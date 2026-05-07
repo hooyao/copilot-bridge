@@ -6,7 +6,7 @@ using CopilotBridge.Cli.Hosting;
 [assembly: SupportedOSPlatform("windows")]
 
 const string ProductName = "copilot-bridge";
-const string ProductVersion = "0.1.0-dev";
+const string ProductVersion = "0.0.1-alpha";
 
 if (args.Length > 0)
 {
