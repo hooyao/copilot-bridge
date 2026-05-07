@@ -1,0 +1,62 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]64/
+
+# AOT / publish output
+publish/
+publish-aot/
+artifacts/
+*.[Pp]ublish.xml
+*.pubxml
+*.publishproj
+
+# IDE
+.vs/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# NuGet
+*.nupkg
+*.snupkg
+*.nuget.props
+*.nuget.targets
+
+# Logs / coverage / test results
+*.log
+*.tlog
+*.binlog
+[Tt]est[Rr]esult*/
+coverage*.json
+coverage*.xml
+*.coverage
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Project-specific
+appsettings.dev.jsonc
+appsettings.local.jsonc
+references/
+.claude/
+
+# Encrypted GitHub token (DPAPI-protected, but never commit it anyway)
+github_token.dat
+
+# Bridge request/response logs and harness scratch output
+logs/
+tests/harness/last-stdout.txt
+tests/harness/last-stderr.txt
