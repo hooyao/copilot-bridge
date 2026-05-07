@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags: ['release-*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. release-0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            "${{ inputs.tag }}"
+          } else {
+            "${{ github.ref_name }}"
+          }
+          $version = $tag -replace '^release-', ''
+          Write-Output "VERSION=$version" >> $env:GITHUB_OUTPUT
+          if ($version -match '-') {
+            Write-Output "PRERELEASE=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Output "PRERELEASE=false" >> $env:GITHUB_OUTPUT
+          }
+          Write-Host "Version: $version, Prerelease: $($version -match '-')"
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore CopilotBridge.slnx
+
+      - name: Build (Release)
+        run: dotnet build CopilotBridge.slnx -c Release --no-restore
+
+      - name: Publish AOT executable
+        shell: pwsh
+        run: |
+          dotnet publish src/CopilotBridge.Cli/CopilotBridge.Cli.csproj `
+            -c Release -r win-x64 `
+            "-p:Version=${{ steps.version.outputs.VERSION }}" `
+            -o ./publish-aot
+
+      - name: Package release archive
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          $exe = Get-Item ./publish-aot/copilot-bridge.exe
+          $sizeMB = [math]::Round($exe.Length / 1MB, 2)
+          Write-Host "Packaging copilot-bridge.exe ($sizeMB MB) into copilot-bridge-$version-win-x64.zip"
+          Compress-Archive `
+            -Path ./publish-aot/copilot-bridge.exe `
+            -DestinationPath "copilot-bridge-$version-win-x64.zip" `
+            -CompressionLevel Optimal
+          Get-Item "copilot-bridge-$version-win-x64.zip"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          $prerelease = "${{ steps.version.outputs.PRERELEASE }}"
+          $ghArgs = @(
+            "release", "create", "v$version",
+            "--title", "copilot-bridge $version",
+            "--generate-notes",
+            "copilot-bridge-$version-win-x64.zip"
+          )
+          if ($prerelease -eq "true") {
+            $ghArgs += "--prerelease"
+          }
+          gh @ghArgs
