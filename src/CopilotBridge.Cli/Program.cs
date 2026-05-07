@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.Versioning;
 using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Debug;
@@ -6,7 +7,14 @@ using CopilotBridge.Cli.Hosting;
 [assembly: SupportedOSPlatform("windows")]
 
 const string ProductName = "copilot-bridge";
-const string ProductVersion = "0.0.1-alpha";
+
+// Read at runtime from the assembly's [AssemblyInformationalVersion]
+// attribute, which MSBuild auto-emits from -p:Version=X.Y.Z passed by the
+// release workflow. No source change needed to bump versions — just push a
+// new release-X.Y.Z tag. AOT-safe: the executing assembly's own attributes
+// are preserved by default. Strip any "+commit-sha" suffix the deterministic
+// build appends.
+var productVersion = ResolveProductVersion();
 
 if (args.Length > 0)
 {
@@ -14,7 +22,7 @@ if (args.Length > 0)
     {
         case "-v":
         case "--version":
-            Console.WriteLine($"{ProductName} {ProductVersion}");
+            Console.WriteLine($"{ProductName} {productVersion}");
             return 0;
         case "-h":
         case "--help":
@@ -52,4 +60,14 @@ static void PrintHelp()
     Console.WriteLine("  -v, --version    Show version");
     Console.WriteLine();
     Console.WriteLine("`serve --help` shows server-specific options (e.g. --port).");
+}
+
+static string ResolveProductVersion()
+{
+    var info = Assembly.GetExecutingAssembly()
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+        ?.InformationalVersion;
+    if (string.IsNullOrEmpty(info)) return "0.0.0-dev";
+    var plus = info.IndexOf('+');
+    return plus >= 0 ? info[..plus] : info;
 }
