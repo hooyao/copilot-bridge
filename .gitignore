@@ -1,8 +1,8 @@
-# Build output
+# Build output. Note: [Dd]ebug/ and [Rr]elease/ would also match the source
+# folder src/CopilotBridge.Cli/Debug/ (which holds DebugCommand.cs) — leave
+# the bare patterns out and rely on bin/ + obj/ to cover MSBuild output.
 [Bb]in/
 [Oo]bj/
-[Dd]ebug/
-[Rr]elease/
 x64/
 x86/
 [Aa][Rr][Mm]64/
