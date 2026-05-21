@@ -20,9 +20,13 @@ for what's in M2/M3/M4). End-to-end verified:
 
 - `claude -p` round-trips through the bridge succeed (text, tool round-trip,
   MCP tools, multi-effort).
-- Identical-prompt runs hit Copilot's prompt cache (`cache_read_input_tokens`
-  matches the prefix) — verified `SystemSanitizeStage` is correctly stripping
-  Claude Code's volatile `# currentDate` injection.
+- Identical-body streaming requests hit Copilot's prompt cache via the bridge
+  (`cache_read_input_tokens > 0` on the second request) — proves the bridge's
+  `DoneFilterStage` is cache-neutral. The `[DONE]` SSE terminator is dropped
+  on the response side without affecting the next request's cache key.
+- `SystemSanitizeStage` strips Claude Code's volatile `# currentDate`
+  injection from request bodies so the cacheable prefix stays stable across
+  days.
 - **Dynamic model catalog** — bridge fetches Copilot's `/models` at startup and
   derives effort routing from each model's declared capabilities. New models
   / variants appear automatically on next restart, no code change.
