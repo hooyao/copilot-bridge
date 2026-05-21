@@ -1,6 +1,7 @@
 using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
+using CopilotBridge.Cli.Hosting.Logging;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline;
@@ -9,6 +10,7 @@ using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Hosting;
@@ -51,7 +53,15 @@ internal static class BridgeHost
             sp.GetRequiredService<HttpClient>(),
             sp.GetRequiredService<IAuthService>(),
             sp.GetRequiredService<CopilotHeaderFactory>()));
-        builder.Services.AddSingleton(_ => new BridgeRequestLogger());
+
+        // Audit sink is owned by the static Serilog logger (see Program.cs).
+        // Surface it as a DI singleton too so tests/host can dispose it
+        // alongside the rest of the container — Dispose drains the worker
+        // queue and is idempotent if Serilog already disposed.
+        if (BridgeIoSinkHolder.Instance is { } sink)
+        {
+            builder.Services.AddSingleton(sink);
+        }
 
         builder.Services.AddSingleton<CopilotModelCatalog>(_ => new CopilotModelCatalog());
         builder.Services.AddSingleton<IModelRegistry>(sp => new CopilotModelRegistry(
@@ -90,8 +100,22 @@ internal static class BridgeHost
         }
 
         var auth = app.Services.GetRequiredService<IAuthService>();
+        var startupLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CopilotBridge.Cli.Startup");
         try
         {
+            // First ensure a GitHub OAuth token exists — runs the
+            // device-code flow if needed. The injected device-code
+            // printer (KestrelServer.PrintDeviceCode) surfaces the
+            // verification URI + user code on stdout so the operator
+            // can complete the browser handshake. EnsureGitHubTokenAsync
+            // blocks (polling GitHub) until they do, then persists the
+            // token. After that, exchange it for a Copilot token.
+            if (!auth.IsAuthenticated)
+            {
+                startupLog.LogInformation(
+                    "No GitHub token on disk — starting device-code flow. Complete the browser handshake to continue.");
+            }
+            await auth.EnsureGitHubTokenAsync(ct);
             await auth.GetCopilotTokenAsync(ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -100,8 +124,7 @@ internal static class BridgeHost
         }
         catch (Exception ex)
         {
-            await Console.Error.WriteLineAsync($"auth check failed: {ex.Message}");
-            await Console.Error.WriteLineAsync("Run `copilot-bridge auth login` first.");
+            startupLog.LogError(ex, "auth setup failed: {Message}", ex.Message);
             return 1;
         }
 

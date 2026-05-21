@@ -1,11 +1,11 @@
 using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
-using CopilotBridge.Cli.Hosting;
+using CopilotBridge.Cli.Hosting.Logging;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Models;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 
@@ -21,12 +21,30 @@ internal static class ClaudeCodeModelsEndpoint
     public static async Task HandleAsync(
         HttpContext httpCtx,
         ICopilotClient copilot,
-        BridgeRequestLogger logger)
+        ILogger<ModelsTag> ioLogger)
     {
         var ct = httpCtx.RequestAborted;
         var sw = Stopwatch.StartNew();
-        var log = new BridgeRequestLog();
-        LogHelpers.CaptureInbound(httpCtx, log);
+        var seq = BridgeIoSeq.Next();
+
+        var inboundHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var header in httpCtx.Request.Headers)
+        {
+            inboundHeaders[header.Key] = header.Value.ToString();
+        }
+        ioLogger.LogInboundRequest(
+            seq,
+            httpCtx.Request.Method,
+            httpCtx.Request.Path.Value ?? "",
+            inboundHeaders,
+            [],
+            0,
+            bodyPooled: false);
+
+        var responseStatus = StatusCodes.Status200OK;
+        var responseHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        byte[] responseBody = [];
+        string? error = null;
 
         try
         {
@@ -46,27 +64,38 @@ internal static class ClaudeCodeModelsEndpoint
             }
 
             var response = new AnthropicModelsResponse { Data = data };
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(response, JsonContext.Default.AnthropicModelsResponse);
-            log.DownstreamBody = Encoding.UTF8.GetString(bytes);
+            responseBody = JsonSerializer.SerializeToUtf8Bytes(response, JsonContext.Default.AnthropicModelsResponse);
+            responseHeaders["Content-Type"] = "application/json";
 
             httpCtx.Response.ContentType = "application/json";
-            httpCtx.Response.ContentLength = bytes.Length;
-            await httpCtx.Response.Body.WriteAsync(bytes, ct);
+            httpCtx.Response.ContentLength = responseBody.Length;
+            await httpCtx.Response.Body.WriteAsync(responseBody, ct);
         }
         catch (Exception ex)
         {
-            log.Error = ex.Message;
+            error = ex.Message;
             if (!httpCtx.Response.HasStarted)
             {
-                httpCtx.Response.StatusCode = StatusCodes.Status502BadGateway;
+                responseStatus = StatusCodes.Status502BadGateway;
+                httpCtx.Response.StatusCode = responseStatus;
                 await httpCtx.Response.WriteAsync($"failed to fetch models: {ex.Message}", CancellationToken.None);
             }
         }
         finally
         {
             sw.Stop();
-            log.DurationMs = sw.ElapsedMilliseconds;
-            await logger.WriteAsync(log, CancellationToken.None);
+            ioLogger.LogInboundResponse(
+                seq,
+                responseStatus,
+                responseHeaders,
+                responseBody,
+                responseBody.Length,
+                bodyPooled: false,
+                error: error,
+                durationMs: sw.ElapsedMilliseconds);
         }
     }
 }
+
+/// <summary>Marker type used to give the models endpoint its own <c>ILogger</c> category.</summary>
+internal sealed class ModelsTag { }

@@ -4,6 +4,7 @@ using System.Runtime.Versioning;
 using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Debug;
 using CopilotBridge.Cli.Hosting;
+using CopilotBridge.Cli.Hosting.Logging;
 using Serilog;
 using Serilog.Events;
 
@@ -90,25 +91,37 @@ static void InitializeLogging()
     //      No rolling: each restart gets its own file so a single run is
     //      easy to grep without daily-spanning chunks. Old files accumulate
     //      until the operator cleans them up.
-    // Level defaults to Debug; operator can dial down with BRIDGE_LOG_LEVEL=Information.
+    // Level defaults to Verbose at the Serilog layer; per-category filtering
+    // is delegated to Microsoft.Extensions.Logging via appsettings.json's
+    // "Logging" section, which the slim host wires up automatically.
     var startupStamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
     var logPath = Path.Combine(AppContext.BaseDirectory, "log", $"bridge-{startupStamp}.log");
+    var ioLogDir = Path.Combine(AppContext.BaseDirectory, "logs");
     const string outputTemplate = "{Timestamp:HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception}";
 
+    // Custom sink owns per-request inbound/upstream audit JSONs.
+    // Registered as a singleton on the DI container too (see BridgeHost) so
+    // endpoints can keep using ILogger; here we just plug it into Serilog.
+    BridgeIoSinkHolder.Instance = new BridgeIoSink(ioLogDir);
+
     Log.Logger = new LoggerConfiguration()
-        .MinimumLevel.Is(ParseLogLevel(Environment.GetEnvironmentVariable("BRIDGE_LOG_LEVEL")))
-        .WriteTo.Console(outputTemplate: outputTemplate, standardErrorFromLevel: LogEventLevel.Verbose)
-        .WriteTo.File(
-            path: logPath,
-            outputTemplate: outputTemplate,
-            flushToDiskInterval: TimeSpan.FromSeconds(2))
+        .MinimumLevel.Verbose()
+        // Bridge IO events go to the audit sink only — keep them out of the
+        // rolling text log and stderr to avoid duplication.
+        .WriteTo.Logger(lc => lc
+            .Filter.ByIncludingOnly(e => e.Properties.ContainsKey("Payload"))
+            .WriteTo.Sink(BridgeIoSinkHolder.Instance))
+        .WriteTo.Logger(lc => lc
+            .Filter.ByExcluding(e => e.Properties.ContainsKey("Payload"))
+            .WriteTo.Console(outputTemplate: outputTemplate, standardErrorFromLevel: LogEventLevel.Verbose)
+            .WriteTo.File(
+                path: logPath,
+                outputTemplate: outputTemplate,
+                flushToDiskInterval: TimeSpan.FromSeconds(2)))
         .CreateLogger();
 
     Log.Information("copilot-bridge {Version} starting (pid={Pid})", ResolveProductVersion(), Environment.ProcessId);
 }
-
-static LogEventLevel ParseLogLevel(string? s) =>
-    Enum.TryParse<LogEventLevel>(s, true, out var v) ? v : LogEventLevel.Debug;
 
 static string ResolveProductVersion()
 {

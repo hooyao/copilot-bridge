@@ -1,6 +1,5 @@
 using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
-using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 
 using Serilog;
@@ -11,8 +10,9 @@ namespace CopilotBridge.Cli.Pipeline.Response;
 /// Drops Copilot's OpenAI-style <c>event:message data:[DONE]</c> terminator
 /// from the streaming response (research §8.6 / §15.2.4). The Anthropic SDK
 /// JSON.parses each <c>data:</c> line and would throw on the literal string
-/// <c>[DONE]</c>. Captures the dropped event into the audit log with
-/// <c>filtered:true</c> so it's still visible during debugging.
+/// <c>[DONE]</c>. Pushes the dropped event into
+/// <see cref="BridgeContext{TBody}.DroppedEvents"/> so it still appears in
+/// the inbound-resp audit with a <c>filtered:true</c> flag.
 /// </summary>
 internal sealed class DoneFilterStage : IResponseStage<MessagesRequest>
 {
@@ -26,20 +26,20 @@ internal sealed class DoneFilterStage : IResponseStage<MessagesRequest>
         }
 
         var source = ctx.Response.EventStream;
-        ctx.Response.EventStream = WrapAsync(source, ctx.Log, ctx.Ct);
+        ctx.Response.EventStream = WrapAsync(source, ctx.DroppedEvents, ctx.Ct);
         return Task.CompletedTask;
     }
 
     private static async IAsyncEnumerable<SseItem<string>> WrapAsync(
         IAsyncEnumerable<SseItem<string>> source,
-        BridgeRequestLog log,
+        List<DroppedSseEvent> droppedEvents,
         [EnumeratorCancellation] CancellationToken ct)
     {
         await foreach (var evt in source.WithCancellation(ct))
         {
             if (evt.EventType == "message" && evt.Data == "[DONE]")
             {
-                log.Events.Add(new SseEventCapture(evt.EventType, evt.Data, Filtered: true));
+                droppedEvents.Add(new DroppedSseEvent(evt.EventType, evt.Data));
                 Log.Debug("stage DoneFilter: dropped event:message data:[DONE]");
                 continue;
             }

@@ -45,17 +45,21 @@ linker).
 # 1. Clone + build
 git clone https://github.com/hooyao/copilot-bridge
 cd copilot-bridge
-.\aot_publish.bat                              # produces publish\copilot-bridge.exe
+dotnet publish src/CopilotBridge.Cli -c Release -r win-x64
+#  → produces .\publish\copilot-bridge.exe at the repo root
 
-# 2. One-time GitHub OAuth (device-code flow). Token is DPAPI-encrypted and
-#    stored next to the exe (or ~\github_token.dat as fallback).
+# 2. Start the server. If no GitHub OAuth token is on disk (first run,
+#    fresh machine), it prints a device-code URL + user code to stdout
+#    and blocks polling GitHub until you complete the browser handshake;
+#    the resulting token is DPAPI-encrypted and saved next to the exe
+#    (or ~\github_token.dat as fallback) so subsequent starts are silent.
+.\publish\copilot-bridge.exe serve              # default port 8765
+
+# Optional: run the device-code flow up front, without starting the server.
 .\publish\copilot-bridge.exe auth login
 
-# 3. Verify Copilot reachable
-.\publish\copilot-bridge.exe debug list-models  # 11 Claude models on Enterprise
-
-# 4. Start the server
-.\publish\copilot-bridge.exe serve              # default port 8765
+# Optional: confirm Copilot is reachable + list the available Claude models.
+.\publish\copilot-bridge.exe debug list-models
 ```
 
 Point Claude Code at the bridge:

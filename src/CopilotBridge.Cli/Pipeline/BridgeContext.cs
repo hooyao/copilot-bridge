@@ -1,5 +1,4 @@
 using System.Net.ServerSentEvents;
-using CopilotBridge.Cli.Hosting;
 
 namespace CopilotBridge.Cli.Pipeline;
 
@@ -14,7 +13,6 @@ internal sealed class BridgeContext<TBody> where TBody : class
 {
     public required BridgeRequest<TBody> Request { get; init; }
     public required BridgeResponse Response { get; init; }
-    public required BridgeRequestLog Log { get; init; }
     public required CancellationToken Ct { get; init; }
 
     /// <summary>
@@ -22,7 +20,18 @@ internal sealed class BridgeContext<TBody> where TBody : class
     /// that runs, accessing this throws (the runner enforces ordering).
     /// </summary>
     public RouteTarget? Target { get; set; }
+
+    /// <summary>
+    /// Side-channel for response stages that drop or rewrite SSE events but
+    /// still want them surfaced in the inbound-resp audit (so a reader can
+    /// see what the bridge filtered out). The endpoint reads this after the
+    /// stream completes and merges it into the audit record.
+    /// </summary>
+    public List<DroppedSseEvent> DroppedEvents { get; init; } = [];
 }
+
+/// <summary>One SSE event a response stage chose not to forward downstream.</summary>
+internal readonly record struct DroppedSseEvent(string? EventType, string Data);
 
 /// <summary>
 /// The inbound side of <see cref="BridgeContext{TBody}"/>: typed body, mutable

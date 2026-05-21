@@ -5,7 +5,9 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Serilog.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Hosting;
 
@@ -20,6 +22,15 @@ internal static class KestrelServer
     public static async Task<int> RunAsync(int port, CancellationToken ct)
     {
         var builder = WebApplication.CreateSlimBuilder();
+
+        // Route all Microsoft.Extensions.Logging output (Kestrel, ASP.NET
+        // Core hosting/routing diagnostics, etc.) through the same Serilog
+        // pipeline that Program.cs configured. Without this, the slim
+        // host's default console provider double-logs requests in its own
+        // `info: Category[id]\n      Message` format alongside our Serilog
+        // template.
+        builder.Logging.ClearProviders();
+        builder.Logging.AddProvider(new SerilogLoggerProvider(dispose: false));
 
         builder.Configuration
             .SetBasePath(AppContext.BaseDirectory)
@@ -37,12 +48,15 @@ internal static class KestrelServer
         var routes = app.Services.GetRequiredService<IOptions<RoutesConfig>>().Value;
         var catalog = app.Services.GetRequiredService<CopilotModelCatalog>();
         var auth = app.Services.GetRequiredService<IAuthService>();
-        var requestLogger = app.Services.GetRequiredService<BridgeRequestLogger>();
-        Console.WriteLine($"copilot-bridge listening on http://localhost:{port}");
-        Console.WriteLine($"Upstream: {auth.CopilotApiBaseUrl}");
-        Console.WriteLine($"Logs:     {requestLogger.LogDirectory}");
-        Console.WriteLine($"Routes:   {routes.Rules.Count} user rules; catalog: {catalog.Count} Anthropic models");
-        Console.WriteLine();
+        var ioSinkDir = Logging.BridgeIoSinkHolder.Instance?.Directory
+            ?? Path.Combine(AppContext.BaseDirectory, "logs");
+
+        var startupLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CopilotBridge.Cli.Startup");
+        startupLog.LogInformation("copilot-bridge listening on http://localhost:{Port}", port);
+        startupLog.LogInformation("Upstream: {UpstreamUrl}", auth.CopilotApiBaseUrl);
+        startupLog.LogInformation("Logs:     {LogDir}", ioSinkDir);
+        startupLog.LogInformation("Routes:   {RuleCount} user rules; catalog: {ModelCount} Anthropic models",
+            routes.Rules.Count, catalog.Count);
 
         BridgeHost.MapEndpoints(app);
 

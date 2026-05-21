@@ -1,11 +1,15 @@
 using System.Runtime.Versioning;
 using CopilotBridge.Cli.Hosting;
+using CopilotBridge.Cli.Hosting.Logging;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Serilog;
+using Serilog.Extensions.Logging;
 using Xunit;
 
 namespace CopilotBridge.Playground.Headless;
@@ -20,14 +24,31 @@ namespace CopilotBridge.Playground.Headless;
 public sealed class BridgeFixture : IAsyncLifetime
 {
     private WebApplication? _app;
-    private string? _logDir;
+    private BridgeIoSink? _sink;
 
     public string BaseUrl { get; private set; } = "";
-    public string LogDirectory => _logDir ?? throw new InvalidOperationException("Bridge not initialized.");
+    public string LogDirectory => _sink?.Directory ?? throw new InvalidOperationException("Bridge not initialized.");
 
     public async Task InitializeAsync()
     {
+        // The bridge expects a BridgeIoSink registered as both the Serilog
+        // sink and a DI singleton. Program.cs handles this for the
+        // production binary; tests do it themselves here.
+        var ioDir = Path.Combine(AppContext.BaseDirectory, "logs");
+        _sink = new BridgeIoSink(ioDir);
+        BridgeIoSinkHolder.Instance = _sink;
+
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Verbose()
+            .WriteTo.Logger(lc => lc
+                .Filter.ByIncludingOnly(e => e.Properties.ContainsKey("Payload"))
+                .WriteTo.Sink(_sink))
+            .CreateLogger();
+
         var builder = WebApplication.CreateBuilder();
+
+        builder.Logging.ClearProviders();
+        builder.Logging.AddProvider(new SerilogLoggerProvider(dispose: false));
 
         // The fixture lives in test bin dir; production appsettings.json lives
         // next to copilot-bridge.exe in src/CopilotBridge.Cli/bin/.../appsettings.json.
@@ -59,9 +80,6 @@ public sealed class BridgeFixture : IAsyncLifetime
         var addresses = _app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()
             ?? throw new InvalidOperationException("No IServerAddressesFeature on host.");
         BaseUrl = addresses.Addresses.First();
-
-        var logger = _app.Services.GetRequiredService<BridgeRequestLogger>();
-        _logDir = logger.LogDirectory;
     }
 
     public async Task DisposeAsync()
@@ -71,6 +89,8 @@ public sealed class BridgeFixture : IAsyncLifetime
             await _app.StopAsync();
             await _app.DisposeAsync();
         }
+        Log.CloseAndFlush();
+        _sink?.Dispose();
     }
 
     /// <summary>

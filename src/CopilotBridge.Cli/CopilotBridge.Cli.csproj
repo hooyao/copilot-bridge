@@ -8,6 +8,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PublishAot>true</PublishAot>
+    <!-- Drop the published exe at the repo root's publish/ folder
+         (instead of bin/<Config>/<TFM>/<RID>/publish/) so it's easy
+         to grab during iterative testing. -->
+    <PublishDir>$(MSBuildThisFileDirectory)..\..\publish\</PublishDir>
     <OptimizationPreference>Size</OptimizationPreference>
     <InvariantGlobalization>true</InvariantGlobalization>
     <UseSystemResourceKeys>true</UseSystemResourceKeys>
@@ -31,6 +35,7 @@
     <PackageReference Include="System.CommandLine" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" />
     <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Extensions.Logging" />
     <PackageReference Include="Serilog.Sinks.Console" />
     <PackageReference Include="Serilog.Sinks.File" />
   </ItemGroup>
