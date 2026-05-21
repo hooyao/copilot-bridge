@@ -59,6 +59,25 @@ internal static class ClaudeCodeMessagesEndpoint
                 return;
             }
 
+            // Short-circuit on Anthropic server tools Copilot doesn't support.
+            // Currently: web_search_* — the upstream's "unsupported_value" error
+            // is opaque to Claude Code users; this surface tells them what to
+            // do (configure an MCP search server instead). See research §15.4.
+            if (TryGetUnsupportedServerTool(clientBody, out var badType))
+            {
+                log.Error = $"unsupported server tool: {badType}";
+                httpCtx.Response.StatusCode = StatusCodes.Status400BadRequest;
+                httpCtx.Response.ContentType = "application/json";
+                var msg = $"The '{badType}' server tool is not supported on the GitHub Copilot backend. Configure a custom search MCP server in your Claude Code MCP config (e.g. via --mcp-config) and disable the built-in WebSearch tool.";
+                // JsonEncodedText handles escaping AOT-safely (no reflection).
+                var bytes = Encoding.UTF8.GetBytes(
+                    $"{{\"type\":\"error\",\"error\":{{\"type\":\"not_supported\",\"message\":\"{System.Text.Encodings.Web.JavaScriptEncoder.Default.Encode(msg)}\"}}}}");
+                log.DownstreamBody = Encoding.UTF8.GetString(bytes);
+                httpCtx.Response.ContentLength = bytes.Length;
+                await httpCtx.Response.Body.WriteAsync(bytes, ct);
+                return;
+            }
+
             // Build a frozen view of inbound headers for the adapter; the
             // pipeline gets its own mutable copy to transform.
             var inboundHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -147,6 +166,27 @@ internal static class ClaudeCodeMessagesEndpoint
             await logger.WriteAsync(log, CancellationToken.None);
             Log.Debug($"endpoint exit  duration_ms={log.DurationMs}");
         }
+    }
+
+    /// <summary>
+    /// Returns true and sets <paramref name="toolType"/> when the request
+    /// carries a server tool the Copilot upstream rejects. Today: anything
+    /// with <c>type</c> starting <c>"web_search_"</c>. New gap models can
+    /// extend this guard without touching the pipeline.
+    /// </summary>
+    private static bool TryGetUnsupportedServerTool(MessagesRequest body, out string? toolType)
+    {
+        toolType = null;
+        if (body.Tools is null) return false;
+        foreach (var t in body.Tools)
+        {
+            if (t.Type is { Length: > 0 } typ && typ.StartsWith("web_search_", StringComparison.OrdinalIgnoreCase))
+            {
+                toolType = typ;
+                return true;
+            }
+        }
+        return false;
     }
 
     private static async Task WriteSseEventAsync(

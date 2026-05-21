@@ -1401,3 +1401,23 @@ Each upstream shapes its response slightly differently. That's the actual source
 3. **`stop_details`, `inference_geo`, `service_tier`** are provider-dependent. Anthropic SDK reads them defensively (`?? null`), so omission breaks nothing. The bridge doesn't need to synthesize missing fields.
 4. **The "haiku as a stand-in for opus diff" reverse-derivation works only for invariants** — provider-specific fields (especially the Bedrock vs Direct vs Vertex variations) require direct observation. Future work: try a higher-tier Anthropic key to fill in the remaining native-vs-Copilot rows for sonnet-4.6 and opus-4.7.
 5. **`usage.service_tier` is Anthropic-native-only across the board** — even Copilot's Anthropic-Direct routing strips it. If anything ever cares about this field, the bridge would need to synthesize it (current answer: nothing cares).
+
+### 16.8 WebSearch policy: bridge friendly 400 + MCP as the workaround (2026-05-21)
+
+Anthropic's `web_search_20250305` / `web_search_20260209` server tools are rejected by every Copilot upstream (§15.4 — HTTP 400 `unsupported_value`). To avoid surfacing Copilot's opaque error to users, the bridge short-circuits these requests at the endpoint level:
+
+```jsonc
+// Bridge response when tools[] contains a web_search_* entry
+HTTP 400 Bad Request
+{
+  "type": "error",
+  "error": {
+    "type": "not_supported",
+    "message": "The 'web_search_20250305' server tool is not supported on the GitHub Copilot backend. Configure a custom search MCP server in your Claude Code MCP config (e.g. via --mcp-config) and disable the built-in WebSearch tool."
+  }
+}
+```
+
+The message points users at the supported alternative: **MCP servers**. Claude Code's MCP loader is transport-agnostic — stdio, SSE, http — and the bridge sees MCP-namespaced tools (`mcp__<server>__<tool>`) as ordinary `tools[]` entries with no special handling. Verified end-to-end by `tests/CopilotBridge.Playground/Headless/McpToolUseTests.cs`: a stdio echo MCP server, Claude Code via `--mcp-config`, sonnet-4.6 model, full `tool_use → tool_result → final text` round-trip with the canary string reaching Claude Code's stdout.
+
+Implementation: `src/CopilotBridge.Cli/Endpoints/ClaudeCode/ClaudeCodeMessagesEndpoint.cs` runs `TryGetUnsupportedServerTool` immediately after deserializing the request body. The `Tool.Type` field was added to the DTO so this check can read the discriminator. Pipeline + upstream are never invoked for rejected requests. Verified by `WebSearchRejectionTests` (both `web_search_20250305` and `web_search_20260209`).

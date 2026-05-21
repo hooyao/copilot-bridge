@@ -19,7 +19,8 @@ internal sealed record ClaudeInvocation(
     TimeSpan? Timeout = null,
     string? AnthropicApiKey = null,   // when set, AnthropicBaseUrl points at native
     string? AnthropicBaseUrl = null,  // override target (e.g. https://api.anthropic.com); null = bridge
-    IReadOnlyList<string>? Betas = null);
+    IReadOnlyList<string>? Betas = null,
+    string? McpConfigPath = null);    // when set, passes --mcp-config <path>
 
 internal sealed record ClaudeResult(
     int ExitCode,
@@ -47,6 +48,12 @@ internal static class ClaudeProcess
         {
             args.Add("--allowedTools");
             args.Add(inv.AllowedTools);
+        }
+        if (inv.McpConfigPath is not null)
+        {
+            args.Add("--mcp-config");
+            args.Add(inv.McpConfigPath);
+            args.Add("--strict-mcp-config");
         }
         args.Add("--setting-sources");
         args.Add("");
