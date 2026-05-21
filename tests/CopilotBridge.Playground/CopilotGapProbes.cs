@@ -84,6 +84,42 @@ public class CopilotGapProbes
     }
 
     /// <summary>
+    /// Dumps every Claude model Copilot exposes, with its <c>capabilities</c>
+    /// block. Foundation for the dynamic model registry — we read this
+    /// instead of hardcoding the EffortAware table. The list changes (new
+    /// models added, old ones deprecated), so the bridge has to discover at
+    /// startup.
+    /// </summary>
+    [Fact]
+    public async Task DumpClaudeModelsAndCapabilities()
+    {
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryRequestAsync(HttpMethod.Get, "/models");
+        Assert.Equal(System.Net.HttpStatusCode.OK, status);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var data = doc.RootElement.GetProperty("data");
+        var claudeModels = new List<System.Text.Json.JsonElement>();
+        foreach (var m in data.EnumerateArray())
+        {
+            var id = m.GetProperty("id").GetString() ?? "";
+            if (id.StartsWith("claude-", StringComparison.OrdinalIgnoreCase))
+                claudeModels.Add(m);
+        }
+
+        _output.WriteLine($"Claude models on this account: {claudeModels.Count}");
+        _output.WriteLine("");
+
+        foreach (var m in claudeModels)
+        {
+            var id = m.GetProperty("id").GetString();
+            _output.WriteLine($"=== {id} ===");
+            _output.WriteLine(System.Text.Json.JsonSerializer.Serialize(m, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            _output.WriteLine("");
+        }
+    }
+
+    /// <summary>
     /// Probes <c>POST /v1/messages/batches</c>. The Anthropic SDK exposes this
     /// but Claude Code doesn't call it (verified by grep on
     /// <c>restored-src/src/</c>) — included for completeness so the gap doc

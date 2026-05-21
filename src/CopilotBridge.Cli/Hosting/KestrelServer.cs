@@ -1,14 +1,7 @@
 using CopilotBridge.Cli.Auth;
-using CopilotBridge.Cli.Copilot;
-using CopilotBridge.Cli.Endpoints.ClaudeCode;
-using CopilotBridge.Cli.Models;
-using CopilotBridge.Cli.Models.Anthropic.Request;
-using CopilotBridge.Cli.Pipeline;
-using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -17,9 +10,10 @@ using Microsoft.Extensions.Options;
 namespace CopilotBridge.Cli.Hosting;
 
 /// <summary>
-/// Builds and runs the bridge HTTP server. Uses
-/// <see cref="WebApplication.CreateSlimBuilder()"/> — the AOT-friendly variant —
-/// and explicit factory registrations everywhere to avoid reflection-based DI.
+/// Production CLI entry: builds the AOT-friendly slim host, hands DI/middleware
+/// wiring off to <see cref="BridgeHost"/>, then runs Kestrel on the requested
+/// port. In-process tests skip this and use <see cref="BridgeHost"/> directly
+/// with a full <see cref="WebApplicationBuilder"/>.
 /// </summary>
 internal static class KestrelServer
 {
@@ -27,103 +21,30 @@ internal static class KestrelServer
     {
         var builder = WebApplication.CreateSlimBuilder();
 
-        // Load appsettings.json from next to the exe. Required (optional:false)
-        // — fail-fast at startup if missing or malformed; better than running
-        // with silent-empty routes.
         builder.Configuration
             .SetBasePath(AppContext.BaseDirectory)
             .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false);
 
-        builder.Services.Configure<RoutesConfig>(builder.Configuration.GetSection("Routing"));
-
-        // Hook our source-gen JsonContext into minimal-API binding so any
-        // future TypedResults.Json calls use it. Direct serialization in the
-        // endpoints already uses JsonContext.Default explicitly.
-        builder.Services.ConfigureHttpJsonOptions(options =>
-        {
-            options.SerializerOptions.TypeInfoResolverChain.Insert(0, JsonContext.Default);
-        });
-
-        // Single HttpClient — generous timeout for long thinking turns; the
-        // bridge's per-request CancellationToken (from Kestrel) tears down
-        // upstream sooner if the inbound client disconnects. The User-Agent is
-        // required by api.github.com (without it the request gets a 403).
-        builder.Services.AddSingleton(_ =>
-        {
-            var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
-            return http;
-        });
-        builder.Services.AddSingleton(sp => new AuthService(
-            sp.GetRequiredService<HttpClient>(),
-            PrintDeviceCode));
-        builder.Services.AddSingleton<IAuthService>(sp => sp.GetRequiredService<AuthService>());
-        builder.Services.AddSingleton(_ => new CopilotHeaderFactory());
-        builder.Services.AddSingleton<ICopilotClient>(sp => new CopilotClient(
-            sp.GetRequiredService<HttpClient>(),
-            sp.GetRequiredService<IAuthService>(),
-            sp.GetRequiredService<CopilotHeaderFactory>()));
-        builder.Services.AddSingleton(_ => new BridgeRequestLogger());
-
-        // Pipeline framework registrations.
-        builder.Services.AddSingleton<IModelRegistry>(_ => new CopilotModelRegistry());
-        builder.Services.AddSingleton(ClaudeCodeInboundAdapter.Instance);
-        builder.Services.AddSingleton(ClaudeCodeOutboundAdapter.Instance);
-        builder.Services.AddSingleton<IPipelineRunner<MessagesRequest>>(_ => new PipelineRunner<MessagesRequest>());
-        builder.Services.AddSingleton(sp => BridgePipelines.BuildAnthropic(
-            sp.GetRequiredService<IModelRegistry>(),
-            sp.GetRequiredService<ICopilotClient>(),
-            sp.GetRequiredService<IOptions<RoutesConfig>>()));
+        BridgeHost.ConfigureServices(builder, PrintDeviceCode);
 
         builder.WebHost.UseUrls($"http://localhost:{port}");
-        builder.Services.Configure<KestrelServerOptions>(opts =>
-        {
-            // Allow long-running streamed responses; default keep-alive would
-            // kill thinking-heavy turns mid-stream.
-            opts.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(15);
-            opts.Limits.RequestHeadersTimeout = TimeSpan.FromMinutes(2);
-        });
 
         var app = builder.Build();
 
-        // Validate routes immediately; fail-fast on any defect so the operator
-        // sees a clear error instead of confusing runtime behavior.
+        var startupResult = await BridgeHost.RunStartupAsync(app, ct);
+        if (startupResult.HasValue) return startupResult.Value;
+
         var routes = app.Services.GetRequiredService<IOptions<RoutesConfig>>().Value;
-        try
-        {
-            RoutesValidator.Validate(routes);
-        }
-        catch (Exception ex)
-        {
-            await Console.Error.WriteLineAsync(ex.Message);
-            return 2;
-        }
-
+        var catalog = app.Services.GetRequiredService<CopilotModelCatalog>();
         var auth = app.Services.GetRequiredService<IAuthService>();
-        try
-        {
-            await auth.GetCopilotTokenAsync(ct);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            return 0;
-        }
-        catch (Exception ex)
-        {
-            await Console.Error.WriteLineAsync($"auth check failed: {ex.Message}");
-            await Console.Error.WriteLineAsync("Run `copilot-bridge auth login` first.");
-            return 1;
-        }
-
         var requestLogger = app.Services.GetRequiredService<BridgeRequestLogger>();
         Console.WriteLine($"copilot-bridge listening on http://localhost:{port}");
         Console.WriteLine($"Upstream: {auth.CopilotApiBaseUrl}");
         Console.WriteLine($"Logs:     {requestLogger.LogDirectory}");
-        Console.WriteLine($"Routes:   {routes.Rules.Count} user rules (effort routing is capability-driven, in CopilotModelRegistry)");
+        Console.WriteLine($"Routes:   {routes.Rules.Count} user rules; catalog: {catalog.Count} Anthropic models");
         Console.WriteLine();
 
-        // Pipeline-driven Claude Code endpoints under /cc/v1/...
-        ClaudeCodeEndpoints.Map(app);
+        BridgeHost.MapEndpoints(app);
 
         await app.RunAsync(ct);
         return 0;
