@@ -77,6 +77,23 @@ public class EffortRoutingTests : IClassFixture<BridgeFixture>
         string? expectedUpstreamEffort) =>
         RunMatrixCase(claudeModel, effort, expectedUpstreamModel, expectedUpstreamEffort);
 
+    // ─── 1M-context models: priority per goal. Both expose full effort ranges. ───
+
+    [Theory]
+    [InlineData("claude-opus-4-7-1m-internal", "low",    "claude-opus-4.7-1m-internal", "low")]
+    [InlineData("claude-opus-4-7-1m-internal", "medium", "claude-opus-4.7-1m-internal", "medium")]
+    [InlineData("claude-opus-4-7-1m-internal", "high",   "claude-opus-4.7-1m-internal", "high")]
+    [InlineData("claude-opus-4-7-1m-internal", "xhigh",  "claude-opus-4.7-1m-internal", "xhigh")]
+    [InlineData("claude-opus-4-6-1m",          "low",    "claude-opus-4.6-1m",          "low")]
+    [InlineData("claude-opus-4-6-1m",          "medium", "claude-opus-4.6-1m",          "medium")]
+    [InlineData("claude-opus-4-6-1m",          "high",   "claude-opus-4.6-1m",          "high")]
+    public Task LongContext1mModels_PassThroughAllEfforts(
+        string claudeModel,
+        string effort,
+        string expectedUpstreamModel,
+        string? expectedUpstreamEffort) =>
+        RunMatrixCase(claudeModel, effort, expectedUpstreamModel, expectedUpstreamEffort);
+
     /// <summary>
     /// Runs one matrix case: drives claude.exe with the given model+effort, then
     /// asserts the bridge audit log matches <paramref name="expectedUpstreamModel"/>
