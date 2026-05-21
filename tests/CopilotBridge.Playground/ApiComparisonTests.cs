@@ -18,10 +18,11 @@ namespace CopilotBridge.Playground;
 /// Anthropic API key comes from <c>tests/CopilotBridge.Playground/appsettings.local.json</c>
 /// (gitignored). Tests skip cleanly when the key is absent or rate-limited (429).
 ///
-/// Model mapping: bridge-side variants like <c>claude-opus-4-7-1m-internal</c>
-/// have no native equivalent; we use <c>claude-opus-4-7</c> with the
-/// <c>context-1m-2025-08-07</c> beta header on the native side and label the
-/// case accordingly.
+/// Model mapping: sonnet-4.6 / haiku-4.5 / opus-4.7 exist on both sides with
+/// the same canonical id (dot/dash format differs — Anthropic native uses
+/// <c>claude-opus-4-7</c>, Copilot uses <c>claude-opus-4.7</c>). The
+/// Copilot-only variant <c>claude-opus-4-7-1m-internal</c> maps to
+/// <c>claude-opus-4-7</c> + <c>context-1m-2025-08-07</c> beta header on native.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public class ApiComparisonTests
@@ -30,12 +31,26 @@ public class ApiComparisonTests
 
     public ApiComparisonTests(ITestOutputHelper output) => _output = output;
 
+    /// <summary>
+    /// Empirical observation from the haiku-4.5 native 1:1 comparison
+    /// (2026-05-21). <b>Only `copilot_usage` is truly platform-invariant.</b>
+    /// `stop_details`, `usage.inference_geo`, `usage.service_tier` vary by
+    /// Copilot backend — see <see cref="CopilotShape_ObserveAcrossModels"/>
+    /// for the reason: Copilot routes models through different upstream
+    /// providers (msg_bdrk_* = AWS Bedrock, msg_vrtx_* = Google Vertex,
+    /// msg_01* = direct Anthropic), each with slightly different response
+    /// shaping. The Anthropic SDK ignores unknown fields and tolerates
+    /// missing optional fields, so the bridge needs no transformation — but
+    /// don't treat haiku-vs-native as a universal reverse-derivation key.
+    /// </summary>
+    private static readonly string[] CopilotInvariantTopLevelKeys = { "copilot_usage" };
+
     [Theory]
     // model_copilot, model_native, native_betas, label
-    [InlineData("claude-sonnet-4.6", "claude-sonnet-4-5",    null,                    "sonnet-4.6 (Copilot) vs sonnet-4.5 (native — closest available)")]
+    [InlineData("claude-sonnet-4.6", "claude-sonnet-4-6",    null,                    "sonnet-4.6 (both)")]
     [InlineData("claude-haiku-4.5",  "claude-haiku-4-5",     null,                    "haiku-4.5 (both)")]
-    [InlineData("claude-opus-4.7",   "claude-opus-4-1",      null,                    "opus-4.7 (Copilot) vs opus-4.1 (native — closest)")]
-    [InlineData("claude-opus-4.7-1m-internal", "claude-opus-4-1", "context-1m-2025-08-07", "opus-4.7 1m variant (Copilot) vs opus-4.1 + 1m beta (native)")]
+    [InlineData("claude-opus-4.7",   "claude-opus-4-7",      null,                    "opus-4.7 (both)")]
+    [InlineData("claude-opus-4.7-1m-internal", "claude-opus-4-7", "context-1m-2025-08-07", "opus-4.7 1m variant (Copilot) vs opus-4.7 + 1m beta (native)")]
     public async Task CompareMinimalPrompt_AcrossBackends(
         string modelCopilot,
         string modelNative,
@@ -90,6 +105,53 @@ public class ApiComparisonTests
         var nativeJson = JsonNode.Parse(nativeResp!)!.AsObject();
 
         ReportDiff(copilotJson, nativeJson);
+    }
+
+    /// <summary>
+    /// Observational probe of Copilot-side shape across priority Claude
+    /// models. Asserts only the truly invariant invariants
+    /// (<see cref="CopilotInvariantTopLevelKeys"/> + base Anthropic fields) —
+    /// dumps everything else for human review. The ID prefix in each response
+    /// (<c>msg_bdrk_</c>, <c>msg_vrtx_</c>, <c>msg_01</c>) reveals which
+    /// upstream provider Copilot routed through, which is the actual driver
+    /// of "does this model emit stop_details / inference_geo / service_tier".
+    /// </summary>
+    [Theory]
+    [InlineData("claude-haiku-4.5")]
+    [InlineData("claude-sonnet-4.6")]
+    [InlineData("claude-opus-4.7")]
+    [InlineData("claude-opus-4.7-1m-internal")]
+    public async Task CopilotShape_ObserveAcrossModels(string model)
+    {
+        var body = BuildBody(model, "Reply with the single word: ok");
+        using var client = new PlaygroundClient();
+        var (status, raw) = await client.TryPostMessagesAsync(body);
+        Assert.InRange((int)status, 200, 299);
+
+        var resp = JsonNode.Parse(raw)!.AsObject();
+        var topKeys = resp.Select(p => p.Key).OrderBy(s => s).ToList();
+        var usageKeys = resp["usage"]?.AsObject().Select(p => p.Key).OrderBy(s => s).ToList() ?? new();
+        var msgId = resp["id"]?.GetValue<string>() ?? "?";
+        var provider = msgId.StartsWith("msg_bdrk_") ? "Bedrock"
+            : msgId.StartsWith("msg_vrtx_") ? "Vertex"
+            : msgId.StartsWith("msg_01") ? "AnthropicDirect"
+            : "Unknown";
+
+        _output.WriteLine($"[Copilot] {model}");
+        _output.WriteLine($"  id          : {msgId}  (provider={provider})");
+        _output.WriteLine($"  top-level   : {string.Join(", ", topKeys)}");
+        _output.WriteLine($"  usage keys  : {string.Join(", ", usageKeys)}");
+        _output.WriteLine($"  has stop_details          : {topKeys.Contains("stop_details")}");
+        _output.WriteLine($"  has usage.inference_geo   : {usageKeys.Contains("inference_geo")}");
+        _output.WriteLine($"  has usage.service_tier    : {usageKeys.Contains("service_tier")}");
+
+        // Truly invariant: copilot_usage extension and the base Anthropic fields.
+        foreach (var k in CopilotInvariantTopLevelKeys)
+            Assert.True(topKeys.Contains(k), $"{model}: expected '{k}'.");
+        foreach (var k in new[] { "content", "id", "model", "role", "stop_reason", "type", "usage" })
+            Assert.True(topKeys.Contains(k), $"{model}: missing core Anthropic field '{k}'.");
+        foreach (var k in new[] { "input_tokens", "output_tokens" })
+            Assert.True(usageKeys.Contains(k), $"{model}: missing 'usage.{k}'.");
     }
 
     private static string BuildBody(string model, string prompt) =>

@@ -1367,24 +1367,37 @@ if (m.includes('haiku') || m.includes('sonnet') || m.includes('opus')) return fa
 
 ### 16.7 Native Anthropic ↔ Copilot 1:1 response diff (verified 2026-05-21)
 
-`tests/CopilotBridge.Playground/ApiComparisonTests.cs` sends the same minimal request body to both `api.anthropic.com/v1/messages` and Copilot's `/v1/messages` and reports structural deltas. Anthropic key lives in `tests/CopilotBridge.Playground/appsettings.local.json` (gitignored).
+`tests/CopilotBridge.Playground/ApiComparisonTests.cs` sends the same minimal request body to both `api.anthropic.com/v1/messages` and Copilot's `/v1/messages` and reports structural deltas. Anthropic key lives in `tests/CopilotBridge.Playground/appsettings.local.json` (gitignored). Native sonnet/opus consistently hit a 429 rate-limit on the test account (an `x-should-retry: true` header + 8 spaced retries all blocked — looks like an account-tier quota, not transient RPM), so the cross-backend direct diff only completed cleanly for haiku-4.5. The Copilot-side observation across the priority model set (`CopilotShape_ObserveAcrossModels`) supplies the rest.
 
-Clean comparison on `claude-haiku-4-5` (sonnet/opus hit Anthropic's per-model rate limit during the run; same shape on Copilot side confirmed across all probed models):
+#### 16.7.1 Copilot multi-cloud routing — the response id is the tell
 
-| Field | Copilot | Native | Notes |
-| --- | --- | --- | --- |
-| `content`, `id`, `model`, `role`, `stop_reason`, `stop_sequence`, `type`, `usage` | ✅ | ✅ | Both present and structurally identical |
-| `stop_details: null` | ❌ omitted | ✅ present | **Native-only.** §4.2's prior claim was reversed — Copilot does NOT emit this; the Anthropic SDK reads it from native responses |
-| `copilot_usage: {token_details, total_nano_aiu}` | ✅ extension | ❌ | Copilot's per-request cost ledger — pure extension, Claude Code's SDK ignores unknown fields |
-| `usage.inference_geo` (e.g. `"not_available"`) | ❌ omitted | ✅ present | Native-only — pricing-region metadata |
-| `usage.service_tier` (e.g. `"standard"`) | ❌ omitted | ✅ present | Native-only — service-tier label |
-| `usage.cache_creation: {ephemeral_5m, ephemeral_1h}` | ✅ | ✅ | Both emit the nested per-TTL breakdown |
-| `usage.input_tokens`, `usage.output_tokens`, `usage.cache_creation_input_tokens`, `usage.cache_read_input_tokens` | ✅ | ✅ | Flat counters identical |
+The Anthropic message id's prefix reveals which upstream provider Copilot routed the request through. For the priority model set:
 
-**Implications for the bridge**:
+| Model | id prefix | Upstream provider |
+| --- | --- | --- |
+| `claude-haiku-4.5` | `msg_bdrk_` | **AWS Bedrock** |
+| `claude-sonnet-4.6` | `msg_bdrk_` | **AWS Bedrock** |
+| `claude-opus-4.7-1m-internal` | `msg_vrtx_` | **Google Vertex** |
+| `claude-opus-4.7` (base) | `msg_01…` | **Anthropic Direct** |
 
-1. **Stripping `inference_geo` / `service_tier` from native passthroughs would lose information** — fortunately Copilot never sends them in the first place. The bridge's `Usage` DTO has these fields, they just stay null when serializing Copilot responses (Anthropic SDK tolerates nulls).
-2. **Adding `stop_details: null` on Copilot responses would more closely match native** — Anthropic SDK probably reads this defensively (`response.stop_details ?? null`), so omission isn't a problem for Claude Code today. Worth a one-line passthrough adjustment if any downstream consumer ever cares.
-3. **`copilot_usage` is harmless extension** — Anthropic SDK ignores unknown fields. Bridge can pass through verbatim. This had already been confirmed in §15.2.3.
+Each upstream shapes its response slightly differently. That's the actual source of "is `stop_details` / `inference_geo` / `service_tier` present" — **not** a Copilot-level rule.
 
-**What we didn't verify** (rate-limit blocked): sonnet-4.6 vs sonnet-4-5, opus-4.7 vs opus-4-1, opus-4.7+1m vs opus-4-1+1m-beta. The Copilot side returned 200 in every case; cross-backend diff awaits Anthropic rate-limit headroom.
+#### 16.7.2 Field-presence matrix across providers
+
+| Field | Bedrock (haiku) | Bedrock (sonnet-4.6) | Anthropic Direct (opus-4.7) | Vertex (opus-4.7-1m) | Anthropic native (haiku) |
+| --- | --- | --- | --- | --- | --- |
+| Core Anthropic: `content`, `id`, `model`, `role`, `stop_reason`, `stop_sequence`, `type`, `usage` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `copilot_usage` (Copilot extension) | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `stop_details: null` | ❌ | ✅ | ✅ | ✅ | ✅ |
+| `usage.inference_geo` | ❌ | ❌ | ✅ | ❌ | ✅ |
+| `usage.service_tier` | ❌ | ❌ | ❌ | ❌ | ✅ |
+| `usage.cache_creation: {ephemeral_5m, ephemeral_1h}` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `usage.input_tokens` / `output_tokens` / cache_*_input_tokens | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+#### 16.7.3 Implications for the bridge
+
+1. **Only `copilot_usage` is a true Copilot platform invariant** — every Copilot response has it, native has none. It's an additive cost ledger; Anthropic SDK ignores unknown fields, so passthrough is correct.
+2. **`opus-4.7` base goes Anthropic Direct** — the user's priority model effectively gets native-Anthropic response shape through Copilot (plus `copilot_usage`). Best-case fidelity: the bridge moves bytes and almost nothing else differs.
+3. **`stop_details`, `inference_geo`, `service_tier`** are provider-dependent. Anthropic SDK reads them defensively (`?? null`), so omission breaks nothing. The bridge doesn't need to synthesize missing fields.
+4. **The "haiku as a stand-in for opus diff" reverse-derivation works only for invariants** — provider-specific fields (especially the Bedrock vs Direct vs Vertex variations) require direct observation. Future work: try a higher-tier Anthropic key to fill in the remaining native-vs-Copilot rows for sonnet-4.6 and opus-4.7.
+5. **`usage.service_tier` is Anthropic-native-only across the board** — even Copilot's Anthropic-Direct routing strips it. If anything ever cares about this field, the bridge would need to synthesize it (current answer: nothing cares).
