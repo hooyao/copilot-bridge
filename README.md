@@ -108,10 +108,12 @@ Two log channels:
   inbound headers/body, upstream URL/headers/body, all SSE events (including
   filtered `[DONE]`), duration. Useful for cache-hit verification and
   protocol-mismatch debugging.
-- **Diag trace** (`<exe-dir>/logs/diag.log` when `BRIDGE_DIAG_FILE` env var
-  is set; Debug builds only) — per-stage timing and one-line diff descriptions
-  via `DiagTracer.Log(...)`. `[Conditional("BRIDGE_DIAG")]`-stripped from
-  Release builds → zero runtime cost in production.
+- **Runtime log** — Serilog 4.3.1 with two sinks: console (stderr) and a new
+  per-startup file at `<exe-dir>/log/bridge-{YYYYMMDD-HHMMSS}.log`. Default
+  level is `Debug`; tune with `BRIDGE_LOG_LEVEL=Information` (or any
+  `Verbose|Debug|Information|Warning|Error|Fatal`). One file per process
+  start makes a single run trivially greppable; old files accumulate until
+  cleaned up.
 
 ## References
 

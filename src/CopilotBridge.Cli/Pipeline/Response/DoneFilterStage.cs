@@ -3,6 +3,8 @@ using System.Runtime.CompilerServices;
 using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 
+using Serilog;
+
 namespace CopilotBridge.Cli.Pipeline.Response;
 
 /// <summary>
@@ -38,7 +40,7 @@ internal sealed class DoneFilterStage : IResponseStage<MessagesRequest>
             if (evt.EventType == "message" && evt.Data == "[DONE]")
             {
                 log.Events.Add(new SseEventCapture(evt.EventType, evt.Data, Filtered: true));
-                DiagTracer.Log("stage DoneFilter: dropped event:message data:[DONE]");
+                Log.Debug("stage DoneFilter: dropped event:message data:[DONE]");
                 continue;
             }
             yield return evt;

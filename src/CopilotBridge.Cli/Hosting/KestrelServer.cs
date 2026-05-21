@@ -9,8 +9,10 @@ using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Hosting;
 
@@ -24,6 +26,15 @@ internal static class KestrelServer
     public static async Task<int> RunAsync(int port, CancellationToken ct)
     {
         var builder = WebApplication.CreateSlimBuilder();
+
+        // Load appsettings.json from next to the exe. Required (optional:false)
+        // — fail-fast at startup if missing or malformed; better than running
+        // with silent-empty routes.
+        builder.Configuration
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false);
+
+        builder.Services.Configure<RoutesConfig>(builder.Configuration.GetSection("Routing"));
 
         // Hook our source-gen JsonContext into minimal-API binding so any
         // future TypedResults.Json calls use it. Direct serialization in the
@@ -61,7 +72,8 @@ internal static class KestrelServer
         builder.Services.AddSingleton<IPipelineRunner<MessagesRequest>>(_ => new PipelineRunner<MessagesRequest>());
         builder.Services.AddSingleton(sp => BridgePipelines.BuildAnthropic(
             sp.GetRequiredService<IModelRegistry>(),
-            sp.GetRequiredService<ICopilotClient>()));
+            sp.GetRequiredService<ICopilotClient>(),
+            sp.GetRequiredService<IOptions<RoutesConfig>>()));
 
         builder.WebHost.UseUrls($"http://localhost:{port}");
         builder.Services.Configure<KestrelServerOptions>(opts =>
@@ -73,6 +85,19 @@ internal static class KestrelServer
         });
 
         var app = builder.Build();
+
+        // Validate routes immediately; fail-fast on any defect so the operator
+        // sees a clear error instead of confusing runtime behavior.
+        var routes = app.Services.GetRequiredService<IOptions<RoutesConfig>>().Value;
+        try
+        {
+            RoutesValidator.Validate(routes);
+        }
+        catch (Exception ex)
+        {
+            await Console.Error.WriteLineAsync(ex.Message);
+            return 2;
+        }
 
         var auth = app.Services.GetRequiredService<IAuthService>();
         try
@@ -94,6 +119,7 @@ internal static class KestrelServer
         Console.WriteLine($"copilot-bridge listening on http://localhost:{port}");
         Console.WriteLine($"Upstream: {auth.CopilotApiBaseUrl}");
         Console.WriteLine($"Logs:     {requestLogger.LogDirectory}");
+        Console.WriteLine($"Routes:   {routes.Rules.Count} user rules (effort routing is capability-driven, in CopilotModelRegistry)");
         Console.WriteLine();
 
         // Pipeline-driven Claude Code endpoints under /cc/v1/...

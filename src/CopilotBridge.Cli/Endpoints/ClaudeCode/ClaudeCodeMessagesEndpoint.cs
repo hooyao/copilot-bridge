@@ -8,6 +8,8 @@ using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 using Microsoft.AspNetCore.Http;
 
+using Serilog;
+
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 
 /// <summary>
@@ -29,7 +31,7 @@ internal static class ClaudeCodeMessagesEndpoint
         var log = new BridgeRequestLog();
         LogHelpers.CaptureInbound(httpCtx, log);
 
-        DiagTracer.Log($"endpoint {httpCtx.Request.Path}: enter  remote={httpCtx.Connection.RemoteIpAddress}");
+        Log.Debug($"endpoint {httpCtx.Request.Path}: enter  remote={httpCtx.Connection.RemoteIpAddress}");
 
         try
         {
@@ -125,13 +127,13 @@ internal static class ClaudeCodeMessagesEndpoint
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             log.Error = "cancelled by client";
-            DiagTracer.Log("endpoint cancelled by client");
+            Log.Debug("endpoint cancelled by client");
             throw;
         }
         catch (Exception ex)
         {
             log.Error = ex.Message;
-            DiagTracer.Log($"endpoint exception: {ex.GetType().Name}: {ex.Message}");
+            Log.Debug($"endpoint exception: {ex.GetType().Name}: {ex.Message}");
             if (!httpCtx.Response.HasStarted)
             {
                 httpCtx.Response.StatusCode = StatusCodes.Status502BadGateway;
@@ -143,7 +145,7 @@ internal static class ClaudeCodeMessagesEndpoint
             sw.Stop();
             log.DurationMs = sw.ElapsedMilliseconds;
             await logger.WriteAsync(log, CancellationToken.None);
-            DiagTracer.Log($"endpoint exit  duration_ms={log.DurationMs}");
+            Log.Debug($"endpoint exit  duration_ms={log.DurationMs}");
         }
     }
 

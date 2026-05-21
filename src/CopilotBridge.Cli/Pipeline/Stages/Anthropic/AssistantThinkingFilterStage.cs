@@ -1,5 +1,7 @@
 using CopilotBridge.Cli.Models.Anthropic.Request;
 
+using Serilog;
+
 namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 
 /// <summary>
@@ -54,7 +56,7 @@ internal sealed class AssistantThinkingFilterStage : IRequestStage<MessagesReque
             ctx.Request.Body = ctx.Request.Body with { Messages = newMessages };
         }
 
-        DiagTracer.Log($"stage {Name}: dropped {dropped} unsigned/placeholder thinking blocks");
+        Log.Debug($"stage {Name}: dropped {dropped} unsigned/placeholder thinking blocks");
         return Task.CompletedTask;
     }
 

@@ -13,20 +13,8 @@ internal static class DebugCommand
 {
     private const string MessagesEndpoint = "/v1/messages";
 
-    public static async Task<int> RunAsync(string[] args)
+    public static async Task<int> ListModelsAsync(bool showAll)
     {
-        var sub = args.Length == 0 ? "help" : args[0];
-        return sub switch
-        {
-            "list-models" => await ListModelsAsync(args[1..]).ConfigureAwait(false),
-            _ => Unknown(sub),
-        };
-    }
-
-    private static async Task<int> ListModelsAsync(string[] args)
-    {
-        var showAll = args.Contains("--all") || args.Contains("-a");
-
         if (TokenStore.TryLoad() is null)
         {
             Console.Error.WriteLine("Not logged in. Run `auth login` first.");
@@ -83,13 +71,6 @@ internal static class DebugCommand
             Console.Error.WriteLine($"Failed: {ex.Message}");
             return 1;
         }
-    }
-
-    private static int Unknown(string sub)
-    {
-        Console.Error.WriteLine($"Unknown subcommand: debug {sub}");
-        Console.Error.WriteLine("Available: debug list-models [--all]");
-        return 2;
     }
 
     private static HttpClient CreateHttpClient()

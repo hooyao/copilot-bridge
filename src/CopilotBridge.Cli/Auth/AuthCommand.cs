@@ -7,21 +7,7 @@ namespace CopilotBridge.Cli.Auth;
 
 internal static class AuthCommand
 {
-    public static async Task<int> RunAsync(string[] args)
-    {
-        var sub = args.Length == 0 ? "login" : args[0];
-        return sub switch
-        {
-            "login" => await LoginAsync().ConfigureAwait(false),
-            "whoami" => await WhoAmIAsync().ConfigureAwait(false),
-            "logout" => Logout(),
-            "status" => Status(),
-            "copilot-status" => await CopilotStatusAsync().ConfigureAwait(false),
-            _ => Unknown(sub),
-        };
-    }
-
-    private static async Task<int> LoginAsync()
+    public static async Task<int> LoginAsync()
     {
         using var http = CreateHttpClient();
         var auth = new AuthService(http, OnDeviceCodeIssued);
@@ -53,7 +39,7 @@ internal static class AuthCommand
         }
     }
 
-    private static async Task<int> WhoAmIAsync()
+    public static async Task<int> WhoAmIAsync()
     {
         var token = TokenStore.TryLoad();
         if (token is null)
@@ -90,7 +76,7 @@ internal static class AuthCommand
         }
     }
 
-    private static int Logout()
+    public static int Logout()
     {
         var primaryExisted = File.Exists(TokenStore.FilePath);
         var fallbackExisted = File.Exists(TokenStore.FallbackPath);
@@ -105,7 +91,7 @@ internal static class AuthCommand
         return 0;
     }
 
-    private static int Status()
+    public static int Status()
     {
         var primaryExists = File.Exists(TokenStore.FilePath);
         var fallbackExists = File.Exists(TokenStore.FallbackPath);
@@ -124,7 +110,7 @@ internal static class AuthCommand
         return 0;
     }
 
-    private static async Task<int> CopilotStatusAsync()
+    public static async Task<int> CopilotStatusAsync()
     {
         if (TokenStore.TryLoad() is null)
         {
@@ -150,13 +136,6 @@ internal static class AuthCommand
             Console.Error.WriteLine($"Failed to obtain Copilot token: {ex.Message}");
             return 1;
         }
-    }
-
-    private static int Unknown(string sub)
-    {
-        Console.Error.WriteLine($"Unknown subcommand: auth {sub}");
-        Console.Error.WriteLine("Available: auth login | auth whoami | auth status | auth copilot-status | auth logout");
-        return 2;
     }
 
     private static HttpClient CreateHttpClient()
