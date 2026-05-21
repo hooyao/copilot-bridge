@@ -15,8 +15,11 @@ internal sealed record ClaudeInvocation(
     string? Effort = null,
     string OutputFormat = "json",
     bool Verbose = false,
-    string? AllowedTools = "",  // "" = no tools; null = default
-    TimeSpan? Timeout = null);
+    string? AllowedTools = "",        // "" = no tools; null = default
+    TimeSpan? Timeout = null,
+    string? AnthropicApiKey = null,   // when set, AnthropicBaseUrl points at native
+    string? AnthropicBaseUrl = null,  // override target (e.g. https://api.anthropic.com); null = bridge
+    IReadOnlyList<string>? Betas = null);
 
 internal sealed record ClaudeResult(
     int ExitCode,

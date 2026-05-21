@@ -621,7 +621,7 @@ Implications for the protocol layer:
 
 Non-streaming responses include these Copilot extension fields:
 
-- `stop_details: null` — not in the Anthropic spec; Copilot-added (placeholder, possibly for future stop-reason details)
+- ~~`stop_details: null` — not in the Anthropic spec; Copilot-added~~ **CORRECTED 2026-05-21**: see §16.7 — `stop_details` is actually **native-only**; Copilot omits it. The earlier note had the attribution backwards.
 - `usage.cache_creation: {ephemeral_1h_input_tokens, ephemeral_5m_input_tokens}` — Anthropic's newer 1h-TTL prompt cache extension; Copilot reports the two TTL buckets separately
 
 The top-level `usage` object is present on non-streaming responses (verified by `RawUsageShapeTests`, 2026-05-21) with this exact shape — same as `message_start.message.usage`:
@@ -1362,3 +1362,29 @@ if (m.includes('haiku') || m.includes('sonnet') || m.includes('opus')) return fa
 **Two follow-ups worth tracking**:
 - `claude-sonnet-4.6` (passes `modelSupportsEffort` via the `sonnet-4-6` branch) sends `output_config.effort` from Claude Code's UI by default. Our bridge currently strips this field for sonnet (no entry in `EffortAware`). If Copilot's `claude-sonnet-4.6` accepts effort directly (different from opus-4.7's variant-suffix model), stripping is wasteful and worth re-probing.
 - Same question for `claude-opus-4-6` once / if Copilot adds it.
+
+**RESOLVED 2026-05-21 (Claude Code 2.1.146)**: Claude Code now ships an `xhigh` effort level in its CLI vocabulary (`--effort low|medium|high|xhigh|max`) and unblocks opus-4.7 specifically — the model picker's `/effort xhigh` description is "Deeper reasoning than high, just below maximum (Opus 4.7 only)". The bridge's `CopilotModelCatalog` (loaded from `/models` at startup) drives effort routing dynamically from `capabilities.supports.reasoning_effort` per model — no more hardcoded EffortAware table. Verified end-to-end by `tests/CopilotBridge.Playground/Headless/EffortRoutingTests.cs` (18 cases covering sonnet-4.6 / opus-4.6 / opus-4.7 base+variant / opus-4.7-1m-internal / opus-4.6-1m / sonnet-4.5 strip / haiku-4.5 strip).
+
+### 16.7 Native Anthropic ↔ Copilot 1:1 response diff (verified 2026-05-21)
+
+`tests/CopilotBridge.Playground/ApiComparisonTests.cs` sends the same minimal request body to both `api.anthropic.com/v1/messages` and Copilot's `/v1/messages` and reports structural deltas. Anthropic key lives in `tests/CopilotBridge.Playground/appsettings.local.json` (gitignored).
+
+Clean comparison on `claude-haiku-4-5` (sonnet/opus hit Anthropic's per-model rate limit during the run; same shape on Copilot side confirmed across all probed models):
+
+| Field | Copilot | Native | Notes |
+| --- | --- | --- | --- |
+| `content`, `id`, `model`, `role`, `stop_reason`, `stop_sequence`, `type`, `usage` | ✅ | ✅ | Both present and structurally identical |
+| `stop_details: null` | ❌ omitted | ✅ present | **Native-only.** §4.2's prior claim was reversed — Copilot does NOT emit this; the Anthropic SDK reads it from native responses |
+| `copilot_usage: {token_details, total_nano_aiu}` | ✅ extension | ❌ | Copilot's per-request cost ledger — pure extension, Claude Code's SDK ignores unknown fields |
+| `usage.inference_geo` (e.g. `"not_available"`) | ❌ omitted | ✅ present | Native-only — pricing-region metadata |
+| `usage.service_tier` (e.g. `"standard"`) | ❌ omitted | ✅ present | Native-only — service-tier label |
+| `usage.cache_creation: {ephemeral_5m, ephemeral_1h}` | ✅ | ✅ | Both emit the nested per-TTL breakdown |
+| `usage.input_tokens`, `usage.output_tokens`, `usage.cache_creation_input_tokens`, `usage.cache_read_input_tokens` | ✅ | ✅ | Flat counters identical |
+
+**Implications for the bridge**:
+
+1. **Stripping `inference_geo` / `service_tier` from native passthroughs would lose information** — fortunately Copilot never sends them in the first place. The bridge's `Usage` DTO has these fields, they just stay null when serializing Copilot responses (Anthropic SDK tolerates nulls).
+2. **Adding `stop_details: null` on Copilot responses would more closely match native** — Anthropic SDK probably reads this defensively (`response.stop_details ?? null`), so omission isn't a problem for Claude Code today. Worth a one-line passthrough adjustment if any downstream consumer ever cares.
+3. **`copilot_usage` is harmless extension** — Anthropic SDK ignores unknown fields. Bridge can pass through verbatim. This had already been confirmed in §15.2.3.
+
+**What we didn't verify** (rate-limit blocked): sonnet-4.6 vs sonnet-4-5, opus-4.7 vs opus-4-1, opus-4.7+1m vs opus-4-1+1m-beta. The Copilot side returned 200 in every case; cross-backend diff awaits Anthropic rate-limit headroom.
