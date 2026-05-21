@@ -875,7 +875,7 @@ I lean **probe**: it's cheap (~50 lines of C#) and eliminates the routing-layer'
 
 ---
 
-## 11. Recommended M1 implementation order (replaces design.md §9)
+## 11. Recommended M1 implementation order
 
 ```
 1. CopilotTokenClient + AuthService.GetCopilotTokenAsync()
@@ -927,25 +927,13 @@ I lean **probe**: it's cheap (~50 lines of C#) and eliminates the routing-layer'
 12. (M3) /chat/completions + /responses translation paths (other models)
 ```
 
-Overall complexity is at least half of design.md §9's original — main reason: **no translation layer, no state machine**.
+Overall complexity is at least half of the original v0.1 plan (translation + streaming state machine) — main reason: **no translation layer, no state machine**.
 
 ---
 
-## 12. Content in design.md to be replaced
+## 12. (removed)
 
-The following sections of `docs/design.md` are **outdated** and need updating (tracked as task #10):
-
-| Section | Current state | Should become |
-| --- | --- | --- |
-| §1.3 M1 success criterion | "Translate to Copilot's OpenAI Chat Completions" | "Anthropic passthrough to Copilot `/v1/messages`" |
-| §3.1 big picture | Translation as central | Translation as fallback; M1 doesn't draw it |
-| §4.2 Translation pure functions | Streaming state machine central | "M1 main path has no translation; fallback (M3) needs the state machine" |
-| §5.4 Model name normalization | Simple regex | Replace with §3.7's full 5-rule set |
-| §5.5/5.6 Tool result ordering + streaming translation | M1 work | Move to M3 |
-| §6 auth flow | Aligns with this research; keep | (Add Copilot token refresh details) |
-| §9 milestone order | Translation + streaming state machine first | Replace with §11's 9 steps |
-| §10 Kestrel vs HttpListener | Open question | M1 still uses Kestrel |
-| Folder structure | `Translation/` central | `Preprocessing/` central; `Translation/` moves to M3 |
+The previous §12 was a punch-list of sections in `docs/design.md` that needed rewriting. That work is done (design.md was rewritten 2026-05-21 to drop the duplicated protocol details and keep only the scope statement, AOT discipline, and decision log). See `docs/design.md` for the current shape. Section numbering preserved below for stable internal links.
 
 ---
 
@@ -984,7 +972,7 @@ The following sections of `docs/design.md` are **outdated** and need updating (t
 
 ## 14. One-line conclusion
 
-**M1 = auth + header rewrite + ~10 pure-function preprocessors + body/SSE passthrough** — not a translator. With Copilot's native `/v1/messages` endpoint confirmed, design.md §9's "OpenAI translation first" path becomes an optional M3 fallback.
+**M1 = auth + header rewrite + ~10 pure-function preprocessors + body/SSE passthrough** — not a translator. With Copilot's native `/v1/messages` endpoint confirmed, the v0.1 plan's "OpenAI translation first" path becomes an optional M3 fallback.
 
 ---
 

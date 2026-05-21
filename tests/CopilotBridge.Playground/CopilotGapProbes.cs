@@ -40,18 +40,24 @@ public class CopilotGapProbes
     }
 
     /// <summary>
-    /// Probes Anthropic's <c>web_search_20250305</c> server tool. Claude Code's
-    /// <c>WebSearch</c> built-in is wired through this — if Copilot rejects the
-    /// tool, that's a real Claude-Code-visible gap. See
-    /// <c>references/vscode-copilot-chat-snippets/anthropicProvider.ts:209</c>
-    /// for the upstream pattern.
+    /// Probes Anthropic's <c>web_search_20250305</c> server tool against every
+    /// Copilot upstream provider (Bedrock / Vertex / AnthropicDirect — see
+    /// <see cref="ApiComparisonTests.CopilotShape_ObserveAcrossModels"/> for
+    /// the provider mapping). If Copilot's gateway rejects the tool
+    /// <i>regardless</i> of which upstream a model routes through, the rejection
+    /// is gateway-level, not upstream-capability-level — which means the
+    /// request never even reaches Anthropic, even on Anthropic-Direct models.
     /// </summary>
-    [Fact]
-    public async Task WebSearchTool_ProbeCopilotAcceptance()
+    [Theory]
+    [InlineData("claude-sonnet-4.6")]            // → Bedrock
+    [InlineData("claude-opus-4.7")]              // → Anthropic Direct
+    [InlineData("claude-opus-4.7-1m-internal")]  // → Vertex
+    [InlineData("claude-haiku-4.5")]             // → Bedrock
+    public async Task WebSearchTool_ProbeCopilotAcceptance(string model)
     {
-        const string payload = """
+        var payload = $$"""
           {
-            "model": "claude-sonnet-4.6",
+            "model": "{{model}}",
             "messages": [{ "role": "user", "content": "What was the top story on Hacker News today? Use web_search." }],
             "max_tokens": 256,
             "tools": [
@@ -62,7 +68,7 @@ public class CopilotGapProbes
 
         using var client = new PlaygroundClient();
         var (status, body) = await client.TryPostMessagesAsync(payload);
-        _output.WriteLine($"HTTP {(int)status} {status}");
+        _output.WriteLine($"[{model}] HTTP {(int)status} {status}");
         _output.WriteLine(PlaygroundClient.PrettyJson(body));
     }
 
