@@ -74,6 +74,55 @@ internal sealed class PlaygroundClient : IDisposable
     }
 
     /// <summary>
+    /// POST <c>/v1/messages/count_tokens</c>. Returns status + body without
+    /// throwing so a probe can OBSERVE whether Copilot exposes the endpoint at
+    /// all (expected: 404 / 405 / similar — every reference impl works around its
+    /// absence rather than proxying it).
+    /// </summary>
+    public async Task<(System.Net.HttpStatusCode Status, string Body)> TryPostCountTokensAsync(
+        string jsonBody,
+        CancellationToken ct = default)
+    {
+        var token = await _auth.GetCopilotTokenAsync(ct);
+        var baseUrl = _auth.CopilotApiBaseUrl
+            ?? throw new InvalidOperationException("CopilotApiBaseUrl is unknown after token fetch.");
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages/count_tokens");
+        _headers.ApplyTo(req, token);
+        req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        return (resp.StatusCode, body);
+    }
+
+    /// <summary>
+    /// Sends an arbitrary HTTP request to a Copilot-relative path. Generic
+    /// escape hatch for one-shot gap probes (e.g. <c>GET /v1/files</c>,
+    /// <c>POST /v1/messages/batches</c>) without adding a dedicated method per
+    /// endpoint. Returns status + body without throwing.
+    /// </summary>
+    public async Task<(System.Net.HttpStatusCode Status, string Body)> TryRequestAsync(
+        HttpMethod method,
+        string relativePath,
+        string? jsonBody = null,
+        CancellationToken ct = default)
+    {
+        var token = await _auth.GetCopilotTokenAsync(ct);
+        var baseUrl = _auth.CopilotApiBaseUrl
+            ?? throw new InvalidOperationException("CopilotApiBaseUrl is unknown after token fetch.");
+
+        using var req = new HttpRequestMessage(method, $"{baseUrl}{relativePath}");
+        _headers.ApplyTo(req, token);
+        if (jsonBody is not null)
+            req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        return (resp.StatusCode, body);
+    }
+
+    /// <summary>
     /// POST <c>/v1/messages</c> with <c>stream:true</c>; yields each SSE item as it arrives.
     /// Caller is responsible for setting <c>"stream": true</c> in the JSON body.
     /// </summary>

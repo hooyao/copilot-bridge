@@ -8,6 +8,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PublishAot>true</PublishAot>
+    <!-- Drop the published exe at the repo root's publish/ folder
+         (instead of bin/<Config>/<TFM>/<RID>/publish/) so it's easy
+         to grab during iterative testing. -->
+    <PublishDir>$(MSBuildThisFileDirectory)..\..\publish\</PublishDir>
     <OptimizationPreference>Size</OptimizationPreference>
     <InvariantGlobalization>true</InvariantGlobalization>
     <UseSystemResourceKeys>true</UseSystemResourceKeys>
@@ -23,23 +27,30 @@
     <HttpActivityPropagationSupport>false</HttpActivityPropagationSupport>
   </PropertyGroup>
 
-  <!-- Debug-only: enable per-stage diagnostic logging. The DiagLog static
-       methods are [Conditional("BRIDGE_DIAG")]; in Release the call sites
-       compile to no-ops. See docs/pipeline-design.md §9.2. -->
-  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
-    <DefineConstants>$(DefineConstants);BRIDGE_DIAG</DefineConstants>
-  </PropertyGroup>
-
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="System.CommandLine" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" />
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Extensions.Logging" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Serilog.Sinks.File" />
   </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="copilot-playground" />
+  </ItemGroup>
+
+  <!-- Ship appsettings.json next to the exe. PreserveNewest means user edits
+       in publish/ aren't clobbered on rebuild unless the source file in the
+       project dir is newer. -->
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

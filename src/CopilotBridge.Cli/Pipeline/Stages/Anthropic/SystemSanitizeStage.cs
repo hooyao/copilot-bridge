@@ -1,6 +1,8 @@
 using System.Text;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 
+using Serilog;
+
 namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 
 /// <summary>
@@ -93,7 +95,7 @@ internal sealed class SystemSanitizeStage : IRequestStage<MessagesRequest>
             };
         }
 
-        DiagTracer.Log($"stage {Name}: stripped {stripped} currentDate occurrences");
+        Log.Debug($"stage {Name}: stripped {stripped} currentDate occurrences");
         return Task.CompletedTask;
     }
 

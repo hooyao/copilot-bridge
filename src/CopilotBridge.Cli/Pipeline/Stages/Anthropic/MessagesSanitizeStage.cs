@@ -1,5 +1,7 @@
 using CopilotBridge.Cli.Models.Anthropic.Request;
 
+using Serilog;
+
 namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 
 /// <summary>
@@ -64,7 +66,7 @@ internal sealed class MessagesSanitizeStage : IRequestStage<MessagesRequest>
             ctx.Request.Body = ctx.Request.Body with { Messages = newMessages };
         }
 
-        DiagTracer.Log($"stage {Name}: dropped \"Tool loaded.\" x{droppedToolLoaded}  trailing-assistant-fix={trailingAssistantFixed}");
+        Log.Debug($"stage {Name}: dropped \"Tool loaded.\" x{droppedToolLoaded}  trailing-assistant-fix={trailingAssistantFixed}");
         return Task.CompletedTask;
     }
 

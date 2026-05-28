@@ -1,11 +1,25 @@
 # Bridge Pipeline Design
 
-> Status: v0.1 · 2026-05-06
+> Status: v0.3 · 2026-05-08
 >
 > This document is the architectural contract for the bridge's request/response
 > transformation framework. New stages, new clients, new backends should
 > conform to the abstractions defined here. Diverging requires updating this
 > document first.
+>
+> **2026-05-08 (v0.3) — three migrations**:
+> (a) Routing redesigned. Per-model effort behavior is now C# capability data
+>     in `CopilotModelRegistry.EffortAware`; `appsettings.json` keeps only
+>     user preferences as `Routing.Rules` (Match → Rewrite). See §7. (b) Logger
+>     swapped from the bespoke `DiagTracer` (`[Conditional("BRIDGE_DIAG")]`) to
+>     Serilog 4.3.1 (AOT-clean since PR #2175) with console + per-startup file
+>     sinks. See §9. (c) `Program.cs` uses `System.CommandLine` 3.0-preview.3
+>     for argument parsing; subcommand handlers are typed entry points instead
+>     of `string[]` parsers.
+>
+> **2026-05-07 (v0.2) — pipeline migration landed**: M1's `/v1/...` endpoints
+> deleted; `/cc/v1/...` is the production path; six request stages + one
+> response stage assembled in `Hosting/BridgePipelines.cs`.
 
 ## 1. Goals
 
@@ -51,10 +65,12 @@ full set:
    `ModelRouterStage` based on the requested model + a registry; the
    `StrategyRegistry` then picks the matching `IUpstreamStrategy`. No `switch`
    statements scattered through the codebase.
-6. **Verbose diagnostic logging is `[Conditional]`-stripped in Release** — the
-   structured per-request audit log (`logs/<utc>-<seq>.json`) is always written;
-   the per-stage diff/timing log is compiled out of Release builds for zero
-   runtime cost.
+6. **Two log channels** — per-request inbound/upstream IO is captured as four
+   discrete JSON artifacts (`logs/<utc>-<seq>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`)
+   through a custom Serilog sink with a bounded back-pressured queue;
+   runtime diagnostics go through Serilog (console + per-startup file under
+   `log/`), with per-category levels driven by appsettings.json's `Logging`
+   section. See §9.
 7. **Mirror the official VS Code Copilot Chat client** — for any wire-format
    detail (header set, beta header gating, etc.) follow `chatEndpoint.ts` and
    `dist/index.js` exactly. See `feedback_match_official_copilot_client.md`.
@@ -149,14 +165,14 @@ Translation rules:
   end of system block + last block of first user message (Anthropic best
   practice).
 - **Stop reason**: simple lookup; unmapped values fall back to `end_turn` with
-  a `DiagLog.Diff` warning.
+  a `Log.Warning` diagnostic.
 - **Tool result message structure**: Anthropic puts tool_result as a content
   block inside the next user message; OpenAI uses a dedicated `tool` role
   message. Translation maintains the `assistant tool_use → tool_result → user`
   ordering.
 
-Every lossy mapping calls `DiagLog.Diff(...)` so debug builds surface what was
-dropped or approximated.
+Every lossy mapping emits a `Log.Warning(...)` diagnostic so the operator can
+surface what was dropped or approximated by tailing the runtime log.
 
 ## 4. Core abstractions
 
@@ -168,8 +184,12 @@ internal sealed class BridgeContext<TBody> where TBody : class
     public required BridgeRequest<TBody> Request { get; init; }
     public required BridgeResponse Response { get; init; }
     public required RouteTarget Target { get; set; }
-    public required BridgeRequestLog Log { get; init; }
     public required CancellationToken Ct { get; init; }
+
+    // Response stages push here when they drop / rewrite individual SSE
+    // events; the endpoint merges these into the inbound-resp audit so
+    // operators see what was filtered.
+    public List<DroppedSseEvent> DroppedEvents { get; init; } = [];
 }
 
 internal sealed class BridgeRequest<TBody> where TBody : class
@@ -296,11 +316,13 @@ Implementation contract:
 ```
 RunAsync:
     foreach stage in pipeline.RequestStages:
-        DiagLog.StageStart(name); apply; DiagLog.StageEnd
+        Log.Debug("req-stage start {Stage}"); apply; Log.Debug("req-stage end {Stage}")
     strategy = pipeline.Strategies.Resolve(ctx.Target)
-    DiagLog.StrategyStart(name); strategy.ForwardAsync(ctx); DiagLog.StrategyEnd
+    Log.Debug("strategy resolved {Name} target={Target}")
+    strategy.ForwardAsync(ctx)
+    Log.Debug("strategy returned status={Status} mode={Mode}")
     foreach stage in pipeline.ResponseStages:
-        DiagLog.StageStart; apply; DiagLog.StageEnd
+        Log.Debug("resp-stage start {Stage}"); apply; Log.Debug("resp-stage end {Stage}")
     write ctx.Response to outbound (handled by endpoint code, not the runner)
 ```
 
@@ -373,19 +395,26 @@ Strategy-side translators (IR ↔ backend shape) are an internal concern of the
 strategy and do not implement these interfaces — they live as private fields
 inside, e.g., `CopilotChatCompletionsStrategy<TIR>`.
 
-## 5. Request pipeline (M1 example: `Pipeline<MessagesRequest>`)
+## 5. Request pipeline (current: `Pipeline<MessagesRequest>`)
+
+The endpoint handler parses the JSON body before constructing
+`BridgeContext<MessagesRequest>`; there is no separate `InboundCaptureStage`.
+The assembled stage list is in `Hosting/BridgePipelines.cs`.
 
 ```
 inbound bytes (POST /cc/v1/messages)
     │
-    ▼
-[1] InboundCaptureStage          parse JSON → ctx.Request.Body, copy headers,
-                                  snapshot RawBody for the audit log
+    ▼  (parsed by endpoint handler into MessagesRequest)
+    │
+[1] ModelRouterStage              normalize model id; apply user
+                                  Routing.Rules (Match → Rewrite); apply
+                                  CopilotModelRegistry capability (effort →
+                                  variant suffix, strip on the wire); resolve
+                                  ctx.Target. See §7.
     │
     ▼
-[2] ModelRouterStage              consult model registry → resolve ctx.Target;
-                                  may rename ctx.Request.Body.Model
-                                  (e.g. claude-opus-4.8 → claude-opus-4.7)
+[2] AssistantThinkingFilterStage  drop unsigned thinking blocks from
+                                  historical assistant messages
     │
     ▼
 [3] SystemSanitizeStage           strip <system-reminder>'s `# currentDate`
@@ -397,25 +426,14 @@ inbound bytes (POST /cc/v1/messages)
                                   merge tool_result + adjacent text in same msg
     │
     ▼
-[5] CacheControlCleanStage        strip system[*].cache_control.scope
-                                  (Copilot rejects extra fields)
+[5] ToolsSanitizeStage            drop `mcp__ide__executeCode` and
+                                  similar IDE-only tools
     │
     ▼
-[6] AssistantThinkingFilterStage  drop unsigned thinking blocks from
-                                  historical assistant messages
-    │
-    ▼
-[7] ThinkingRewriteStage          per-model-family thinking shape
-                                  (haiku→explicit, opus-4.7→adaptive, sonnet→passthrough)
-    │
-    ▼
-[8] ToolsSanitizeStage            mcp__ide__executeCode drop;
-                                  mcp__ide__getDiagnostics description rewrite
-    │
-    ▼
-[9] HeadersOutboundStage          generate Copilot's 7 official headers +
-                                  conditional anthropic-beta per chatEndpoint.ts:193-210;
-                                  drop inbound auth/x-api-key/x-claude-code-* etc.
+[6] HeadersOutboundStage          generate Copilot's 7 official headers +
+                                  conditional `anthropic-beta` per
+                                  chatEndpoint.ts:193-210; drop inbound
+                                  auth / x-api-key / x-claude-code-* / etc.
     │
     ▼
 ctx.Target now resolved + ctx.Request.Body transformed
@@ -425,6 +443,15 @@ strategy = pipeline.Strategies.Resolve(ctx.Target)
 strategy.ForwardAsync(ctx)        executes HTTP call to upstream;
                                   populates ctx.Response.EventStream
 ```
+
+`CacheControlCleanStage` from research §3.6 rule 1 is intentionally absent —
+the DTO does not model `cache_control.scope`, so the field is silently dropped
+at deserialize time. Add the stage if a `Scope` property is ever introduced.
+
+The previous standalone `ThinkingRewriteStage` is gone: its haiku adaptive →
+enabled and opus-4.7 enabled → adaptive coercions live as data in
+`appsettings.json`'s `Routing.Rules`, applied by `ModelRouterStage` via
+`ModelRouteResolver`. See §7.
 
 ## 6. Response pipeline (M1 example)
 
@@ -479,33 +506,311 @@ endpoint's writer) drives the entire chain lazily.
 
 ## 7. Routing semantics
 
-The `ModelRouterStage` is the heart of "client model id → backend route". It
-consults a `ModelRegistry`:
+Three concentric layers, each with a distinct responsibility:
+
+```
+inbound (model, effort, thinking, ...)
+   ↓ Normalize (canonical id)
+   ↓ User rules     (JSON, in appsettings.json)        — operator preferences
+   ↓ Capability     (C#, in CopilotModelRegistry)      — physical wire facts
+   ↓ Resolve        (vendor + endpoint dispatch)
+outbound to upstream
+```
+
+The split is "what users decide" vs "what the wire requires." User preferences
+are JSON; physical wire facts are code. Each scales linearly with the number
+of models we cover.
+
+### 7.1 Vendor + endpoint dispatch — `IModelRegistry.Resolve`
+
+Maps a (canonical) model id to `(BackendVendor, default endpoint, model id)`.
+Hardcoded by prefix in `CopilotModelRegistry`:
+
+| Prefix | Vendor | Default endpoint |
+| --- | --- | --- |
+| `claude-*` | CopilotAnthropic | `/v1/messages` |
+| `gpt-*`, `o3-*`, `o4-*`, `gemini-*` | CopilotOpenAi | `/chat/completions` |
+
+Plus a `Normalize` step that canonicalizes the inbound id:
+
+- Strips a trailing 8-digit date suffix (`claude-sonnet-4-5-20250929` → `claude-sonnet-4-5`)
+- Merges the first consecutive `digit-digit` pair into `digit.digit`
+  (`claude-opus-4-7` → `claude-opus-4.7`,
+  `claude-opus-4-7-1m-internal` → `claude-opus-4.7-1m-internal`)
+
+`Resolve` returns `null` for unknown prefixes; the runtime stage throws a
+descriptive error in that case (fail-fast, not silent passthrough).
+
+`Aliases` (currently empty) is a static degradation table for "client requests
+a model the backend doesn't have yet" — populated when needed
+(e.g. `claude-opus-4.8 → claude-opus-4.7`).
+
+### 7.2 Per-model effort capability — `CopilotModelRegistry.EffortAware`
+
+Per-model wire facts about `output_config.effort` live in code, not JSON. One
+entry per known effort-aware model; the value is a `ModelCapability` declaring
+the effort → variant-suffix map. Models **not** in the table fall through to
+the safe default ("strip the effort field, keep the model"):
 
 ```csharp
-internal interface IModelRegistry
+private static readonly Dictionary<string, ModelCapability> EffortAware = new(
+    StringComparer.OrdinalIgnoreCase)
 {
-    /// <summary>
-    /// Given the model id the client requested, returns the resolved backend
-    /// (vendor + endpoint + actual backend model id), or null if no mapping.
-    /// </summary>
-    RouteTarget? Resolve(string requestedModel);
+    ["claude-opus-4.7"] = new(EffortToSuffix: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["max"]    = "-xhigh",   // no -max variant; xhigh is the closest sized variant
+        ["xhigh"]  = "-xhigh",
+        ["high"]   = "-high",
+        ["medium"] = "",         // base model is implicitly medium-effort
+        ["low"]    = "",         // no -low variant; clamp to base
+    }),
+};
+```
+
+`IModelRegistry.ApplyEffortRouting(modelId, effort)` returns
+`(newModel, stripEffort)`:
+
+- effort is null → no-op
+- model not in `EffortAware` → strip effort, keep model
+- effort matches an entry → append the suffix, strip effort
+
+Rationale for embedding in code rather than JSON: this collapses the previous
+seven `VariantRoutes` rows for opus-4.7 into one capability entry, and the
+table grows linearly with the number of effort-aware models (small) rather
+than (model × effort) combinations (cartesian).
+
+> **M3 TODO** — replace the static table with a startup-built one populated
+> from `CopilotClient.GetModelsAsync()`. The capability shape will grow new
+> fields (`SupportedEndpoints`, accepted thinking shapes); see §7.4.
+
+### 7.3 User routing rules — `appsettings.json` `Routing.Rules`
+
+Loaded via standard `IConfiguration` / `IOptions<T>` at startup. Validated by
+`RoutesValidator` before Kestrel binds the port. **No hot reload** — edit and
+restart.
+
+Single linear scan, first-match-wins. Each rule has a `Match` (AND-combined,
+null = no constraint) and a `Rewrite` (any subset of model / effort / thinking
+fields). If the rule sets `Effort`, that field is "claimed" — phase 7.2 won't
+re-touch it (so `Rewrite: { Effort: "xhigh" }` round-trips even when the
+target model isn't in `EffortAware`).
+
+Schema:
+
+```jsonc
+{
+  "Routing": {
+    "Rules": [
+      {
+        "Match":   { "InboundModel": "claude-haiku-4.5", "InboundThinking": "adaptive" },
+        "Rewrite": { "Thinking": { "Type": "enabled" }, "DeriveBudgetFromEffort": true },
+        "Note":    "haiku-4.5 advertises adaptive but rejects it at runtime"
+      },
+      {
+        "Match":   { "InboundModel": "claude-opus-4.7", "InboundThinking": "enabled" },
+        "Rewrite": { "Thinking": { "Type": "adaptive" }, "DeriveEffortFromBudget": true },
+        "Note":    "opus-4.7 base only accepts adaptive thinking"
+      }
+    ]
+  }
 }
 ```
 
-For M1, `CopilotModelRegistry` reads the live `/models` list from Copilot
-(filtered to `/v1/messages`-supporting) and applies a static alias table. Every
-model on the alias table OR matching by exact id resolves to a `RouteTarget`.
+`Rewrite` fields:
 
-Future targets:
-- `claude-opus-4.8` → alias to whichever opus is current on Copilot
-- `claude-opus-5` → alias to opus-4.7 (or whatever's the closest available)
-- `gpt-5` → would resolve to `(CopilotOpenAi, /chat/completions, gpt-5)`,
-  triggering a different strategy that translates Anthropic body → OpenAI body
+| Field | Meaning |
+| --- | --- |
+| `Model: "..."` | Replace outbound model with this canonical id. |
+| `Effort: "..."` | Replace outbound `output_config.effort`. Marks effort as user-explicit; phase 7.2 won't override. |
+| `Thinking: { Type, BudgetTokens? }` | Replace `thinking` block. `Type` is `"enabled" \| "adaptive" \| "disabled"`. |
+| `DeriveBudgetFromEffort: true` | After applying `Thinking` (or if already `enabled`), set `budget_tokens` from current effort using the standard mapping (low=4096, medium=16384, high=32768, xhigh/max=64000). |
+| `DeriveEffortFromBudget: true` | When the post-rewrite `Thinking` is `enabled`, derive effort from `budget_tokens` using the inverse mapping. Marks effort user-explicit. |
 
-The ModelRouterStage never throws on miss — if no mapping, the strategy
-registry returns a "cannot route" strategy that emits HTTP 400 with a clear
-"model X not available; closest available: ..." message.
+The rule list typically holds three kinds of entries:
+
+1. **Per-model thinking quirks** — what the previous `ShapeRewrites` did.
+   These ship by default in the example `appsettings.json`.
+2. **User redirects** — operator preferences, e.g.
+   `{ Match: {InboundModel: "claude-opus-4.7"}, Rewrite: {Model: "claude-opus-4.6"} }`.
+3. **Bug-patches** — when Copilot ships a new model whose physical
+   capability table is stale, the operator can write a rule to set the
+   right effort/model on the wire. After the next bridge release adapts
+   `EffortAware`, the rule can be removed and zero-config behavior is
+   restored.
+
+`RoutesValidator` enforces: each `Match` constrains at least one dimension;
+`Match.InboundThinking` and `Rewrite.Thinking.Type` are one of
+`enabled / adaptive / disabled`. Invalid config fails the process at startup.
+
+### 7.4 Endpoint selection for multi-endpoint models (M3 design)
+
+When a single model is served by multiple Copilot endpoints (gpt-5 supports
+both `/chat/completions` and `/responses`), the bridge picks **automatically**
+based on hardcoded heuristics — **not** a user setting:
+
+- Single-endpoint model → use that one
+- Multi-endpoint model with `thinking` enabled or multi-turn agent loop →
+  prefer `/responses` (reasoning state persistence)
+- Otherwise → `/chat/completions` (simpler, cross-model compatible)
+
+Rationale: endpoint choice is a **derived fact** from request features +
+model capabilities, not user preference. Forcing users to know "use
+/responses for o-series, /chat for gpt-4.1, gpt-5 depends on whether you
+want reasoning persistence" is unreasonable.
+
+Implementation plan: extend `ModelCapability` with `SupportedEndpoints`
+(populated from Copilot's live `/models` response at startup), and add
+`CopilotModelRegistry.SelectEndpoint(modelId, body)` that applies the
+heuristic above.
+
+### 7.5 1M-context routing — model-variant + beta-header rewrite (planned)
+
+> **Status: not yet implemented.** This section captures the design so
+> the next developer can pick it up directly. The unknowns have been
+> probed; the configuration shape and code touch points are concrete.
+
+#### The problem
+
+Claude Code's "1M context" toggle ships as an `anthropic-beta` header value
+`context-1m-2025-08-07`, not a different model name. On Anthropic Direct
+that header opts the request into a 1M context window for the same
+`claude-opus-4.7` model.
+
+Copilot does **not** accept that beta token. Instead, it exposes 1M variants
+as **dedicated model ids**. Verified empirically by running
+`CopilotGapProbes.DumpClaudeModelsAndCapabilities` against the live
+`/models` endpoint:
+
+| Copilot model id                | `max_context_window_tokens` |
+|---------------------------------|-----------------------------|
+| `claude-opus-4.7`               | 200 000                     |
+| `claude-opus-4.7-high`          | 200 000                     |
+| `claude-opus-4.7-xhigh`         | 200 000                     |
+| `claude-opus-4.7-1m-internal`   | **1 000 000**               |
+| `claude-opus-4.6`               | 200 000                     |
+| `claude-opus-4.6-1m`            | **1 000 000**               |
+
+So the bridge needs to: (a) detect the inbound 1M beta token, (b) rewrite
+`body.model` to the dedicated 1M variant, and (c) **strip** the beta from
+the outbound header set (Copilot would reject it).
+
+#### Configuration shape
+
+Extend the existing `Routing.Rules` with two new fields. Reusing the
+first-match-wins, AND-combined `Match` machinery keeps the mental model
+uniform — 1M is just another (model, beta) → (model, header-strip)
+rewrite.
+
+```json
+{
+  "Routing": {
+    "Rules": [
+      {
+        "Match": {
+          "InboundModel": "claude-opus-4.7",
+          "InboundBeta":  "context-1m-2025-08-07"
+        },
+        "Rewrite": {
+          "Model":      "claude-opus-4.7-1m-internal",
+          "StripBetas": ["context-1m-*"]
+        },
+        "Note": "1M context: Copilot exposes it as a dedicated model id, not a beta"
+      },
+      {
+        "Match": {
+          "InboundModel": "claude-opus-4.6",
+          "InboundBeta":  "context-1m-2025-08-07"
+        },
+        "Rewrite": {
+          "Model":      "claude-opus-4.6-1m",
+          "StripBetas": ["context-1m-*"]
+        }
+      }
+    ]
+  }
+}
+```
+
+`Match.InboundBeta` semantics: the inbound `anthropic-beta` header is split
+on `,`; the rule matches when the resulting set contains the given token
+(case-insensitive). For future "multiple betas must all be present"
+scenarios, the field can grow into `InboundBetas: [...]` later — start
+narrow.
+
+`Rewrite.StripBetas` semantics: each pattern is matched against tokens in
+the outbound header list; matching tokens are removed. `*` is a trailing
+wildcard so `context-1m-*` covers future spec dates without code changes.
+
+#### Inbound beta default behavior
+
+**Currently** (`HeadersOutboundStage.cs`): the inbound `anthropic-beta`
+header is **discarded entirely** and the outbound list is rebuilt from
+scratch by the stage (adaptive thinking, context-management,
+tool-search). This is broken in two directions:
+
+- Tokens Copilot *does* accept (`interleaved-thinking-2025-05-14`,
+  `context-management-2025-06-27`, `advanced-tool-use-2025-11-20`) are
+  derived from request shape on every call, so they happen to land
+  correctly even though inbound is ignored.
+- Tokens Copilot *does not* accept (`context-1m-2025-08-07`,
+  `prompt-caching-scope-2026-01-05`, `claude-code-20250219`) are silently
+  dropped — which is fine for the rejection case but loses the signal
+  that we needed to act on (e.g. trigger the model rewrite above).
+
+**The fix** has two parts:
+
+1. **Parse inbound betas into IR**, so rules can match on them. Add a
+   transient (non-wire-serialized) field on the request DTO populated by
+   the inbound adapter, e.g.
+   `MessagesRequest { [JsonIgnore] InboundBetaSet { get; init; } }`. The
+   pipeline stages use it; `HeadersOutboundStage` reads `StripBetas`
+   directives accumulated on `BridgeContext` to decide what to forward.
+2. **Establish a forward whitelist** for unknown betas. Open question — the
+   project is fact-driven, so the right default depends on what Copilot
+   actually does with unknown beta tokens. Run `BetaAcceptanceTests` (see
+   `tests/CopilotBridge.Playground/BetaAcceptanceTests.cs`) for every known
+   Anthropic beta name and observe the matrix (200 vs 400 vs silently
+   ignored). Decide the default once data is in.
+
+#### Effort × 1M interaction
+
+Copilot's `-1m-internal` variant does **not** have its own `-high` /
+`-xhigh` suffix (per the `/models` dump above). So when a rule rewrites
+`claude-opus-4.7` (with effort=max) to `claude-opus-4.7-1m-internal`, the
+effort field should pass through unchanged — Copilot's catalog-driven
+effort router will then handle it as a single model + body.effort. No
+extra wiring needed in the rule.
+
+#### Code touch points
+
+1. `Models/Anthropic/Request/MessagesRequest.cs` — add
+   `[JsonIgnore] IReadOnlyList<string>? InboundBetaHeader { get; init; }`
+   field (or pass via `BridgeContext` — pick one).
+2. `Pipeline/Adapters/ClaudeCode/ClaudeCodeInboundAdapter.cs` — parse
+   `anthropic-beta` header CSV from the headers dictionary, populate the
+   field.
+3. `Pipeline/Routing/RoutesConfig.cs` — add `InboundBeta` to `RouteMatch`,
+   `StripBetas` to `RuleRewrite`.
+4. `Pipeline/Routing/ModelRouteResolver.cs` — extend `Matches()` for the
+   new field; extend `ApplyRewrite()` to accumulate strip directives on
+   the context.
+5. `Pipeline/Stages/Anthropic/HeadersOutboundStage.cs` — merge inbound
+   betas with computed betas, then apply strip patterns.
+6. `Pipeline/Routing/RoutesValidator.cs` — validate `InboundBeta` is a
+   non-empty token; validate `StripBetas` patterns are non-empty.
+7. `tests/CopilotBridge.Playground/BetaAcceptanceTests.cs` — extend to
+   cover `context-1m-2025-08-07` and the two Claude Code 2.1.x betas
+   currently marked "acceptance unknown".
+8. `appsettings.json` — add the two new rules.
+
+#### Verification
+
+A `Headless/` test that drives a real `claude.exe` with the 1M effort
+toggle on (so the inbound carries the beta), then asserts that the audit
+JSON for that request shows `body.model == "claude-opus-4.7-1m-internal"`
+on the upstream side and **no** `context-1m-*` token in the upstream
+headers. The `HeadlessRunner` pattern already exists for effort routing
+tests (`tests/.../Headless/EffortRoutingTests.cs`).
 
 ## 8. Per-client URL prefixes
 
@@ -536,144 +841,198 @@ Configuration impact: Claude Code's `ANTHROPIC_BASE_URL` environment variable
 must be set to `http://localhost:8765/cc` (note the `/cc` suffix), so its
 client appends `/v1/messages` and lands on our `/cc/v1/messages`.
 
-## 9. Diagnostic logging
+## 9. Logging
 
-Two log channels:
+Two log channels, both flowing through a single Serilog pipeline configured
+once in `Program.cs`.
 
-### 9.1 Audit log (always-on)
+### 9.1 Per-request IO audit (always-on, four files per request)
 
-`logs/<utc>-<seq>.json` — written for every request via `BridgeRequestLogger`.
-Includes inbound headers/body, upstream URL/headers/body, all SSE events
-(including dropped ones), status, duration. Already implemented.
+Each inbound request produces **four** JSON files in `<exe-dir>/logs/`,
+sharing a stamp so they're trivially groupable:
 
-### 9.2 Diagnostic trace ([Conditional], file-based)
+```
+20260521-143205-0042-inbound-req.json     ← what Claude Code sent us
+20260521-143205-0042-upstream-req.json    ← what we forwarded to Copilot
+20260521-143205-0042-upstream-resp.json   ← what Copilot returned
+20260521-143205-0042-inbound-resp.json    ← what we sent back to Claude Code
+                                            (including dropped SSE events)
+```
 
-Direct file writer, modeled after RamDrive's
-[`FsTracer`](https://github.com/hooyao/RamDrive/blob/main/src/RamDrive.Core/Diagnostics/FsTracer.cs).
-Stripped from Release builds via the C# `[Conditional]` attribute — zero
-runtime cost, zero AOT footprint, including no string interpolation evaluation.
+`<seq>` is a process-wide monotonic counter (`BridgeIoSeq.Next`); the inbound
+and upstream halves of one request share it. The four artifacts are
+intentionally separate files (not one combined record) so an operator can
+load a single side into an editor without bringing along megabytes of the
+streaming response.
 
-```csharp
-internal static class DiagTracer
+#### Pipeline
+
+```
+endpoint
+   │  logger.LogInboundRequest (seq, method, path, headers, body)
+   │  logger.LogUpstreamRequest (seq, method, url, headers, body)
+   │  logger.LogUpstreamResponse(seq, status, headers, body)
+   │  logger.LogInboundResponse (seq, status, headers, body, events?, error?, durationMs)
+   ▼
+ILogger<T> (Microsoft.Extensions.Logging)
+   ▼   one entry per call, EventId in {1001..1004}, state =
+   ▼   IEnumerable<KVP<string,object?>> { ("Payload", BridgeIoPayload) }
+   ▼
+Serilog.Extensions.Logging bridge
+   ▼   LogEvent.Properties["Payload"] = ScalarValue(BridgeIoPayload)
+   ▼
+Serilog logger split (Program.cs):
+  .WriteTo.Logger(lc => lc
+    .Filter.ByIncludingOnly(e => e.Properties.ContainsKey("Payload"))
+    .WriteTo.Sink(BridgeIoSink))
+  .WriteTo.Logger(lc => lc
+    .Filter.ByExcluding(e => e.Properties.ContainsKey("Payload"))
+    .WriteTo.Console(...)
+    .WriteTo.File(...))
+   ▼
+BridgeIoSink (custom ILogEventSink, Hosting/Logging/BridgeIoSink.cs)
+   │  Emit(LogEvent) extracts Payload, drops it into a bounded Channel.
+   │  Channel: capacity=256, FullMode=Wait → producer (request thread)
+   │           blocks when full = real back-pressure on the request side.
+   ▼
+Worker task (single reader)
+   ▼  pretty-prints to <utc>-<seq>-<kind>.json (using JsonNode tree;
+   ▼  body is parsed as JSON when possible, falls back to string)
+   ▼  returns pooled byte[] back to ArrayPool<byte>.Shared
+```
+
+#### Buffer ownership
+
+Endpoints read inbound bodies into `ArrayPool<byte>.Shared`-rented buffers
+to avoid GC pressure on conversation-sized payloads. The pooled buffer is
+**not** the one handed to the sink — endpoints make a one-shot copy for
+the audit and keep the pooled buffer alive for the pipeline's `RawBody`
+view. The endpoint's `finally` block returns the pool buffer after the
+request completes.
+
+The sink-owned body buffer is tracked by `BridgeIoPayload.BodyPooled` and
+released by the worker after the audit JSON is written (via
+`BridgeIoPayload.Release()`).
+
+#### Redaction
+
+`Authorization`, `X-Api-Key`, `Anthropic-Auth-Token` header values are
+replaced with `<redacted>` before serialization. Bodies are not scrubbed
+(the wire bodies don't contain OAuth tokens; those flow only through the
+`/login/device/*` endpoints which never enter the bridge audit path).
+
+#### Shutdown
+
+`AppDomain.ProcessExit` calls `Log.CloseAndFlush()`, which disposes the
+custom sink. Dispose:
+
+1. `_channel.Writer.TryComplete()` — no more payloads will be accepted.
+2. `_worker.Wait(5s)` — drain the queue naturally.
+3. On timeout, cancel the worker token and wait another 1s — panic flush.
+
+So pending IO audits land before the process exits, even on Ctrl+C.
+
+### 9.2 Runtime log — Serilog console + per-startup file
+
+Non-IO events (stage debug lines, startup banners, framework noise from
+Kestrel / Routing / Hosting.Diagnostics) flow through Serilog's standard
+sinks:
+
+- **Console** (`Serilog.Sinks.Console` 6.1.1) — mirrors to **stderr** from
+  level Verbose+. Stderr (not stdout) so it doesn't interleave with the
+  device-code OAuth banner.
+- **File** (`Serilog.Sinks.File` 7.0.0) — writes to
+  `<exe-dir>/log/bridge-{YYYYMMDD-HHMMSS}.log`. One file per process start
+  (no rolling). Each restart gets its own file; old files accumulate
+  until the operator cleans up.
+
+Output template:
+`{Timestamp:HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception}`.
+
+#### Level filtering — driven by appsettings.json
+
+Serilog's own minimum is `Verbose` (everything in). Per-category filtering
+is delegated to `Microsoft.Extensions.Logging` via `appsettings.json`'s
+`Logging` section (the slim host wires this up automatically when
+`SerilogLoggerProvider` is the only MEL provider — see `KestrelServer.cs`'s
+`builder.Logging.ClearProviders(); AddProvider(new SerilogLoggerProvider(...))`):
+
+```json
 {
-    [Conditional("BRIDGE_DIAG")]
-    public static void Log(string message)            { /* append one line */ }
-
-    [Conditional("BRIDGE_DIAG")]
-    public static void Log(object? value)             { /* JSON-serialize then append */ }
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "CopilotBridge.Cli": "Debug",
+      "Microsoft.AspNetCore.Hosting.Diagnostics": "Warning",
+      "Microsoft.AspNetCore.Routing": "Warning",
+      "Microsoft.AspNetCore.Server.Kestrel": "Warning"
+    }
+  }
 }
 ```
 
-The single primary surface is `Log(string)`. Stages and the runner build their
-trace lines with normal string interpolation — when `BRIDGE_DIAG` isn't
-defined, the call site, the format string, and every interpolation hole
-disappear at IL emission time:
+> **Known gap**: the bridge's own code still uses the static `Serilog.Log.Debug(...)`
+> API in places, which bypasses MEL filtering and is always emitted (subject
+> only to Serilog's own minimum). Converting all static calls to injected
+> `ILogger<T>` is mechanical but not yet done.
 
-```csharp
-DiagTracer.Log($"req-stage end {stage.Name}  stripped {n} currentDate occurrences");
-```
+#### AOT footprint
 
-For dumping a complex object (a typed request body, a SSE event tree, etc.),
-the `Log(object?)` overload uses reflection-based JSON serialization. It
-carries `[RequiresDynamicCode]` / `[RequiresUnreferencedCode]` so the AOT
-analyzer is silent — and since the call sites are conditional anyway, the
-method body is unreachable in Release/AOT publish and gets trimmed.
+Serilog 4.3.0+ closes the IL2072 trim warning. The destructuring path
+(`{@Property}`) reflects on `obj.GetType()`'s public properties; we use the
+plain message-template path everywhere, so trimming is clean. Verified by
+`dotnet publish` with 0 warnings.
 
-#### Build-time gate
+### 9.3 Startup auth flow
 
-`csproj` defines the constant in Debug:
+Before opening the listening socket, `BridgeHost.RunStartupAsync`:
 
-```xml
-<PropertyGroup Condition="'$(Configuration)' == 'Debug'">
-  <DefineConstants>$(DefineConstants);BRIDGE_DIAG</DefineConstants>
-</PropertyGroup>
-```
+1. Validates `Routing.Rules` (`RoutesValidator`). On failure: log error,
+   exit code 2.
+2. `auth.EnsureGitHubTokenAsync(ct)` — if `auth.IsAuthenticated` is false,
+   logs `[INF] No GitHub token on disk — starting device-code flow`, then
+   the injected `PrintDeviceCode` callback writes the verification URL +
+   user code to stdout. `EnsureGitHubTokenAsync` **blocks** polling GitHub
+   until the user completes the browser handshake; the token is then
+   DPAPI-encrypted and saved next to the .exe.
+3. `auth.GetCopilotTokenAsync(ct)` — exchanges the GitHub token for a
+   short-lived Copilot bearer token, started the in-memory refresh timer.
+4. `catalog.LoadFromAsync(...)` — fetches `/models`; on failure logs a
+   warning but continues (effort routing degrades to "strip the field
+   for unknown models").
 
-- Debug builds: `BRIDGE_DIAG` is defined → all `DiagTracer.Log(...)` call sites
-  compile through.
-- Release builds (`dotnet build -c Release`, `aot_publish.bat`): `BRIDGE_DIAG`
-  is not defined → C# compiler removes call sites and their argument
-  expressions entirely.
-
-#### Runtime gate
-
-Even in a Debug-built binary, tracing only activates when the
-`BRIDGE_DIAG_FILE` environment variable is set:
-
-- `BRIDGE_DIAG_FILE=` (empty) → log to `<exe-dir>/logs/diag.log`
-- `BRIDGE_DIAG_FILE=C:\path\to\trace.log` → log to that path
-- variable unset → DiagTracer's static initializer stays disabled; the
-  early-return in `Log` short-circuits to a single int-load + branch
-
-This double-gate matches FsTracer: compile-time means Release ships zero
-DiagTracer code; runtime means a Debug build can be quiet by default.
-
-#### Output format
-
-One line per call, columns: `<elapsed-seconds-since-start>  T<thread-id>  <message>`.
-Greppable, easy to diff across runs, easy to feed into a chat session for
-analysis. Single shared file (truncated at process start), with explicit flush
-on `ProcessExit` and `Console.CancelKeyPress`.
-
-#### Buffering and back pressure
-
-`Log` does not synchronously write to disk — it enqueues onto a bounded
-`Channel<string>` (`System.Threading.Channels`) and a single dedicated
-consumer task drains the channel and batch-flushes the file:
-
-- Capacity: 4096 lines (~1 MB at 256 B/line).
-- Producer: `TryWrite` non-blocking — if the queue is full, the line is
-  dropped and a counter incremented (surfaced on shutdown as
-  `# dropped N lines due to full queue`). Diagnostic data is best-effort by
-  design: it must not slow the request path or block on disk.
-- Consumer: `await foreach` over `ChannelReader.ReadAllAsync`; flushes the
-  underlying `StreamWriter` every 64 lines and once more on completion.
-- Shutdown: `Channel.Writer.TryComplete` + bounded wait on the consumer task
-  (2 seconds) drains pending lines, flushes, disposes the writer.
-
-Caller threads pay the cost of one timestamp read, one thread-id read, one
-string format, and one channel `TryWrite` — all synchronous but lock-free or
-minimally contended. No I/O on the call path.
-
-#### Constraints
-
-- `[Conditional]` only applies to `void` methods. Both `Log` overloads return
-  void.
-- The tracer's static state (StreamWriter, lock) lives in the assembly even in
-  Release builds, but if no `Log` callers compile in, the entire static class
-  is unreachable and the AOT linker drops it.
-- Do not use `DiagTracer.Log` for control flow — calls vanish in Release.
+Net behavior: a fresh checkout / fresh machine just runs `copilot-bridge
+serve` and the operator pastes the device code into their browser; no
+separate `auth login` step is required. `auth login` still exists for
+operators who want to handshake offline before starting the server.
 
 ## 10. File layout
 
 ```
 src/CopilotBridge.Cli/
+├── Program.cs                                   # System.CommandLine root + subcommands; Serilog init
+│
 ├── Pipeline/
 │   ├── BridgeContext.cs                         # context + request + response containers + ResponseMode
 │   ├── RouteTarget.cs                           # record + BackendVendor enum
-│   ├── DiagTracer.cs                            # [Conditional]-gated file tracer (FsTracer pattern)
 │   ├── PipelineRunner.cs                        # IPipelineRunner<TBody> + impl
 │   ├── Pipeline.cs                              # Pipeline<TBody>
-│   ├── IModelRegistry.cs                        # interface only; impls under Routing/
+│   ├── IModelRegistry.cs                        # Resolve + ApplyEffortRouting; impls under Routing/
 │   │
 │   ├── Stages/                                  # IRequestStage<TBody> implementations
 │   │   ├── IRequestStage.cs
 │   │   ├── Anthropic/                           # for Pipeline<MessagesRequest> — IR shape stages
-│   │   │   ├── ModelRouterStage.cs
+│   │   │   ├── ModelRouterStage.cs              # normalize + user rules + capability + ctx.Target
 │   │   │   ├── SystemSanitizeStage.cs           # strip currentDate
 │   │   │   ├── MessagesSanitizeStage.cs         # tool_result merge, trailing assistant fix
-│   │   │   ├── CacheControlCleanStage.cs        # strip cache_control.scope
 │   │   │   ├── AssistantThinkingFilterStage.cs
-│   │   │   ├── ThinkingRewriteStage.cs
 │   │   │   ├── ToolsSanitizeStage.cs
 │   │   │   └── HeadersOutboundStage.cs          # chatEndpoint.ts logic
 │   │   └── (OpenAi/, Gemini/ added later — only if a future pipeline runs in non-IR shape)
 │   │
 │   ├── Response/                                # IResponseStage<TBody> implementations
 │   │   ├── IResponseStage.cs
-│   │   ├── DoneFilterStage.cs                   # shape-agnostic
-│   │   ├── EventCaptureStage.cs                 # shape-agnostic
-│   │   └── ResponseHeadersStage.cs              # shape-agnostic
+│   │   └── DoneFilterStage.cs                   # shape-agnostic
 │   │
 │   ├── Strategies/                              # backend forwarders + internal IR↔backend translators
 │   │   ├── IUpstreamStrategy.cs
@@ -694,8 +1053,11 @@ src/CopilotBridge.Cli/
 │   │   └── Gemini/                              # M4 — Gemini ↔ IR translators
 │   │
 │   └── Routing/
-│       ├── CopilotModelRegistry.cs              # IModelRegistry impl backed by /models + alias table
-│       └── ModelAliases.cs                      # static alias table (e.g. claude-opus-4.8 → 4.7)
+│       ├── CopilotModelRegistry.cs              # IModelRegistry impl: Resolve + Normalize +
+│       │                                        #   EffortAware capability dictionary
+│       ├── RoutesConfig.cs                      # POCOs bound from appsettings.json Routing.Rules
+│       ├── ModelRouteResolver.cs                # apply user rules then capability
+│       └── RoutesValidator.cs                   # startup fail-fast schema validation
 │
 ├── Endpoints/
 │   ├── ClaudeCode/
@@ -707,9 +1069,22 @@ src/CopilotBridge.Cli/
 │   │   └── (CodexChatCompletionsEndpoint, CodexResponsesEndpoint, CodexModelsEndpoint)
 │   └── Gemini/                                  # M4
 │
-└── Hosting/
-    ├── BridgePipelines.cs                       # the assembly: builds Pipeline<MessagesRequest>
-    └── (existing files: KestrelServer, BridgeRequestLogger, etc.)
+├── Hosting/
+│   ├── KestrelServer.cs                         # builds + runs the HTTP host; loads RoutesConfig
+│   ├── BridgePipelines.cs                       # the assembly: builds Pipeline<MessagesRequest>
+│   ├── BridgeHost.cs                            # ConfigureServices + RunStartupAsync (auth, models)
+│   ├── ServeCommand.cs                          # typed entry point: RunAsync(int port)
+│   └── Logging/
+│       ├── BridgeIoEvents.cs                    # EventIds 1001..1004 (the four IO artifacts)
+│       ├── BridgeIoPayload.cs                   # sink payload + ArrayPool ownership
+│       ├── BridgeIoLoggerExtensions.cs          # logger.LogInboundRequest / ...
+│       ├── BridgeIoSink.cs                      # bounded Channel + worker, writes per-request JSONs
+│       └── BridgeIoSinkHolder.cs                # static handoff slot (Program.cs ↔ DI)
+│
+└── appsettings.json                             # ships next to the .exe; PreserveNewest copy.
+                                                 # Holds Routing.Rules — user preferences only.
+                                                 # Wire facts (effort → variant) live in
+                                                 # CopilotModelRegistry.EffortAware, not here.
 ```
 
 ## 11. Evolution path
@@ -756,7 +1131,16 @@ Copilot model list, then sets `ctx.Request.Body.Model` to the resolved id.
 
 ## 12. Migration plan from current code
 
-The current state (M1 step 6a) has `Endpoints/MessagesEndpoint.cs`,
+> **Completed 2026-05-07** — kept as a record. The unprefixed `/v1/...`
+> endpoints described as "current" below were deleted; `/cc/v1/...` is the
+> production path. The `DiagLog`/`BRIDGE_DIAG` machinery referenced in step 2
+> was later replaced by Serilog (see §9; `BRIDGE_DIAG` no longer exists in
+> the csproj). The `BridgeRequestLog` / `BridgeRequestLogger` types
+> mentioned in step 2 were subsequently rewritten as a custom Serilog sink
+> (`BridgeIoSink`) with four ILogger extension methods and per-request
+> ArrayPool-backed JSON files — see §9.1.
+
+The starting state (M1 step 6a) had `Endpoints/MessagesEndpoint.cs`,
 `Endpoints/ModelsEndpoint.cs`, `Endpoints/CountTokensEndpoint.cs` registered at
 unprefixed paths (`/v1/messages`, etc.) with inline logic.
 
@@ -807,6 +1191,6 @@ format remains compatible). Diag log is additive (new section in the JSON).
   per-instance state. If we add e.g. a `RateLimitStage`, configuration enters.
   At that point introduce `IRequestStage<TBody, TConfig>` or a sealed
   `StageOptions<TStage>` pattern.
-- **Diag log for production debugging** — currently `[Conditional]` strips it
-  from Release. If we ever need to diag a Release build, add a separate flag
-  like `BRIDGE_DIAG_RELEASE` defined per ad-hoc publish; same machinery.
+- ~~**Diag log for production debugging** — currently `[Conditional]` strips
+  it from Release.~~ **Resolved (v0.3)**: Serilog now logs in Release too;
+  level is controlled at runtime via `BRIDGE_LOG_LEVEL`. No build-time gate.

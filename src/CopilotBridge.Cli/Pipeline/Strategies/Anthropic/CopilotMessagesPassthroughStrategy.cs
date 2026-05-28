@@ -5,6 +5,8 @@ using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 
+using Serilog;
+
 namespace CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 
 /// <summary>
@@ -46,7 +48,7 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             beta = betaStr.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         }
 
-        DiagTracer.Log($"strategy {Name}: forwarding bytes={body.Length} vision={vision} betas={(beta is null ? 0 : beta.Count)}");
+        Log.Debug($"strategy {Name}: forwarding bytes={body.Length} vision={vision} betas={(beta is null ? 0 : beta.Count)}");
 
         var resp = await _copilot.PostMessagesAsync(body, vision, beta, ctx.Ct);
 
@@ -71,7 +73,7 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             // Ownership of `resp` transfers to the iterator — disposed when
             // the consumer (the endpoint writer) finishes enumeration.
             ctx.Response.EventStream = StreamEventsAsync(resp, ctx.Ct);
-            DiagTracer.Log($"strategy {Name}: streaming (content-type={contentType})");
+            Log.Debug($"strategy {Name}: streaming (content-type={contentType})");
         }
         else
         {
@@ -79,7 +81,7 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             try
             {
                 ctx.Response.BufferedBody = await resp.Content.ReadAsByteArrayAsync(ctx.Ct);
-                DiagTracer.Log($"strategy {Name}: buffered status={ctx.Response.Status} bytes={ctx.Response.BufferedBody.Length}");
+                Log.Debug($"strategy {Name}: buffered status={ctx.Response.Status} bytes={ctx.Response.BufferedBody.Length}");
             }
             finally
             {

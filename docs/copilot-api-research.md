@@ -619,10 +619,26 @@ Implications for the protocol layer:
 
 ### 4.2 Empirically captured non-streaming response fields (playground effort experiment, 2026-05-06)
 
-Non-streaming responses (we didn't re-test with `stream:false`, but the streaming `message_start` + accumulated blocks are equivalent to the non-streaming `content[]`) include these Copilot extension fields:
+Non-streaming responses include these Copilot extension fields:
 
-- `stop_details: null` — not in the Anthropic spec; Copilot-added (placeholder, possibly for future stop-reason details)
+- ~~`stop_details: null` — not in the Anthropic spec; Copilot-added~~ **CORRECTED 2026-05-21**: see §16.7 — `stop_details` is actually **native-only**; Copilot omits it. The earlier note had the attribution backwards.
 - `usage.cache_creation: {ephemeral_1h_input_tokens, ephemeral_5m_input_tokens}` — Anthropic's newer 1h-TTL prompt cache extension; Copilot reports the two TTL buckets separately
+
+The top-level `usage` object is present on non-streaming responses (verified by `RawUsageShapeTests`, 2026-05-21) with this exact shape — same as `message_start.message.usage`:
+
+```json
+{
+  "cache_creation": { "ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 0 },
+  "cache_creation_input_tokens": 0,
+  "cache_read_input_tokens": 0,
+  "input_tokens": 14,
+  "output_tokens": 4
+}
+```
+
+All five keys appear even when cache buckets are zero. `message_delta.usage` carries the same scalars but **drops the nested `cache_creation`** — only the four flat counters are emitted on the final delta.
+
+**This is Anthropic protocol design, not Copilot dropping data.** The official Anthropic SDK has two separate types: `BetaUsage` (non-streaming response + `message_start`, includes `cache_creation`) and `BetaMessageDeltaUsage` (streaming `message_delta`, no `cache_creation`). Our DTOs in `src/CopilotBridge.Cli/Models/Anthropic/Common/Usage.cs` mirror this split. The per-TTL cache breakdown is announced once at the start of the stream — repeating it on the final delta would be redundant, since only `output_tokens` actually grows during generation.
 
 ---
 
@@ -859,7 +875,7 @@ I lean **probe**: it's cheap (~50 lines of C#) and eliminates the routing-layer'
 
 ---
 
-## 11. Recommended M1 implementation order (replaces design.md §9)
+## 11. Recommended M1 implementation order
 
 ```
 1. CopilotTokenClient + AuthService.GetCopilotTokenAsync()
@@ -911,25 +927,13 @@ I lean **probe**: it's cheap (~50 lines of C#) and eliminates the routing-layer'
 12. (M3) /chat/completions + /responses translation paths (other models)
 ```
 
-Overall complexity is at least half of design.md §9's original — main reason: **no translation layer, no state machine**.
+Overall complexity is at least half of the original v0.1 plan (translation + streaming state machine) — main reason: **no translation layer, no state machine**.
 
 ---
 
-## 12. Content in design.md to be replaced
+## 12. (removed)
 
-The following sections of `docs/design.md` are **outdated** and need updating (tracked as task #10):
-
-| Section | Current state | Should become |
-| --- | --- | --- |
-| §1.3 M1 success criterion | "Translate to Copilot's OpenAI Chat Completions" | "Anthropic passthrough to Copilot `/v1/messages`" |
-| §3.1 big picture | Translation as central | Translation as fallback; M1 doesn't draw it |
-| §4.2 Translation pure functions | Streaming state machine central | "M1 main path has no translation; fallback (M3) needs the state machine" |
-| §5.4 Model name normalization | Simple regex | Replace with §3.7's full 5-rule set |
-| §5.5/5.6 Tool result ordering + streaming translation | M1 work | Move to M3 |
-| §6 auth flow | Aligns with this research; keep | (Add Copilot token refresh details) |
-| §9 milestone order | Translation + streaming state machine first | Replace with §11's 9 steps |
-| §10 Kestrel vs HttpListener | Open question | M1 still uses Kestrel |
-| Folder structure | `Translation/` central | `Preprocessing/` central; `Translation/` moves to M3 |
+The previous §12 was a punch-list of sections in `docs/design.md` that needed rewriting. That work is done (design.md was rewritten 2026-05-21 to drop the duplicated protocol details and keep only the scope statement, AOT discipline, and decision log). See `docs/design.md` for the current shape. Section numbering preserved below for stable internal links.
 
 ---
 
@@ -968,7 +972,7 @@ The following sections of `docs/design.md` are **outdated** and need updating (t
 
 ## 14. One-line conclusion
 
-**M1 = auth + header rewrite + ~10 pure-function preprocessors + body/SSE passthrough** — not a translator. With Copilot's native `/v1/messages` endpoint confirmed, design.md §9's "OpenAI translation first" path becomes an optional M3 fallback.
+**M1 = auth + header rewrite + ~10 pure-function preprocessors + body/SSE passthrough** — not a translator. With Copilot's native `/v1/messages` endpoint confirmed, the v0.1 plan's "OpenAI translation first" path becomes an optional M3 fallback.
 
 ---
 
@@ -992,6 +996,8 @@ Run: `dotnet test` (~1m40s, single-threaded to dodge Anthropic's per-account rat
 | `VisionTests` | 1 | base64 PNG image content block + `Copilot-Vision-Request: true` header — sonnet-4.6 processes and returns text |
 | `ContextManagementTests` | 1 | `context_management.edits` field + `anthropic-beta: context-management-2025-06-27` header are accepted (doesn't verify `applied_edits` triggering — would need >100k input tokens of history) |
 | `MaxTokensTests` | 2 | When request hits `max_tokens`, `stop_reason="max_tokens"` and `output_tokens` is close to the ceiling (verified on sonnet/haiku) |
+| `RawUsageShapeTests` | 2 | Top-level `usage` in non-streaming responses matches `message_start.message.usage` exactly (5 keys: nested `cache_creation`, two flat cache counters, `input_tokens`, `output_tokens`); `message_delta.usage` carries the same four scalars but drops nested `cache_creation` |
+| `CopilotGapProbes` | 4 | `POST /v1/messages/count_tokens` is supported upstream (HTTP 200, real `{input_tokens:N}`); `tools[].type:"web_search_20250305"` → HTTP 400 `unsupported_value` (Claude Code's `WebSearch` won't work over Copilot); `GET /v1/files` → HTTP 404 plain text; `POST /v1/messages/batches` → HTTP 404 plain text. The plain-text 404s confirm Copilot's gateway only exposes routes it actually implements. |
 
 ### 15.2 Cross-test invariants
 
@@ -1025,7 +1031,10 @@ Copilot's backend is AWS Bedrock; every response carries Bedrock-specific fields
   "type": "message_stop"
 }
 
-// In usage (non-streaming response + message_start/message_delta events)
+// In usage (non-streaming response + message_start events).
+// message_delta carries the same scalars but DROPS the nested cache_creation
+// — that's per Anthropic spec (BetaMessageDeltaUsage has no cache_creation field),
+// not Copilot dropping data. See §4.2.
 "usage": {
   "cache_creation": {
     "ephemeral_5m_input_tokens": 0,
@@ -1033,11 +1042,12 @@ Copilot's backend is AWS Bedrock; every response carries Bedrock-specific fields
   },
   "cache_creation_input_tokens": 5303,
   "cache_read_input_tokens": 0,
-  ...
+  "input_tokens": 14,
+  "output_tokens": 4
 }
 ```
 
-The Anthropic protocol's `cache_creation` is flat (just `cache_creation_input_tokens`), but Copilot returns both the nested object and the flat scalar. **The bridge passes both through** — the Anthropic SDK ignores the nested `cache_creation` (unknown field), no compatibility issue.
+The Anthropic protocol's `cache_creation` is flat (just `cache_creation_input_tokens`), but Copilot returns both the nested object and the flat scalar on non-streaming responses and `message_start`. **The bridge passes both through** — the Anthropic SDK ignores the nested `cache_creation` (unknown field), no compatibility issue.
 
 #### 15.2.3 Copilot's own extension fields
 
@@ -1080,6 +1090,32 @@ The `capabilities` field returned by `/models` is not always consistent with act
 - ✅ 100×100 PNG → accepted
 
 Anthropic's docs suggest ≥200px but state no hard minimum. Copilot's threshold is somewhere between. Bridge doesn't need to validate sizes — pass through and let Copilot reject.
+
+#### Web search server tool — NOT supported (2026-05-21)
+
+`tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 1 }]` returns:
+
+```json
+HTTP 400
+{ "error": { "message": "The use of the web search tool is not supported.", "code": "unsupported_value" } }
+```
+
+This is Anthropic's server-side web search (`web_search_20250305`, `web_search_20260209`). The official VS Code Copilot Chat client gates this behind an experiment flag (`references/vscode-copilot-chat-snippets/anthropicProvider.ts:201-211`) — i.e. even VS Code doesn't send it on Copilot by default. Claude Code's `WebSearch` built-in tool is implemented via this exact server tool, so **Claude Code's WebSearch will not work over Copilot.**
+
+**Bridge implications**:
+- Letting the 400 bubble through is correct behavior — silently stripping the tool would make WebSearch fail with confusing "tool unknown" errors instead of a clean "not supported."
+- A future UX improvement could be to detect `web_search_*` in inbound `tools[]` and return a friendly bridge-level 400 explaining the gap (saves a Copilot round-trip), but the upstream message is already clear.
+
+#### `/v1/messages/count_tokens` — IS supported (2026-05-21)
+
+Contrary to circumstantial evidence from reference impls (which all estimate locally or proxy to Anthropic), Copilot does expose Anthropic's token-counting endpoint:
+
+```json
+HTTP 200
+{ "input_tokens": 8 }
+```
+
+Verified by `CopilotGapProbes.CountTokens_ProbeCopilotUpstream` on a minimal `claude-sonnet-4.6` payload. The bridge's `ClaudeCodeCountTokensEndpoint` (`src/CopilotBridge.Cli/Endpoints/ClaudeCode/ClaudeCodeCountTokensEndpoint.cs:31`) currently returns a hardcoded `{input_tokens:1}` stub — this can be replaced with a passthrough to get real counts. The wire format matches Anthropic's spec exactly, so passthrough is a one-line swap.
 
 #### Cache value non-determinism
 
@@ -1206,3 +1242,170 @@ outbound (bridge → Claude Code)
 **13 steps, 4 I/O boundaries, ~250 lines of C#**. Plus `/v1/models` (mirror Copilot's `/models`, filter to `/v1/messages`-supporting) and `/v1/messages/count_tokens` (M1 returns `{"input_tokens":1}`), and that's the complete bridge endpoint.
 
 The playground tests are the "known-good terminal state" of this passthrough chain — once the bridge is built, the first thing to do is run all playground tests through the bridge and confirm they still pass. That's the regression gate.
+
+---
+
+## 16. Claude Code's API surface (verified against `claude-code-2.1.88`)
+
+Decompiled source at `Q:/MyProjects/claude-code-sourcemap/restored-src/`. File-line citations below refer to that path. The aim of this section is to bound the bridge's surface area: knowing exactly what Claude Code calls means knowing exactly what the bridge needs to handle — and what is dead code.
+
+### 16.1 What Claude Code calls via `ANTHROPIC_BASE_URL`
+
+The Anthropic SDK client is constructed in `src/services/api/client.ts` and uses whatever `ANTHROPIC_BASE_URL` resolves to. Only three SDK methods are called from Claude Code's own code (verified by grep on `anthropic\.(beta\.)?(messages|models|completions|files|skills)\.`):
+
+| SDK call | Endpoint | Site(s) | Bridge status |
+| --- | --- | --- | --- |
+| `anthropic.beta.messages.create(...)` (streaming + non-streaming) | `POST /v1/messages` | `src/services/api/claude.ts:555` (API verification), `:864` (non-stream fallback), `:727` (streaming via `queryModel()`), `src/services/tokenEstimation.ts:302` (token estimation probe) | ✅ implemented |
+| `anthropic.beta.messages.countTokens(...)` | `POST /v1/messages/count_tokens` | `src/services/tokenEstimation.ts:172` | ⚠️ stub — Copilot supports it, bridge returns `{input_tokens:1}`. See [§15.4 count_tokens probe](#-v1messagescount_tokens--is-supported-2026-05-21) |
+| `anthropic.models.list({ betas })` | `GET /v1/models` | `src/utils/model/modelCapabilities.ts:93` | ✅ implemented, **but never hit in practice** — see §16.2 |
+
+**Plus one non-SDK path that *also* uses `ANTHROPIC_BASE_URL`**: `src/services/api/filesApi.ts:32-37` uses raw axios with `process.env.ANTHROPIC_BASE_URL ?? process.env.CLAUDE_CODE_API_BASE_URL ?? 'https://api.anthropic.com'`. Endpoints hit:
+
+| Method + path | Site | Trigger | Bridge status |
+| --- | --- | --- | --- |
+| `GET /v1/files/{id}/content` | `filesApi.ts:137` | File attachment download at session startup (BriefTool / teleport) | ❌ not implemented |
+| `POST /v1/files` | `filesApi.ts:385` | Upload — `src/tools/BriefTool/upload.ts:248` (BriefTool), `src/utils/teleport/gitBundle.ts` (teleport git bundle) | ❌ not implemented |
+| `GET /v1/files` | `filesApi.ts:646` | File listing | ❌ not implemented |
+
+### 16.2 Gating: `/v1/models` is dead code on the bridge
+
+`src/utils/model/modelCapabilities.ts:46-51` gates the entire `refreshModelCapabilities()` call behind three checks:
+
+```ts
+function isModelCapabilitiesEligible(): boolean {
+  if (process.env.USER_TYPE !== 'ant') return false
+  if (getAPIProvider() !== 'firstParty') return false
+  if (!isFirstPartyAnthropicBaseUrl()) return false
+  return true
+}
+```
+
+A Claude Code instance pointed at the bridge fails the `isFirstPartyAnthropicBaseUrl()` check (and almost always the other two). **`anthropic.models.list()` is never called when Claude Code's base URL is custom.** The bridge's `GET /cc/v1/models` endpoint exists but won't be exercised by this flow.
+
+Implication: don't invest time hardening `/cc/v1/models`. Either remove it once we're sure no other tool hits it, or keep it as a passive convenience for `curl`-based debugging.
+
+### 16.3 SDK endpoints Claude Code *doesn't* call (not gaps)
+
+Grep on `anthropic\.beta\.(skills|messages\.batches)|\.completions\.create|anthropic\.files\.` against `src/` returns zero matches:
+
+- `POST /v1/messages/batches` (and the rest of the Batches API) — not used; probed at HTTP 404 plain text on Copilot anyway
+- `/v1/skills/*` — not used (it's a beta SDK surface; Claude Code's `skills` feature is local, not server-side)
+- `POST /v1/complete` — legacy completions API, not used
+- `/v1/files/*` via the SDK — Claude Code uses raw axios instead (see §16.1)
+
+These are SDK surface area, not Claude Code surface area. No bridge work needed.
+
+### 16.4 Claude Code endpoints that *don't* go through `ANTHROPIC_BASE_URL`
+
+Anything below uses a different base URL constant. The bridge sees none of these — they hit Anthropic's claude.ai / console / MCP / telemetry endpoints directly. Listed here so future "we saw Claude Code call X" reports can be ruled out fast.
+
+| Endpoint | Base URL source | File:line |
+| --- | --- | --- |
+| `POST /v1/oauth/token` | `getOauthConfig().TOKEN_URL` (claude.ai or platform.claude.com) | `src/constants/oauth.ts:91, 127, 163, 214` |
+| `/v1/mcp/*`, `/v1/toolbox/shttp/mcp/*` | `getOauthConfig().MCP_PROXY_URL` (`mcp-proxy.anthropic.com`) | `src/constants/oauth.ts:102-103, 141, 172` |
+| `/v1/code/sessions/*` | claude.ai | `src/constants/product.ts:57` |
+| `/v1/sessions`, `/v1/session_ingress/*`, `/v1/environment_providers/*` | teleport base URL (claude.ai cloud) | `src/utils/teleport.tsx:556, 631, 822, 1096`; `src/utils/teleport/api.ts:201, 209, 294, 369, 432`; `src/utils/teleport/environments.ts:45, 88` |
+| `POST /v1/traces`, `POST /v1/logs` | OTel exporter URL | `src/utils/telemetry/instrumentation.ts:367, 371` |
+
+### 16.5 Bridge gap summary
+
+| Surface | Bridge action | Reasoning |
+| --- | --- | --- |
+| `POST /v1/messages` | ✅ implemented (passthrough) | Hot path; verified by full playground suite |
+| `POST /v1/messages/count_tokens` | ✅ implemented (passthrough, 2026-05-21) | Copilot returns real counts ([§15.4 probe](#-v1messagescount_tokens--is-supported-2026-05-21)); bridge forwards body raw via `ICopilotClient.PostCountTokensAsync`. Old `{input_tokens:1}` stub removed |
+| `GET /v1/models` | 🪦 dead code under bridge flow | Gated by `isFirstPartyAnthropicBaseUrl()`; never hit. Can remove |
+| `GET /v1/files/{id}/content`, `POST /v1/files`, `GET /v1/files` | ❌ not implemented; consider friendly 404 | Copilot returns plain-text 404; Claude Code's axios path will fail at the parse step. If we want clean UX when BriefTool / teleport is triggered, return `{"error": {"type": "not_supported", "message": "Files API is not supported on the Copilot backend."}}` from the bridge instead of forwarding |
+| `web_search_20250305` server tool in `tools[]` | ❌ bridge passthrough returns Copilot's clear 400 | Acceptable as-is; future UX nicety is to detect and short-circuit at the bridge (see [§15.4 web search probe](#web-search-server-tool--not-supported-2026-05-21)) |
+| Anthropic Batches / Skills / Completions / Admin Usage / claude.ai-side endpoints | n/a | Either not called by Claude Code (§16.3) or doesn't route via `ANTHROPIC_BASE_URL` (§16.4) |
+
+**Net** (post 2026-05-21): `count_tokens` now passthrough — see §16.5 row. Remaining: one cleanup option (remove dead `/cc/v1/models`), one optional polish (bridge-side 404 for `/v1/files/*` with a helpful body). The bridge's coverage of what Claude Code actually sends is otherwise complete.
+
+### 16.6 How Claude Code emits `output_config.effort` (verified 2026-05-21)
+
+The bridge's effort-routing design ([§15.3 capability mismatches](#-153-model-specific-behavior-capabilityreality-mismatches), `src/CopilotBridge.Cli/Pipeline/Routing/CopilotModelRegistry.cs:50-60`) handles `model + effort` correctly, but **Claude Code rarely sends effort in the shape the bridge expects.** Tracing `restored-src/src/utils/effort.ts` + `services/api/claude.ts:440-466`:
+
+**Vocabulary** (`effort.ts:13-18`): `EFFORT_LEVELS = ['low', 'medium', 'high', 'max']`. **No `xhigh`.** `parseEffortValue('xhigh')` returns undefined; `convertEffortValueToLevel` coerces unknown strings to `'high'`. The CLI `/effort` command, `--effort` flag, env `CLAUDE_CODE_EFFORT_LEVEL`, and settings.json `effortLevel` all funnel through these 4 values.
+
+**Per-model gate** (`effort.ts:23-49`, `modelSupportsEffort()`):
+```ts
+if (m.includes('opus-4-6') || m.includes('sonnet-4-6')) return true
+if (m.includes('haiku') || m.includes('sonnet') || m.includes('opus')) return false
+// default-true only for 1P (api.anthropic.com)
+```
+**Opus 4.7 falls into the second branch and returns false** — Claude Code refuses to set `output_config.effort` on opus-4.7 requests (`claude.ts:447` early-returns from `configureEffortParams`). Override: `process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`.
+
+**Max clamp** (`effort.ts:53-65, 162-165`): `modelSupportsMaxEffort()` is `true` only for `opus-4-6`. Any other model's `max` gets downgraded to `high` before being sent. So even with `ALWAYS_ENABLE_EFFORT=1`, you can't get `max` on the wire for opus-4.7.
+
+#### What the bridge actually sees, by user path
+
+| User does in Claude Code | Wire to bridge | Bridge → Copilot |
+| --- | --- | --- |
+| Default usage of opus-4.7 (any effort UI selection) | `model: claude-opus-4-7-...`, **no `effort` field** | normalize → `claude-opus-4.7`, `ApplyEffortRouting` returns `(model, false)` (no effort to strip), Copilot uses model's default = medium |
+| `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` + selects `max` | `model: opus-4-7-...`, `effort: "high"` (clamped) | EffortAware: high → `-high` variant, effort stripped. Final: `claude-opus-4.7-high` |
+| Sets `ANTHROPIC_MODEL=claude-opus-4.7-xhigh` directly | `model: claude-opus-4-7-xhigh`, no `effort` | normalize keeps `-xhigh`, not in EffortAware table, default behavior keeps model. Final: `claude-opus-4.7-xhigh` |
+| SDK `extraBodyParams.output_config.effort = "xhigh"` (only reachable via the SDK, not Claude Code UI) | `model: opus-4-7-...`, `effort: "xhigh"` | EffortAware: xhigh → `-xhigh` variant, effort stripped. Final: `claude-opus-4.7-xhigh` |
+
+**Practical conclusion**: for a user who wants opus-4.7 xhigh, the supported path is **`ANTHROPIC_MODEL=claude-opus-4.7-xhigh`** — direct variant selection. The "base + effort" path is gated off by `modelSupportsEffort` returning false. The bridge's `EffortAware["claude-opus-4.7"]` table is correct but exercised mainly by the env-var bypass or SDK callers, not Claude Code's normal UI.
+
+**Two follow-ups worth tracking**:
+- `claude-sonnet-4.6` (passes `modelSupportsEffort` via the `sonnet-4-6` branch) sends `output_config.effort` from Claude Code's UI by default. Our bridge currently strips this field for sonnet (no entry in `EffortAware`). If Copilot's `claude-sonnet-4.6` accepts effort directly (different from opus-4.7's variant-suffix model), stripping is wasteful and worth re-probing.
+- Same question for `claude-opus-4-6` once / if Copilot adds it.
+
+**RESOLVED 2026-05-21 (Claude Code 2.1.146)**: Claude Code now ships an `xhigh` effort level in its CLI vocabulary (`--effort low|medium|high|xhigh|max`) and unblocks opus-4.7 specifically — the model picker's `/effort xhigh` description is "Deeper reasoning than high, just below maximum (Opus 4.7 only)". The bridge's `CopilotModelCatalog` (loaded from `/models` at startup) drives effort routing dynamically from `capabilities.supports.reasoning_effort` per model — no more hardcoded EffortAware table. Verified end-to-end by `tests/CopilotBridge.Playground/Headless/EffortRoutingTests.cs` (18 cases covering sonnet-4.6 / opus-4.6 / opus-4.7 base+variant / opus-4.7-1m-internal / opus-4.6-1m / sonnet-4.5 strip / haiku-4.5 strip).
+
+### 16.7 Native Anthropic ↔ Copilot 1:1 response diff (verified 2026-05-21)
+
+`tests/CopilotBridge.Playground/ApiComparisonTests.cs` sends the same minimal request body to both `api.anthropic.com/v1/messages` and Copilot's `/v1/messages` and reports structural deltas. Anthropic key lives in `tests/CopilotBridge.Playground/appsettings.local.json` (gitignored). Native sonnet/opus consistently hit a 429 rate-limit on the test account (an `x-should-retry: true` header + 8 spaced retries all blocked — looks like an account-tier quota, not transient RPM), so the cross-backend direct diff only completed cleanly for haiku-4.5. The Copilot-side observation across the priority model set (`CopilotShape_ObserveAcrossModels`) supplies the rest.
+
+#### 16.7.1 Copilot multi-cloud routing — the response id is the tell
+
+The Anthropic message id's prefix reveals which upstream provider Copilot routed the request through. For the priority model set:
+
+| Model | id prefix | Upstream provider |
+| --- | --- | --- |
+| `claude-haiku-4.5` | `msg_bdrk_` | **AWS Bedrock** |
+| `claude-sonnet-4.6` | `msg_bdrk_` | **AWS Bedrock** |
+| `claude-opus-4.7-1m-internal` | `msg_vrtx_` | **Google Vertex** |
+| `claude-opus-4.7` (base) | `msg_01…` | **Anthropic Direct** |
+
+Each upstream shapes its response slightly differently. That's the actual source of "is `stop_details` / `inference_geo` / `service_tier` present" — **not** a Copilot-level rule.
+
+#### 16.7.2 Field-presence matrix across providers
+
+| Field | Bedrock (haiku) | Bedrock (sonnet-4.6) | Anthropic Direct (opus-4.7) | Vertex (opus-4.7-1m) | Anthropic native (haiku) |
+| --- | --- | --- | --- | --- | --- |
+| Core Anthropic: `content`, `id`, `model`, `role`, `stop_reason`, `stop_sequence`, `type`, `usage` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `copilot_usage` (Copilot extension) | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `stop_details: null` | ❌ | ✅ | ✅ | ✅ | ✅ |
+| `usage.inference_geo` | ❌ | ❌ | ✅ | ❌ | ✅ |
+| `usage.service_tier` | ❌ | ❌ | ❌ | ❌ | ✅ |
+| `usage.cache_creation: {ephemeral_5m, ephemeral_1h}` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `usage.input_tokens` / `output_tokens` / cache_*_input_tokens | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+#### 16.7.3 Implications for the bridge
+
+1. **Only `copilot_usage` is a true Copilot platform invariant** — every Copilot response has it, native has none. It's an additive cost ledger; Anthropic SDK ignores unknown fields, so passthrough is correct.
+2. **`opus-4.7` base goes Anthropic Direct** — the user's priority model effectively gets native-Anthropic response shape through Copilot (plus `copilot_usage`). Best-case fidelity: the bridge moves bytes and almost nothing else differs.
+3. **`stop_details`, `inference_geo`, `service_tier`** are provider-dependent. Anthropic SDK reads them defensively (`?? null`), so omission breaks nothing. The bridge doesn't need to synthesize missing fields.
+4. **The "haiku as a stand-in for opus diff" reverse-derivation works only for invariants** — provider-specific fields (especially the Bedrock vs Direct vs Vertex variations) require direct observation. Future work: try a higher-tier Anthropic key to fill in the remaining native-vs-Copilot rows for sonnet-4.6 and opus-4.7.
+5. **`usage.service_tier` is Anthropic-native-only across the board** — even Copilot's Anthropic-Direct routing strips it. If anything ever cares about this field, the bridge would need to synthesize it (current answer: nothing cares).
+
+### 16.8 WebSearch policy: bridge friendly 400 + MCP as the workaround (2026-05-21)
+
+Anthropic's `web_search_20250305` / `web_search_20260209` server tools are rejected by every Copilot upstream (§15.4 — HTTP 400 `unsupported_value`). To avoid surfacing Copilot's opaque error to users, the bridge short-circuits these requests at the endpoint level:
+
+```jsonc
+// Bridge response when tools[] contains a web_search_* entry
+HTTP 400 Bad Request
+{
+  "type": "error",
+  "error": {
+    "type": "not_supported",
+    "message": "The 'web_search_20250305' server tool is not supported on the GitHub Copilot backend. Configure a custom search MCP server in your Claude Code MCP config (e.g. via --mcp-config) and disable the built-in WebSearch tool."
+  }
+}
+```
+
+The message points users at the supported alternative: **MCP servers**. Claude Code's MCP loader is transport-agnostic — stdio, SSE, http — and the bridge sees MCP-namespaced tools (`mcp__<server>__<tool>`) as ordinary `tools[]` entries with no special handling. Verified end-to-end by `tests/CopilotBridge.Playground/Headless/McpToolUseTests.cs`: a stdio echo MCP server, Claude Code via `--mcp-config`, sonnet-4.6 model, full `tool_use → tool_result → final text` round-trip with the canary string reaching Claude Code's stdout.
+
+Implementation: `src/CopilotBridge.Cli/Endpoints/ClaudeCode/ClaudeCodeMessagesEndpoint.cs` runs `TryGetUnsupportedServerTool` immediately after deserializing the request body. The `Tool.Type` field was added to the DTO so this check can read the discriminator. Pipeline + upstream are never invoked for rejected requests. Verified by `WebSearchRejectionTests` (both `web_search_20250305` and `web_search_20260209`).

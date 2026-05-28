@@ -1,5 +1,4 @@
 using System.Text.Json.Serialization;
-using CopilotBridge.Cli.Models.Anthropic.CountTokens;
 using CopilotBridge.Cli.Models.Anthropic.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Models.Anthropic.Response;
@@ -35,7 +34,6 @@ namespace CopilotBridge.Cli.Models;
 [JsonSerializable(typeof(AnthropicMessage))]
 [JsonSerializable(typeof(StreamEvent))]
 [JsonSerializable(typeof(AnthropicModelsResponse))]
-[JsonSerializable(typeof(CountTokensResponse))]
 // The converter-driven properties (MessageParam.Content,
 // MessagesRequest.System) need direct TypeInfo lookups for their element
 // types at runtime via options.GetTypeInfo(...).

@@ -1,5 +1,7 @@
 using CopilotBridge.Cli.Models.Anthropic.Request;
 
+using Serilog;
+
 namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 
 /// <summary>
@@ -42,7 +44,7 @@ internal sealed class ToolsSanitizeStage : IRequestStage<MessagesRequest>
             ctx.Request.Body = ctx.Request.Body with { Tools = rebuilt };
         }
 
-        DiagTracer.Log($"stage {Name}: dropped {dropped} IDE-only tools (kept {rebuilt.Count})");
+        Log.Debug($"stage {Name}: dropped {dropped} IDE-only tools (kept {rebuilt.Count})");
         return Task.CompletedTask;
     }
 }

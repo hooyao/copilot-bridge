@@ -20,4 +20,15 @@
     <ProjectReference Include="..\..\src\CopilotBridge.Cli\CopilotBridge.Cli.csproj" />
   </ItemGroup>
 
+  <!-- Local-only config (Anthropic API key for native A/B compare tests).
+       Gitignored. Tests gracefully skip when the file/key is absent. -->
+  <ItemGroup>
+    <None Update="appsettings.local.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Headless\mcp-echo-server.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

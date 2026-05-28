@@ -57,6 +57,24 @@ internal sealed class CopilotClient(
         return await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
     }
 
+    public async ValueTask<HttpResponseMessage> PostCountTokensAsync(
+        ReadOnlyMemory<byte> body,
+        CancellationToken ct = default)
+    {
+        var (token, baseUrl) = await ResolveAuthAsync(ct);
+
+        var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages/count_tokens")
+        {
+            Content = new ReadOnlyMemoryContent(body)
+            {
+                Headers = { ContentType = new MediaTypeHeaderValue("application/json") },
+            },
+        };
+        headers.ApplyTo(req, token);
+
+        return await http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
+    }
+
     private async ValueTask<(string Token, string BaseUrl)> ResolveAuthAsync(CancellationToken ct)
     {
         var token = await auth.GetCopilotTokenAsync(ct);

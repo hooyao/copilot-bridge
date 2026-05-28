@@ -32,4 +32,16 @@ internal interface ICopilotClient
         bool vision = false,
         IReadOnlyList<string>? anthropicBeta = null,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// <c>POST {baseUrl}/v1/messages/count_tokens</c>. Plain JSON request/response —
+    /// no SSE, no pipeline transforms. Forwards the raw inbound body and returns
+    /// the response with headers read (caller disposes). Copilot was verified to
+    /// support this endpoint with the same wire format as Anthropic
+    /// (<c>CopilotGapProbes.CountTokens_ProbeCopilotUpstream</c>), so passthrough
+    /// gives Claude Code real counts instead of a stubbed <c>{input_tokens:1}</c>.
+    /// </summary>
+    ValueTask<HttpResponseMessage> PostCountTokensAsync(
+        ReadOnlyMemory<byte> body,
+        CancellationToken ct = default);
 }

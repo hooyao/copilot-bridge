@@ -1,5 +1,7 @@
 using CopilotBridge.Cli.Models.Anthropic.Request;
 
+using Serilog;
+
 namespace CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 
 /// <summary>
@@ -22,7 +24,7 @@ internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesR
         IReadOnlyDictionary<string, string> headers,
         CancellationToken ct)
     {
-        DiagTracer.Log($"adapter {Name}: identity  model={clientBody.Model}  messages={clientBody.Messages.Count}  stream={clientBody.Stream == true}");
+        Log.Debug($"adapter {Name}: identity  model={clientBody.Model}  messages={clientBody.Messages.Count}  stream={clientBody.Stream == true}");
         return ValueTask.FromResult(clientBody);
     }
 }

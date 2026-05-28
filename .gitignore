@@ -50,6 +50,8 @@ Thumbs.db
 # Project-specific
 appsettings.dev.jsonc
 appsettings.local.jsonc
+appsettings.dev.json
+appsettings.local.json
 references/
 .claude/
 

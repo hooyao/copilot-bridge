@@ -1,5 +1,7 @@
 using CopilotBridge.Cli.Models.Anthropic.Request;
 
+using Serilog;
+
 namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 
 /// <summary>
@@ -67,7 +69,7 @@ internal sealed class HeadersOutboundStage : IRequestStage<MessagesRequest>
             ctx.Request.Headers["copilot-vision-request"] = "true";
         }
 
-        DiagTracer.Log($"stage {Name}: betas=[{string.Join(',', betas)}] vision={ctx.Request.Headers.ContainsKey("copilot-vision-request")}");
+        Log.Debug($"stage {Name}: betas=[{string.Join(',', betas)}] vision={ctx.Request.Headers.ContainsKey("copilot-vision-request")}");
         return Task.CompletedTask;
     }
 

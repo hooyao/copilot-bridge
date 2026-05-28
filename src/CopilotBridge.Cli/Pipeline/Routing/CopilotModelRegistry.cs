@@ -1,29 +1,32 @@
 namespace CopilotBridge.Cli.Pipeline.Routing;
 
 /// <summary>
-/// M1 implementation of <see cref="IModelRegistry"/>. Resolves a client-supplied
-/// model id to a Copilot backend route, applying:
+/// Implementation of <see cref="IModelRegistry"/>. Owns three responsibilities:
 /// <list type="number">
 ///   <item>Name normalization: <c>claude-sonnet-4-5-20250929</c> →
 ///         <c>claude-sonnet-4.5</c> (research §3.7).</item>
-///   <item>Alias table: graceful degradation when a client requests a model
-///         the backend doesn't have yet (<c>claude-opus-4.8</c> →
-///         <c>claude-opus-4.7</c>). Empty for M1; populated as Claude Code
-///         starts shipping new defaults ahead of Copilot.</item>
-///   <item>Vendor dispatch by prefix: M1 only handles <c>claude-*</c> (routed
-///         to <see cref="BackendVendor.CopilotAnthropic"/>); GPT and Gemini
-///         routes land in M3.</item>
+///   <item>Alias table for graceful degradation when a client requests a
+///         model the backend doesn't have yet.</item>
+///   <item>Vendor + endpoint dispatch by prefix.</item>
+///   <item><b>Per-model effort-routing capability</b> — delegated to
+///         <see cref="CopilotModelCatalog"/>, which derives the routing
+///         decision from Copilot's live <c>/models</c> response. Nothing
+///         is hardcoded; new models / new variants are picked up at the
+///         next bridge restart.</item>
 /// </list>
-/// Future enhancement: validate the resolved id against Copilot's live
-/// <c>/models</c> response (filter to <c>/v1/messages</c>-supporting). For
-/// now, trust the prefix — Copilot itself returns 400 if the model is
-/// unrecognized, and that error surfaces through the strategy.
 /// </summary>
 internal sealed class CopilotModelRegistry : IModelRegistry
 {
+    private readonly CopilotModelCatalog _catalog;
+
+    public CopilotModelRegistry(CopilotModelCatalog catalog)
+    {
+        _catalog = catalog;
+    }
+
     private static readonly Dictionary<string, string> Aliases = new(StringComparer.OrdinalIgnoreCase)
     {
-        // Empty for M1. Populate as needed:
+        // Empty by default. Populate as needed:
         // ["claude-opus-4.8"] = "claude-opus-4.7",
     };
 
@@ -36,26 +39,70 @@ internal sealed class CopilotModelRegistry : IModelRegistry
         {
             return new RouteTarget(BackendVendor.CopilotAnthropic, "/v1/messages", resolved);
         }
-        // M3: gpt-* → CopilotOpenAi /chat/completions; gemini-* → same.
+        // GPT / o-series / Gemini all served by Copilot via the OpenAI shape.
+        // The actual backend strategy isn't implemented until M3, but we
+        // recognize the prefix here so RoutesValidator at startup can confirm
+        // a config rule's referenced model is at least known. Requests will
+        // fail at the strategy registry (no handler) until M3 lands — that's
+        // a clear runtime error, not silent breakage.
+        if (resolved.StartsWith("gpt-",  StringComparison.OrdinalIgnoreCase)
+         || resolved.StartsWith("o3-",   StringComparison.OrdinalIgnoreCase)
+         || resolved.StartsWith("o4-",   StringComparison.OrdinalIgnoreCase)
+         || resolved.StartsWith("gemini-", StringComparison.OrdinalIgnoreCase))
+        {
+            return new RouteTarget(BackendVendor.CopilotOpenAi, "/chat/completions", resolved);
+        }
         return null;
     }
 
+    public (string Model, bool StripEffort) ApplyEffortRouting(string normalizedModelId, string? effort)
+    {
+        if (effort is null)
+        {
+            // Client didn't send the field; nothing to strip, no variant
+            // selection possible. Pass through unchanged.
+            return (normalizedModelId, false);
+        }
+        var decision = _catalog.DecideEffortRouting(normalizedModelId, effort);
+        return (decision.Model, decision.StripEffort);
+    }
+
     /// <summary>
-    /// Convert versioned dash form (<c>claude-sonnet-4-5-20250929</c>) to
-    /// dotted form (<c>claude-sonnet-4.5</c>) Copilot expects. Inputs that
-    /// don't match the versioned-with-date pattern pass through unchanged.
+    /// Canonicalize a model id to dotted-version form regardless of date
+    /// suffix or trailing variant tags:
+    /// <code>
+    /// claude-opus-4-7                  → claude-opus-4.7
+    /// claude-opus-4-7-20251015         → claude-opus-4.7      (date suffix stripped)
+    /// claude-opus-4-7-high             → claude-opus-4.7-high
+    /// claude-opus-4-7-1m-internal      → claude-opus-4.7-1m-internal
+    /// claude-sonnet-4-5-20250929       → claude-sonnet-4.5
+    /// claude-haiku-4.5                 → claude-haiku-4.5     (already canonical)
+    /// </code>
+    /// Strategy: (1) drop a trailing 8-digit date suffix, (2) merge the first
+    /// consecutive <c>digit-digit</c> pair into <c>digit.digit</c>.
     /// </summary>
     public static string Normalize(string modelId)
     {
-        var parts = modelId.Split('-');
-        // Pattern: claude-{family}-{major}-{minor}-{YYYYMMDD}
-        if (parts.Length >= 5
-            && parts[^1].Length == 8
-            && IsAllDigits(parts[^1]))
+        var parts = new List<string>(modelId.Split('-'));
+
+        // Strip trailing YYYYMMDD date.
+        if (parts.Count >= 2 && parts[^1].Length == 8 && IsAllDigits(parts[^1]))
         {
-            return string.Join('-', parts[..^2]) + "." + parts[^2];
+            parts.RemoveAt(parts.Count - 1);
         }
-        return modelId;
+
+        // Merge first consecutive numeric pair into "major.minor".
+        for (var i = 0; i < parts.Count - 1; i++)
+        {
+            if (IsAllDigits(parts[i]) && IsAllDigits(parts[i + 1]))
+            {
+                parts[i] = parts[i] + "." + parts[i + 1];
+                parts.RemoveAt(i + 1);
+                break;
+            }
+        }
+
+        return string.Join('-', parts);
     }
 
     private static bool IsAllDigits(string s)

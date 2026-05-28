@@ -1,3 +1,5 @@
+using Serilog;
+
 namespace CopilotBridge.Cli.Pipeline;
 
 /// <summary>
@@ -14,13 +16,13 @@ internal sealed class PipelineRunner<TBody> : IPipelineRunner<TBody> where TBody
 {
     public async Task RunAsync(Pipeline<TBody> pipeline, BridgeContext<TBody> ctx)
     {
-        DiagTracer.Log($"pipeline {pipeline.Name} start  path={ctx.Request.Path}  body-bytes={ctx.Request.RawBody.Length}");
+        Log.Debug($"pipeline {pipeline.Name} start  path={ctx.Request.Path}  body-bytes={ctx.Request.RawBody.Length}");
 
         foreach (var stage in pipeline.RequestStages)
         {
-            DiagTracer.Log($"req-stage start  {stage.Name}");
+            Log.Debug($"req-stage start  {stage.Name}");
             await stage.ApplyAsync(ctx);
-            DiagTracer.Log($"req-stage end    {stage.Name}");
+            Log.Debug($"req-stage end    {stage.Name}");
         }
 
         if (ctx.Target is null)
@@ -31,17 +33,17 @@ internal sealed class PipelineRunner<TBody> : IPipelineRunner<TBody> where TBody
         }
 
         var strategy = pipeline.Strategies.Resolve(ctx.Target);
-        DiagTracer.Log($"strategy resolved  {strategy.Name}  target={ctx.Target.Vendor}:{ctx.Target.Endpoint}  model={ctx.Target.ModelId}");
+        Log.Debug($"strategy resolved  {strategy.Name}  target={ctx.Target.Vendor}:{ctx.Target.Endpoint}  model={ctx.Target.ModelId}");
         await strategy.ForwardAsync(ctx);
-        DiagTracer.Log($"strategy returned  status={ctx.Response.Status}  mode={ctx.Response.Mode}");
+        Log.Debug($"strategy returned  status={ctx.Response.Status}  mode={ctx.Response.Mode}");
 
         foreach (var stage in pipeline.ResponseStages)
         {
-            DiagTracer.Log($"resp-stage start {stage.Name}");
+            Log.Debug($"resp-stage start {stage.Name}");
             await stage.ApplyAsync(ctx);
-            DiagTracer.Log($"resp-stage end   {stage.Name}");
+            Log.Debug($"resp-stage end   {stage.Name}");
         }
 
-        DiagTracer.Log($"pipeline {pipeline.Name} end");
+        Log.Debug($"pipeline {pipeline.Name} end");
     }
 }

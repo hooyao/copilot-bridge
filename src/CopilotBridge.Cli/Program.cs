@@ -1,65 +1,126 @@
+using System.CommandLine;
 using System.Reflection;
 using System.Runtime.Versioning;
 using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Debug;
 using CopilotBridge.Cli.Hosting;
+using CopilotBridge.Cli.Hosting.Logging;
+using Serilog;
+using Serilog.Events;
 
 [assembly: SupportedOSPlatform("windows")]
 
 const string ProductName = "copilot-bridge";
 
-// Read at runtime from the assembly's [AssemblyInformationalVersion]
-// attribute, which MSBuild auto-emits from -p:Version=X.Y.Z passed by the
-// release workflow. No source change needed to bump versions — just push a
-// new release-X.Y.Z tag. AOT-safe: the executing assembly's own attributes
-// are preserved by default. Strip any "+commit-sha" suffix the deterministic
-// build appends.
-var productVersion = ResolveProductVersion();
-
-if (args.Length > 0)
+// Shared option for the serve command.
+var portOption = new Option<int>("--port", "-p")
 {
-    switch (args[0])
-    {
-        case "-v":
-        case "--version":
-            Console.WriteLine($"{ProductName} {productVersion}");
-            return 0;
-        case "-h":
-        case "--help":
-            PrintHelp();
-            return 0;
-        case "auth":
-            return await AuthCommand.RunAsync(args[1..]);
-        case "debug":
-            return await DebugCommand.RunAsync(args[1..]);
-        case "serve":
-            return await ServeCommand.RunAsync(args[1..]);
-    }
-}
+    Description = "Port to listen on",
+    DefaultValueFactory = _ => ServeCommand.DefaultPort,
+};
 
-// No subcommand → run the server with defaults.
-return await ServeCommand.RunAsync(args);
-
-static void PrintHelp()
+var serveCommand = new Command("serve", "Start the HTTP bridge");
+serveCommand.Options.Add(portOption);
+serveCommand.SetAction((parseResult, _) =>
 {
-    Console.WriteLine("copilot-bridge: GitHub Copilot reverse proxy for Claude Code.");
-    Console.WriteLine();
-    Console.WriteLine("Usage: copilot-bridge <command> [args]");
-    Console.WriteLine();
-    Console.WriteLine("Commands:");
-    Console.WriteLine("  serve                 Start the HTTP bridge (default if no command given)");
-    Console.WriteLine("  auth login            Log in to GitHub via device-code flow");
-    Console.WriteLine("  auth whoami           Verify the saved token");
-    Console.WriteLine("  auth status           Check login status");
-    Console.WriteLine("  auth copilot-status   Exchange GitHub token for a Copilot token, print expiry + base URL");
-    Console.WriteLine("  auth logout           Delete the encrypted token");
-    Console.WriteLine("  debug list-models     List models advertising /v1/messages on Copilot (--all for full list + capabilities)");
-    Console.WriteLine();
-    Console.WriteLine("Options:");
-    Console.WriteLine("  -h, --help       Show this help message");
-    Console.WriteLine("  -v, --version    Show version");
-    Console.WriteLine();
-    Console.WriteLine("`serve --help` shows server-specific options (e.g. --port).");
+    InitializeLogging();
+    return ServeCommand.RunAsync(parseResult.GetValue(portOption));
+});
+
+// auth subcommands.
+var authLogin = new Command("login", "Log in to GitHub via device-code flow");
+authLogin.SetAction((_, _) => { InitializeLogging(); return AuthCommand.LoginAsync(); });
+
+var authWhoami = new Command("whoami", "Verify the saved token by calling api.github.com/user");
+authWhoami.SetAction((_, _) => { InitializeLogging(); return AuthCommand.WhoAmIAsync(); });
+
+var authStatus = new Command("status", "Check login status (offline)");
+authStatus.SetAction((_, _) => { InitializeLogging(); return Task.FromResult(AuthCommand.Status()); });
+
+var authLogout = new Command("logout", "Delete the encrypted token");
+authLogout.SetAction((_, _) => { InitializeLogging(); return Task.FromResult(AuthCommand.Logout()); });
+
+var authCopilotStatus = new Command("copilot-status",
+    "Exchange the GitHub token for a Copilot token, print expiry + base URL");
+authCopilotStatus.SetAction((_, _) => { InitializeLogging(); return AuthCommand.CopilotStatusAsync(); });
+
+var authCommand = new Command("auth", "GitHub authentication");
+authCommand.Subcommands.Add(authLogin);
+authCommand.Subcommands.Add(authWhoami);
+authCommand.Subcommands.Add(authStatus);
+authCommand.Subcommands.Add(authLogout);
+authCommand.Subcommands.Add(authCopilotStatus);
+
+// debug subcommands.
+var allOption = new Option<bool>("--all", "-a")
+{
+    Description = "Include all models, not just those advertising /v1/messages",
+};
+var listModelsCommand = new Command("list-models",
+    "List models advertising /v1/messages on Copilot");
+listModelsCommand.Options.Add(allOption);
+listModelsCommand.SetAction((parseResult, _) =>
+{
+    InitializeLogging();
+    return DebugCommand.ListModelsAsync(parseResult.GetValue(allOption));
+});
+
+var debugCommand = new Command("debug", "Diagnostic tools");
+debugCommand.Subcommands.Add(listModelsCommand);
+
+// Root.
+var rootCommand = new RootCommand(
+    $"{ProductName} v{ResolveProductVersion()}: GitHub Copilot reverse proxy for Claude Code");
+rootCommand.Subcommands.Add(serveCommand);
+rootCommand.Subcommands.Add(authCommand);
+rootCommand.Subcommands.Add(debugCommand);
+// Default action when no subcommand is given: behave like 'serve' on the default port.
+rootCommand.SetAction((_, _) => { InitializeLogging(); return ServeCommand.RunAsync(ServeCommand.DefaultPort); });
+
+// Ensure log buffers flush even on hard exit (Ctrl+C, kill).
+AppDomain.CurrentDomain.ProcessExit += (_, _) => Log.CloseAndFlush();
+
+return await rootCommand.Parse(args).InvokeAsync();
+
+static void InitializeLogging()
+{
+    // Two sinks:
+    //   1. Console — standard error stream so we don't interleave with stdout
+    //      output produced by the auth device-code flow / banners.
+    //   2. File — one new file per process start at <exe-dir>/log/bridge-{YYYYMMDD-HHMMSS}.log.
+    //      No rolling: each restart gets its own file so a single run is
+    //      easy to grep without daily-spanning chunks. Old files accumulate
+    //      until the operator cleans them up.
+    // Level defaults to Verbose at the Serilog layer; per-category filtering
+    // is delegated to Microsoft.Extensions.Logging via appsettings.json's
+    // "Logging" section, which the slim host wires up automatically.
+    var startupStamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+    var logPath = Path.Combine(AppContext.BaseDirectory, "log", $"bridge-{startupStamp}.log");
+    var ioLogDir = Path.Combine(AppContext.BaseDirectory, "logs");
+    const string outputTemplate = "{Timestamp:HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception}";
+
+    // Custom sink owns per-request inbound/upstream audit JSONs.
+    // Registered as a singleton on the DI container too (see BridgeHost) so
+    // endpoints can keep using ILogger; here we just plug it into Serilog.
+    BridgeIoSinkHolder.Instance = new BridgeIoSink(ioLogDir);
+
+    Log.Logger = new LoggerConfiguration()
+        .MinimumLevel.Verbose()
+        // Bridge IO events go to the audit sink only — keep them out of the
+        // rolling text log and stderr to avoid duplication.
+        .WriteTo.Logger(lc => lc
+            .Filter.ByIncludingOnly(e => e.Properties.ContainsKey("Payload"))
+            .WriteTo.Sink(BridgeIoSinkHolder.Instance))
+        .WriteTo.Logger(lc => lc
+            .Filter.ByExcluding(e => e.Properties.ContainsKey("Payload"))
+            .WriteTo.Console(outputTemplate: outputTemplate, standardErrorFromLevel: LogEventLevel.Verbose)
+            .WriteTo.File(
+                path: logPath,
+                outputTemplate: outputTemplate,
+                flushToDiskInterval: TimeSpan.FromSeconds(2)))
+        .CreateLogger();
+
+    Log.Information("copilot-bridge {Version} starting (pid={Pid})", ResolveProductVersion(), Environment.ProcessId);
 }
 
 static string ResolveProductVersion()
