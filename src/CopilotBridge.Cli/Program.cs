@@ -5,6 +5,7 @@ using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Debug;
 using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Hosting.Logging;
+using Microsoft.Extensions.Configuration;
 using Serilog;
 using Serilog.Events;
 
@@ -91,26 +92,61 @@ static void InitializeLogging()
     //      No rolling: each restart gets its own file so a single run is
     //      easy to grep without daily-spanning chunks. Old files accumulate
     //      until the operator cleans them up.
+    // Per-request audit JSON (a separate "request trace" stream) is OFF by
+    // default — it captures full request/response bodies, which include
+    // user prompts. Operators opt in via appsettings.json:
+    //     "Tracing": { "Enabled": true, "Directory": "request-traces" }
+    // When off, no sink is created and no audit files are written.
     // Level defaults to Verbose at the Serilog layer; per-category filtering
     // is delegated to Microsoft.Extensions.Logging via appsettings.json's
     // "Logging" section, which the slim host wires up automatically.
     var startupStamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
     var logPath = Path.Combine(AppContext.BaseDirectory, "log", $"bridge-{startupStamp}.log");
-    var ioLogDir = Path.Combine(AppContext.BaseDirectory, "logs");
+
+    // Read just the Tracing section ourselves — we need the answer before
+    // ConfigureServices runs, so the standard Options binding isn't available
+    // yet. Two scalar lookups, no POCO binding, AOT-safe.
+    var earlyConfig = new ConfigurationBuilder()
+        .SetBasePath(AppContext.BaseDirectory)
+        .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
+        .Build();
+    var tracingEnabled = string.Equals(
+        earlyConfig["Tracing:Enabled"], "true", StringComparison.OrdinalIgnoreCase);
+    var tracingDir = earlyConfig["Tracing:Directory"];
+    if (string.IsNullOrWhiteSpace(tracingDir)) tracingDir = "request-traces";
+    var ioLogDir = Path.IsPathRooted(tracingDir)
+        ? tracingDir
+        : Path.Combine(AppContext.BaseDirectory, tracingDir);
     const string outputTemplate = "{Timestamp:HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception}";
 
     // Custom sink owns per-request inbound/upstream audit JSONs.
-    // Registered as a singleton on the DI container too (see BridgeHost) so
-    // endpoints can keep using ILogger; here we just plug it into Serilog.
-    BridgeIoSinkHolder.Instance = new BridgeIoSink(ioLogDir);
+    // Created only when tracing is enabled; otherwise the holder stays null
+    // and the audit-only Serilog sub-logger is skipped entirely (no files,
+    // no channel, no background writer).
+    if (tracingEnabled)
+    {
+        BridgeIoSinkHolder.Instance = new BridgeIoSink(ioLogDir);
+    }
 
-    Log.Logger = new LoggerConfiguration()
+    var loggerConfig = new LoggerConfiguration()
         .MinimumLevel.Verbose()
+        // Keep BridgeIoPayload as a live reference instead of letting Serilog
+        // stringify it: BridgeIoSink reads scalar.Value back as the typed
+        // payload. Without this AsScalar registration the MEL→Serilog bridge
+        // calls .ToString() on the value (since BridgeIoPayload isn't a known
+        // scalar) and the sink silently drops every audit event.
+        .Destructure.AsScalar<BridgeIoPayload>();
+
+    if (BridgeIoSinkHolder.Instance is { } auditSink)
+    {
         // Bridge IO events go to the audit sink only — keep them out of the
         // rolling text log and stderr to avoid duplication.
-        .WriteTo.Logger(lc => lc
+        loggerConfig = loggerConfig.WriteTo.Logger(lc => lc
             .Filter.ByIncludingOnly(e => e.Properties.ContainsKey("Payload"))
-            .WriteTo.Sink(BridgeIoSinkHolder.Instance))
+            .WriteTo.Sink(auditSink));
+    }
+
+    Log.Logger = loggerConfig
         .WriteTo.Logger(lc => lc
             .Filter.ByExcluding(e => e.Properties.ContainsKey("Payload"))
             .WriteTo.Console(outputTemplate: outputTemplate, standardErrorFromLevel: LogEventLevel.Verbose)

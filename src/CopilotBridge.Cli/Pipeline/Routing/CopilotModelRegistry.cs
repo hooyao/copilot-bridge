@@ -1,70 +1,35 @@
 namespace CopilotBridge.Cli.Pipeline.Routing;
 
 /// <summary>
-/// Implementation of <see cref="IModelRegistry"/>. Owns three responsibilities:
-/// <list type="number">
-///   <item>Name normalization: <c>claude-sonnet-4-5-20250929</c> →
-///         <c>claude-sonnet-4.5</c> (research §3.7).</item>
-///   <item>Alias table for graceful degradation when a client requests a
-///         model the backend doesn't have yet.</item>
-///   <item>Vendor + endpoint dispatch by prefix.</item>
-///   <item><b>Per-model effort-routing capability</b> — delegated to
-///         <see cref="CopilotModelCatalog"/>, which derives the routing
-///         decision from Copilot's live <c>/models</c> response. Nothing
-///         is hardcoded; new models / new variants are picked up at the
-///         next bridge restart.</item>
-/// </list>
+/// Implementation of <see cref="IModelRegistry"/>: pure name normalization +
+/// prefix-based vendor/endpoint dispatch. Per-model capability data lives in
+/// <see cref="ModelProfileCatalog"/>, not here — the registry only answers
+/// "where does this id go on the wire" (always <c>/v1/messages</c> for
+/// <c>claude-*</c>, <c>/chat/completions</c> for the rest).
 /// </summary>
 internal sealed class CopilotModelRegistry : IModelRegistry
 {
-    private readonly CopilotModelCatalog _catalog;
-
-    public CopilotModelRegistry(CopilotModelCatalog catalog)
-    {
-        _catalog = catalog;
-    }
-
-    private static readonly Dictionary<string, string> Aliases = new(StringComparer.OrdinalIgnoreCase)
-    {
-        // Empty by default. Populate as needed:
-        // ["claude-opus-4.8"] = "claude-opus-4.7",
-    };
-
     public RouteTarget? Resolve(string requestedModelId)
     {
         var normalized = Normalize(requestedModelId);
-        var resolved = Aliases.TryGetValue(normalized, out var alias) ? alias : normalized;
 
-        if (resolved.StartsWith("claude-", StringComparison.OrdinalIgnoreCase))
+        if (normalized.StartsWith("claude-", StringComparison.OrdinalIgnoreCase))
         {
-            return new RouteTarget(BackendVendor.CopilotAnthropic, "/v1/messages", resolved);
+            return new RouteTarget(BackendVendor.CopilotAnthropic, "/v1/messages", normalized);
         }
         // GPT / o-series / Gemini all served by Copilot via the OpenAI shape.
         // The actual backend strategy isn't implemented until M3, but we
-        // recognize the prefix here so RoutesValidator at startup can confirm
-        // a config rule's referenced model is at least known. Requests will
-        // fail at the strategy registry (no handler) until M3 lands — that's
-        // a clear runtime error, not silent breakage.
-        if (resolved.StartsWith("gpt-",  StringComparison.OrdinalIgnoreCase)
-         || resolved.StartsWith("o3-",   StringComparison.OrdinalIgnoreCase)
-         || resolved.StartsWith("o4-",   StringComparison.OrdinalIgnoreCase)
-         || resolved.StartsWith("gemini-", StringComparison.OrdinalIgnoreCase))
+        // recognize the prefix here so requests for those don't silently fall
+        // through. Requests will fail at the strategy registry (no handler)
+        // until M3 lands — that's a clear runtime error, not silent breakage.
+        if (normalized.StartsWith("gpt-",  StringComparison.OrdinalIgnoreCase)
+         || normalized.StartsWith("o3-",   StringComparison.OrdinalIgnoreCase)
+         || normalized.StartsWith("o4-",   StringComparison.OrdinalIgnoreCase)
+         || normalized.StartsWith("gemini-", StringComparison.OrdinalIgnoreCase))
         {
-            return new RouteTarget(BackendVendor.CopilotOpenAi, "/chat/completions", resolved);
+            return new RouteTarget(BackendVendor.CopilotOpenAi, "/chat/completions", normalized);
         }
         return null;
-    }
-
-    public (string Model, bool StripEffort) ApplyEffortRouting(string normalizedModelId, string? effort)
-    {
-        if (effort is null)
-        {
-            // Client didn't send the field; nothing to strip, no variant
-            // selection possible. Pass through unchanged.
-            return (normalizedModelId, false);
-        }
-        var decision = _catalog.DecideEffortRouting(normalizedModelId, effort);
-        return (decision.Model, decision.StripEffort);
     }
 
     /// <summary>

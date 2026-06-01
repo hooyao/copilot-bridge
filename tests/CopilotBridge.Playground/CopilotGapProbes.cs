@@ -154,4 +154,92 @@ public class CopilotGapProbes
         _output.WriteLine($"HTTP {(int)status} {status}");
         _output.WriteLine(body);
     }
+
+    /// <summary>
+    /// Probes the thinking-shape constraint on <c>claude-opus-4.7-1m-internal</c>.
+    /// Base <c>claude-opus-4.7</c> only accepts <c>thinking.type=adaptive</c>
+    /// (rule #4 in appsettings.json exists for exactly that). Open question:
+    /// does the 1M variant inherit the same constraint, or accept
+    /// <c>enabled</c> too? Result drives whether we need a compound routing
+    /// rule when a request carries both thinking:enabled AND the 1M beta.
+    ///
+    /// Also probes the same matrix for <c>claude-opus-4.8</c>, since user just
+    /// learned Claude Code 2.1.x ships opus-4.8 and Copilot serves it only as
+    /// the base 200k model (no 1M variant, no -high/-xhigh variants per the
+    /// model catalog). Routing opus-4.8 + 1M beta → 1m-internal needs the same
+    /// answer.
+    /// </summary>
+    [Theory]
+    [InlineData("claude-opus-4.7-1m-internal", "adaptive",  null)]
+    [InlineData("claude-opus-4.7-1m-internal", "enabled",   8192)]
+    [InlineData("claude-opus-4.7-1m-internal", "disabled",  null)]
+    [InlineData("claude-opus-4.7-1m-internal", null,        null)]
+    [InlineData("claude-opus-4.8",             "adaptive",  null)]
+    [InlineData("claude-opus-4.8",             "enabled",   8192)]
+    [InlineData("claude-opus-4.8",             null,        null)]
+    public async Task ThinkingShape_ProbeAcceptance(string model, string? thinkingType, int? budgetTokens)
+    {
+        var thinkingBlock = thinkingType switch
+        {
+            null => "",
+            "enabled" => $$$""","thinking":{"type":"enabled","budget_tokens":{{{budgetTokens}}}}""",
+            _ => $$$""","thinking":{"type":"{{{thinkingType}}}"}""",
+        };
+        var payload = $$"""
+          {
+            "model": "{{model}}",
+            "max_tokens": 16,
+            "messages": [{"role":"user","content":"reply: ok"}]{{thinkingBlock}}
+          }
+          """;
+
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+
+        var preview = body.Length > 240 ? body[..240] + "…" : body;
+        _output.WriteLine($"[{model}] thinking={thinkingType ?? "<absent>"} → {(int)status} {status}");
+        _output.WriteLine($"  body: {preview}");
+    }
+
+    /// <summary>
+    /// Cross-version 1M fallback probe. Simulates the request shape Claude Code
+    /// would send for <c>claude-opus-4.8</c> with the 1M-context toggle enabled,
+    /// after the bridge has rewritten <c>body.model</c> to
+    /// <c>claude-opus-4.7-1m-internal</c> (the closest 1M-capable model Copilot
+    /// serves). Answers: does Copilot accept the substitution? Note that
+    /// "substitution" is purely a bridge concern — Copilot only sees the
+    /// rewritten body and doesn't care that opus-4.8 was the original choice.
+    /// </summary>
+    [Theory]
+    // matrix: (effort, thinking_type) — opus-4.8 catalog says reasoning_effort=[medium]
+    // and adaptive_thinking=true, so these are the shapes CC plausibly sends.
+    [InlineData(null,     "adaptive")]
+    [InlineData("medium", "adaptive")]
+    [InlineData(null,     null)]
+    [InlineData("medium", null)]
+    public async Task CrossVersion1mFallback_ProbeUpstreamAcceptance(string? effort, string? thinkingType)
+    {
+        var effortBlock = effort is null
+            ? ""
+            : $$$""","output_config":{"effort":"{{{effort}}}"}""";
+        var thinkingBlock = thinkingType switch
+        {
+            null => "",
+            _ => $$$""","thinking":{"type":"{{{thinkingType}}}"}""",
+        };
+        var payload = $$"""
+          {
+            "model": "claude-opus-4.7-1m-internal",
+            "max_tokens": 32,
+            "messages": [{"role":"user","content":"reply: ok"}]{{effortBlock}}{{thinkingBlock}}
+          }
+          """;
+
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+
+        var preview = body.Length > 240 ? body[..240] + "…" : body;
+        _output.WriteLine($"effort={effort ?? "<absent>"} thinking={thinkingType ?? "<absent>"} → {(int)status} {status}");
+        _output.WriteLine($"  body: {preview}");
+    }
 }

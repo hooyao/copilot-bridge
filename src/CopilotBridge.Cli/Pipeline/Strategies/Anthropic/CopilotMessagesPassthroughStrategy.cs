@@ -48,9 +48,14 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             beta = betaStr.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         }
 
-        Log.Debug($"strategy {Name}: forwarding bytes={body.Length} vision={vision} betas={(beta is null ? 0 : beta.Count)}");
+        Log.Debug($"strategy {Name}: forwarding bytes={body.Length} vision={vision} betas={(beta is null ? 0 : beta.Count)} hdrOverrides={ctx.CopilotHeaderOverrides.Count}");
 
-        var resp = await _copilot.PostMessagesAsync(body, vision, beta, ctx.Ct);
+        // Only thread overrides through when there's actually something to override
+        // — keeps the common-case HTTP build identical to pre-routing-rewrite.
+        var overrides = ctx.CopilotHeaderOverrides.Count > 0
+            ? (IReadOnlyDictionary<string, string?>)ctx.CopilotHeaderOverrides
+            : null;
+        var resp = await _copilot.PostMessagesAsync(body, vision, beta, overrides, ctx.Ct);
 
         ctx.Response.Status = (int)resp.StatusCode;
         foreach (var h in resp.Headers)

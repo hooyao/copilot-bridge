@@ -20,6 +20,7 @@ internal static class BridgePipelines
 {
     public static Pipeline<MessagesRequest> BuildAnthropic(
         IModelRegistry models,
+        ModelProfileCatalog profiles,
         ICopilotClient copilot,
         IOptions<RoutesConfig> routesOptions)
     {
@@ -28,14 +29,14 @@ internal static class BridgePipelines
             Name = "Anthropic-IR",
             RequestStages =
             [
-                // 1. Routing + per-model body coercion. Reads RoutesConfig
-                //    (appsettings.json Routing.Rules) for user preferences,
-                //    then applies CopilotModelRegistry's capability data
-                //    (effort → variant suffix, strip-on-the-wire). Sets
-                //    ctx.Target. Replaces the previous separate
-                //    ThinkingRewriteStage — its quirks now live as Rules
-                //    in appsettings.json.
-                new ModelRouterStage(models, routesOptions),
+                // 1. Routing + per-model body coercion. Normalize → first
+                //    matching user rule (model redirect only) → profile
+                //    lookup in ModelProfileCatalog → ProfileAdjuster
+                //    mechanically shapes the body to what the target
+                //    profile accepts. A missing profile throws
+                //    UnknownModelException, surfaced as a 400 by the
+                //    endpoint.
+                new ModelRouterStage(models, profiles, routesOptions),
 
                 // 2-5. Body-level cleanups, each independent of model family.
                 //

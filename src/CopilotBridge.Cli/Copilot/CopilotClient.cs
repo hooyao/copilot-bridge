@@ -35,6 +35,7 @@ internal sealed class CopilotClient(
         ReadOnlyMemory<byte> body,
         bool vision = false,
         IReadOnlyList<string>? anthropicBeta = null,
+        IReadOnlyDictionary<string, string?>? copilotHeaderOverrides = null,
         CancellationToken ct = default)
     {
         var (token, baseUrl) = await ResolveAuthAsync(ct);
@@ -46,7 +47,7 @@ internal sealed class CopilotClient(
                 Headers = { ContentType = new MediaTypeHeaderValue("application/json") },
             },
         };
-        headers.ApplyTo(req, token, vision);
+        headers.ApplyTo(req, token, vision, copilotHeaderOverrides);
         if (anthropicBeta is { Count: > 0 })
         {
             req.Headers.Add("anthropic-beta", string.Join(',', anthropicBeta));

@@ -55,10 +55,17 @@ appsettings.local.json
 references/
 .claude/
 
+# Local-only: MCP server config + Claude Code session-handoff dumps (never commit)
+.mcp.json
+*-this-session-is-being-continued-*.txt
+
 # Encrypted GitHub token (DPAPI-protected, but never commit it anyway)
 github_token.dat
 
-# Bridge request/response logs and harness scratch output
+# Bridge logs and harness scratch output. log/ = always-on text log;
+# request-traces/ = opt-in per-request JSON audit (Tracing.Enabled).
 logs/
+log/
+request-traces/
 tests/harness/last-stdout.txt
 tests/harness/last-stderr.txt

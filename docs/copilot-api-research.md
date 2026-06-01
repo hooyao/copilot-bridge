@@ -1340,18 +1340,20 @@ if (m.includes('haiku') || m.includes('sonnet') || m.includes('opus')) return fa
 
 | User does in Claude Code | Wire to bridge | Bridge → Copilot |
 | --- | --- | --- |
-| Default usage of opus-4.7 (any effort UI selection) | `model: claude-opus-4-7-...`, **no `effort` field** | normalize → `claude-opus-4.7`, `ApplyEffortRouting` returns `(model, false)` (no effort to strip), Copilot uses model's default = medium |
-| `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` + selects `max` | `model: opus-4-7-...`, `effort: "high"` (clamped) | EffortAware: high → `-high` variant, effort stripped. Final: `claude-opus-4.7-high` |
-| Sets `ANTHROPIC_MODEL=claude-opus-4.7-xhigh` directly | `model: claude-opus-4-7-xhigh`, no `effort` | normalize keeps `-xhigh`, not in EffortAware table, default behavior keeps model. Final: `claude-opus-4.7-xhigh` |
-| SDK `extraBodyParams.output_config.effort = "xhigh"` (only reachable via the SDK, not Claude Code UI) | `model: opus-4-7-...`, `effort: "xhigh"` | EffortAware: xhigh → `-xhigh` variant, effort stripped. Final: `claude-opus-4.7-xhigh` |
+| Default usage of opus-4.7 (any effort UI selection) | `model: claude-opus-4-7-...`, **no `effort` field** | normalize → `claude-opus-4.7`; no `effort` field, nothing to strip; Copilot uses the model's default = medium |
+| `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` + selects `max` | `model: opus-4-7-...`, `effort: "high"` (clamped) | opus-4.7 profile routes high → `-high` variant via `EffortToVariant`, effort stripped. Final: `claude-opus-4.7-high` |
+| Sets `ANTHROPIC_MODEL=claude-opus-4.7-xhigh` directly | `model: claude-opus-4-7-xhigh`, no `effort` | normalize keeps `-xhigh`; the `-xhigh` profile accepts xhigh natively. Final: `claude-opus-4.7-xhigh` |
+| SDK `extraBodyParams.output_config.effort = "xhigh"` (only reachable via the SDK, not Claude Code UI) | `model: opus-4-7-...`, `effort: "xhigh"` | opus-4.7 profile routes xhigh → `-xhigh` variant, effort stripped. Final: `claude-opus-4.7-xhigh` |
 
-**Practical conclusion**: for a user who wants opus-4.7 xhigh, the supported path is **`ANTHROPIC_MODEL=claude-opus-4.7-xhigh`** — direct variant selection. The "base + effort" path is gated off by `modelSupportsEffort` returning false. The bridge's `EffortAware["claude-opus-4.7"]` table is correct but exercised mainly by the env-var bypass or SDK callers, not Claude Code's normal UI.
+**Practical conclusion**: for a user who wants opus-4.7 xhigh, the supported path is **`ANTHROPIC_MODEL=claude-opus-4.7-xhigh`** — direct variant selection. The "base + effort" path is gated off by `modelSupportsEffort` returning false. The bridge's opus-4.7 profile (`AcceptedEfforts = ["medium"]` + `EffortToVariant` for high/xhigh) is correct but exercised mainly by the env-var bypass or SDK callers, not Claude Code's normal UI. (A `Routing.Locations` `EffortMap` can also remap a value per-target — e.g. `max → xhigh` on `claude-opus-4.7-1m-internal`.)
 
-**Two follow-ups worth tracking**:
-- `claude-sonnet-4.6` (passes `modelSupportsEffort` via the `sonnet-4-6` branch) sends `output_config.effort` from Claude Code's UI by default. Our bridge currently strips this field for sonnet (no entry in `EffortAware`). If Copilot's `claude-sonnet-4.6` accepts effort directly (different from opus-4.7's variant-suffix model), stripping is wasteful and worth re-probing.
-- Same question for `claude-opus-4-6` once / if Copilot adds it.
+**Two follow-ups — both RESOLVED 2026-05-31 by the probe matrix**:
+- `claude-sonnet-4.6` sends `output_config.effort` from Claude Code's UI by default. The probe confirmed sonnet-4.6 accepts `low`/`medium`/`high` directly, so `ModelProfile.AcceptedEfforts = ["low","medium","high"]` and the bridge forwards those values unchanged (stripping only `xhigh`/`max`, which this family rejects). No wasteful stripping.
+- `claude-opus-4.6` (and `claude-opus-4.6-1m`) are now on Copilot and probed — same `["low","medium","high"]` profile as sonnet-4.6.
 
 **RESOLVED 2026-05-21 (Claude Code 2.1.146)**: Claude Code now ships an `xhigh` effort level in its CLI vocabulary (`--effort low|medium|high|xhigh|max`) and unblocks opus-4.7 specifically — the model picker's `/effort xhigh` description is "Deeper reasoning than high, just below maximum (Opus 4.7 only)". The bridge's `CopilotModelCatalog` (loaded from `/models` at startup) drives effort routing dynamically from `capabilities.supports.reasoning_effort` per model — no more hardcoded EffortAware table. Verified end-to-end by `tests/CopilotBridge.Playground/Headless/EffortRoutingTests.cs` (18 cases covering sonnet-4.6 / opus-4.6 / opus-4.7 base+variant / opus-4.7-1m-internal / opus-4.6-1m / sonnet-4.5 strip / haiku-4.5 strip).
+
+> **Superseded 2026-05-31**: the `/models`-derived `CopilotModelCatalog` was itself deleted and replaced by the hand-curated `ModelProfileCatalog` (playground probes). `/models` capability metadata proved unreliable — haiku-4.5 advertises adaptive thinking but rejects it at runtime; opus-4.8 declares mid-conversation `role:"system"` support its gateway rejects on every model. Effort routing is now a per-profile `AcceptedEfforts` + `EffortToVariant` fact sourced from `ModelProfileProbe.cs`, not from `/models`. See pipeline-design.md §7.2.
 
 ### 16.7 Native Anthropic ↔ Copilot 1:1 response diff (verified 2026-05-21)
 

@@ -20,8 +20,13 @@ namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 /// <see cref="Copilot.CopilotHeaderFactory"/> inside the strategy's HTTP call.
 /// </summary>
 /// <remarks>
-/// MUST run last in the request pipeline — earlier stages may want to read
-/// inbound headers; this stage clears them.
+/// <para>MUST run last in the request pipeline — earlier stages may want to read
+/// inbound headers; this stage clears them.</para>
+/// <para>Beta forwarding policy: <b>pass-through-by-default</b>. The final beta
+/// set is the union of (a) the three derived tokens above and (b) every token
+/// in <c>ctx.InboundBetas</c>, then minus everything matched by
+/// <c>ctx.PendingBetaStrips</c>. Rationale + empirical data in
+/// <c>docs/pipeline-design.md §7.5</c>.</para>
 /// </remarks>
 internal sealed class HeadersOutboundStage : IRequestStage<MessagesRequest>
 {
@@ -31,7 +36,7 @@ internal sealed class HeadersOutboundStage : IRequestStage<MessagesRequest>
     {
         ctx.Request.Headers.Clear();
 
-        var betas = new List<string>(3);
+        var betas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // chatEndpoint.ts: `if (!this.supportsAdaptiveThinking)` — push when
         // the model lacks adaptive thinking support. Per Copilot's /models
@@ -59,6 +64,29 @@ internal sealed class HeadersOutboundStage : IRequestStage<MessagesRequest>
             betas.Add("advanced-tool-use-2025-11-20");
         }
 
+        // Pass-through: union inbound betas onto the derived set.
+        foreach (var token in ctx.InboundBetas)
+        {
+            betas.Add(token);
+        }
+
+        // Add tokens declared by routing locations via Use.Headers.Set on
+        // "anthropic-beta". Done before strips so an Add immediately followed
+        // by a wildcard Strip (e.g. add 'foo-2026' then strip 'foo-*') still
+        // produces the expected end state: nothing.
+        foreach (var token in ctx.PendingBetaAdds)
+        {
+            betas.Add(token);
+        }
+
+        // Apply strip patterns from any routing rules that fired. Each pattern
+        // may end with '*' (trailing wildcard) so e.g. `context-1m-*` covers
+        // future spec dates without needing a code change.
+        if (ctx.PendingBetaStrips.Count > 0)
+        {
+            betas.RemoveWhere(token => MatchesAnyStripPattern(token, ctx.PendingBetaStrips));
+        }
+
         if (betas.Count > 0)
         {
             ctx.Request.Headers["anthropic-beta"] = string.Join(',', betas);
@@ -69,8 +97,25 @@ internal sealed class HeadersOutboundStage : IRequestStage<MessagesRequest>
             ctx.Request.Headers["copilot-vision-request"] = "true";
         }
 
-        Log.Debug($"stage {Name}: betas=[{string.Join(',', betas)}] vision={ctx.Request.Headers.ContainsKey("copilot-vision-request")}");
+        Log.Debug($"stage {Name}: betas=[{string.Join(',', betas)}] adds=[{string.Join(',', ctx.PendingBetaAdds)}] strips=[{string.Join(',', ctx.PendingBetaStrips)}] vision={ctx.Request.Headers.ContainsKey("copilot-vision-request")}");
         return Task.CompletedTask;
+    }
+
+    private static bool MatchesAnyStripPattern(string token, IReadOnlyList<string> patterns)
+    {
+        foreach (var pattern in patterns)
+        {
+            if (pattern.EndsWith('*'))
+            {
+                var prefix = pattern[..^1];
+                if (token.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            else
+            {
+                if (token.Equals(pattern, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+        }
+        return false;
     }
 
     private static bool ModelSupportsAdaptiveThinking(string modelId)

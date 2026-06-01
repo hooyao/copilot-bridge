@@ -31,6 +31,7 @@ internal interface ICopilotClient
         ReadOnlyMemory<byte> body,
         bool vision = false,
         IReadOnlyList<string>? anthropicBeta = null,
+        IReadOnlyDictionary<string, string?>? copilotHeaderOverrides = null,
         CancellationToken ct = default);
 
     /// <summary>

@@ -1,21 +1,44 @@
 # Bridge Pipeline Design
 
-> Status: v0.3 · 2026-05-08
+> Status: v0.5 · 2026-06-01
 >
 > This document is the architectural contract for the bridge's request/response
 > transformation framework. New stages, new clients, new backends should
 > conform to the abstractions defined here. Diverging requires updating this
 > document first.
 >
+> **2026-06-01 (v0.5) — routing config redesigned nginx-style**: the flat
+> `Routing.Rules` (`Match` → `Rewrite.Model`) list became `Routing.Locations`,
+> each a self-contained `When` (a `MatchExpression` tree: `AllOf`/`AnyOf` +
+> `Model`/`Effort`/`Header` leaves) → `Use` (change-set: `Model` swap,
+> per-target `EffortMap`, whitelisted header `Set`/`Remove`). First-match-wins,
+> no chain. Header overrides are limited to an allow-list
+> (`anthropic-beta`, `Editor-Version`, `Editor-Plugin-Version`,
+> `Copilot-Integration-Id`, `X-GitHub-Api-Version`). Also: per-request IO
+> tracing is now **opt-in** (`Tracing.Enabled`, default off) and writes to
+> `request-traces/` (renamed from `logs/`); the global `advisor-tool-*` beta
+> strip keeps Claude Code 4.8 working against Copilot. See §7, §9.
+>
+> **2026-05-31 (v0.4) — routing redesigned around per-model profiles**:
+> Wire-truth moved out of `CopilotModelRegistry.EffortAware` (deleted) and
+> the live `/models` `CopilotModelCatalog` (deleted) into hand-curated
+> `ModelProfileCatalog` entries grounded in playground probes. `Routing.Rules`
+> in `appsettings.json` collapsed to model-redirect only; everything else
+> (effort coercion, thinking shape coercion, mid-conv-system fold, beta
+> strips) lives as data on the target profile and runs through the new
+> `ProfileAdjuster`. Unknown models surface as `UnknownModelException` → 400
+> + Anthropic error body instead of silent passthrough. See §7.
+>
 > **2026-05-08 (v0.3) — three migrations**:
-> (a) Routing redesigned. Per-model effort behavior is now C# capability data
->     in `CopilotModelRegistry.EffortAware`; `appsettings.json` keeps only
->     user preferences as `Routing.Rules` (Match → Rewrite). See §7. (b) Logger
->     swapped from the bespoke `DiagTracer` (`[Conditional("BRIDGE_DIAG")]`) to
->     Serilog 4.3.1 (AOT-clean since PR #2175) with console + per-startup file
->     sinks. See §9. (c) `Program.cs` uses `System.CommandLine` 3.0-preview.3
->     for argument parsing; subcommand handlers are typed entry points instead
->     of `string[]` parsers.
+> (a) Routing redesigned. Per-model effort behavior was C# capability data
+>     in `CopilotModelRegistry.EffortAware`; `appsettings.json` kept
+>     user preferences as `Routing.Rules` (Match → Rewrite). Superseded by
+>     v0.4. (b) Logger swapped from the bespoke `DiagTracer`
+>     (`[Conditional("BRIDGE_DIAG")]`) to Serilog 4.3.1 (AOT-clean since
+>     PR #2175) with console + per-startup file sinks. See §9.
+>     (c) `Program.cs` uses `System.CommandLine` 3.0-preview.3 for argument
+>     parsing; subcommand handlers are typed entry points instead of
+>     `string[]` parsers.
 >
 > **2026-05-07 (v0.2) — pipeline migration landed**: M1's `/v1/...` endpoints
 > deleted; `/cc/v1/...` is the production path; six request stages + one
@@ -65,12 +88,13 @@ full set:
    `ModelRouterStage` based on the requested model + a registry; the
    `StrategyRegistry` then picks the matching `IUpstreamStrategy`. No `switch`
    statements scattered through the codebase.
-6. **Two log channels** — per-request inbound/upstream IO is captured as four
-   discrete JSON artifacts (`logs/<utc>-<seq>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`)
+6. **Two log channels** — per-request inbound/upstream IO is captured (when
+   `Tracing.Enabled`, default off) as four discrete JSON artifacts
+   (`request-traces/<utc>-<seq>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`)
    through a custom Serilog sink with a bounded back-pressured queue;
-   runtime diagnostics go through Serilog (console + per-startup file under
-   `log/`), with per-category levels driven by appsettings.json's `Logging`
-   section. See §9.
+   runtime diagnostics go through Serilog (console + always-on per-startup
+   file under `log/`), with per-category levels driven by appsettings.json's
+   `Logging` section. See §9.
 7. **Mirror the official VS Code Copilot Chat client** — for any wire-format
    detail (header set, beta header gating, etc.) follow `chatEndpoint.ts` and
    `dist/index.js` exactly. See `feedback_match_official_copilot_client.md`.
@@ -406,11 +430,13 @@ inbound bytes (POST /cc/v1/messages)
     │
     ▼  (parsed by endpoint handler into MessagesRequest)
     │
-[1] ModelRouterStage              normalize model id; apply user
-                                  Routing.Rules (Match → Rewrite); apply
-                                  CopilotModelRegistry capability (effort →
-                                  variant suffix, strip on the wire); resolve
-                                  ctx.Target. See §7.
+[1] ModelRouterStage              normalize model id; apply matching
+                                  Routing.Locations entry (When→Use: model
+                                  swap, effort remap, header set/remove);
+                                  look up the target's ModelProfile; run
+                                  ProfileAdjuster to shape the body to what
+                                  the profile accepts; resolve ctx.Target.
+                                  See §7.
     │
     ▼
 [2] AssistantThinkingFilterStage  drop unsigned thinking blocks from
@@ -448,10 +474,13 @@ strategy.ForwardAsync(ctx)        executes HTTP call to upstream;
 the DTO does not model `cache_control.scope`, so the field is silently dropped
 at deserialize time. Add the stage if a `Scope` property is ever introduced.
 
-The previous standalone `ThinkingRewriteStage` is gone: its haiku adaptive →
-enabled and opus-4.7 enabled → adaptive coercions live as data in
-`appsettings.json`'s `Routing.Rules`, applied by `ModelRouterStage` via
-`ModelRouteResolver`. See §7.
+Body coercions that used to live as the standalone `ThinkingRewriteStage` or
+spread across multiple routing-rule entries (haiku adaptive → enabled,
+opus-4.7 enabled → adaptive, effort variant routing, beta strips) now live as
+data in `ModelProfileCatalog`, applied uniformly by `ProfileAdjuster`. User
+`Routing.Locations` express operator preference only (model swap, per-target
+effort remap, whitelisted header tweaks) — the target's profile decides every
+wire-shape fact. See §7.
 
 ## 6. Response pipeline (M1 example)
 
@@ -506,32 +535,62 @@ endpoint's writer) drives the entire chain lazily.
 
 ## 7. Routing semantics
 
-Three concentric layers, each with a distinct responsibility:
-
 ```
-inbound (model, effort, thinking, ...)
-   ↓ Normalize (canonical id)
-   ↓ User rules     (JSON, in appsettings.json)        — operator preferences
-   ↓ Capability     (C#, in CopilotModelRegistry)      — physical wire facts
-   ↓ Resolve        (vendor + endpoint dispatch)
+inbound (model, effort, thinking, betas, ...)
+   ↓ Normalize          canonical id (dotted, no date suffix)
+   ↓ User location      appsettings.json Routing.Locations — first-match-wins;
+                        applies Use (model swap, effort remap, header set/remove)
+   ↓ Profile lookup     ModelProfileCatalog — wire truth for the target model
+   ↓ ProfileAdjuster    mechanical body coercion (effort, thinking, betas,
+                        mid-conv-system fold, budget cap)
+   ↓ Resolve            vendor + endpoint dispatch
 outbound to upstream
 ```
 
-The split is "what users decide" vs "what the wire requires." User preferences
-are JSON; physical wire facts are code. Each scales linearly with the number
-of models we cover.
+The split is **"profile = fact, location = preference, adjuster = mechanism"**:
+
+- **`ModelProfile`** describes what Copilot's variant of one model actually
+  accepts on the wire — the values come from playground probes against
+  `/v1/messages` (see
+  `tests/CopilotBridge.Playground/ModelProfileProbe.cs`), never from
+  Copilot's `/models` metadata (which is incomplete and sometimes wrong:
+  haiku-4.5 advertises adaptive thinking but rejects it at runtime). A
+  profile is Copilot's behavior, not a preference — users cannot override
+  it.
+- **`Routing.Locations`** in `appsettings.json` are nginx-style entries:
+  each is a self-contained `When` (match expression) → `Use` (change-set)
+  closure, scanned first-match-wins. A `Use` may swap `body.model`, remap
+  `output_config.effort` (per-target, e.g. `max → xhigh` only where the
+  backend accepts xhigh), and set/remove a whitelisted header. This lets an
+  operator paper over a stale catalog (Copilot ships opus-4.9, our catalog
+  only knows opus-4.8 → redirect 4.9 to 4.8 until we release), pick a
+  deliberate fallback (1M-context beta → the dedicated 1M model id), or
+  normalize client vocabulary the backend rejects (`effort=max`). Locations
+  express **operator preference**; they never override a profile fact (the
+  rewritten body still flows through `ProfileAdjuster`).
+- **`ProfileAdjuster`** is a pure function `(body, profile) → body` that
+  enforces the profile's accepts/rejects: strip unsupported effort, coerce
+  unsupported thinking shape, fold mid-conversation `role:"system"`
+  messages into the top-level `system` field, cap `budget_tokens`, register
+  beta-strip patterns for `HeadersOutboundStage`.
+
+A profile miss is a **hard error**: `ModelRouterStage` throws
+`UnknownModelException`, which the endpoint converts into a 400 +
+Anthropic-format error body. The message tells the operator what to fix
+(add a routing rule, fix the typo, file an issue). The bridge never
+forwards a request for a model it has no profile for — guessing would
+produce a silent Copilot 400 that operators cannot diagnose.
 
 ### 7.1 Vendor + endpoint dispatch — `IModelRegistry.Resolve`
 
-Maps a (canonical) model id to `(BackendVendor, default endpoint, model id)`.
-Hardcoded by prefix in `CopilotModelRegistry`:
+Pure name normalization + prefix-based dispatch in `CopilotModelRegistry`:
 
 | Prefix | Vendor | Default endpoint |
 | --- | --- | --- |
 | `claude-*` | CopilotAnthropic | `/v1/messages` |
 | `gpt-*`, `o3-*`, `o4-*`, `gemini-*` | CopilotOpenAi | `/chat/completions` |
 
-Plus a `Normalize` step that canonicalizes the inbound id:
+`Normalize` canonicalizes the inbound id:
 
 - Strips a trailing 8-digit date suffix (`claude-sonnet-4-5-20250929` → `claude-sonnet-4-5`)
 - Merges the first consecutive `digit-digit` pair into `digit.digit`
@@ -539,278 +598,260 @@ Plus a `Normalize` step that canonicalizes the inbound id:
   `claude-opus-4-7-1m-internal` → `claude-opus-4.7-1m-internal`)
 
 `Resolve` returns `null` for unknown prefixes; the runtime stage throws a
-descriptive error in that case (fail-fast, not silent passthrough).
+descriptive error in that case.
 
-`Aliases` (currently empty) is a static degradation table for "client requests
-a model the backend doesn't have yet" — populated when needed
-(e.g. `claude-opus-4.8 → claude-opus-4.7`).
+### 7.2 Model profile catalog — `ModelProfileCatalog`
 
-### 7.2 Per-model effort capability — `CopilotModelRegistry.EffortAware`
-
-Per-model wire facts about `output_config.effort` live in code, not JSON. One
-entry per known effort-aware model; the value is a `ModelCapability` declaring
-the effort → variant-suffix map. Models **not** in the table fall through to
-the safe default ("strip the effort field, keep the model"):
+The wire-truth table. One `ModelProfile` per Copilot Anthropic model id,
+hand-curated in `Pipeline/Routing/ModelProfileCatalog.cs`. As of the
+2026-05-31 probe run the catalog covers 11 models (every Claude id Copilot
+exposes on this account). The values are sourced from the corresponding
+probe rows in `ModelProfileProbe.cs` — re-run that test after Copilot ships
+or changes any model, then reconcile.
 
 ```csharp
-private static readonly Dictionary<string, ModelCapability> EffortAware = new(
-    StringComparer.OrdinalIgnoreCase)
+internal sealed record ModelProfile
 {
-    ["claude-opus-4.7"] = new(EffortToSuffix: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-    {
-        ["max"]    = "-xhigh",   // no -max variant; xhigh is the closest sized variant
-        ["xhigh"]  = "-xhigh",
-        ["high"]   = "-high",
-        ["medium"] = "",         // base model is implicitly medium-effort
-        ["low"]    = "",         // no -low variant; clamp to base
-    }),
-};
+    public required string CanonicalId { get; init; }
+
+    // Effort values accepted as-is. Empty = backend rejects the field outright.
+    public IReadOnlyList<string> AcceptedEfforts { get; init; } = [];
+
+    // What to do with an inbound effort not in AcceptedEfforts:
+    //   Strip            — drop the field; model falls back to its default.
+    //   RouteToVariant   — re-target body.model to a sized sibling id
+    //                      (e.g. opus-4.7 + high → opus-4.7-high).
+    public EffortHandling EffortOnUnsupported { get; init; } = EffortHandling.Strip;
+    public IReadOnlyDictionary<string, string> EffortToVariant { get; init; } = …;
+
+    // Which thinking shapes the backend takes, and how to coerce the others.
+    public ThinkingPolicy Thinking { get; init; } = ThinkingPolicy.AdaptiveOnly;
+    public int MaxThinkingBudget { get; init; } = 64000;
+
+    // Only opus-4.8 declares the protocol extension; empirically Copilot's
+    // gateway rejects it on every model regardless — kept false everywhere.
+    public bool AcceptsMidConversationSystem { get; init; }
+    public bool AcceptsSpeedFast { get; init; }
+
+    // anthropic-beta tokens to strip from the outbound header set when this
+    // profile is the active target (e.g. `context-1m-*` on the dedicated 1M
+    // model ids, which subsume the beta).
+    public IReadOnlyList<string> StripBetas { get; init; } = [];
+}
+
+internal sealed record ThinkingPolicy
+{
+    public required IReadOnlyList<string> AcceptedShapes { get; init; }
+    public required string CoerceToWhenUnsupported { get; init; }
+    public bool DeriveBudgetFromEffortOnEnabled { get; init; }
+    public bool DeriveEffortFromBudgetOnCoerce { get; init; }
+
+    // Three named presets cover today's catalog. Add more as needed.
+    public static ThinkingPolicy AdaptiveOnly { get; } // opus-4.7 family, opus-4.8
+    public static ThinkingPolicy EnabledOnly  { get; } // haiku-4.5, sonnet-4.5, opus-4.5
+    public static ThinkingPolicy All          { get; } // sonnet-4.6, opus-4.6, opus-4.6-1m
+}
 ```
 
-`IModelRegistry.ApplyEffortRouting(modelId, effort)` returns
-`(newModel, stripEffort)`:
+Cross-cutting facts the probe surfaced and the catalog encodes:
 
-- effort is null → no-op
-- model not in `EffortAware` → strip effort, keep model
-- effort matches an entry → append the suffix, strip effort
+- **No model accepts `effort = "max"`.** Strip everywhere.
+- **No model — including opus-4.8 — accepts non-first `role:"system"`
+  messages.** Copilot's gateway rejects the 4.8 protocol extension with
+  `"Unexpected role 'system'"` regardless of model. So
+  `AcceptsMidConversationSystem` is `false` for every entry, and the fold
+  in §7.3 runs unconditionally.
+- **`thinking.budget_tokens` must always be less than `max_tokens`** or
+  Copilot 400s on that constraint before evaluating the shape at all.
 
-Rationale for embedding in code rather than JSON: this collapses the previous
-seven `VariantRoutes` rows for opus-4.7 into one capability entry, and the
-table grows linearly with the number of effort-aware models (small) rather
-than (model × effort) combinations (cartesian).
+### 7.3 Body coercion — `ProfileAdjuster.Apply`
 
-> **M3 TODO** — replace the static table with a startup-built one populated
-> from `CopilotClient.GetModelsAsync()`. The capability shape will grow new
-> fields (`SupportedEndpoints`, accepted thinking shapes); see §7.4.
+Pure function over `(BridgeContext, ModelProfile, ModelProfileCatalog)`,
+applied in order:
 
-### 7.3 User routing rules — `appsettings.json` `Routing.Rules`
+1. **Effort + variant routing.** If `body.output_config.effort` isn't in
+   the profile's `AcceptedEfforts`, either drop the field (`Strip`) or
+   rewrite `body.model` to a sized sibling id from `EffortToVariant`
+   (`RouteToVariant`). A variant rewrite switches profiles — the adjuster
+   continues against the new profile's contract for the remaining steps.
+2. **Thinking shape coercion.** If `body.thinking.type` isn't in
+   `AcceptedShapes`, coerce to `CoerceToWhenUnsupported`. When coercing
+   enabled→adaptive and the policy says so, carry the inbound
+   `budget_tokens` forward into `output_config.effort` first (so the
+   user's reasoning depth survives). When the coerced shape lands on
+   enabled, derive `budget_tokens` from effort using the standard
+   mapping (low=4096, medium=16384, high=32768, xhigh=64000).
+3. **Mid-conversation system fold.** When the profile rejects
+   `role:"system"` messages outside the first slot, collect their text
+   blocks, drop the messages from `body.messages`, and append the text to
+   `body.system`. Preserves order. Without this, 4.8 → 4.7 fallback (or
+   any 4.8 request at all on Copilot, per §7.2) would 400 on
+   `Unexpected role 'system'`.
+4. **Budget cap.** Clamp `thinking.budget_tokens` to
+   `MaxThinkingBudget`.
+5. **Beta strip registration.** Append the profile's `StripBetas`
+   patterns to `ctx.PendingBetaStrips` so `HeadersOutboundStage` removes
+   them from the outbound `anthropic-beta` header. A global
+   `advisor-tool-*` strip is also registered here unconditionally —
+   Claude Code 4.8 sends `advisor-tool-2026-03-01` by default and
+   Copilot's gateway 400s on it (`unsupported beta header(s)`), so it's
+   dropped for every model regardless of profile.
+
+The adjuster never decides what's a user preference vs a fact — by the
+time it runs, the user rule has already picked the target profile, and
+every adjustment from there is fully determined by the profile's
+documented behavior.
+
+### 7.4 User routing locations — `appsettings.json` `Routing.Locations`
 
 Loaded via standard `IConfiguration` / `IOptions<T>` at startup. Validated by
 `RoutesValidator` before Kestrel binds the port. **No hot reload** — edit and
 restart.
 
-Single linear scan, first-match-wins. Each rule has a `Match` (AND-combined,
-null = no constraint) and a `Rewrite` (any subset of model / effort / thinking
-fields). If the rule sets `Effort`, that field is "claimed" — phase 7.2 won't
-re-touch it (so `Rewrite: { Effort: "xhigh" }` round-trips even when the
-target model isn't in `EffortAware`).
+Modeled after nginx `location { ... }`: a request matches at most one entry
+(first-match-wins, no chain, no fall-through), and that entry's `Use` is the
+complete change-set applied to the request. Each location is a self-contained
+closure — everything that should happen for "this kind of request" lives in
+one block.
 
 Schema:
 
 ```jsonc
 {
   "Routing": {
-    "Rules": [
+    "Locations": [
       {
-        "Match":   { "InboundModel": "claude-haiku-4.5", "InboundThinking": "adaptive" },
-        "Rewrite": { "Thinking": { "Type": "enabled" }, "DeriveBudgetFromEffort": true },
-        "Note":    "haiku-4.5 advertises adaptive but rejects it at runtime"
-      },
-      {
-        "Match":   { "InboundModel": "claude-opus-4.7", "InboundThinking": "enabled" },
-        "Rewrite": { "Thinking": { "Type": "adaptive" }, "DeriveEffortFromBudget": true },
-        "Note":    "opus-4.7 base only accepts adaptive thinking"
+        "When": {
+          "Model": "claude-opus-4.8",
+          "Header": { "Name": "anthropic-beta", "Contains": "context-1m-2025-08-07" }
+        },
+        "Use": {
+          "Model": "claude-opus-4.7-1m-internal",
+          "EffortMap": { "max": "xhigh" }
+        },
+        "Note": "opus-4.8 + 1M — Copilot has no opus-4.8 1M variant; fall back to 4.7 1M-internal; map max→xhigh on this target"
       }
     ]
   }
 }
 ```
 
-`Rewrite` fields:
+**`When` — the match expression** (`Pipeline/Routing/MatchExpression.cs`). A
+small JSON-native tree, no custom DSL:
 
-| Field | Meaning |
+| Node | Form | Semantics |
+| --- | --- | --- |
+| `Model` | `"claude-opus-4.8"` | Exact (case-insensitive) match on the canonical model id. |
+| `Effort` | `"max"` | Exact match on `output_config.effort`. |
+| `Header` | `{ "Name": "...", "Eq" \| "Contains": "..." }` | Header match. For `anthropic-beta` the inbound representation is the parsed token set, so `Contains` is token-containment (with trailing `*` wildcard) and `Eq` is "this exact token is present". |
+| `AllOf` | `[ … ]` | AND — every child must match. |
+| `AnyOf` | `[ … ]` | OR — at least one child must match. |
+
+Top-level `Model` / `Effort` / `Header` are **implicitly AND-ed** (the 80%
+case needs no `AllOf` wrapper). There is **no `Not`** — negation is a
+readability footgun; write two locations instead. An empty `When` matches
+everything (a catch-all), but `RoutesValidator` rejects empty `AllOf`/`AnyOf`
+arrays as authoring slips.
+
+**`Use` — the change-set.** At least one field is required (an empty `Use` is
+rejected):
+
+| Field | Effect |
 | --- | --- |
-| `Model: "..."` | Replace outbound model with this canonical id. |
-| `Effort: "..."` | Replace outbound `output_config.effort`. Marks effort as user-explicit; phase 7.2 won't override. |
-| `Thinking: { Type, BudgetTokens? }` | Replace `thinking` block. `Type` is `"enabled" \| "adaptive" \| "disabled"`. |
-| `DeriveBudgetFromEffort: true` | After applying `Thinking` (or if already `enabled`), set `budget_tokens` from current effort using the standard mapping (low=4096, medium=16384, high=32768, xhigh/max=64000). |
-| `DeriveEffortFromBudget: true` | When the post-rewrite `Thinking` is `enabled`, derive effort from `budget_tokens` using the inverse mapping. Marks effort user-explicit. |
+| `Model` | Replace `body.model` (canonical id). |
+| `EffortMap` | `{ inbound: outbound }` — per-target effort remap, applied **after** the model swap, so a map like `{"max":"xhigh"}` is scoped to the resolved target (only meaningful on ids that accept xhigh). |
+| `Headers.Set` | `{ name: value }` — set/replace a whitelisted header. For `anthropic-beta` the value is split into tokens and merged into the outbound set (`PendingBetaAdds`). |
+| `Headers.Remove` | `[ "X-Foo", "anthropic-beta:context-1m-*" ]` — plain entries drop the whole header; the `name:pattern` form drops matching `anthropic-beta` tokens (trailing `*` wildcard). |
 
-The rule list typically holds three kinds of entries:
+**Header whitelist.** `Headers.Set` / `Headers.Remove` only accept
+`anthropic-beta`, `Editor-Version`, `Editor-Plugin-Version`,
+`Copilot-Integration-Id`, `X-GitHub-Api-Version`. Any other name fails
+startup validation — bridge-internal protocol headers (`Authorization`,
+session/machine/device ids, the vision flag) are off-limits so a config
+typo can't produce silent 401s. Identity-header overrides thread through
+`BridgeContext.CopilotHeaderOverrides` into `CopilotHeaderFactory`;
+`anthropic-beta` add/remove flows through `HeadersOutboundStage`.
 
-1. **Per-model thinking quirks** — what the previous `ShapeRewrites` did.
-   These ship by default in the example `appsettings.json`.
-2. **User redirects** — operator preferences, e.g.
-   `{ Match: {InboundModel: "claude-opus-4.7"}, Rewrite: {Model: "claude-opus-4.6"} }`.
-3. **Bug-patches** — when Copilot ships a new model whose physical
-   capability table is stale, the operator can write a rule to set the
-   right effort/model on the wire. After the next bridge release adapts
-   `EffortAware`, the rule can be removed and zero-config behavior is
-   restored.
+Today's `appsettings.json` ships three locations, all "opus 4.x + 1M beta →
+the dedicated 1M model id":
 
-`RoutesValidator` enforces: each `Match` constrains at least one dimension;
-`Match.InboundThinking` and `Rewrite.Thinking.Type` are one of
-`enabled / adaptive / disabled`. Invalid config fails the process at startup.
+| `When` model + beta | `Use.Model` | `Use.EffortMap` |
+| --- | --- | --- |
+| `claude-opus-4.7` + `context-1m-2025-08-07` | `claude-opus-4.7-1m-internal` | `max → xhigh` |
+| `claude-opus-4.8` + `context-1m-2025-08-07` | `claude-opus-4.7-1m-internal` | `max → xhigh` |
+| `claude-opus-4.6` + `context-1m-2025-08-07` | `claude-opus-4.6-1m` | — |
 
-### 7.4 Endpoint selection for multi-endpoint models (M3 design)
+Three things to note:
+- The 1M-internal profile carries `StripBetas = ["context-1m-*"]`, so the
+  beta token doesn't leak through to Copilot after the redirect — that's
+  a profile fact, not a location field.
+- `EffortMap {"max":"xhigh"}` sits on the 1M-internal locations because
+  that model is the only Copilot id that accepts `xhigh` natively; the
+  4.6-1m location omits it (4.6-1m tops out at `high`, so its profile
+  strips `max`/`xhigh`).
+- The opus-4.8→4.7-1m-internal fallback works precisely because the target
+  profile folds mid-conv `role:"system"` messages (which a real 4.8 client
+  may send) into the top-level system field via `ProfileAdjuster`.
+- No `claude-haiku-4.5 + 1M`, `claude-sonnet-4.6 + 1M`, etc. locations are
+  needed: Copilot has no 1M variant for those families, and the bridge
+  refuses to invent one. The inbound beta passes through to Copilot,
+  which 400s with its own message — the user's signal to either drop
+  the beta or pick a 1M-capable model.
 
-When a single model is served by multiple Copilot endpoints (gpt-5 supports
-both `/chat/completions` and `/responses`), the bridge picks **automatically**
-based on hardcoded heuristics — **not** a user setting:
+### 7.5 Unknown-model error path
 
-- Single-endpoint model → use that one
-- Multi-endpoint model with `thinking` enabled or multi-turn agent loop →
-  prefer `/responses` (reasoning state persistence)
-- Otherwise → `/chat/completions` (simpler, cross-model compatible)
+When `ModelRouterStage` looks up the post-normalize, post-location model id in
+`ModelProfileCatalog` and finds nothing, it throws
+`UnknownModelException` carrying the inbound model id, the resolved id, the
+matching location (if any) plus its index, and the full known-profile list.
+`ClaudeCodeMessagesEndpoint` catches the exception and writes:
 
-Rationale: endpoint choice is a **derived fact** from request features +
-model capabilities, not user preference. Forcing users to know "use
-/responses for o-series, /chat for gpt-4.1, gpt-5 depends on whether you
-want reasoning persistence" is unreasonable.
+```
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
 
-Implementation plan: extend `ModelCapability` with `SupportedEndpoints`
-(populated from Copilot's live `/models` response at startup), and add
-`CopilotModelRegistry.SelectEndpoint(modelId, body)` that applies the
-heuristic above.
-
-### 7.5 1M-context routing — model-variant + beta-header rewrite (planned)
-
-> **Status: not yet implemented.** This section captures the design so
-> the next developer can pick it up directly. The unknowns have been
-> probed; the configuration shape and code touch points are concrete.
-
-#### The problem
-
-Claude Code's "1M context" toggle ships as an `anthropic-beta` header value
-`context-1m-2025-08-07`, not a different model name. On Anthropic Direct
-that header opts the request into a 1M context window for the same
-`claude-opus-4.7` model.
-
-Copilot does **not** accept that beta token. Instead, it exposes 1M variants
-as **dedicated model ids**. Verified empirically by running
-`CopilotGapProbes.DumpClaudeModelsAndCapabilities` against the live
-`/models` endpoint:
-
-| Copilot model id                | `max_context_window_tokens` |
-|---------------------------------|-----------------------------|
-| `claude-opus-4.7`               | 200 000                     |
-| `claude-opus-4.7-high`          | 200 000                     |
-| `claude-opus-4.7-xhigh`         | 200 000                     |
-| `claude-opus-4.7-1m-internal`   | **1 000 000**               |
-| `claude-opus-4.6`               | 200 000                     |
-| `claude-opus-4.6-1m`            | **1 000 000**               |
-
-So the bridge needs to: (a) detect the inbound 1M beta token, (b) rewrite
-`body.model` to the dedicated 1M variant, and (c) **strip** the beta from
-the outbound header set (Copilot would reject it).
-
-#### Configuration shape
-
-Extend the existing `Routing.Rules` with two new fields. Reusing the
-first-match-wins, AND-combined `Match` machinery keeps the mental model
-uniform — 1M is just another (model, beta) → (model, header-strip)
-rewrite.
-
-```json
 {
-  "Routing": {
-    "Rules": [
-      {
-        "Match": {
-          "InboundModel": "claude-opus-4.7",
-          "InboundBeta":  "context-1m-2025-08-07"
-        },
-        "Rewrite": {
-          "Model":      "claude-opus-4.7-1m-internal",
-          "StripBetas": ["context-1m-*"]
-        },
-        "Note": "1M context: Copilot exposes it as a dedicated model id, not a beta"
-      },
-      {
-        "Match": {
-          "InboundModel": "claude-opus-4.6",
-          "InboundBeta":  "context-1m-2025-08-07"
-        },
-        "Rewrite": {
-          "Model":      "claude-opus-4.6-1m",
-          "StripBetas": ["context-1m-*"]
-        }
-      }
-    ]
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "message": "[copilot-bridge] No profile for model 'claude-opus-4.9' …"
   }
 }
 ```
 
-`Match.InboundBeta` semantics: the inbound `anthropic-beta` header is split
-on `,`; the rule matches when the resulting set contains the given token
-(case-insensitive). For future "multiple betas must all be present"
-scenarios, the field can grow into `InboundBetas: [...]` later — start
-narrow.
+The message is Anthropic's standard error envelope (so clients that already
+handle `invalid_request_error` display it correctly) with a
+`[copilot-bridge]` prefix and one of two diagnostic templates:
 
-`Rewrite.StripBetas` semantics: each pattern is matched against tokens in
-the outbound header list; matching tokens are removed. `*` is a trailing
-wildcard so `context-1m-*` covers future spec dates without code changes.
+- **Client sent unknown model**: lists known profiles + a JSON snippet the
+  operator can paste into `appsettings.json` to redirect.
+- **A location's `Use.Model` target is unknown**: cites the offending
+  `Routing.Locations[i]` (by index + its `Note`) and asks the operator to
+  fix it or add an earlier location that remaps the resolved id.
 
-#### Inbound beta default behavior
+`ModelRouterStage` also `Log.Error`s the same diagnostic so it lands in
+the bridge's runtime log without needing the client transcript.
 
-**Currently** (`HeadersOutboundStage.cs`): the inbound `anthropic-beta`
-header is **discarded entirely** and the outbound list is rebuilt from
-scratch by the stage (adaptive thinking, context-management,
-tool-search). This is broken in two directions:
+### 7.6 Refreshing the catalog when Copilot changes
 
-- Tokens Copilot *does* accept (`interleaved-thinking-2025-05-14`,
-  `context-management-2025-06-27`, `advanced-tool-use-2025-11-20`) are
-  derived from request shape on every call, so they happen to land
-  correctly even though inbound is ignored.
-- Tokens Copilot *does not* accept (`context-1m-2025-08-07`,
-  `prompt-caching-scope-2026-01-05`, `claude-code-20250219`) are silently
-  dropped — which is fine for the rejection case but loses the signal
-  that we needed to act on (e.g. trigger the model rewrite above).
+The probe → catalog refresh cycle:
 
-**The fix** has two parts:
+1. Run `tests/CopilotBridge.Playground/CopilotGapProbes.DumpClaudeModelsAndCapabilities`
+   to see what Copilot exposes on the current account.
+2. Run `tests/CopilotBridge.Playground/ModelProfileProbe.Thinking_ProbeAcceptance`,
+   `Effort_ProbeAcceptance`, and `MidConversationSystem_ProbeAcceptance`
+   for the full per-model matrix. The error messages tell you which
+   values are accepted (e.g. `"supported values: [low medium high]"`).
+3. Reconcile `Pipeline/Routing/ModelProfileCatalog.cs` against the
+   results. Each entry's field should map back to a row in the probe
+   output — don't extrapolate from family names; sibling models surprise
+   you (haiku-4.5 ≠ sonnet-4.6 on thinking; opus-4.7-1m-internal accepts
+   four efforts but its base only accepts one).
 
-1. **Parse inbound betas into IR**, so rules can match on them. Add a
-   transient (non-wire-serialized) field on the request DTO populated by
-   the inbound adapter, e.g.
-   `MessagesRequest { [JsonIgnore] InboundBetaSet { get; init; } }`. The
-   pipeline stages use it; `HeadersOutboundStage` reads `StripBetas`
-   directives accumulated on `BridgeContext` to decide what to forward.
-2. **Establish a forward whitelist** for unknown betas. Open question — the
-   project is fact-driven, so the right default depends on what Copilot
-   actually does with unknown beta tokens. Run `BetaAcceptanceTests` (see
-   `tests/CopilotBridge.Playground/BetaAcceptanceTests.cs`) for every known
-   Anthropic beta name and observe the matrix (200 vs 400 vs silently
-   ignored). Decide the default once data is in.
-
-#### Effort × 1M interaction
-
-Copilot's `-1m-internal` variant does **not** have its own `-high` /
-`-xhigh` suffix (per the `/models` dump above). So when a rule rewrites
-`claude-opus-4.7` (with effort=max) to `claude-opus-4.7-1m-internal`, the
-effort field should pass through unchanged — Copilot's catalog-driven
-effort router will then handle it as a single model + body.effort. No
-extra wiring needed in the rule.
-
-#### Code touch points
-
-1. `Models/Anthropic/Request/MessagesRequest.cs` — add
-   `[JsonIgnore] IReadOnlyList<string>? InboundBetaHeader { get; init; }`
-   field (or pass via `BridgeContext` — pick one).
-2. `Pipeline/Adapters/ClaudeCode/ClaudeCodeInboundAdapter.cs` — parse
-   `anthropic-beta` header CSV from the headers dictionary, populate the
-   field.
-3. `Pipeline/Routing/RoutesConfig.cs` — add `InboundBeta` to `RouteMatch`,
-   `StripBetas` to `RuleRewrite`.
-4. `Pipeline/Routing/ModelRouteResolver.cs` — extend `Matches()` for the
-   new field; extend `ApplyRewrite()` to accumulate strip directives on
-   the context.
-5. `Pipeline/Stages/Anthropic/HeadersOutboundStage.cs` — merge inbound
-   betas with computed betas, then apply strip patterns.
-6. `Pipeline/Routing/RoutesValidator.cs` — validate `InboundBeta` is a
-   non-empty token; validate `StripBetas` patterns are non-empty.
-7. `tests/CopilotBridge.Playground/BetaAcceptanceTests.cs` — extend to
-   cover `context-1m-2025-08-07` and the two Claude Code 2.1.x betas
-   currently marked "acceptance unknown".
-8. `appsettings.json` — add the two new rules.
-
-#### Verification
-
-A `Headless/` test that drives a real `claude.exe` with the 1M effort
-toggle on (so the inbound carries the beta), then asserts that the audit
-JSON for that request shows `body.model == "claude-opus-4.7-1m-internal"`
-on the upstream side and **no** `context-1m-*` token in the upstream
-headers. The `HeadlessRunner` pattern already exists for effort routing
-tests (`tests/.../Headless/EffortRoutingTests.cs`).
+A future Copilot model can land as a hard error first (the bridge refuses
+the request with a clear 400) and then as a profile after probes confirm
+the wire shape. This is by design — silent breakage is worse than an
+explicit "I don't know this model yet."
 
 ## 8. Per-client URL prefixes
 
@@ -846,10 +887,28 @@ client appends `/v1/messages` and lands on our `/cc/v1/messages`.
 Two log channels, both flowing through a single Serilog pipeline configured
 once in `Program.cs`.
 
-### 9.1 Per-request IO audit (always-on, four files per request)
+### 9.1 Per-request IO audit (opt-in, four files per request)
 
-Each inbound request produces **four** JSON files in `<exe-dir>/logs/`,
-sharing a stamp so they're trivially groupable:
+**Off by default.** The audit captures full request and response bodies —
+including user prompts — so it's gated behind a config toggle:
+
+```jsonc
+"Tracing": {
+  "Enabled": false,              // flip to true to capture; restart to apply
+  "Directory": "request-traces"  // relative to the .exe unless absolute
+}
+```
+
+When `Enabled` is false (the default), `Program.cs` never constructs the
+`BridgeIoSink` and the audit sub-logger is skipped entirely — no files, no
+channel, no background writer. The startup banner says `Req trace: disabled`.
+The separate Serilog **text** log (`<exe-dir>/log/bridge-<stamp>.log`,
+startup banner + stage debug + errors) is always on; only the per-request
+JSON capture is opt-in.
+
+When enabled, each inbound request produces **four** JSON files in
+`<exe-dir>/request-traces/` (or the configured `Directory`), sharing a stamp
+so they're trivially groupable:
 
 ```
 20260521-143205-0042-inbound-req.json     ← what Claude Code sent us
@@ -863,7 +922,8 @@ sharing a stamp so they're trivially groupable:
 and upstream halves of one request share it. The four artifacts are
 intentionally separate files (not one combined record) so an operator can
 load a single side into an editor without bringing along megabytes of the
-streaming response.
+streaming response. (Note: `log/` = always-on text log, `request-traces/` =
+opt-in per-request JSON — two distinct directories.)
 
 #### Pipeline
 
@@ -987,7 +1047,7 @@ plain message-template path everywhere, so trimming is clean. Verified by
 
 Before opening the listening socket, `BridgeHost.RunStartupAsync`:
 
-1. Validates `Routing.Rules` (`RoutesValidator`). On failure: log error,
+1. Validates `Routing.Locations` (`RoutesValidator`). On failure: log error,
    exit code 2.
 2. `auth.EnsureGitHubTokenAsync(ct)` — if `auth.IsAuthenticated` is false,
    logs `[INF] No GitHub token on disk — starting device-code flow`, then
@@ -997,9 +1057,10 @@ Before opening the listening socket, `BridgeHost.RunStartupAsync`:
    DPAPI-encrypted and saved next to the .exe.
 3. `auth.GetCopilotTokenAsync(ct)` — exchanges the GitHub token for a
    short-lived Copilot bearer token, started the in-memory refresh timer.
-4. `catalog.LoadFromAsync(...)` — fetches `/models`; on failure logs a
-   warning but continues (effort routing degrades to "strip the field
-   for unknown models").
+4. `ModelProfileCatalog` is a static DI singleton (hand-curated, no
+   network call) — startup just logs its profile count and ids. The
+   catalog deliberately does **not** derive from Copilot's `/models`
+   metadata; see §7.2 for why.
 
 Net behavior: a fresh checkout / fresh machine just runs `copilot-bridge
 serve` and the operator pastes the device code into their browser; no
@@ -1017,12 +1078,13 @@ src/CopilotBridge.Cli/
 │   ├── RouteTarget.cs                           # record + BackendVendor enum
 │   ├── PipelineRunner.cs                        # IPipelineRunner<TBody> + impl
 │   ├── Pipeline.cs                              # Pipeline<TBody>
-│   ├── IModelRegistry.cs                        # Resolve + ApplyEffortRouting; impls under Routing/
+│   ├── IModelRegistry.cs                        # Resolve (name normalize + vendor/endpoint dispatch)
 │   │
 │   ├── Stages/                                  # IRequestStage<TBody> implementations
 │   │   ├── IRequestStage.cs
 │   │   ├── Anthropic/                           # for Pipeline<MessagesRequest> — IR shape stages
-│   │   │   ├── ModelRouterStage.cs              # normalize + user rules + capability + ctx.Target
+│   │   │   ├── ModelRouterStage.cs              # normalize + user location + profile lookup +
+│   │   │   │                                    #   ProfileAdjuster + ctx.Target
 │   │   │   ├── SystemSanitizeStage.cs           # strip currentDate
 │   │   │   ├── MessagesSanitizeStage.cs         # tool_result merge, trailing assistant fix
 │   │   │   ├── AssistantThinkingFilterStage.cs
@@ -1053,11 +1115,20 @@ src/CopilotBridge.Cli/
 │   │   └── Gemini/                              # M4 — Gemini ↔ IR translators
 │   │
 │   └── Routing/
-│       ├── CopilotModelRegistry.cs              # IModelRegistry impl: Resolve + Normalize +
-│       │                                        #   EffortAware capability dictionary
-│       ├── RoutesConfig.cs                      # POCOs bound from appsettings.json Routing.Rules
-│       ├── ModelRouteResolver.cs                # apply user rules then capability
-│       └── RoutesValidator.cs                   # startup fail-fast schema validation
+│       ├── CopilotModelRegistry.cs              # IModelRegistry impl: pure name normalize +
+│       │                                        #   prefix-based vendor/endpoint dispatch
+│       ├── ModelProfile.cs                      # per-model wire-truth record (effort, thinking,
+│       │                                        #   mid-conv-system, betas, budget cap)
+│       ├── ModelProfileCatalog.cs               # hand-curated id → profile map, sourced from
+│       │                                        #   ModelProfileProbe.cs playground results
+│       ├── ProfileAdjuster.cs                   # pure body coercion against a profile
+│       ├── UnknownModelException.cs             # thrown by ModelRouterStage on profile miss;
+│       │                                        #   endpoint converts to 400 + Anthropic error body
+│       ├── RoutesConfig.cs                      # POCOs bound from appsettings.json Routing.Locations
+│       │                                        #   (RouteLocation = When + Use{Model,EffortMap,Headers})
+│       ├── MatchExpression.cs                   # When tree: AllOf/AnyOf + Model/Effort/Header leaves
+│       ├── ModelRouteResolver.cs                # first-match-wins; apply Use (model/effort/headers)
+│       └── RoutesValidator.cs                   # startup fail-fast schema + header-whitelist validation
 │
 ├── Endpoints/
 │   ├── ClaudeCode/
@@ -1070,9 +1141,10 @@ src/CopilotBridge.Cli/
 │   └── Gemini/                                  # M4
 │
 ├── Hosting/
-│   ├── KestrelServer.cs                         # builds + runs the HTTP host; loads RoutesConfig
+│   ├── KestrelServer.cs                         # builds + runs the HTTP host
 │   ├── BridgePipelines.cs                       # the assembly: builds Pipeline<MessagesRequest>
-│   ├── BridgeHost.cs                            # ConfigureServices + RunStartupAsync (auth, models)
+│   ├── BridgeHost.cs                            # ConfigureServices + RunStartupAsync (auth, routes,
+│   │                                            #   ModelProfileCatalog log)
 │   ├── ServeCommand.cs                          # typed entry point: RunAsync(int port)
 │   └── Logging/
 │       ├── BridgeIoEvents.cs                    # EventIds 1001..1004 (the four IO artifacts)
@@ -1082,9 +1154,9 @@ src/CopilotBridge.Cli/
 │       └── BridgeIoSinkHolder.cs                # static handoff slot (Program.cs ↔ DI)
 │
 └── appsettings.json                             # ships next to the .exe; PreserveNewest copy.
-                                                 # Holds Routing.Rules — user preferences only.
-                                                 # Wire facts (effort → variant) live in
-                                                 # CopilotModelRegistry.EffortAware, not here.
+                                                 # Holds Routing.Locations (When/Use) + Tracing toggle.
+                                                 # Wire facts (effort, thinking, betas) live in
+                                                 # ModelProfileCatalog.cs, not here.
 ```
 
 ## 11. Evolution path
@@ -1108,26 +1180,34 @@ The pipeline framework, runner, response stages, audit log — all reused.
    `IStreamTranslator<OpenAiSseChunk, AnthropicSseEvent>`.
 2. Register it in `Pipeline<MessagesRequest>`'s strategy registry, matching
    targets where `BackendVendor == CopilotOpenAi`.
-3. Update `ModelRegistry` to map the relevant model ids to that vendor.
+3. Update `CopilotModelRegistry`'s prefix dispatch (or add a new entry to
+   `ModelProfileCatalog`) so the relevant model ids resolve to that vendor.
 
 Pipeline stages, audit log, endpoints — all reused.
 
 ### 11.3 Substituting a model alias (the immediate case)
 
-`Pipeline/ModelRegistry.cs` carries a static alias table:
+When Copilot ships a model the bridge has no profile for yet, the operator
+adds a redirect location in `appsettings.json`:
 
-```csharp
-private static readonly Dictionary<string, string> Aliases = new()
+```jsonc
 {
-    // Claude Code may default to a model not yet on Copilot.
-    ["claude-opus-4.8"] = "claude-opus-4.7",
-    ["claude-opus-5"]   = "claude-opus-4.7",
-    // ...
-};
+  "When": { "Model": "claude-opus-5" },
+  "Use":  { "Model": "claude-opus-4.8" }
+}
 ```
 
-Stage: `ModelRouterStage` resolves from alias, then validates against the live
-Copilot model list, then sets `ctx.Request.Body.Model` to the resolved id.
+The redirect is intentionally a user-visible knob, not a static C# table:
+the operator can confirm a fallback works for their workload before a
+release lands, and they can remove the location once the bridge ships a real
+`ModelProfile` for the new id. There is no built-in alias dictionary —
+the bridge prefers a clear `UnknownModelException` (§7.5) over silent
+substitution.
+
+Stage: `ModelRouterStage` normalizes the inbound id, runs the location
+matcher to apply the `Use` change-set, looks up the target profile, and runs
+`ProfileAdjuster`. If `Use.Model` points at an id with no profile, the
+bridge 400s with a message that names the offending `Routing.Locations[i]`.
 
 ## 12. Migration plan from current code
 
