@@ -66,7 +66,7 @@ Layers, outer depends on inner only:
 ## Build / run / test
 
 - Develop: `dotnet run --project src/CopilotBridge.Cli`
-- Publish single-file AOT exe (Windows): `dotnet publish src/CopilotBridge.Cli -c Release -r win-x64` (requires the Visual Studio C++ Build Tools workload + Windows SDK — the linker won't be found otherwise)
+- Publish single-file AOT exe (Windows): `dotnet publish src/CopilotBridge.Cli -c Release -r win-x64` (requires the Visual Studio C++ Build Tools workload + Windows SDK — the linker won't be found otherwise). **Two PATH prerequisites, both needed:** (1) run from a VS Developer environment (`VsDevCmd.bat -arch=x64 -host_arch=x64`) so MSVC `link.exe` is on PATH; (2) **also** add `C:\Program Files (x86)\Microsoft Visual Studio\Installer\` to PATH so `vswhere.exe` is reachable — `VsDevCmd` does *not* add it, and ILC shells out to `vswhere` to locate `link.exe`, failing with `'vswhere.exe' is not recognized` otherwise. A throwaway `.bat` that does both then calls `dotnet publish` is the reliable recipe.
 - Tests: `dotnet test`
 - Single test: `dotnet test --filter FullyQualifiedName~<TestName>`
 
@@ -78,5 +78,5 @@ One project for now (per RamDrive's pattern early on). If size or compile time p
   - **Files in the repo** — `CLAUDE.md`, everything under `docs/`, code comments, commit messages, etc. — are always written in **English**, regardless of the user's chat language.
   - **Claude Code's chat replies to the user** match the user's language: if they write in Chinese, respond in Chinese; if English, respond in English. Don't mix unless the user does.
 - The user is on Windows with PowerShell as the default shell. Default to PowerShell-shaped commands; the Bash tool is also available for POSIX scripts.
-- This directory is not yet a git repo. If you `git init`, add `references/` to `.gitignore` first — that subdirectory is a separate checkout used for reading only.
+- This directory is a git repo (`origin` → GitHub `hooyao/copilot-bridge`). `references/` and `.claude/` are already gitignored — `references/` is a separate read-only checkout; never `git add` it. Also keep local-only scratch out of commits: `.mcp.json` (local MCP server config) and session-handoff `.txt` dumps.
 - Build incrementally: `/v1/chat/completions` (mostly passthrough) end-to-end before `/v1/messages` (translation), and non-streaming before streaming. The reference's `src/routes/` layout reflects the same complexity gradient — follow it.

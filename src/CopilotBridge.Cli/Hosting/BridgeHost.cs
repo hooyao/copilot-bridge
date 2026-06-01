@@ -63,14 +63,14 @@ internal static class BridgeHost
             builder.Services.AddSingleton(sink);
         }
 
-        builder.Services.AddSingleton<CopilotModelCatalog>(_ => new CopilotModelCatalog());
-        builder.Services.AddSingleton<IModelRegistry>(sp => new CopilotModelRegistry(
-            sp.GetRequiredService<CopilotModelCatalog>()));
+        builder.Services.AddSingleton<ModelProfileCatalog>(_ => new ModelProfileCatalog());
+        builder.Services.AddSingleton<IModelRegistry>(_ => new CopilotModelRegistry());
         builder.Services.AddSingleton(ClaudeCodeInboundAdapter.Instance);
         builder.Services.AddSingleton(ClaudeCodeOutboundAdapter.Instance);
         builder.Services.AddSingleton<IPipelineRunner<MessagesRequest>>(_ => new PipelineRunner<MessagesRequest>());
         builder.Services.AddSingleton(sp => BridgePipelines.BuildAnthropic(
             sp.GetRequiredService<IModelRegistry>(),
+            sp.GetRequiredService<ModelProfileCatalog>(),
             sp.GetRequiredService<ICopilotClient>(),
             sp.GetRequiredService<IOptions<RoutesConfig>>()));
 
@@ -128,16 +128,10 @@ internal static class BridgeHost
             return 1;
         }
 
-        var catalog = app.Services.GetRequiredService<CopilotModelCatalog>();
-        var copilotClient = app.Services.GetRequiredService<ICopilotClient>();
-        try
-        {
-            await catalog.LoadFromAsync(copilotClient, ct);
-        }
-        catch (Exception ex)
-        {
-            await Console.Error.WriteLineAsync($"warn: /models load failed: {ex.Message} — effort routing will strip the field for unknown models.");
-        }
+        var catalog = app.Services.GetRequiredService<ModelProfileCatalog>();
+        startupLog.LogInformation(
+            "Model profile catalog loaded with {Count} profiles: {Ids}",
+            catalog.Count, string.Join(", ", catalog.KnownIds));
 
         return null;
     }

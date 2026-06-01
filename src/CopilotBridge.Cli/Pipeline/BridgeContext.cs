@@ -28,6 +28,45 @@ internal sealed class BridgeContext<TBody> where TBody : class
     /// stream completes and merges it into the audit record.
     /// </summary>
     public List<DroppedSseEvent> DroppedEvents { get; init; } = [];
+
+    /// <summary>
+    /// Parsed inbound <c>anthropic-beta</c> tokens. Populated by the endpoint
+    /// before the pipeline runs (the wire header is CSV; this is the split set,
+    /// case-insensitive). Used by <c>ModelRouteResolver</c> to match rules with
+    /// <c>Match.InboundBeta</c>, and by <c>HeadersOutboundStage</c> to forward
+    /// tokens verbatim (pass-through-by-default policy — see
+    /// <c>docs/pipeline-design.md §7.5</c>).
+    /// </summary>
+    public IReadOnlySet<string> InboundBetas { get; init; } =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Strip patterns accumulated when routing rules fire. Each pattern may end
+    /// in <c>*</c> (trailing wildcard). <c>HeadersOutboundStage</c> applies them
+    /// against the merged outbound beta list right before writing the header.
+    /// </summary>
+    public List<string> PendingBetaStrips { get; init; } = [];
+
+    /// <summary>
+    /// Extra <c>anthropic-beta</c> tokens to add to the outbound set. Populated
+    /// by <c>ModelRouteResolver</c> when a matched location's
+    /// <c>Use.Headers.Set["anthropic-beta"]</c> declares additional tokens;
+    /// merged in <c>HeadersOutboundStage</c> before strip patterns run.
+    /// </summary>
+    public List<string> PendingBetaAdds { get; init; } = [];
+
+    /// <summary>
+    /// Per-request overrides for the Copilot identity header set built by
+    /// <c>CopilotHeaderFactory.ApplyTo</c> (e.g. <c>Editor-Version</c>,
+    /// <c>Editor-Plugin-Version</c>, <c>Copilot-Integration-Id</c>). Populated
+    /// by <c>ModelRouteResolver</c> when a location's <c>Use.Headers.Set</c>
+    /// targets one of those whitelisted names; the strategy threads the dict
+    /// into the <c>CopilotClient</c> call. Case-insensitive keys. <c>null</c>
+    /// values mean "remove this header" (so a location can opt out of an
+    /// identity header rather than only overriding it).
+    /// </summary>
+    public Dictionary<string, string?> CopilotHeaderOverrides { get; init; } =
+        new(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>One SSE event a response stage chose not to forward downstream.</summary>

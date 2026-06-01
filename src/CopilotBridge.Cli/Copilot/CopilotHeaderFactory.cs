@@ -38,18 +38,43 @@ internal sealed class CopilotHeaderFactory
     /// Add Copilot-required headers to <paramref name="req"/>, including the bearer auth.
     /// Pass <paramref name="vision"/>=true when the request body contains image content
     /// blocks; Copilot uses this header to gate vision-capable routing.
+    /// <para><paramref name="overrides"/> applies per-request user-configured
+    /// overrides (from routing locations) <i>after</i> the static set is
+    /// written: a non-null value replaces the header; a null value drops it.
+    /// Only the four operator-tunable headers below are accepted — every other
+    /// name is rejected at config load time, not here, so we trust the dict.</para>
     /// </summary>
-    public void ApplyTo(HttpRequestMessage req, string copilotToken, bool vision = false)
+    public void ApplyTo(
+        HttpRequestMessage req,
+        string copilotToken,
+        bool vision = false,
+        IReadOnlyDictionary<string, string?>? overrides = null)
     {
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", copilotToken);
-        req.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", ApiVersion);
-        req.Headers.TryAddWithoutValidation("Copilot-Integration-Id", IntegrationId);
+        AddOrOverride(req, "X-GitHub-Api-Version", ApiVersion, overrides);
+        AddOrOverride(req, "Copilot-Integration-Id", IntegrationId, overrides);
         req.Headers.TryAddWithoutValidation("VScode-SessionId", _sessionId);
         req.Headers.TryAddWithoutValidation("VScode-MachineId", _machineId);
         req.Headers.TryAddWithoutValidation("Editor-Device-Id", _deviceId);
-        req.Headers.TryAddWithoutValidation("Editor-Plugin-Version", EditorPluginVersion);
-        req.Headers.TryAddWithoutValidation("Editor-Version", EditorVersion);
+        AddOrOverride(req, "Editor-Plugin-Version", EditorPluginVersion, overrides);
+        AddOrOverride(req, "Editor-Version", EditorVersion, overrides);
         if (vision)
             req.Headers.TryAddWithoutValidation("Copilot-Vision-Request", "true");
+    }
+
+    private static void AddOrOverride(
+        HttpRequestMessage req,
+        string name,
+        string defaultValue,
+        IReadOnlyDictionary<string, string?>? overrides)
+    {
+        if (overrides is not null && overrides.TryGetValue(name, out var overrideValue))
+        {
+            // null override = "skip this header entirely".
+            if (overrideValue is not null)
+                req.Headers.TryAddWithoutValidation(name, overrideValue);
+            return;
+        }
+        req.Headers.TryAddWithoutValidation(name, defaultValue);
     }
 }

@@ -34,12 +34,17 @@ public sealed class BridgeFixture : IAsyncLifetime
         // The bridge expects a BridgeIoSink registered as both the Serilog
         // sink and a DI singleton. Program.cs handles this for the
         // production binary; tests do it themselves here.
-        var ioDir = Path.Combine(AppContext.BaseDirectory, "logs");
+        var ioDir = Path.Combine(AppContext.BaseDirectory, "request-traces");
         _sink = new BridgeIoSink(ioDir);
         BridgeIoSinkHolder.Instance = _sink;
 
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Verbose()
+            // Mirror Program.cs: keep the BridgeIoPayload reference live so
+            // BridgeIoSink can cast scalar.Value back to the typed payload.
+            // Without this, Serilog stringifies the complex type and the sink
+            // silently drops every audit event.
+            .Destructure.AsScalar<BridgeIoPayload>()
             .WriteTo.Logger(lc => lc
                 .Filter.ByIncludingOnly(e => e.Properties.ContainsKey("Payload"))
                 .WriteTo.Sink(_sink))

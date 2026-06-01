@@ -10,94 +10,85 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 /// port (fail-fast, no silent fallback).
 /// </summary>
 /// <remarks>
-/// Two layers (hardcoded order, no iteration / no fixed-point):
-/// <list type="number">
-///   <item><b>User rules</b> (this file, JSON) — the operator's preferences:
-///         "route opus-4.7 to opus-4.6", "rewrite effort=max to xhigh", and
-///         protocol quirks the operator can patch when Copilot ships a new
-///         model before we cut a release. Each rule is a Match → Rewrite
-///         pair; the rule list is scanned once, first-match-wins.</item>
-///   <item><b>Capability</b> (in <see cref="CopilotModelRegistry"/>, C#) —
-///         the model's physical truth: which models accept
-///         <c>output_config.effort</c>, and which efforts trigger a sized
-///         variant (e.g. opus-4.7 + high → opus-4.7-high). Capability runs
-///         <i>after</i> user rules and gives the outbound model's
-///         constraints the final word, except for fields the user
-///         explicitly set in their Rewrite — those bypass capability so
-///         "I really want effort=xhigh on this model" round-trips.</item>
-/// </list>
+/// <para>Routing is organized nginx-style: a request matches at most one
+/// <see cref="RouteLocation"/> (first-match-wins), and that location's
+/// <see cref="LocationUse"/> declares the complete change-set applied to the
+/// request — backend model, effort remapping for this target, header tweaks.
+/// There is no chain, no fall-through, no <c>StopWhenMatched</c>: each
+/// location is a self-contained closure.</para>
+/// <para>After the location's <c>Use</c> is applied, the target's
+/// <see cref="ModelProfile"/> still runs over the rewritten body —
+/// profile-derived guarantees (thinking shape coercion, beta strips,
+/// mid-conv-system fold) are layered <i>after</i> user routing.</para>
 /// </remarks>
 internal sealed class RoutesConfig
 {
-    /// <summary>Single linear scan, first-match-wins.</summary>
-    public List<RoutingRule> Rules { get; set; } = [];
+    /// <summary>Top-to-bottom, first-match-wins.</summary>
+    public List<RouteLocation> Locations { get; set; } = [];
 }
 
-internal sealed class RoutingRule
+/// <summary>
+/// A self-contained routing entry: the <see cref="When"/> match plus the
+/// <see cref="Use"/> change-set fired on a match. Modeled after nginx
+/// <c>location { ... }</c> — everything that should happen for "this kind
+/// of request" lives in one block.
+/// </summary>
+internal sealed class RouteLocation
 {
-    public RouteMatch Match { get; set; } = new();
-    public RuleRewrite? Rewrite { get; set; }
+    public MatchExpression When { get; set; } = new();
+    public LocationUse Use { get; set; } = new();
     /// <summary>Free-form developer comment; runtime-ignored, kept in diag log.</summary>
     public string? Note { get; set; }
 }
 
 /// <summary>
-/// Match conditions. Every non-null field must match the request's
-/// corresponding value exactly (case-insensitive). null = no constraint on
-/// that dimension.
+/// What this location does when matched. All fields are optional — an empty
+/// <c>Use</c> is a no-op and rejected by <see cref="RoutesValidator"/>.
 /// </summary>
-internal sealed class RouteMatch
+internal sealed class LocationUse
 {
-    /// <summary>Canonical model id (post-<c>CopilotModelRegistry.Normalize</c>).</summary>
-    public string? InboundModel { get; set; }
-    /// <summary>Effort level requested in <c>output_config.effort</c>.</summary>
-    public string? InboundEffort { get; set; }
-    /// <summary>Thinking shape: <c>"enabled"</c> | <c>"adaptive"</c> | <c>"disabled"</c>.</summary>
-    public string? InboundThinking { get; set; }
-}
-
-/// <summary>
-/// Outbound rewrites. Any non-null field replaces the corresponding inbound
-/// field; null/absent means "leave alone (capability layer may still adjust
-/// it)". Setting a field marks it as user-explicit, which makes the
-/// capability layer trust the user's decision instead of stripping the
-/// field on physical-fact grounds.
-/// </summary>
-internal sealed class RuleRewrite
-{
-    /// <summary>Replace the outbound model (canonical id, e.g. <c>claude-opus-4.6</c>).</summary>
+    /// <summary>Replace the outbound model id (canonical form, e.g. <c>claude-opus-4.7-1m-internal</c>).</summary>
     public string? Model { get; set; }
 
-    /// <summary>Replace the outbound <c>output_config.effort</c> value.</summary>
-    public string? Effort { get; set; }
-
-    /// <summary>Replace the outbound thinking shape.</summary>
-    public ThinkingRewrite? Thinking { get; set; }
-
     /// <summary>
-    /// After applying <see cref="Thinking"/> (or if thinking is already
-    /// <c>enabled</c>), set <c>thinking.budget_tokens</c> from
-    /// <c>output_config.effort</c> using the standard mapping
-    /// (low=4096, medium=16384, high=32768, xhigh/max=64000).
+    /// Per-target effort remapping. Keys are inbound effort values
+    /// (case-insensitive); the matching key's value replaces
+    /// <c>output_config.effort</c> before <see cref="ProfileAdjuster"/> runs.
+    /// Lives on the location rather than as a separate rule because the
+    /// mapping is specific to <see cref="Model"/> — e.g.
+    /// <c>{"max":"xhigh"}</c> makes sense on <c>claude-opus-4.7-1m-internal</c>
+    /// (the only Copilot model that accepts xhigh natively) but would be
+    /// wrong on <c>claude-opus-4.8</c> (no xhigh variant exists).
     /// </summary>
-    public bool DeriveBudgetFromEffort { get; set; }
+    public Dictionary<string, string>? EffortMap { get; set; }
 
-    /// <summary>
-    /// When the (post-Rewrite) thinking is <c>enabled</c>, derive
-    /// <c>output_config.effort</c> from <c>thinking.budget_tokens</c>
-    /// using the inverse of the standard mapping. Marks effort as
-    /// user-explicit.
-    /// </summary>
-    public bool DeriveEffortFromBudget { get; set; }
+    /// <summary>Header overrides. Whitelisted at startup by <see cref="RoutesValidator"/>.</summary>
+    public LocationHeaders? Headers { get; set; }
 }
 
 /// <summary>
-/// Rewrite the thinking shape. <see cref="Type"/> picks the kind;
-/// <see cref="BudgetTokens"/> only applies to <c>"enabled"</c>.
+/// Header rewrites. Only a small whitelist of header names is accepted
+/// (operator-tunable Copilot identity headers + <c>anthropic-beta</c>);
+/// names outside the whitelist fail startup validation. This keeps users
+/// from clobbering bridge-internal protocol headers (<c>Authorization</c>,
+/// session/device ids) and producing silent 401s.
 /// </summary>
-internal sealed class ThinkingRewrite
+internal sealed class LocationHeaders
 {
-    /// <summary><c>"enabled"</c> | <c>"adaptive"</c> | <c>"disabled"</c>.</summary>
-    public string? Type { get; set; }
-    public int? BudgetTokens { get; set; }
+    /// <summary>
+    /// Set or replace headers, name → value. For multi-token headers like
+    /// <c>anthropic-beta</c> the value is taken verbatim (comma-joined token
+    /// list); use <see cref="Remove"/> if you only want to drop specific
+    /// tokens rather than replace the whole header.
+    /// </summary>
+    public Dictionary<string, string>? Set { get; set; }
+
+    /// <summary>
+    /// Remove headers (or specific tokens). Plain entries (<c>"X-Foo"</c>)
+    /// drop the whole header. For comma-token headers the form
+    /// <c>"anthropic-beta:context-1m-*"</c> drops only the matching token(s);
+    /// trailing <c>*</c> is a wildcard. Patterns without <c>:</c> match
+    /// whole-header by name (case-insensitive).
+    /// </summary>
+    public List<string>? Remove { get; set; }
 }

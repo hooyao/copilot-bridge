@@ -4,9 +4,11 @@ using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Hosting.Logging;
 using CopilotBridge.Cli.Models;
+using CopilotBridge.Cli.Models.Anthropic.Errors;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
+using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
@@ -129,6 +131,7 @@ internal static class ClaudeCodeMessagesEndpoint
             }
 
             var irBody = await inboundAdapter.AdaptAsync(clientBody, inboundHeaders, ct);
+            var inboundBetas = ClaudeCodeInboundAdapter.ParseInboundBetas(inboundHeaders);
 
             var bridgeCtx = new BridgeContext<MessagesRequest>
             {
@@ -142,6 +145,7 @@ internal static class ClaudeCodeMessagesEndpoint
                 },
                 Response = new BridgeResponse(),
                 Ct = ct,
+                InboundBetas = inboundBetas,
             };
 
             await runner.RunAsync(pipeline, bridgeCtx);
@@ -200,6 +204,32 @@ internal static class ClaudeCodeMessagesEndpoint
             endpointError = "cancelled by client";
             Log.Debug("endpoint cancelled by client");
             throw;
+        }
+        catch (UnknownModelException ex)
+        {
+            // The bridge refused the model because it has no profile for it
+            // (after normalize + any user rule that fired). Surface as 400 +
+            // Anthropic-format error body so clients display it as a normal
+            // model error rather than a transport failure; the message
+            // ([copilot-bridge] prefix) tells the operator what to fix.
+            // ModelRouterStage already logged the full diagnostic to Serilog.
+            endpointError = ex.Message;
+            if (!httpCtx.Response.HasStarted)
+            {
+                responseStatus = StatusCodes.Status400BadRequest;
+                httpCtx.Response.StatusCode = responseStatus;
+                httpCtx.Response.ContentType = "application/json";
+                var error = new ErrorResponse
+                {
+                    Error = new ErrorBody { Type = "invalid_request_error", Message = ex.Message },
+                };
+                var bytes = JsonSerializer.SerializeToUtf8Bytes(error, JsonContext.Default.ErrorResponse);
+                responseBody = bytes;
+                responseBodyLen = bytes.Length;
+                responseBodyPooled = false;
+                httpCtx.Response.ContentLength = bytes.Length;
+                await httpCtx.Response.Body.WriteAsync(bytes, CancellationToken.None);
+            }
         }
         catch (Exception ex)
         {

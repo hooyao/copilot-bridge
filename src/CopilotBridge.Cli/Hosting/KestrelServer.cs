@@ -46,17 +46,25 @@ internal static class KestrelServer
         if (startupResult.HasValue) return startupResult.Value;
 
         var routes = app.Services.GetRequiredService<IOptions<RoutesConfig>>().Value;
-        var catalog = app.Services.GetRequiredService<CopilotModelCatalog>();
+        var catalog = app.Services.GetRequiredService<ModelProfileCatalog>();
         var auth = app.Services.GetRequiredService<IAuthService>();
-        var ioSinkDir = Logging.BridgeIoSinkHolder.Instance?.Directory
-            ?? Path.Combine(AppContext.BaseDirectory, "logs");
+        var traceDir = Logging.BridgeIoSinkHolder.Instance?.Directory;
+        var textLogDir = Path.Combine(AppContext.BaseDirectory, "log");
 
         var startupLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CopilotBridge.Cli.Startup");
         startupLog.LogInformation("copilot-bridge listening on http://localhost:{Port}", port);
         startupLog.LogInformation("Upstream: {UpstreamUrl}", auth.CopilotApiBaseUrl);
-        startupLog.LogInformation("Logs:     {LogDir}", ioSinkDir);
-        startupLog.LogInformation("Routes:   {RuleCount} user rules; catalog: {ModelCount} Anthropic models",
-            routes.Rules.Count, catalog.Count);
+        startupLog.LogInformation("Text log: {LogDir} (one file per process start)", textLogDir);
+        if (traceDir is not null)
+        {
+            startupLog.LogInformation("Req trace: {TraceDir} (enabled — per-request audit JSON written here)", traceDir);
+        }
+        else
+        {
+            startupLog.LogInformation("Req trace: disabled — set Tracing.Enabled=true in appsettings.json to capture per-request bodies");
+        }
+        startupLog.LogInformation("Routes:    {LocCount} user locations; catalog: {ModelCount} model profiles",
+            routes.Locations.Count, catalog.Count);
 
         BridgeHost.MapEndpoints(app);
 

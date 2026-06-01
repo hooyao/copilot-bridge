@@ -5,178 +5,136 @@ using Serilog;
 namespace CopilotBridge.Cli.Pipeline.Routing;
 
 /// <summary>
-/// Two-layer routing resolver:
-/// <list type="number">
-///   <item>Walk <see cref="RoutesConfig.Rules"/> once, first-match-wins.
-///         A matching rule's <see cref="RuleRewrite"/> applies any of
-///         model / effort / thinking. If the rule sets effort, it claims
-///         that field — the capability layer below will not re-touch it.</item>
-///   <item>Hand the (possibly-rewritten) body to
-///         <see cref="IModelRegistry.ApplyEffortRouting"/> for the
-///         capability layer: variant-suffix routing (a physical fact —
-///         always applied) and effort-field strip on un-routed models.
-///         Skipped entirely when the user rule already set effort.</item>
-/// </list>
-/// No iteration / no fixed-point — debugging stays trivial.
+/// nginx-style location resolver: scan <see cref="RoutesConfig.Locations"/>
+/// top-to-bottom, fire the first one whose <see cref="RouteLocation.When"/>
+/// matches, apply its <see cref="LocationUse"/>, return. No chain, no
+/// fall-through, no <c>StopWhenMatched</c> — each location is a complete
+/// closure (when this case matches, do all of this).
 /// </summary>
+/// <remarks>
+/// Profile-driven body coercion (thinking shape, beta strips, mid-conv-system
+/// fold, budget cap) still runs <i>after</i> this resolver via
+/// <see cref="ProfileAdjuster"/>; user routing only sets the inbound shape
+/// (model, effort, headers) and the profile takes it from there.
+/// </remarks>
 internal static class ModelRouteResolver
 {
     /// <summary>
-    /// Apply user rules then capability to <paramref name="ctx"/> in
-    /// place. Returns the rule that fired (for diag log) — null if no
-    /// user rule matched.
+    /// Walk locations; on the first match, apply the rewrite and return
+    /// <c>(location, index)</c>. Returns <c>(null, -1)</c> when no location
+    /// matched.
     /// </summary>
-    public static RoutingRule? Apply(
-        BridgeContext<MessagesRequest> ctx, RoutesConfig config, IModelRegistry registry)
+    public static (RouteLocation? Matched, int Index) Apply(
+        BridgeContext<MessagesRequest> ctx, RoutesConfig config)
     {
-        var (matched, effortExplicit) = ApplyUserRule(ctx, config.Rules);
-        if (!effortExplicit)
+        for (var i = 0; i < config.Locations.Count; i++)
         {
-            ApplyCapability(ctx, registry);
+            var loc = config.Locations[i];
+            if (!loc.When.Matches(ctx)) continue;
+
+            ApplyUse(ctx, loc.Use);
+            Log.Debug($"  routes/location[{i}]: matched [{loc.Note ?? "—"}]");
+            return (loc, i);
         }
-        return matched;
+        return (null, -1);
     }
 
-    private static (RoutingRule? Matched, bool EffortExplicit) ApplyUserRule(
-        BridgeContext<MessagesRequest> ctx, List<RoutingRule> rules)
-    {
-        foreach (var rule in rules)
-        {
-            if (!Matches(rule.Match, ctx.Request.Body)) continue;
-            var effortExplicit = ApplyRewrite(ctx, rule.Rewrite);
-            Log.Debug($"  routes/rule: matched [{rule.Note ?? Describe(rule)}]");
-            return (rule, effortExplicit);
-        }
-        return (null, false);
-    }
-
-    private static bool Matches(RouteMatch match, MessagesRequest body)
-    {
-        if (match.InboundModel is not null
-            && !string.Equals(match.InboundModel, body.Model, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-        if (match.InboundEffort is not null)
-        {
-            var effort = body.OutputConfig?.Effort;
-            if (!string.Equals(match.InboundEffort, effort, StringComparison.OrdinalIgnoreCase)) return false;
-        }
-        if (match.InboundThinking is not null)
-        {
-            var actual = ThinkingShape(body.Thinking);
-            if (!string.Equals(match.InboundThinking, actual, StringComparison.OrdinalIgnoreCase)) return false;
-        }
-        return true;
-    }
-
-    private static bool ApplyRewrite(BridgeContext<MessagesRequest> ctx, RuleRewrite? r)
-    {
-        if (r is null) return false;
-
-        var body = ctx.Request.Body;
-        var effortExplicit = false;
-
-        if (r.Model is { Length: > 0 } newModel)
-        {
-            body = body with { Model = newModel };
-        }
-
-        if (r.Effort is { Length: > 0 } newEffort)
-        {
-            var oc = (body.OutputConfig ?? new OutputConfig()) with { Effort = newEffort };
-            body = body with { OutputConfig = oc };
-            effortExplicit = true;
-        }
-
-        if (r.Thinking?.Type is { Length: > 0 } thinkingType)
-        {
-            body = body with { Thinking = BuildThinking(thinkingType, r.Thinking.BudgetTokens) };
-        }
-
-        if (r.DeriveBudgetFromEffort && body.Thinking is ThinkingConfigEnabled enabled)
-        {
-            var newBudget = EffortToBudget(body.OutputConfig?.Effort);
-            body = body with { Thinking = enabled with { BudgetTokens = newBudget } };
-        }
-
-        if (r.DeriveEffortFromBudget && body.Thinking is ThinkingConfigEnabled withBudget)
-        {
-            var derivedEffort = BudgetToEffort(withBudget.BudgetTokens);
-            var oc = (body.OutputConfig ?? new OutputConfig()) with { Effort = derivedEffort };
-            body = body with { OutputConfig = oc };
-            effortExplicit = true;
-        }
-
-        ctx.Request.Body = body;
-        return effortExplicit;
-    }
-
-    private static ThinkingConfig BuildThinking(string type, int? budgetTokens) =>
-        type.ToLowerInvariant() switch
-        {
-            "enabled"  => new ThinkingConfigEnabled { BudgetTokens = budgetTokens ?? 16384 },
-            "adaptive" => new ThinkingConfigAdaptive(),
-            "disabled" => new ThinkingConfigDisabled(),
-            _ => throw new InvalidOperationException(
-                $"Rewrite.Thinking.Type='{type}' is not one of: enabled, adaptive, disabled."),
-        };
-
-    private static void ApplyCapability(BridgeContext<MessagesRequest> ctx, IModelRegistry registry)
+    private static void ApplyUse(BridgeContext<MessagesRequest> ctx, LocationUse use)
     {
         var body = ctx.Request.Body;
-        var (newModel, stripEffort) = registry.ApplyEffortRouting(body.Model, body.OutputConfig?.Effort);
+        var bodyChanged = false;
 
-        var changed = false;
-        if (!string.Equals(body.Model, newModel, StringComparison.OrdinalIgnoreCase))
+        if (use.Model is { Length: > 0 } newModel
+            && !string.Equals(newModel, body.Model, StringComparison.OrdinalIgnoreCase))
         {
             body = body with { Model = newModel };
-            changed = true;
+            bodyChanged = true;
         }
-        if (stripEffort && body.OutputConfig?.Effort is not null)
+
+        // EffortMap: lookup by current effort. The lookup runs AFTER the model
+        // swap above, so a location can say "on this target, max → xhigh"
+        // independently of what the inbound model was.
+        if (use.EffortMap is { Count: > 0 } map
+            && body.OutputConfig?.Effort is { Length: > 0 } inboundEffort
+            && map.TryGetValue(inboundEffort, out var mappedEffort)
+            && !string.Equals(mappedEffort, inboundEffort, StringComparison.OrdinalIgnoreCase))
         {
-            body = body with { OutputConfig = body.OutputConfig with { Effort = null } };
-            changed = true;
+            var oc = body.OutputConfig with { Effort = mappedEffort };
+            body = body with { OutputConfig = oc };
+            bodyChanged = true;
+            Log.Debug($"    EffortMap: '{inboundEffort}' → '{mappedEffort}'");
         }
-        if (changed)
+
+        if (bodyChanged) ctx.Request.Body = body;
+
+        if (use.Headers is { } h)
         {
-            ctx.Request.Body = body;
-            Log.Debug($"  routes/capability: model='{newModel}' stripEffort={stripEffort}");
+            ApplyHeaders(ctx, h);
         }
     }
 
-    private static string? ThinkingShape(ThinkingConfig? thinking) => thinking switch
+    private static void ApplyHeaders(BridgeContext<MessagesRequest> ctx, LocationHeaders h)
     {
-        ThinkingConfigEnabled  => "enabled",
-        ThinkingConfigAdaptive => "adaptive",
-        ThinkingConfigDisabled => "disabled",
-        _                      => null,
-    };
+        if (h.Set is { Count: > 0 } setMap)
+        {
+            foreach (var (name, value) in setMap)
+            {
+                if (string.Equals(name, "anthropic-beta", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Split value into tokens and stage them as PendingBetaAdds;
+                    // HeadersOutboundStage merges them with the inbound set and
+                    // the derived set, then applies strip patterns. Splitting
+                    // here means the user can write either a single token or a
+                    // comma list with the same effect.
+                    foreach (var token in SplitBetaTokens(value))
+                    {
+                        ctx.PendingBetaAdds.Add(token);
+                    }
+                }
+                else
+                {
+                    // Whitelisted Copilot identity header (validated at startup).
+                    // Stage it for CopilotHeaderFactory to honor at HTTP-build time.
+                    ctx.CopilotHeaderOverrides[name] = value;
+                }
+            }
+        }
 
-    private static int EffortToBudget(string? effort) => effort switch
-    {
-        "low"    => 4096,
-        "medium" => 16384,
-        "high"   => 32768,
-        "xhigh"  => 64000,
-        "max"    => 64000,
-        _        => 16384,
-    };
+        if (h.Remove is { Count: > 0 } removeList)
+        {
+            foreach (var entry in removeList)
+            {
+                // Token-level form: "anthropic-beta:context-1m-*". The colon
+                // splits header name from the token pattern; only meaningful
+                // for anthropic-beta today (other whitelisted headers are
+                // single-value).
+                var colon = entry.IndexOf(':');
+                if (colon > 0)
+                {
+                    var hName = entry[..colon];
+                    var pattern = entry[(colon + 1)..];
+                    if (string.Equals(hName, "anthropic-beta", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ctx.PendingBetaStrips.Add(pattern);
+                    }
+                    // Non-beta token-form removes don't have a use case today;
+                    // RoutesValidator already rejected them at startup.
+                }
+                else
+                {
+                    // Whole-header remove on a Copilot identity header.
+                    // Setting to null tells CopilotHeaderFactory to skip it.
+                    ctx.CopilotHeaderOverrides[entry] = null;
+                }
+            }
+        }
+    }
 
-    private static string BudgetToEffort(int budget) => budget switch
+    private static IEnumerable<string> SplitBetaTokens(string raw)
     {
-        < 8192  => "low",
-        < 24000 => "medium",
-        < 48000 => "high",
-        _       => "xhigh",
-    };
-
-    private static string Describe(RoutingRule r)
-    {
-        var parts = new List<string>();
-        if (r.Match.InboundModel is not null) parts.Add($"model={r.Match.InboundModel}");
-        if (r.Match.InboundEffort is not null) parts.Add($"effort={r.Match.InboundEffort}");
-        if (r.Match.InboundThinking is not null) parts.Add($"thinking={r.Match.InboundThinking}");
-        return string.Join(',', parts);
+        foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (part.Length > 0) yield return part;
+        }
     }
 }

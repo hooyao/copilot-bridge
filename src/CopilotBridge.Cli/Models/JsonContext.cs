@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using CopilotBridge.Cli.Models.Anthropic.Errors;
 using CopilotBridge.Cli.Models.Anthropic.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Models.Anthropic.Response;
@@ -39,4 +40,6 @@ namespace CopilotBridge.Cli.Models;
 // types at runtime via options.GetTypeInfo(...).
 [JsonSerializable(typeof(ContentBlockParam))]
 [JsonSerializable(typeof(TextBlockParam))]
+// Bridge-generated error responses (e.g. unknown model → 400).
+[JsonSerializable(typeof(ErrorResponse))]
 internal partial class JsonContext : JsonSerializerContext;
