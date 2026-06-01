@@ -11,6 +11,7 @@ namespace CopilotBridge.Playground;
 /// many tool uses, which is outside this experiment's scope. Just proving "field
 /// accepted" is enough ground truth for the bridge passthrough.
 /// </summary>
+[Trait("Category", "Integration")]
 public class ContextManagementTests
 {
     private const string BetaHeader = "context-management-2025-06-27";

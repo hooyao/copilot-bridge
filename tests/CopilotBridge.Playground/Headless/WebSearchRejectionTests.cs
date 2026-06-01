@@ -15,6 +15,7 @@ namespace CopilotBridge.Playground.Headless;
 /// The error body points the user at MCP as the search workaround.
 /// </summary>
 [SupportedOSPlatform("windows")]
+[Trait("Category", "Integration")]
 public class WebSearchRejectionTests : IClassFixture<BridgeFixture>
 {
     private readonly BridgeFixture _bridge;

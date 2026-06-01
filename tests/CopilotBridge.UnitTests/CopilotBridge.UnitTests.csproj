@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>copilot-unittests</AssemblyName>
+    <RootNamespace>CopilotBridge.UnitTests</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <!-- Pure unit tests: no network, no Copilot, no claude.exe. Fast and
+       deterministic — runs in CI without any live credentials, unlike the
+       integration probes in tests/CopilotBridge.Playground. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <!-- For the config-binding tests: ConfigurationBuilder + AddJsonStream + Bind
+       live in the ASP.NET shared framework (same one Cli uses). -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CopilotBridge.Cli\CopilotBridge.Cli.csproj" />
+  </ItemGroup>
+
+</Project>

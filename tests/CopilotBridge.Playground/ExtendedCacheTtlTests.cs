@@ -11,6 +11,7 @@ namespace CopilotBridge.Playground;
 /// that the 1h-tagged tokens land in <c>usage.cache_creation.ephemeral_1h_input_tokens</c>
 /// (a Copilot-extended Bedrock field), not the 5m bucket.
 /// </summary>
+[Trait("Category", "Integration")]
 public class ExtendedCacheTtlTests
 {
     // Distinct from PromptCachingTests's prefix so the cache key doesn't collide.

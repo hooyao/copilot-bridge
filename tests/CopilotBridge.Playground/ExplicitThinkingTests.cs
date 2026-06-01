@@ -9,6 +9,7 @@ namespace CopilotBridge.Playground;
 /// With explicit thinking, the model is required to emit thinking blocks on any
 /// non-trivial prompt — making it a reliable assertion target.
 /// </summary>
+[Trait("Category", "Integration")]
 public class ExplicitThinkingTests
 {
     // claude-opus-4.7-1m-internal returns HTTP 400 when sent thinking:{type:"enabled"};

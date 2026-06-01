@@ -7,6 +7,7 @@ namespace CopilotBridge.Playground;
 /// (message_start → content_block_* → message_delta → message_stop) plus the
 /// Copilot-added <c>[DONE]</c> terminator the bridge needs to filter.
 /// </summary>
+[Trait("Category", "Integration")]
 public class StreamingTests
 {
     [Theory]

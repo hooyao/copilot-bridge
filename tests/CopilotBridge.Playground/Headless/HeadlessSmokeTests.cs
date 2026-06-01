@@ -11,6 +11,7 @@ namespace CopilotBridge.Playground.Headless;
 /// matrix; once the smoke case is solid we add cases.
 /// </summary>
 [SupportedOSPlatform("windows")]
+[Trait("Category", "Integration")]
 public class HeadlessSmokeTests : IClassFixture<BridgeFixture>
 {
     private readonly BridgeFixture _bridge;

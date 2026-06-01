@@ -10,6 +10,7 @@ namespace CopilotBridge.Playground;
 /// twice; expects <c>cache_creation_input_tokens &gt; 0</c> on the first and
 /// <c>cache_read_input_tokens &gt; 0</c> on the second.
 /// </summary>
+[Trait("Category", "Integration")]
 public class PromptCachingTests
 {
     // ~6450 tokens — comfortably above Anthropic's 1024 (Sonnet/Opus) and 2048 (Haiku) thresholds.

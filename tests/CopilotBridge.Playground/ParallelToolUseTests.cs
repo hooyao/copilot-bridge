@@ -9,6 +9,7 @@ namespace CopilotBridge.Playground;
 /// need to round-trip all of them with multiple <c>tool_result</c> blocks in a
 /// single user message.
 /// </summary>
+[Trait("Category", "Integration")]
 public class ParallelToolUseTests
 {
     [Theory]

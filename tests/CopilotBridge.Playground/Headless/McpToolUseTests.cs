@@ -24,6 +24,7 @@ namespace CopilotBridge.Playground.Headless;
 /// of the unsupported <c>web_search_*</c> built-in.
 /// </summary>
 [SupportedOSPlatform("windows")]
+[Trait("Category", "Integration")]
 public class McpToolUseTests : IClassFixture<BridgeFixture>
 {
     private readonly BridgeFixture _bridge;

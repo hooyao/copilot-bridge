@@ -10,6 +10,7 @@ namespace CopilotBridge.Playground;
 /// Claude Code maps this to its <c>FinishedCompletionReason.Length</c> path
 /// (<c>messagesApi.ts:1006-1018</c>).
 /// </summary>
+[Trait("Category", "Integration")]
 public class MaxTokensTests
 {
     [Theory]

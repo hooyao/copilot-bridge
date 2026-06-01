@@ -11,6 +11,7 @@ namespace CopilotBridge.Playground;
 /// implementations. Add a new probe here whenever a "does Copilot support X?"
 /// question comes up.
 /// </summary>
+[Trait("Category", "Integration")]
 public class CopilotGapProbes
 {
     private readonly ITestOutputHelper _output;

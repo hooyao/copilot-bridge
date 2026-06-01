@@ -25,6 +25,7 @@ namespace CopilotBridge.Playground;
 /// <c>claude-opus-4-7</c> + <c>context-1m-2025-08-07</c> beta header on native.
 /// </summary>
 [SupportedOSPlatform("windows")]
+[Trait("Category", "Integration")]
 public class ApiComparisonTests
 {
     private readonly ITestOutputHelper _output;

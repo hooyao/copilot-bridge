@@ -13,6 +13,7 @@ namespace CopilotBridge.Playground.Headless;
 /// contains the canary string the shell command emitted.
 /// </summary>
 [SupportedOSPlatform("windows")]
+[Trait("Category", "Integration")]
 public class ToolUseHeadlessTests : IClassFixture<BridgeFixture>
 {
     private readonly BridgeFixture _bridge;

@@ -10,6 +10,7 @@ namespace CopilotBridge.Playground;
 /// natural-language answer. This exercises the full Anthropic tool protocol
 /// the bridge will need to passthrough.
 /// </summary>
+[Trait("Category", "Integration")]
 public class ToolUseTests
 {
     [Theory]

@@ -42,6 +42,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="copilot-playground" />
+    <InternalsVisibleTo Include="copilot-unittests" />
   </ItemGroup>
 
   <!-- Ship appsettings.json next to the exe. PreserveNewest means user edits
