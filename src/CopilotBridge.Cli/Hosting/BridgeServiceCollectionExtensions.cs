@@ -88,6 +88,13 @@ internal static class BridgeServiceCollectionExtensions
         });
 
         // --- HTTP + auth + Copilot client ---------------------------------
+        // HttpClient and AuthService keep factory registrations: the former
+        // needs UserAgent setup, the latter takes the closure-captured
+        // deviceCodePrinter (DI can't supply it). Everything else with a
+        // straightforward constructor uses the two-param overload so the
+        // container does its own activation — fewer moving pieces, same
+        // AOT-safety (Microsoft.Extensions.DependencyInjection's two-param
+        // AddSingleton<TService, TImpl> is trim-clean since .NET 8).
         services.AddSingleton(_ =>
         {
             var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
@@ -97,12 +104,13 @@ internal static class BridgeServiceCollectionExtensions
         services.AddSingleton(sp => new AuthService(
             sp.GetRequiredService<HttpClient>(),
             deviceCodePrinter));
+        // Forwarding singleton — same AuthService instance reachable through
+        // both the concrete type and the IAuthService interface. Must stay
+        // a factory; AddSingleton<IAuthService, AuthService>() would create
+        // a second instance.
         services.AddSingleton<IAuthService>(sp => sp.GetRequiredService<AuthService>());
-        services.AddSingleton(_ => new CopilotHeaderFactory());
-        services.AddSingleton<ICopilotClient>(sp => new CopilotClient(
-            sp.GetRequiredService<HttpClient>(),
-            sp.GetRequiredService<IAuthService>(),
-            sp.GetRequiredService<CopilotHeaderFactory>()));
+        services.AddSingleton<CopilotHeaderFactory>();
+        services.AddSingleton<ICopilotClient, CopilotClient>();
 
         // --- Logging sink (DI-owned, optional based on TracingOptions) ----
         // Registered via the non-generic overload because the factory may
@@ -119,14 +127,11 @@ internal static class BridgeServiceCollectionExtensions
         });
 
         // --- Pipeline ------------------------------------------------------
-        services.AddSingleton<ModelProfileCatalog>(_ => new ModelProfileCatalog());
-        services.AddSingleton<IModelRegistry>(_ => new CopilotModelRegistry());
-        services.AddSingleton(sp => new ClaudeCodeInboundAdapter(
-            sp.GetRequiredService<ILogger<ClaudeCodeInboundAdapter>>()));
-        services.AddSingleton(sp => new ClaudeCodeOutboundAdapter(
-            sp.GetRequiredService<ILogger<ClaudeCodeOutboundAdapter>>()));
-        services.AddSingleton<IPipelineRunner<MessagesRequest>>(sp =>
-            new PipelineRunner<MessagesRequest>(sp.GetRequiredService<ILogger<PipelineRunner<MessagesRequest>>>()));
+        services.AddSingleton<ModelProfileCatalog>();
+        services.AddSingleton<IModelRegistry, CopilotModelRegistry>();
+        services.AddSingleton<ClaudeCodeInboundAdapter>();
+        services.AddSingleton<ClaudeCodeOutboundAdapter>();
+        services.AddSingleton<IPipelineRunner<MessagesRequest>, PipelineRunner<MessagesRequest>>();
         services.AddSingleton(sp => BuildAnthropicPipeline(sp));
 
         // --- New per-request summary logger -------------------------------
