@@ -132,7 +132,20 @@ internal static class BridgeServiceCollectionExtensions
         services.AddSingleton<ClaudeCodeInboundAdapter>();
         services.AddSingleton<ClaudeCodeOutboundAdapter>();
         services.AddSingleton<IPipelineRunner<MessagesRequest>, PipelineRunner<MessagesRequest>>();
-        services.AddSingleton(sp => BuildAnthropicPipeline(sp));
+
+        // Each pipeline stage / strategy registers itself as a singleton so
+        // the DI container — not the assembly point — instantiates it and
+        // wires its ILogger<T>. BuildAnthropicPipeline only orders them.
+        services.AddSingleton<ModelRouterStage>();
+        services.AddSingleton<AssistantThinkingFilterStage>();
+        services.AddSingleton<SystemSanitizeStage>();
+        services.AddSingleton<MessagesSanitizeStage>();
+        services.AddSingleton<ToolsSanitizeStage>();
+        services.AddSingleton<HeadersOutboundStage>();
+        services.AddSingleton<DoneFilterStage>();
+        services.AddSingleton<CopilotMessagesPassthroughStrategy>();
+
+        services.AddSingleton(BuildAnthropicPipeline);
 
         // --- New per-request summary logger -------------------------------
         services.AddSingleton<RequestSummaryLogger>();
@@ -147,10 +160,13 @@ internal static class BridgeServiceCollectionExtensions
         return services;
     }
 
-    private static Pipeline<MessagesRequest> BuildAnthropicPipeline(IServiceProvider sp)
-    {
-        var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-        return new Pipeline<MessagesRequest>
+    /// <summary>
+    /// Compose the Anthropic-IR pipeline by ordering DI-resolved stages and
+    /// strategies. Stages themselves are singletons registered in
+    /// <see cref="AddBridgeServer"/>; this method only decides the order.
+    /// </summary>
+    private static Pipeline<MessagesRequest> BuildAnthropicPipeline(IServiceProvider sp) =>
+        new()
         {
             Name = "Anthropic-IR",
             RequestStages =
@@ -161,13 +177,7 @@ internal static class BridgeServiceCollectionExtensions
                 //    mechanically shapes the body to what the target
                 //    profile accepts. A missing profile throws
                 //    UnknownModelException, surfaced as a 400 by the endpoint.
-                new ModelRouterStage(
-                    sp.GetRequiredService<IModelRegistry>(),
-                    sp.GetRequiredService<ModelProfileCatalog>(),
-                    sp.GetRequiredService<IOptions<RoutesConfig>>(),
-                    loggerFactory.CreateLogger<ModelRouterStage>(),
-                    loggerFactory.CreateLogger<ModelRouteResolverLog>(),
-                    loggerFactory.CreateLogger<ProfileAdjusterLog>()),
+                sp.GetRequiredService<ModelRouterStage>(),
 
                 // 2-5. Body-level cleanups, each independent of model family.
                 //
@@ -176,26 +186,23 @@ internal static class BridgeServiceCollectionExtensions
                 //  `cache_control.scope`, so the field is silently dropped at
                 //  deserialize time. If the DTO ever grows a Scope property,
                 //  add the stage to actively clear it.
-                new AssistantThinkingFilterStage(loggerFactory.CreateLogger<AssistantThinkingFilterStage>()),
-                new SystemSanitizeStage(loggerFactory.CreateLogger<SystemSanitizeStage>()),
-                new MessagesSanitizeStage(loggerFactory.CreateLogger<MessagesSanitizeStage>()),
-                new ToolsSanitizeStage(loggerFactory.CreateLogger<ToolsSanitizeStage>()),
+                sp.GetRequiredService<AssistantThinkingFilterStage>(),
+                sp.GetRequiredService<SystemSanitizeStage>(),
+                sp.GetRequiredService<MessagesSanitizeStage>(),
+                sp.GetRequiredService<ToolsSanitizeStage>(),
 
                 // 6. Always last — generates outbound headers from the FINAL body shape.
-                new HeadersOutboundStage(loggerFactory.CreateLogger<HeadersOutboundStage>()),
+                sp.GetRequiredService<HeadersOutboundStage>(),
             ],
             ResponseStages =
             [
-                new DoneFilterStage(loggerFactory.CreateLogger<DoneFilterStage>()),
+                sp.GetRequiredService<DoneFilterStage>(),
             ],
             Strategies = new StrategyRegistry<MessagesRequest>(
             [
-                new CopilotMessagesPassthroughStrategy(
-                    sp.GetRequiredService<ICopilotClient>(),
-                    loggerFactory.CreateLogger<CopilotMessagesPassthroughStrategy>()),
+                sp.GetRequiredService<CopilotMessagesPassthroughStrategy>(),
             ]),
         };
-    }
 }
 
 /// <summary>
