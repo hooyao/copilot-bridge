@@ -17,11 +17,17 @@ internal static class ProfileAdjuster
     /// ends up addressing — usually the same one passed in, but variant-routing
     /// can switch profiles mid-adjust.
     /// </summary>
+    /// <param name="globalBetaStrips">Operator-configured patterns appended
+    /// to <c>ctx.PendingBetaStrips</c> before the per-profile strips. Comes
+    /// from <see cref="Hosting.Options.OutboundBetaPolicyOptions"/> and
+    /// defaults to <c>["advisor-tool-*", "structured-outputs-*"]</c> in the
+    /// shipped <c>appsettings.json</c>; empty when this argument is null.</param>
     public static ModelProfile Apply(
         BridgeContext<MessagesRequest> ctx,
         ModelProfile profile,
         ModelProfileCatalog catalog,
-        ILogger<ProfileAdjusterLog>? log = null)
+        ILogger<ProfileAdjusterLog>? log = null,
+        IReadOnlyList<string>? globalBetaStrips = null)
     {
         profile = ApplyEffort(ctx, profile, catalog, log);
         ApplyThinking(ctx, profile, log);
@@ -32,7 +38,14 @@ internal static class ProfileAdjuster
         CapThinkingBudget(ctx, profile, log);
 
         // Step 5: register beta-strip patterns for HeadersOutboundStage.
-        ctx.PendingBetaStrips.Add("advisor-tool-*");
+        // Operator-configured global strips run first (these are tokens
+        // Copilot's gateway rejects on EVERY model — they live in
+        // appsettings.json so each deployment can tune what its backend
+        // tolerates without a code change). Per-profile strips run after.
+        if (globalBetaStrips is { Count: > 0 })
+        {
+            ctx.PendingBetaStrips.AddRange(globalBetaStrips);
+        }
         if (profile.StripBetas.Count > 0)
         {
             ctx.PendingBetaStrips.AddRange(profile.StripBetas);

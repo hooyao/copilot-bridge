@@ -85,6 +85,7 @@ internal static class ClaudeCodeMessagesEndpoint
         var upstreamBodyPooled = false;
         var upstreamStatus = 0;
         Dictionary<string, string>? upstreamResponseHeaders = null;
+        byte[]? upstreamBufferedBody = null;   // non-streaming response body for the audit
 
         // Per-request summary, populated as the pipeline progresses. Always
         // emitted in finally regardless of error path.
@@ -175,6 +176,12 @@ internal static class ClaudeCodeMessagesEndpoint
             upstreamHeaders = new Dictionary<string, string>(bridgeCtx.Request.Headers, StringComparer.OrdinalIgnoreCase);
             upstreamStatus = bridgeCtx.Response.Status;
             upstreamResponseHeaders = new Dictionary<string, string>(bridgeCtx.Response.Headers, StringComparer.OrdinalIgnoreCase);
+            // BufferedBody is what Copilot returned for non-streaming
+            // responses (including error responses with their JSON body).
+            // For streaming responses BufferedBody stays null — the body
+            // arrives as SSE events captured separately on the inbound-resp
+            // side, so upstream-resp's body remains empty by design.
+            upstreamBufferedBody = bridgeCtx.Response.BufferedBody;
 
             responseStatus = bridgeCtx.Response.Status;
             foreach (var (k, v) in bridgeCtx.Response.Headers)
@@ -299,12 +306,21 @@ internal static class ClaudeCodeMessagesEndpoint
                     upstreamBodyLen,
                     upstreamBodyPooled);
 
+                // Surface what Copilot actually sent back. For buffered
+                // responses (errors, non-streaming completions) this is
+                // bridgeCtx.Response.BufferedBody; for streaming responses
+                // the body is delivered as a sequence of SSE events captured
+                // by the relay loop (`capturedEvents`) and recorded on the
+                // inbound-resp side, so the upstream-resp body is empty.
+                // Without this, every 4xx/5xx from Copilot showed an empty
+                // body in the audit and we had to guess at the error.
+                var upstreamRespBody = upstreamBufferedBody ?? Array.Empty<byte>();
                 ioLogger.LogUpstreamResponse(
                     seq,
                     upstreamStatus,
                     upstreamResponseHeaders ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
-                    [],
-                    0,
+                    upstreamRespBody,
+                    upstreamRespBody.Length,
                     bodyPooled: false,
                     error: endpointError);
             }

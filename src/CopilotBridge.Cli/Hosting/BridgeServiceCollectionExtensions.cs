@@ -74,6 +74,7 @@ internal static class BridgeServiceCollectionExtensions
         }
         services.Configure<TracingOptions>(config.GetSection("Tracing"));
         services.Configure<RoutesConfig>(config.GetSection("Routing"));
+        services.Configure<OutboundBetaPolicyOptions>(config.GetSection("Pipeline:OutboundBeta"));
 
         // Kestrel listens on the (post-PostConfigure) port + uses our generous
         // keep-alive limits. Configured via IConfigureOptions so it can pull

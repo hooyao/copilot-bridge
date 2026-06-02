@@ -1,4 +1,5 @@
 using CopilotBridge.Cli.Hosting;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -17,6 +18,7 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
     private readonly IModelRegistry _registry;
     private readonly Routing.ModelProfileCatalog _profiles;
     private readonly Routing.RoutesConfig _routes;
+    private readonly OutboundBetaPolicyOptions _betaPolicy;
     private readonly ILogger<ModelRouterStage> _log;
     private readonly ILogger<ModelRouteResolverLog> _resolverLog;
     private readonly ILogger<ProfileAdjusterLog> _adjusterLog;
@@ -25,6 +27,7 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
         IModelRegistry registry,
         Routing.ModelProfileCatalog profiles,
         IOptions<Routing.RoutesConfig> routesOptions,
+        IOptions<OutboundBetaPolicyOptions> betaPolicyOptions,
         ILogger<ModelRouterStage> log,
         ILogger<ModelRouteResolverLog> resolverLog,
         ILogger<ProfileAdjusterLog> adjusterLog)
@@ -32,6 +35,7 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
         _registry = registry;
         _profiles = profiles;
         _routes = routesOptions.Value;
+        _betaPolicy = betaPolicyOptions.Value;
         _log = log;
         _resolverLog = resolverLog;
         _adjusterLog = adjusterLog;
@@ -69,7 +73,7 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
         }
 
         // 4. Profile-driven body adjustment. May switch profile via variant routing.
-        profile = Routing.ProfileAdjuster.Apply(ctx, profile, _profiles, _adjusterLog);
+        profile = Routing.ProfileAdjuster.Apply(ctx, profile, _profiles, _adjusterLog, _betaPolicy.GlobalStrip);
 
         // 5. Vendor/endpoint dispatch on the final model id.
         var finalModel = ctx.Request.Body.Model;
