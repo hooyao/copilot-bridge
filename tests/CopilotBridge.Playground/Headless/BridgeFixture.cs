@@ -1,4 +1,5 @@
 using System.Runtime.Versioning;
+using CopilotBridge.Cli.Endpoints.ClaudeCode;
 using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Hosting.Logging;
 using Microsoft.AspNetCore.Builder;
@@ -7,9 +8,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Serilog;
-using Serilog.Extensions.Logging;
 using Xunit;
 
 namespace CopilotBridge.Playground.Headless;
@@ -31,54 +30,45 @@ public sealed class BridgeFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        // The bridge expects a BridgeIoSink registered as both the Serilog
-        // sink and a DI singleton. Program.cs handles this for the
-        // production binary; tests do it themselves here.
-        var ioDir = Path.Combine(AppContext.BaseDirectory, "request-traces");
-        _sink = new BridgeIoSink(ioDir);
-        BridgeIoSinkHolder.Instance = _sink;
-
-        Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Verbose()
-            // Mirror Program.cs: keep the BridgeIoPayload reference live so
-            // BridgeIoSink can cast scalar.Value back to the typed payload.
-            // Without this, Serilog stringifies the complex type and the sink
-            // silently drops every audit event.
-            .Destructure.AsScalar<BridgeIoPayload>()
-            .WriteTo.Logger(lc => lc
-                .Filter.ByIncludingOnly(e => e.Properties.ContainsKey("Payload"))
-                .WriteTo.Sink(_sink))
-            .CreateLogger();
+        // Mirror production: bootstrap Serilog before anything else, then let
+        // the host swap in the full logger via SerilogReplacerHostedService.
+        Log.Logger = SerilogBootstrapper.BuildBootstrap();
 
         var builder = WebApplication.CreateBuilder();
 
-        builder.Logging.ClearProviders();
-        builder.Logging.AddProvider(new SerilogLoggerProvider(dispose: false));
-
-        // The fixture lives in test bin dir; production appsettings.json lives
-        // next to copilot-bridge.exe in src/CopilotBridge.Cli/bin/.../appsettings.json.
-        // Load it explicitly so the catalog/routing logic exercises the same
-        // config the user runs against.
+        // Production appsettings.json lives next to copilot-bridge.exe in
+        // src/CopilotBridge.Cli/...; the fixture lives in test bin dir. Locate
+        // and load it explicitly so the catalog/routing logic exercises the
+        // same config the user runs against. Override Tracing.Enabled so the
+        // fixture always captures bodies for assertions.
         var prodAppsettings = LocateProductionAppsettings();
         if (prodAppsettings is not null)
         {
             builder.Configuration.AddJsonFile(prodAppsettings, optional: false, reloadOnChange: false);
         }
+        var ioDir = Path.Combine(AppContext.BaseDirectory, "request-traces");
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Tracing:Enabled"] = "true",
+            ["Tracing:Directory"] = ioDir,
+        });
 
-        BridgeHost.ConfigureServices(builder, deviceCodePrinter: null);
+        builder.Logging.AddBridgeLogging();
+        builder.Services.AddBridgeServer(builder.Configuration, cliPort: null, deviceCodePrinter: null);
 
-        // Random ephemeral port. After app starts, IServerAddressesFeature gives us the actual port.
+        // Random ephemeral port — but the production AddBridgeServer wires
+        // Kestrel via IConfigureOptions<KestrelServerOptions>.ListenLocalhost(port).
+        // Override that here with a UseUrls so the OS picks the port.
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
         _app = builder.Build();
 
-        var startup = await BridgeHost.RunStartupAsync(_app, CancellationToken.None);
-        if (startup.HasValue)
-        {
-            throw new InvalidOperationException($"Bridge startup returned exit code {startup.Value} — auth or routes config issue.");
-        }
+        // Cache the sink so LogDirectory can read it.
+        _sink = _app.Services.GetService<BridgeIoSink>();
 
-        BridgeHost.MapEndpoints(_app);
+        _app.MapMessages();
+        _app.MapCountTokens();
+        _app.MapModels();
 
         await _app.StartAsync();
 

@@ -80,6 +80,7 @@ Layers, outer depends on inner only:
 - Unit tests (CI-safe, no Copilot): `dotnet test tests/CopilotBridge.UnitTests`, or solution-wide skipping the integration harness: `dotnet test --filter "Category!=Integration"`.
 - Integration harness (live Copilot + claude.exe): `dotnet test tests/CopilotBridge.Playground` — tagged `[Trait("Category","Integration")]`. New playground tests must carry that trait or CI will try to run them. Routing config reference: `docs/routing.md`.
 - Single test: `dotnet test --filter FullyQualifiedName~<TestName>`
+- **NEVER bind the default port (8765) when running the bridge from a test or local script.** The user often has a real bridge running on 8765; collisions surface as a generic "address already in use" startup failure that's easy to misdiagnose. Always pass a non-8765 port: in-process fixtures use `WebHost.UseUrls("http://127.0.0.1:0")` (ephemeral); manual `dotnet run` for ad-hoc smoke tests should pass `serve --port 18765` (or any free high port). The Playground's `BridgeFixture` already follows this rule.
 
 One project for now (per RamDrive's pattern early on). If size or compile time pushes back, the natural seam is to split out `CopilotBridge.Core` containing `Translation/`, `Copilot/`, `Auth/`, `Configuration/`, `Models/`, `State/`, leaving `Cli/` as `Program.cs` + `Hosting/` + `Endpoints/` + `WebAssets/`. Subdomains live as folders inside the single project until then — extra `.csproj` files each pay an AOT cost.
 

@@ -61,10 +61,15 @@ jobs:
         run: |
           $version = "${{ steps.version.outputs.VERSION }}"
           $exe = Get-Item ./publish-aot/copilot-bridge.exe
+          $settings = Get-Item ./publish-aot/appsettings.json
           $sizeMB = [math]::Round($exe.Length / 1MB, 2)
-          Write-Host "Packaging copilot-bridge.exe ($sizeMB MB) into copilot-bridge-$version-win-x64.zip"
+          Write-Host "Packaging copilot-bridge.exe ($sizeMB MB) + appsettings.json into copilot-bridge-$version-win-x64.zip"
+          # Both files are required at runtime: appsettings.json carries the
+          # Routing, Server (port), and Tracing config the bridge loads with
+          # AddJsonFile(optional:false) at startup. Without it the exe fails
+          # fast with a FileNotFoundException.
           Compress-Archive `
-            -Path ./publish-aot/copilot-bridge.exe `
+            -Path ./publish-aot/copilot-bridge.exe, ./publish-aot/appsettings.json `
             -DestinationPath "copilot-bridge-$version-win-x64.zip" `
             -CompressionLevel Optimal
           Get-Item "copilot-bridge-$version-win-x64.zip"

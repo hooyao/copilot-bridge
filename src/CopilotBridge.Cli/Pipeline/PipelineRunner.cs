@@ -1,4 +1,4 @@
-using Serilog;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline;
 
@@ -14,15 +14,23 @@ internal interface IPipelineRunner<TBody> where TBody : class
 
 internal sealed class PipelineRunner<TBody> : IPipelineRunner<TBody> where TBody : class
 {
+    private readonly ILogger<PipelineRunner<TBody>> _log;
+
+    public PipelineRunner(ILogger<PipelineRunner<TBody>> log)
+    {
+        _log = log;
+    }
+
     public async Task RunAsync(Pipeline<TBody> pipeline, BridgeContext<TBody> ctx)
     {
-        Log.Debug($"pipeline {pipeline.Name} start  path={ctx.Request.Path}  body-bytes={ctx.Request.RawBody.Length}");
+        _log.LogDebug("pipeline {PipelineName} start  path={Path}  body-bytes={BodyBytes}",
+            pipeline.Name, ctx.Request.Path, ctx.Request.RawBody.Length);
 
         foreach (var stage in pipeline.RequestStages)
         {
-            Log.Debug($"req-stage start  {stage.Name}");
+            _log.LogDebug("req-stage start  {StageName}", stage.Name);
             await stage.ApplyAsync(ctx);
-            Log.Debug($"req-stage end    {stage.Name}");
+            _log.LogDebug("req-stage end    {StageName}", stage.Name);
         }
 
         if (ctx.Target is null)
@@ -33,17 +41,19 @@ internal sealed class PipelineRunner<TBody> : IPipelineRunner<TBody> where TBody
         }
 
         var strategy = pipeline.Strategies.Resolve(ctx.Target);
-        Log.Debug($"strategy resolved  {strategy.Name}  target={ctx.Target.Vendor}:{ctx.Target.Endpoint}  model={ctx.Target.ModelId}");
+        _log.LogDebug("strategy resolved  {StrategyName}  target={Vendor}:{Endpoint}  model={ModelId}",
+            strategy.Name, ctx.Target.Vendor, ctx.Target.Endpoint, ctx.Target.ModelId);
         await strategy.ForwardAsync(ctx);
-        Log.Debug($"strategy returned  status={ctx.Response.Status}  mode={ctx.Response.Mode}");
+        _log.LogDebug("strategy returned  status={Status}  mode={Mode}",
+            ctx.Response.Status, ctx.Response.Mode);
 
         foreach (var stage in pipeline.ResponseStages)
         {
-            Log.Debug($"resp-stage start {stage.Name}");
+            _log.LogDebug("resp-stage start {StageName}", stage.Name);
             await stage.ApplyAsync(ctx);
-            Log.Debug($"resp-stage end   {stage.Name}");
+            _log.LogDebug("resp-stage end   {StageName}", stage.Name);
         }
 
-        Log.Debug($"pipeline {pipeline.Name} end");
+        _log.LogDebug("pipeline {PipelineName} end", pipeline.Name);
     }
 }

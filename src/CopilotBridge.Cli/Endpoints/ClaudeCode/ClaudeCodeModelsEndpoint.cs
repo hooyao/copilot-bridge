@@ -4,7 +4,9 @@ using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Hosting.Logging;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Models;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
@@ -17,6 +19,12 @@ namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 internal static class ClaudeCodeModelsEndpoint
 {
     private const string EpochCreatedAt = "1970-01-01T00:00:00Z";
+
+    public static IEndpointRouteBuilder MapModels(this IEndpointRouteBuilder app)
+    {
+        app.MapGet("/cc/v1/models", HandleAsync);
+        return app;
+    }
 
     public static async Task HandleAsync(
         HttpContext httpCtx,

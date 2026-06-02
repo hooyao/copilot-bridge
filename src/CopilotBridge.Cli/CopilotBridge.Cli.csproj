@@ -16,7 +16,22 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <UseSystemResourceKeys>true</UseSystemResourceKeys>
     <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
+    <!-- Source-generated IConfiguration → POCO binding. Implicitly on under
+         PublishAot=true since .NET 9, declared explicitly so the JIT build
+         takes the same path and so the intent is visible in the csproj. -->
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
   </PropertyGroup>
+
+  <!-- Windows-only by design (DPAPI for the encrypted token store).
+       Emitted as an assembly-level [SupportedOSPlatform("windows")] so all
+       cross-platform-warning analyzers (CA1416) treat the assembly as
+       Windows-specific. Replaces the per-file attribute that used to live
+       at the top of Program.cs. -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
+      <_Parameter1>windows</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
 
   <!-- Release-only: trim debug-shaped support to shrink the binary further. -->
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -47,10 +62,13 @@
 
   <!-- Ship appsettings.json next to the exe. PreserveNewest means user edits
        in publish/ aren't clobbered on rebuild unless the source file in the
-       project dir is newer. -->
+       project dir is newer. CopyToPublishDirectory is the property that
+       actually drives `dotnet publish` (CopyToOutputDirectory alone only
+       affects build output — publish doesn't carry it forward reliably). -->
   <ItemGroup>
     <None Update="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
   </ItemGroup>
 

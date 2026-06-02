@@ -1,6 +1,5 @@
 using CopilotBridge.Cli.Models.Anthropic.Request;
-
-using Serilog;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 
@@ -13,9 +12,12 @@ namespace CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 /// </summary>
 internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesRequest, MessagesRequest>
 {
-    public static readonly ClaudeCodeInboundAdapter Instance = new();
+    private readonly ILogger<ClaudeCodeInboundAdapter> _log;
 
-    private ClaudeCodeInboundAdapter() { }
+    public ClaudeCodeInboundAdapter(ILogger<ClaudeCodeInboundAdapter> log)
+    {
+        _log = log;
+    }
 
     public string Name => "ClaudeCodeInbound";
 
@@ -24,7 +26,9 @@ internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesR
         IReadOnlyDictionary<string, string> headers,
         CancellationToken ct)
     {
-        Log.Debug($"adapter {Name}: identity  model={clientBody.Model}  messages={clientBody.Messages.Count}  stream={clientBody.Stream == true}");
+        _log.LogDebug(
+            "adapter {Name}: identity  model={Model}  messages={Messages}  stream={Stream}",
+            Name, clientBody.Model, clientBody.Messages.Count, clientBody.Stream == true);
         return ValueTask.FromResult(clientBody);
     }
 

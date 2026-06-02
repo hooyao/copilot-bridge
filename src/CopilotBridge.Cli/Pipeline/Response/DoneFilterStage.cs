@@ -1,8 +1,7 @@
 using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using CopilotBridge.Cli.Models.Anthropic.Request;
-
-using Serilog;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Response;
 
@@ -16,6 +15,13 @@ namespace CopilotBridge.Cli.Pipeline.Response;
 /// </summary>
 internal sealed class DoneFilterStage : IResponseStage<MessagesRequest>
 {
+    private readonly ILogger<DoneFilterStage> _log;
+
+    public DoneFilterStage(ILogger<DoneFilterStage> log)
+    {
+        _log = log;
+    }
+
     public string Name => "DoneFilter";
 
     public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
@@ -26,13 +32,14 @@ internal sealed class DoneFilterStage : IResponseStage<MessagesRequest>
         }
 
         var source = ctx.Response.EventStream;
-        ctx.Response.EventStream = WrapAsync(source, ctx.DroppedEvents, ctx.Ct);
+        ctx.Response.EventStream = WrapAsync(source, ctx.DroppedEvents, _log, ctx.Ct);
         return Task.CompletedTask;
     }
 
     private static async IAsyncEnumerable<SseItem<string>> WrapAsync(
         IAsyncEnumerable<SseItem<string>> source,
         List<DroppedSseEvent> droppedEvents,
+        ILogger log,
         [EnumeratorCancellation] CancellationToken ct)
     {
         await foreach (var evt in source.WithCancellation(ct))
@@ -40,7 +47,7 @@ internal sealed class DoneFilterStage : IResponseStage<MessagesRequest>
             if (evt.EventType == "message" && evt.Data == "[DONE]")
             {
                 droppedEvents.Add(new DroppedSseEvent(evt.EventType, evt.Data));
-                Log.Debug("stage DoneFilter: dropped event:message data:[DONE]");
+                log.LogDebug("stage DoneFilter: dropped event:message data:[DONE]");
                 continue;
             }
             yield return evt;
