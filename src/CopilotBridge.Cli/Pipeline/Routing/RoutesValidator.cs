@@ -52,6 +52,21 @@ internal static class RoutesValidator
 
     private static void ValidateMatch(MatchExpression m, string prefix)
     {
+        // A node with no condition at all matches everything. That's almost
+        // always an authoring slip — or, more insidiously, a nested-binding
+        // failure that silently produced an empty node (e.g. AllOf/AnyOf failed
+        // to bind under the config source-generator). Either way, reject it so
+        // an empty When can never become a match-all that swallows all traffic.
+        if (m.AllOf is null && m.AnyOf is null
+            && m.Model is null && m.Effort is null && m.Header is null)
+        {
+            throw new InvalidOperationException(
+                $"{prefix} has no conditions (AllOf/AnyOf/Model/Effort/Header all null). "
+                + "An empty match routes every request through this location. If a nested "
+                + "AllOf/AnyOf was intended, verify it actually bound from config; otherwise "
+                + "add a condition.");
+        }
+
         // Composites must be non-empty arrays when present; an empty AllOf/AnyOf
         // is almost always an authoring slip and the semantics ("vacuously true"
         // vs "vacuously false") differ between them in a non-obvious way.

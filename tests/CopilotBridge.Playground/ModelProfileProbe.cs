@@ -21,6 +21,7 @@ namespace CopilotBridge.Playground;
 /// "invalid_request_error" = rejected.
 /// </remarks>
 [SupportedOSPlatform("windows")]
+[Trait("Category", "Integration")]
 public class ModelProfileProbe
 {
     private readonly ITestOutputHelper _output;

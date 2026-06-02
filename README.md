@@ -10,7 +10,7 @@ Codex       (OpenAI shape)    ──► /codex/v1/chat/completions   ├─► c
 Gemini CLI  (Gemini shape)    ──► /gemini/v1/...               ┘
 ```
 
-Ships as a single ~9.5 MB `.exe` with no .NET runtime dependency.
+Ships as a single ~12 MB `.exe` with no .NET runtime dependency.
 
 ## Status
 
@@ -188,20 +188,25 @@ zips the AOT exe and publishes a GitHub Release.
 
 Two log channels:
 
-- **Audit log** (`logs/<utc>-<seq>.json`) — always-on per-request capture of
+- **Runtime text log** (always-on) — Serilog with two sinks: console (stderr)
+  and a per-startup file at `<exe-dir>/log/bridge-{YYYYMMDD-HHMMSS}.log`
+  (startup banner, stage debug, errors). One file per process start makes a
+  single run trivially greppable; old files accumulate until cleaned up.
+  Levels are set per category in `appsettings.json`'s `Logging:LogLevel`
+  section (default `Debug` for `CopilotBridge.Cli`).
+- **Per-request audit trace** (opt-in, **off by default**) — set
+  `"Tracing": { "Enabled": true }` in `appsettings.json` to capture four JSON
+  files per request under `request-traces/`
+  (`<utc>-<seq>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`):
   inbound headers/body, upstream URL/headers/body, all SSE events (including
-  filtered `[DONE]`), duration. Useful for cache-hit verification and
-  protocol-mismatch debugging.
-- **Runtime log** — Serilog 4.3.1 with two sinks: console (stderr) and a new
-  per-startup file at `<exe-dir>/log/bridge-{YYYYMMDD-HHMMSS}.log`. Default
-  level is `Debug`; tune with `BRIDGE_LOG_LEVEL=Information` (or any
-  `Verbose|Debug|Information|Warning|Error|Fatal`). One file per process
-  start makes a single run trivially greppable; old files accumulate until
-  cleaned up.
+  the filtered `[DONE]`), duration. Off by default because traces contain full
+  prompts; turn it on to debug a cache-hit or protocol mismatch, then off
+  again. Useful for cache-hit verification and protocol-mismatch debugging.
 
 ## References
 
 - [`docs/pipeline-design.md`](docs/pipeline-design.md) — pipeline architecture spec
+- [`docs/routing.md`](docs/routing.md) — `Routing.Locations` config reference (nginx-style match/rewrite)
 - [`docs/copilot-api-research.md`](docs/copilot-api-research.md) — Copilot API protocol notes
 - [`docs/design.md`](docs/design.md) — original design doc
 - [`docs/size-history.md`](docs/size-history.md) — AOT binary size record per change

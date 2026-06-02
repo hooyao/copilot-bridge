@@ -53,6 +53,14 @@ jobs:
       - name: Build (Debug)
         run: dotnet build CopilotBridge.slnx -c Debug --no-restore
 
+      # Unit tests only. CopilotBridge.UnitTests is pure logic (routing match
+      # engine, validator, resolver) — no network, no DPAPI. The
+      # CopilotBridge.Playground integration harness is tagged
+      # [Trait("Category","Integration")] and filtered out here: it hits live
+      # Copilot and needs a DPAPI-encrypted GitHub token, neither available in CI.
+      - name: Test (unit, skip integration)
+        run: dotnet test CopilotBridge.slnx -c Debug --no-build --filter "Category!=Integration"
+
       # Run a Release AOT publish too — catches IL trim / source-gen
       # regressions that don't surface under Debug. The playground project
       # tests hit live Copilot and require a DPAPI-encrypted GitHub OAuth
@@ -82,10 +90,12 @@ jobs:
           | Configuration | Result |
           | --- | --- |
           | Debug build | ✅ |
+          | Unit tests (\`Category!=Integration\`) | ✅ |
           | Release AOT publish | ✅ |
           | \`copilot-bridge.exe\` size | **${{ steps.size.outputs.BINARY_SIZE_MB }} MB** |
 
-          Tests skipped: \`CopilotBridge.Playground\` is an integration harness
-          that requires a live GitHub OAuth token + DPAPI (Windows). Run
-          locally with \`dotnet test\` after \`auth login\`.
+          Integration tests skipped: \`CopilotBridge.Playground\` is tagged
+          \`[Trait("Category","Integration")]\` — it hits live Copilot and needs
+          a DPAPI-encrypted GitHub token (Windows). Run locally with
+          \`dotnet test\` after \`auth login\`.
           "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

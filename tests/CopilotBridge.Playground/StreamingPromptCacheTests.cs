@@ -20,6 +20,7 @@ namespace CopilotBridge.Playground;
 /// path or the <c>[DONE]</c> marker somehow contaminates the server-side
 /// cache key (which we don't expect).
 /// </summary>
+[Trait("Category", "Integration")]
 public class StreamingPromptCacheTests
 {
     private readonly ITestOutputHelper _output;

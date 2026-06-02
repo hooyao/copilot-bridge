@@ -20,6 +20,7 @@ namespace CopilotBridge.Playground;
 /// <c>dotnet test --filter BetaAcceptance --logger "console;verbosity=detailed"</c>.
 /// </summary>
 [SupportedOSPlatform("windows")]
+[Trait("Category", "Integration")]
 public class BetaAcceptanceTests
 {
     // sonnet-4.6 exists on both sides; the probe is about header acceptance,

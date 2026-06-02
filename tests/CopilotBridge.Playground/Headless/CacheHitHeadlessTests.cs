@@ -23,6 +23,7 @@ namespace CopilotBridge.Playground.Headless;
 /// DoneFilterStage.
 /// </summary>
 [SupportedOSPlatform("windows")]
+[Trait("Category", "Integration")]
 public class CacheHitHeadlessTests : IClassFixture<BridgeFixture>
 {
     private readonly BridgeFixture _bridge;

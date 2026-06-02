@@ -4,5 +4,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/CopilotBridge.Playground/CopilotBridge.Playground.csproj" />
+    <Project Path="tests/CopilotBridge.UnitTests/CopilotBridge.UnitTests.csproj" />
   </Folder>
 </Solution>

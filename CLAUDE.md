@@ -2,13 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **The authoritative, agent-agnostic project guide is [`AGENTS.md`](AGENTS.md)** — environment, setup, build/publish (including the AOT `vswhere` gotcha), the architecture map, and the hard invariants live there. This file keeps Claude-Code-specific notes plus the deeper protocol detail below. Where the two disagree, **AGENTS.md + `docs/pipeline-design.md` are as-built**; some "planned" sections here predate the M1 OpenAI→Anthropic-passthrough pivot.
+
 ## Project intent
 
 A .NET 10 **Native AOT** reverse proxy that exposes the GitHub Copilot LLM API as Anthropic-compatible (`/v1/messages`) and OpenAI-compatible (`/v1/chat/completions`) endpoints, so Claude Code and similar tools can use Copilot as a backend. Ships as a **single small `.exe`** with no .NET runtime dependency — Native AOT is chosen specifically to keep the binary small; trimming and source-generated JSON are not optional.
 
 A simple HTML config page is served from the same process for one-time GitHub auth (device-code flow) and runtime settings (port, account type, model selection).
 
-The first milestone — get these two flows working end-to-end:
+**M1 (shipped):** Claude Code → `POST /cc/v1/messages` → **byte-level passthrough** to Copilot's *native* Anthropic `/v1/messages` endpoint. The original plan (translate to Copilot's OpenAI Chat Completions, the two flows listed below) was dropped once research found Copilot exposes a native Anthropic endpoint — see `docs/design.md` v0.2. OpenAI (Codex) and Gemini translation paths are M3/M4.
+
+The original first-milestone sketch, kept for context:
 - Claude Code → `POST /v1/messages` → translated to Copilot OpenAI Chat Completions
 - Claude Code → `POST /v1/chat/completions` → forwarded to Copilot
 
@@ -24,7 +28,13 @@ The first milestone — get these two flows working end-to-end:
 
 The reference is in-tree for reading only. **Never edit files under `references/`** — and note `references/copilot-api/.git` exists, so don't `git add` that directory if you later init this repo (add `references/` to `.gitignore`).
 
-## Architecture (planned)
+## Architecture (original plan — see AGENTS.md / docs/pipeline-design.md for as-built)
+
+> The diagram below is the *initial* sketch. As-built M1 uses per-client URL
+> prefixes (`/cc/v1/messages`), passes through to Copilot's **native Anthropic**
+> endpoint (not `/chat/completions`), and resolves the base URL from the Copilot
+> token (enterprise → `api.enterprise.githubcopilot.com`). The HTML config page
+> is M2 (not built yet).
 
 ```
 Claude Code ──► /v1/messages (Anthropic)         ┐
@@ -66,8 +76,9 @@ Layers, outer depends on inner only:
 ## Build / run / test
 
 - Develop: `dotnet run --project src/CopilotBridge.Cli`
-- Publish single-file AOT exe (Windows): `dotnet publish src/CopilotBridge.Cli -c Release -r win-x64` (requires the Visual Studio C++ Build Tools workload + Windows SDK — the linker won't be found otherwise). **Two PATH prerequisites, both needed:** (1) run from a VS Developer environment (`VsDevCmd.bat -arch=x64 -host_arch=x64`) so MSVC `link.exe` is on PATH; (2) **also** add `C:\Program Files (x86)\Microsoft Visual Studio\Installer\` to PATH so `vswhere.exe` is reachable — `VsDevCmd` does *not* add it, and ILC shells out to `vswhere` to locate `link.exe`, failing with `'vswhere.exe' is not recognized` otherwise. A throwaway `.bat` that does both then calls `dotnet publish` is the reliable recipe.
-- Tests: `dotnet test`
+- Publish single-file AOT exe (Windows): **`.\build-aot.bat`** (wraps `dotnet publish src/CopilotBridge.Cli -c Release -r win-x64`; requires the VS C++ Build Tools workload + Windows SDK). The script exists because a bare `dotnet publish` fails the AOT native link: ILC shells out to `vswhere.exe` to find `link.exe`, but `vswhere` (`C:\Program Files (x86)\Microsoft Visual Studio\Installer\`) isn't on PATH by default — not even in a VS Developer prompt. `build-aot.bat` adds it, runs `VsDevCmd.bat`, then publishes. JIT `dotnet run`/`build`/`test` need none of this.
+- Unit tests (CI-safe, no Copilot): `dotnet test tests/CopilotBridge.UnitTests`, or solution-wide skipping the integration harness: `dotnet test --filter "Category!=Integration"`.
+- Integration harness (live Copilot + claude.exe): `dotnet test tests/CopilotBridge.Playground` — tagged `[Trait("Category","Integration")]`. New playground tests must carry that trait or CI will try to run them. Routing config reference: `docs/routing.md`.
 - Single test: `dotnet test --filter FullyQualifiedName~<TestName>`
 
 One project for now (per RamDrive's pattern early on). If size or compile time pushes back, the natural seam is to split out `CopilotBridge.Core` containing `Translation/`, `Copilot/`, `Auth/`, `Configuration/`, `Models/`, `State/`, leaving `Cli/` as `Program.cs` + `Hosting/` + `Endpoints/` + `WebAssets/`. Subdomains live as folders inside the single project until then — extra `.csproj` files each pay an AOT cost.

@@ -24,6 +24,7 @@ namespace CopilotBridge.Playground.Headless;
 /// 4. Copilot returns 2xx
 /// </summary>
 [SupportedOSPlatform("windows")]
+[Trait("Category", "Integration")]
 public class EffortRoutingTests : IClassFixture<BridgeFixture>
 {
     private readonly BridgeFixture _bridge;

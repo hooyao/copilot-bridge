@@ -8,6 +8,7 @@ namespace CopilotBridge.Playground;
 /// reasoning_effort value advertised by the model. Each successful test = one
 /// piece of ground truth for what the bridge can later forward verbatim.
 /// </summary>
+[Trait("Category", "Integration")]
 public class EffortLevelsTests
 {
     [Theory]

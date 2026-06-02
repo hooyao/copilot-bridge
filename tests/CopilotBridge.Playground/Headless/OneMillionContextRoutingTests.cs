@@ -26,6 +26,7 @@ namespace CopilotBridge.Playground.Headless;
 /// inject it directly so the test isn't coupled to the CLI's settings storage.
 /// </summary>
 [SupportedOSPlatform("windows")]
+[Trait("Category", "Integration")]
 public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
 {
     private readonly BridgeFixture _bridge;

@@ -15,6 +15,7 @@ namespace CopilotBridge.Playground;
 /// Run with <c>dotnet test --filter RawUsageShape --logger "console;verbosity=detailed"</c>
 /// to see the captured payloads.
 /// </summary>
+[Trait("Category", "Integration")]
 public class RawUsageShapeTests
 {
     private const string MinimalPayload = """

@@ -13,6 +13,7 @@ namespace CopilotBridge.Playground;
 /// succeeds and produces a text response. Wire-format compatibility is what the
 /// bridge needs.
 /// </summary>
+[Trait("Category", "Integration")]
 public class VisionTests
 {
     [Theory]
