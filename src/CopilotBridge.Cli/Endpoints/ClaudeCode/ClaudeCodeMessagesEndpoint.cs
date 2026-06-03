@@ -46,6 +46,9 @@ internal static class ClaudeCodeMessagesEndpoint
         var ct = httpCtx.RequestAborted;
         var sw = Stopwatch.StartNew();
         var seq = BridgeIoSeq.Next();
+        // One trace id pins the four audit files for this request and the
+        // INFO summary line together — see BridgeIoSeq.BuildTraceId.
+        var traceId = BridgeIoSeq.BuildTraceId(seq, DateTime.UtcNow);
 
         endpointLog.LogDebug("endpoint {Path}: enter  remote={Remote}",
             httpCtx.Request.Path, httpCtx.Connection.RemoteIpAddress);
@@ -63,6 +66,7 @@ internal static class ClaudeCodeMessagesEndpoint
         var inboundAuditBody = inboundBytesView.ToArray();
         ioLogger.LogInboundRequest(
             seq,
+            traceId,
             httpCtx.Request.Method,
             httpCtx.Request.Path.Value ?? "",
             inboundHeaders,
@@ -89,7 +93,7 @@ internal static class ClaudeCodeMessagesEndpoint
 
         // Per-request summary, populated as the pipeline progresses. Always
         // emitted in finally regardless of error path.
-        var summary = new RequestSummary { Kind = "messages" };
+        var summary = new RequestSummary { Kind = "messages", TraceId = traceId };
         var usageSnapshot = summary.Usage;
         var inboundBetaSet = ClaudeCodeInboundAdapter.ParseInboundBetas(inboundHeaders);
         summary.InboundBetas = inboundBetaSet.ToArray();
@@ -299,6 +303,7 @@ internal static class ClaudeCodeMessagesEndpoint
             {
                 ioLogger.LogUpstreamRequest(
                     seq,
+                    traceId,
                     "POST",
                     upstreamUrl,
                     upstreamHeaders,
@@ -317,6 +322,7 @@ internal static class ClaudeCodeMessagesEndpoint
                 var upstreamRespBody = upstreamBufferedBody ?? Array.Empty<byte>();
                 ioLogger.LogUpstreamResponse(
                     seq,
+                    traceId,
                     upstreamStatus,
                     upstreamResponseHeaders ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     upstreamRespBody,
@@ -327,6 +333,7 @@ internal static class ClaudeCodeMessagesEndpoint
 
             ioLogger.LogInboundResponse(
                 seq,
+                traceId,
                 responseStatus,
                 responseHeaders,
                 responseBody,

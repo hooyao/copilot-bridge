@@ -8,14 +8,25 @@ namespace CopilotBridge.Cli.Hosting.Logging;
 /// <summary>
 /// Per-process monotonic counter for bridge IO audit files. Endpoints reserve
 /// a single seq for one inbound request and pass it down to all four artifact
-/// log calls so the resulting files share a stamp:
-/// <c>20260521-143205-0042-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json</c>.
+/// log calls so the resulting files share a stamp. Combined with a UTC time
+/// captured at the inbound endpoint, it forms a stable trace id
+/// (<c>{yyyyMMdd-HHmmss}-{seq:D4}</c>) that names every artifact of the
+/// request and prefixes the per-request INFO summary log line.
 /// </summary>
 internal static class BridgeIoSeq
 {
     private static int _value;
 
     public static int Next() => Interlocked.Increment(ref _value);
+
+    /// <summary>
+    /// Build the per-request trace id used to (1) name the four audit JSON
+    /// files for this request and (2) prefix the INFO summary line as
+    /// <c>req#&lt;traceId&gt;</c>. Same string at all five sites so operators
+    /// can grep one and find the rest.
+    /// </summary>
+    public static string BuildTraceId(int seq, DateTime utcStart) =>
+        $"{utcStart:yyyyMMdd-HHmmss}-{seq:D4}";
 }
 
 /// <summary>
@@ -30,6 +41,7 @@ internal static class BridgeIoLoggerExtensions
     public static void LogInboundRequest(
         this ILogger logger,
         int seq,
+        string traceId,
         string method,
         string path,
         IReadOnlyDictionary<string, string> headers,
@@ -40,6 +52,7 @@ internal static class BridgeIoLoggerExtensions
         var payload = new BridgeIoPayload
         {
             Seq = seq,
+            TraceId = traceId,
             TimestampUtc = DateTime.UtcNow,
             Kind = "inbound-req",
             Method = method,
@@ -55,6 +68,7 @@ internal static class BridgeIoLoggerExtensions
     public static void LogInboundResponse(
         this ILogger logger,
         int seq,
+        string traceId,
         int status,
         IReadOnlyDictionary<string, string> headers,
         byte[] body,
@@ -67,6 +81,7 @@ internal static class BridgeIoLoggerExtensions
         var payload = new BridgeIoPayload
         {
             Seq = seq,
+            TraceId = traceId,
             TimestampUtc = DateTime.UtcNow,
             Kind = "inbound-resp",
             Status = status,
@@ -84,6 +99,7 @@ internal static class BridgeIoLoggerExtensions
     public static void LogUpstreamRequest(
         this ILogger logger,
         int seq,
+        string traceId,
         string method,
         string url,
         IReadOnlyDictionary<string, string> headers,
@@ -94,6 +110,7 @@ internal static class BridgeIoLoggerExtensions
         var payload = new BridgeIoPayload
         {
             Seq = seq,
+            TraceId = traceId,
             TimestampUtc = DateTime.UtcNow,
             Kind = "upstream-req",
             Method = method,
@@ -109,6 +126,7 @@ internal static class BridgeIoLoggerExtensions
     public static void LogUpstreamResponse(
         this ILogger logger,
         int seq,
+        string traceId,
         int status,
         IReadOnlyDictionary<string, string> headers,
         byte[] body,
@@ -119,6 +137,7 @@ internal static class BridgeIoLoggerExtensions
         var payload = new BridgeIoPayload
         {
             Seq = seq,
+            TraceId = traceId,
             TimestampUtc = DateTime.UtcNow,
             Kind = "upstream-resp",
             Status = status,
@@ -131,14 +150,6 @@ internal static class BridgeIoLoggerExtensions
         Emit(logger, BridgeIoEvents.UpstreamResponse, payload);
     }
 
-    // The state is an IEnumerable<KeyValuePair<string, object?>> with a
-    // single entry ("Payload" → BridgeIoPayload). The Serilog/MEL bridge
-    // turns each kvp into a LogEvent property, so the sink can pull the
-    // payload back out with a deterministic key (no reliance on
-    // TState type-name heuristics). The formatter the framework requires
-    // returns a human-readable summary so this event is still
-    // intelligible if a non-BridgeIoSink consumer (e.g. test runner)
-    // happens to receive it.
     private static void Emit(ILogger logger, EventId eventId, BridgeIoPayload payload)
     {
         var state = new[] { new KeyValuePair<string, object?>("Payload", payload) };

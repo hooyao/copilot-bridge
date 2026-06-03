@@ -27,6 +27,7 @@ public class RequestSummaryFormatterTests
         rsl.Log(new RequestSummary
         {
             Kind = "messages",
+            TraceId = "20260101-120000-0042",
             RequestedModel = "claude-opus-4.8",
             ResolvedModel = "claude-opus-4.7-1m-internal",
             CanonicalProfileId = "claude-opus-4.7-1m-internal",
@@ -77,6 +78,7 @@ public class RequestSummaryFormatterTests
         rsl.Log(new RequestSummary
         {
             Kind = "messages",
+            TraceId = "t",
             InboundEffort = "high",
             OutboundEffort = "high",
         });
@@ -87,7 +89,7 @@ public class RequestSummaryFormatterTests
     public void EffortDisplay_BothNull_RendersNonePlaceholder()
     {
         var (rsl, rec) = BuildLogger();
-        rsl.Log(new RequestSummary { Kind = "messages" });
+        rsl.Log(new RequestSummary { Kind = "messages", TraceId = "t" });
         Assert.Equal("(none)", rec.Events.Single().Properties["EffortDisplay"]);
     }
 
@@ -98,6 +100,7 @@ public class RequestSummaryFormatterTests
         rsl.Log(new RequestSummary
         {
             Kind = "count_tokens",
+            TraceId = "20260101-120000-0099",
             RequestedModel = "claude-opus-4.8",
             ResolvedModel = "claude-opus-4.8",
             Usage = new UsageSnapshot { InputTokens = 42 },
@@ -106,6 +109,47 @@ public class RequestSummaryFormatterTests
 
         var evt = rec.Events.Single();
         Assert.Equal("count_tokens", evt.Properties["Kind"]);
+        Assert.Equal("20260101-120000-0099", evt.Properties["TraceId"]);
         Assert.Contains("in:42", Assert.IsType<string>(evt.Properties["UsageDisplay"]));
+    }
+
+    // --- Level-per-status: success at Info, 4xx at Warning, 5xx at Error.
+    // Without this mapping a 400 from Copilot hid behind LogInformation
+    // alongside 200s and was easy to miss in tail -f output.
+
+    [Theory]
+    [InlineData(200)]
+    [InlineData(204)]
+    [InlineData(301)]
+    [InlineData(399)]
+    public void SuccessOrRedirectStatus_LogsAtInformation(int status)
+    {
+        var (rsl, rec) = BuildLogger();
+        rsl.Log(new RequestSummary { Kind = "messages", TraceId = "t", StatusCode = status });
+        Assert.Equal(LogLevel.Information, rec.Events.Single().Level);
+    }
+
+    [Theory]
+    [InlineData(400)]
+    [InlineData(404)]
+    [InlineData(429)]
+    [InlineData(499)]
+    public void ClientErrorStatus_LogsAtWarning(int status)
+    {
+        var (rsl, rec) = BuildLogger();
+        rsl.Log(new RequestSummary { Kind = "messages", TraceId = "t", StatusCode = status });
+        Assert.Equal(LogLevel.Warning, rec.Events.Single().Level);
+    }
+
+    [Theory]
+    [InlineData(500)]
+    [InlineData(502)]
+    [InlineData(503)]
+    [InlineData(0)]   // strategy never reached upstream (network / auth)
+    public void ServerErrorOrUnknownStatus_LogsAtError(int status)
+    {
+        var (rsl, rec) = BuildLogger();
+        rsl.Log(new RequestSummary { Kind = "messages", TraceId = "t", StatusCode = status });
+        Assert.Equal(LogLevel.Error, rec.Events.Single().Level);
     }
 }

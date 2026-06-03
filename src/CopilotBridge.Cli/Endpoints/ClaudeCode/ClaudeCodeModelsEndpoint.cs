@@ -34,6 +34,7 @@ internal static class ClaudeCodeModelsEndpoint
         var ct = httpCtx.RequestAborted;
         var sw = Stopwatch.StartNew();
         var seq = BridgeIoSeq.Next();
+        var traceId = BridgeIoSeq.BuildTraceId(seq, DateTime.UtcNow);
 
         var inboundHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var header in httpCtx.Request.Headers)
@@ -42,6 +43,7 @@ internal static class ClaudeCodeModelsEndpoint
         }
         ioLogger.LogInboundRequest(
             seq,
+            traceId,
             httpCtx.Request.Method,
             httpCtx.Request.Path.Value ?? "",
             inboundHeaders,
@@ -94,6 +96,7 @@ internal static class ClaudeCodeModelsEndpoint
             sw.Stop();
             ioLogger.LogInboundResponse(
                 seq,
+                traceId,
                 responseStatus,
                 responseHeaders,
                 responseBody,

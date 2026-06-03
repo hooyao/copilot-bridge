@@ -34,6 +34,7 @@ internal static class ClaudeCodeCountTokensEndpoint
         var ct = httpCtx.RequestAborted;
         var sw = Stopwatch.StartNew();
         var seq = BridgeIoSeq.Next();
+        var traceId = BridgeIoSeq.BuildTraceId(seq, DateTime.UtcNow);
 
         var inboundHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var header in httpCtx.Request.Headers)
@@ -46,6 +47,7 @@ internal static class ClaudeCodeCountTokensEndpoint
 
         ioLogger.LogInboundRequest(
             seq,
+            traceId,
             httpCtx.Request.Method,
             httpCtx.Request.Path.Value ?? "",
             inboundHeaders,
@@ -62,7 +64,7 @@ internal static class ClaudeCodeCountTokensEndpoint
         // The count_tokens endpoint never goes through the pipeline, so the
         // summary line is much shorter — it just identifies the request, the
         // model the client asked for, and the resulting input_tokens count.
-        var summary = new RequestSummary { Kind = "count_tokens" };
+        var summary = new RequestSummary { Kind = "count_tokens", TraceId = traceId };
         // Inbound beta tokens — same parser as the messages endpoint uses.
         var betaSet = ClaudeCodeInboundAdapter.ParseInboundBetas(inboundHeaders);
         if (betaSet.Count > 0)
@@ -85,6 +87,7 @@ internal static class ClaudeCodeCountTokensEndpoint
             var upstreamHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             ioLogger.LogUpstreamRequest(
                 seq,
+                traceId,
                 "POST",
                 "https://api.githubcopilot.com/v1/messages/count_tokens",
                 upstreamHeaders,
@@ -111,6 +114,7 @@ internal static class ClaudeCodeCountTokensEndpoint
 
             ioLogger.LogUpstreamResponse(
                 seq,
+                traceId,
                 responseStatus,
                 upstreamRespHeaders,
                 bytes,
@@ -148,6 +152,7 @@ internal static class ClaudeCodeCountTokensEndpoint
             {
                 ioLogger.LogUpstreamResponse(
                     seq,
+                    traceId,
                     0,
                     new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     [],
@@ -158,6 +163,7 @@ internal static class ClaudeCodeCountTokensEndpoint
 
             ioLogger.LogInboundResponse(
                 seq,
+                traceId,
                 responseStatus,
                 responseHeaders,
                 responseBody,

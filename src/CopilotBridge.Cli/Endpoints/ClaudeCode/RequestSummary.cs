@@ -19,6 +19,14 @@ namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 internal sealed class RequestSummary
 {
     public required string Kind { get; init; }                  // "messages" or "count_tokens"
+    /// <summary>
+    /// Stable per-request id shared with the four audit JSON files
+    /// (<c>{TraceId}-{kind}.json</c>) — built once at the inbound endpoint
+    /// as <c>{yyyyMMdd-HHmmss}-{seq:D4}</c>. The INFO summary line renders
+    /// this as <c>req#&lt;TraceId&gt;</c>; the operator greps the log for
+    /// the id and immediately knows which trace files to open.
+    /// </summary>
+    public required string TraceId { get; init; }
     public string? RequestedModel { get; set; }
     public string? ResolvedModel { get; set; }
     public string? CanonicalProfileId { get; set; }
