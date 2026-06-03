@@ -2,7 +2,11 @@ using System.Buffers;
 using System.Diagnostics;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Hosting.Logging;
+using CopilotBridge.Cli.Models;
+using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
@@ -15,14 +19,22 @@ namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 /// </summary>
 internal static class ClaudeCodeCountTokensEndpoint
 {
+    public static IEndpointRouteBuilder MapCountTokens(this IEndpointRouteBuilder app)
+    {
+        app.MapPost("/cc/v1/messages/count_tokens", HandleAsync);
+        return app;
+    }
+
     public static async Task HandleAsync(
         HttpContext httpCtx,
         ICopilotClient copilot,
+        RequestSummaryLogger summaryLogger,
         ILogger<CountTokensTag> ioLogger)
     {
         var ct = httpCtx.RequestAborted;
         var sw = Stopwatch.StartNew();
         var seq = BridgeIoSeq.Next();
+        var traceId = BridgeIoSeq.BuildTraceId(seq, DateTime.UtcNow);
 
         var inboundHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var header in httpCtx.Request.Headers)
@@ -31,13 +43,11 @@ internal static class ClaudeCodeCountTokensEndpoint
         }
 
         var (inboundBuf, inboundLen) = await ReadBodyPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false);
-        // The pooled buffer is forwarded to Copilot, so we keep it alive
-        // for the strategy call. Hand a discrete (non-pooled) copy to the
-        // audit so the sink can release it independently.
         var inboundAuditBody = new ReadOnlyMemory<byte>(inboundBuf, 0, inboundLen).ToArray();
 
         ioLogger.LogInboundRequest(
             seq,
+            traceId,
             httpCtx.Request.Method,
             httpCtx.Request.Path.Value ?? "",
             inboundHeaders,
@@ -51,18 +61,33 @@ internal static class ClaudeCodeCountTokensEndpoint
         string? error = null;
         var upstreamLogged = false;
 
+        // The count_tokens endpoint never goes through the pipeline, so the
+        // summary line is much shorter — it just identifies the request, the
+        // model the client asked for, and the resulting input_tokens count.
+        var summary = new RequestSummary { Kind = "count_tokens", TraceId = traceId };
+        // Inbound beta tokens — same parser as the messages endpoint uses.
+        var betaSet = ClaudeCodeInboundAdapter.ParseInboundBetas(inboundHeaders);
+        if (betaSet.Count > 0)
+        {
+            var arr = new string[betaSet.Count];
+            var i = 0;
+            foreach (var t in betaSet) arr[i++] = t;
+            summary.InboundBetas = arr;
+        }
+        // Cheap model probe: look for "model":"..." in the JSON body without
+        // a full deserialize (count_tokens has many fields we don't model).
+        summary.RequestedModel = TryReadModelFromJson(inboundAuditBody);
+        summary.ResolvedModel = summary.RequestedModel;
+
         try
         {
             using var upstream = await copilot.PostCountTokensAsync(
                 inboundBuf.AsMemory(0, inboundLen).ToArray(), ct);
 
-            // Upstream audit: count_tokens forwards the body unchanged, so
-            // we can describe the upstream URL and reuse the inbound audit
-            // body as the upstream-sent body.
             var upstreamHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            // ICopilotClient hides the actual URL; record what we know.
             ioLogger.LogUpstreamRequest(
                 seq,
+                traceId,
                 "POST",
                 "https://api.githubcopilot.com/v1/messages/count_tokens",
                 upstreamHeaders,
@@ -84,8 +109,12 @@ internal static class ClaudeCodeCountTokensEndpoint
             responseStatus = (int)upstream.StatusCode;
             responseBody = bytes;
 
+            // Pull input_tokens out for the summary line.
+            UsageProbe.TryReadCountTokens(bytes, summary.Usage);
+
             ioLogger.LogUpstreamResponse(
                 seq,
+                traceId,
                 responseStatus,
                 upstreamRespHeaders,
                 bytes,
@@ -115,12 +144,15 @@ internal static class ClaudeCodeCountTokensEndpoint
         finally
         {
             sw.Stop();
+            summary.StatusCode = responseStatus;
+            summary.DurationMs = sw.ElapsedMilliseconds;
+            summaryLogger.Log(summary);
+
             if (!upstreamLogged)
             {
-                // Strategy never returned a response (network error, auth).
-                // Log a minimal upstream-resp record so seq stays balanced.
                 ioLogger.LogUpstreamResponse(
                     seq,
+                    traceId,
                     0,
                     new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     [],
@@ -131,6 +163,7 @@ internal static class ClaudeCodeCountTokensEndpoint
 
             ioLogger.LogInboundResponse(
                 seq,
+                traceId,
                 responseStatus,
                 responseHeaders,
                 responseBody,
@@ -141,6 +174,28 @@ internal static class ClaudeCodeCountTokensEndpoint
 
             ArrayPool<byte>.Shared.Return(inboundBuf, clearArray: false);
         }
+    }
+
+    /// <summary>
+    /// Cheap model probe: scan the JSON body for the top-level <c>"model"</c>
+    /// property without spinning up a full <see cref="System.Text.Json.JsonDocument"/>.
+    /// Returns null when the body is empty or the field can't be found —
+    /// not fatal, the summary just shows "?" for the model.
+    /// </summary>
+    private static string? TryReadModelFromJson(byte[] body)
+    {
+        if (body.Length == 0) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("model", out var modelProp)
+                && modelProp.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                return modelProp.GetString();
+            }
+        }
+        catch (System.Text.Json.JsonException) { /* malformed body — skip */ }
+        return null;
     }
 
     private static async Task<(byte[] Buffer, int Length)> ReadBodyPooledAsync(Stream body, CancellationToken ct)

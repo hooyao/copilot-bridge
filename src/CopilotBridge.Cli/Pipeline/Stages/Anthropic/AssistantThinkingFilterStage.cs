@@ -1,6 +1,5 @@
 using CopilotBridge.Cli.Models.Anthropic.Request;
-
-using Serilog;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 
@@ -14,6 +13,13 @@ namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 /// </summary>
 internal sealed class AssistantThinkingFilterStage : IRequestStage<MessagesRequest>
 {
+    private readonly ILogger<AssistantThinkingFilterStage> _log;
+
+    public AssistantThinkingFilterStage(ILogger<AssistantThinkingFilterStage> log)
+    {
+        _log = log;
+    }
+
     public string Name => "AssistantThinkingFilter";
 
     public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
@@ -56,7 +62,7 @@ internal sealed class AssistantThinkingFilterStage : IRequestStage<MessagesReque
             ctx.Request.Body = ctx.Request.Body with { Messages = newMessages };
         }
 
-        Log.Debug($"stage {Name}: dropped {dropped} unsigned/placeholder thinking blocks");
+        _log.LogDebug("stage {Name}: dropped {Dropped} unsigned/placeholder thinking blocks", Name, dropped);
         return Task.CompletedTask;
     }
 
@@ -64,8 +70,6 @@ internal sealed class AssistantThinkingFilterStage : IRequestStage<MessagesReque
     {
         if (string.IsNullOrWhiteSpace(t.Thinking)) return false;
         if (string.IsNullOrEmpty(t.Signature)) return false;
-        // Claude Code injects literal "@..." as a placeholder signature for
-        // turns it has no signed thinking for. Detect via '@' presence.
         if (t.Signature.Contains('@')) return false;
         return true;
     }

@@ -42,4 +42,13 @@ namespace CopilotBridge.Cli.Models;
 [JsonSerializable(typeof(TextBlockParam))]
 // Bridge-generated error responses (e.g. unknown model → 400).
 [JsonSerializable(typeof(ErrorResponse))]
+// Usage-probe envelopes — minimal POCOs read by UsageProbe to extract token
+// counts off (a) the non-streaming response body, (b) the count_tokens
+// response body, (c) message_start / message_delta SSE events. None of these
+// participate in the wire shape; they exist solely so the per-request INFO
+// summary can report input/output/cache token counts.
+[JsonSerializable(typeof(UsageProbeEnvelope))]
+[JsonSerializable(typeof(CountTokensResponse))]
+[JsonSerializable(typeof(MessageStartUsageEnvelope))]
+[JsonSerializable(typeof(MessageDeltaUsageEnvelope))]
 internal partial class JsonContext : JsonSerializerContext;

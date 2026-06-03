@@ -1,6 +1,6 @@
+using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Models.Anthropic.Request;
-
-using Serilog;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Routing;
 
@@ -22,24 +22,25 @@ internal static class ModelRouteResolver
     /// <summary>
     /// Walk locations; on the first match, apply the rewrite and return
     /// <c>(location, index)</c>. Returns <c>(null, -1)</c> when no location
-    /// matched.
+    /// matched. Logger is injected by the caller (<see cref="Stages.Anthropic.ModelRouterStage"/>)
+    /// so this static helper doesn't need its own DI registration.
     /// </summary>
     public static (RouteLocation? Matched, int Index) Apply(
-        BridgeContext<MessagesRequest> ctx, RoutesConfig config)
+        BridgeContext<MessagesRequest> ctx, RoutesConfig config, ILogger<ModelRouteResolverLog>? log = null)
     {
         for (var i = 0; i < config.Locations.Count; i++)
         {
             var loc = config.Locations[i];
             if (!loc.When.Matches(ctx)) continue;
 
-            ApplyUse(ctx, loc.Use);
-            Log.Debug($"  routes/location[{i}]: matched [{loc.Note ?? "—"}]");
+            ApplyUse(ctx, loc.Use, log);
+            log?.LogDebug("  routes/location[{Index}]: matched [{Note}]", i, loc.Note ?? "—");
             return (loc, i);
         }
         return (null, -1);
     }
 
-    private static void ApplyUse(BridgeContext<MessagesRequest> ctx, LocationUse use)
+    private static void ApplyUse(BridgeContext<MessagesRequest> ctx, LocationUse use, ILogger? log)
     {
         var body = ctx.Request.Body;
         var bodyChanged = false;
@@ -62,7 +63,7 @@ internal static class ModelRouteResolver
             var oc = body.OutputConfig with { Effort = mappedEffort };
             body = body with { OutputConfig = oc };
             bodyChanged = true;
-            Log.Debug($"    EffortMap: '{inboundEffort}' → '{mappedEffort}'");
+            log?.LogDebug("    EffortMap: '{Inbound}' → '{Mapped}'", inboundEffort, mappedEffort);
         }
 
         if (bodyChanged) ctx.Request.Body = body;

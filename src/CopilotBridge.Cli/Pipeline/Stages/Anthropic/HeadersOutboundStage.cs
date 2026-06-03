@@ -1,6 +1,5 @@
 using CopilotBridge.Cli.Models.Anthropic.Request;
-
-using Serilog;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 
@@ -30,6 +29,13 @@ namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 /// </remarks>
 internal sealed class HeadersOutboundStage : IRequestStage<MessagesRequest>
 {
+    private readonly ILogger<HeadersOutboundStage> _log;
+
+    public HeadersOutboundStage(ILogger<HeadersOutboundStage> log)
+    {
+        _log = log;
+    }
+
     public string Name => "HeadersOutbound";
 
     public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
@@ -38,27 +44,16 @@ internal sealed class HeadersOutboundStage : IRequestStage<MessagesRequest>
 
         var betas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // chatEndpoint.ts: `if (!this.supportsAdaptiveThinking)` — push when
-        // the model lacks adaptive thinking support. Per Copilot's /models
-        // metadata, all current Claude variants advertise support; haiku-4.5
-        // lies (research §15.3) but we mirror the official client's trust.
         if (!ModelSupportsAdaptiveThinking(ctx.Target!.ModelId))
         {
             betas.Add("interleaved-thinking-2025-05-14");
         }
 
-        // chatEndpoint.ts: `if (isAnthropicContextEditingEnabled(...))` — gated
-        // on a config flag in VS Code. Locally we use the simpler proxy "the
-        // request body actually has a context_management field" — there's no
-        // point sending the beta otherwise.
         if (ctx.Request.Body.ContextManagement is not null)
         {
             betas.Add("context-management-2025-06-27");
         }
 
-        // chatEndpoint.ts: `if (isAnthropicToolSearchEnabled(...))` — gated on
-        // a config flag in VS Code. M1 doesn't model server-side tool_search
-        // tool variants in the request DTO, so this is always false for now.
         if (HasToolSearchTools(ctx.Request.Body))
         {
             betas.Add("advanced-tool-use-2025-11-20");
@@ -79,9 +74,6 @@ internal sealed class HeadersOutboundStage : IRequestStage<MessagesRequest>
             betas.Add(token);
         }
 
-        // Apply strip patterns from any routing rules that fired. Each pattern
-        // may end with '*' (trailing wildcard) so e.g. `context-1m-*` covers
-        // future spec dates without needing a code change.
         if (ctx.PendingBetaStrips.Count > 0)
         {
             betas.RemoveWhere(token => MatchesAnyStripPattern(token, ctx.PendingBetaStrips));
@@ -97,7 +89,13 @@ internal sealed class HeadersOutboundStage : IRequestStage<MessagesRequest>
             ctx.Request.Headers["copilot-vision-request"] = "true";
         }
 
-        Log.Debug($"stage {Name}: betas=[{string.Join(',', betas)}] adds=[{string.Join(',', ctx.PendingBetaAdds)}] strips=[{string.Join(',', ctx.PendingBetaStrips)}] vision={ctx.Request.Headers.ContainsKey("copilot-vision-request")}");
+        _log.LogDebug(
+            "stage {Name}: betas=[{Betas}] adds=[{Adds}] strips=[{Strips}] vision={Vision}",
+            Name,
+            string.Join(',', betas),
+            string.Join(',', ctx.PendingBetaAdds),
+            string.Join(',', ctx.PendingBetaStrips),
+            ctx.Request.Headers.ContainsKey("copilot-vision-request"));
         return Task.CompletedTask;
     }
 
@@ -124,6 +122,7 @@ internal sealed class HeadersOutboundStage : IRequestStage<MessagesRequest>
         // support adaptive). When we add older Claude families that genuinely
         // need explicit thinking, surface a fact in CopilotModelRegistry and
         // consult it here.
+        _ = modelId;
         return true;
     }
 

@@ -1,7 +1,6 @@
 using System.Text;
 using CopilotBridge.Cli.Models.Anthropic.Request;
-
-using Serilog;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 
@@ -18,13 +17,19 @@ internal sealed class SystemSanitizeStage : IRequestStage<MessagesRequest>
 {
     private const string Marker = "# currentDate\n";
 
+    private readonly ILogger<SystemSanitizeStage> _log;
+
+    public SystemSanitizeStage(ILogger<SystemSanitizeStage> log)
+    {
+        _log = log;
+    }
+
     public string Name => "SystemSanitize";
 
     public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
     {
         var stripped = 0;
 
-        // Scan the top-level system field first.
         IReadOnlyList<TextBlockParam>? newSystem = ctx.Request.Body.System;
         if (newSystem is { Count: > 0 })
         {
@@ -47,7 +52,6 @@ internal sealed class SystemSanitizeStage : IRequestStage<MessagesRequest>
             if (systemChanged) newSystem = rebuilt;
         }
 
-        // Scan every user message's text blocks.
         var newMessages = ctx.Request.Body.Messages;
         var messagesChanged = false;
         var rebuiltMessages = new List<MessageParam>(newMessages.Count);
@@ -95,7 +99,7 @@ internal sealed class SystemSanitizeStage : IRequestStage<MessagesRequest>
             };
         }
 
-        Log.Debug($"stage {Name}: stripped {stripped} currentDate occurrences");
+        _log.LogDebug("stage {Name}: stripped {Stripped} currentDate occurrences", Name, stripped);
         return Task.CompletedTask;
     }
 
@@ -123,18 +127,14 @@ internal sealed class SystemSanitizeStage : IRequestStage<MessagesRequest>
                 break;
             }
             sb.Append(input, i, idx - i);
-            // Skip the marker
             var skipFrom = idx + Marker.Length;
-            // Skip the date line (everything up to the next \n inclusive)
             var dateLineEnd = input.IndexOf('\n', skipFrom);
             if (dateLineEnd < 0)
             {
-                // Marker exists but no terminating newline after the date — bail and keep the marker.
                 sb.Append(input, idx, input.Length - idx);
                 break;
             }
             i = dateLineEnd + 1;
-            // Eat any immediately-following blank lines so we don't leave a hole.
             while (i < input.Length && input[i] == '\n') i++;
             hits++;
         }

@@ -1,7 +1,6 @@
 using System.Net.ServerSentEvents;
 using CopilotBridge.Cli.Models.Anthropic.Request;
-
-using Serilog;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 
@@ -13,9 +12,12 @@ namespace CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 /// </summary>
 internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<MessagesRequest>
 {
-    public static readonly ClaudeCodeOutboundAdapter Instance = new();
+    private readonly ILogger<ClaudeCodeOutboundAdapter> _log;
 
-    private ClaudeCodeOutboundAdapter() { }
+    public ClaudeCodeOutboundAdapter(ILogger<ClaudeCodeOutboundAdapter> log)
+    {
+        _log = log;
+    }
 
     public string Name => "ClaudeCodeOutbound";
 
@@ -24,7 +26,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
         BridgeContext<MessagesRequest> ctx,
         CancellationToken ct)
     {
-        Log.Debug($"adapter {Name}: identity-stream");
+        _log.LogDebug("adapter {Name}: identity-stream", Name);
         return irStream;
     }
 
@@ -33,7 +35,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
         BridgeContext<MessagesRequest> ctx,
         CancellationToken ct)
     {
-        Log.Debug($"adapter {Name}: identity-buffered  bytes={irBody.Length}");
+        _log.LogDebug("adapter {Name}: identity-buffered  bytes={Bytes}", Name, irBody.Length);
         return ValueTask.FromResult(irBody);
     }
 }

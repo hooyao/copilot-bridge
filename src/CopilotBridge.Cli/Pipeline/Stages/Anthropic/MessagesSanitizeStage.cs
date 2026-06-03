@@ -1,6 +1,5 @@
 using CopilotBridge.Cli.Models.Anthropic.Request;
-
-using Serilog;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 
@@ -15,14 +14,18 @@ namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 ///         API accepts trailing-assistant as a prefill, but Copilot's
 ///         translation layer 400s on it (research §3.6 rule 3).</item>
 /// </list>
-/// The "merge tool_result + adjacent text in same user message" rule is
-/// deferred until we observe it in real Claude Code traffic — none of the
-/// captured samples so far contain that combination.
 /// </summary>
 internal sealed class MessagesSanitizeStage : IRequestStage<MessagesRequest>
 {
     private const string ToolLoadedMarker = "Tool loaded.";
     private const string ContinuePrompt = "Please continue.";
+
+    private readonly ILogger<MessagesSanitizeStage> _log;
+
+    public MessagesSanitizeStage(ILogger<MessagesSanitizeStage> log)
+    {
+        _log = log;
+    }
 
     public string Name => "MessagesSanitize";
 
@@ -42,9 +45,6 @@ internal sealed class MessagesSanitizeStage : IRequestStage<MessagesRequest>
                 }
                 rebuilt.Add(block);
             }
-            // If the message ends up with no content, still preserve it —
-            // Anthropic accepts empty content arrays in some cases. Don't
-            // drop the whole message just because it had only "Tool loaded."
             newMessages.Add(rebuilt.Count == msg.Content.Count
                 ? msg
                 : msg with { Content = rebuilt });
@@ -66,7 +66,9 @@ internal sealed class MessagesSanitizeStage : IRequestStage<MessagesRequest>
             ctx.Request.Body = ctx.Request.Body with { Messages = newMessages };
         }
 
-        Log.Debug($"stage {Name}: dropped \"Tool loaded.\" x{droppedToolLoaded}  trailing-assistant-fix={trailingAssistantFixed}");
+        _log.LogDebug(
+            "stage {Name}: dropped \"Tool loaded.\" x{DroppedToolLoaded}  trailing-assistant-fix={TrailingAssistantFixed}",
+            Name, droppedToolLoaded, trailingAssistantFixed);
         return Task.CompletedTask;
     }
 

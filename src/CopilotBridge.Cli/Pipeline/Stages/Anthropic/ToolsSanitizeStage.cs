@@ -1,6 +1,5 @@
 using CopilotBridge.Cli.Models.Anthropic.Request;
-
-using Serilog;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 
@@ -14,10 +13,16 @@ namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 ///   <item><c>mcp__ide__getDiagnostics</c> — description rewrite TODO; we
 ///         don't yet know Copilot's preferred phrasing. Pass through for now.</item>
 /// </list>
-/// Other tools (Bash / Read / Write / Grep / etc.) are left alone.
 /// </summary>
 internal sealed class ToolsSanitizeStage : IRequestStage<MessagesRequest>
 {
+    private readonly ILogger<ToolsSanitizeStage> _log;
+
+    public ToolsSanitizeStage(ILogger<ToolsSanitizeStage> log)
+    {
+        _log = log;
+    }
+
     public string Name => "ToolsSanitize";
 
     public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
@@ -44,7 +49,8 @@ internal sealed class ToolsSanitizeStage : IRequestStage<MessagesRequest>
             ctx.Request.Body = ctx.Request.Body with { Tools = rebuilt };
         }
 
-        Log.Debug($"stage {Name}: dropped {dropped} IDE-only tools (kept {rebuilt.Count})");
+        _log.LogDebug("stage {Name}: dropped {Dropped} IDE-only tools (kept {Kept})",
+            Name, dropped, rebuilt.Count);
         return Task.CompletedTask;
     }
 }

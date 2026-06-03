@@ -4,7 +4,9 @@ using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Hosting.Logging;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Models;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
@@ -18,6 +20,12 @@ internal static class ClaudeCodeModelsEndpoint
 {
     private const string EpochCreatedAt = "1970-01-01T00:00:00Z";
 
+    public static IEndpointRouteBuilder MapModels(this IEndpointRouteBuilder app)
+    {
+        app.MapGet("/cc/v1/models", HandleAsync);
+        return app;
+    }
+
     public static async Task HandleAsync(
         HttpContext httpCtx,
         ICopilotClient copilot,
@@ -26,6 +34,7 @@ internal static class ClaudeCodeModelsEndpoint
         var ct = httpCtx.RequestAborted;
         var sw = Stopwatch.StartNew();
         var seq = BridgeIoSeq.Next();
+        var traceId = BridgeIoSeq.BuildTraceId(seq, DateTime.UtcNow);
 
         var inboundHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var header in httpCtx.Request.Headers)
@@ -34,6 +43,7 @@ internal static class ClaudeCodeModelsEndpoint
         }
         ioLogger.LogInboundRequest(
             seq,
+            traceId,
             httpCtx.Request.Method,
             httpCtx.Request.Path.Value ?? "",
             inboundHeaders,
@@ -86,6 +96,7 @@ internal static class ClaudeCodeModelsEndpoint
             sw.Stop();
             ioLogger.LogInboundResponse(
                 seq,
+                traceId,
                 responseStatus,
                 responseHeaders,
                 responseBody,

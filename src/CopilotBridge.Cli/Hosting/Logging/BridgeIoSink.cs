@@ -121,8 +121,11 @@ internal sealed class BridgeIoSink : ILogEventSink, IDisposable
 
     private async Task WriteOneAsync(BridgeIoPayload p)
     {
-        var stamp = p.TimestampUtc.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-        var fileName = $"{stamp}-{p.Seq:D4}-{p.Kind}.json";
+        // File name = trace id + kind. All four audits of one request share
+        // the trace id, so they sort/group naturally and `ls *<traceId>*`
+        // returns the complete set. The per-audit TimestampUtc still lands
+        // inside the JSON body for diagnostic timing.
+        var fileName = $"{p.TraceId}-{p.Kind}.json";
         var path = Path.Combine(_dir, fileName);
 
         var node = BuildJson(p);

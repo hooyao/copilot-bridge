@@ -4,8 +4,7 @@ using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
-
-using Serilog;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 
@@ -21,10 +20,14 @@ namespace CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<MessagesRequest>
 {
     private readonly ICopilotClient _copilot;
+    private readonly ILogger<CopilotMessagesPassthroughStrategy> _log;
 
-    public CopilotMessagesPassthroughStrategy(ICopilotClient copilot)
+    public CopilotMessagesPassthroughStrategy(
+        ICopilotClient copilot,
+        ILogger<CopilotMessagesPassthroughStrategy> log)
     {
         _copilot = copilot;
+        _log = log;
     }
 
     public string Name => "CopilotMessagesPassthrough";
@@ -48,7 +51,9 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             beta = betaStr.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         }
 
-        Log.Debug($"strategy {Name}: forwarding bytes={body.Length} vision={vision} betas={(beta is null ? 0 : beta.Count)} hdrOverrides={ctx.CopilotHeaderOverrides.Count}");
+        _log.LogDebug(
+            "strategy {Name}: forwarding bytes={Bytes} vision={Vision} betas={BetaCount} hdrOverrides={OverrideCount}",
+            Name, body.Length, vision, beta?.Count ?? 0, ctx.CopilotHeaderOverrides.Count);
 
         // Only thread overrides through when there's actually something to override
         // — keeps the common-case HTTP build identical to pre-routing-rewrite.
@@ -78,7 +83,7 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             // Ownership of `resp` transfers to the iterator — disposed when
             // the consumer (the endpoint writer) finishes enumeration.
             ctx.Response.EventStream = StreamEventsAsync(resp, ctx.Ct);
-            Log.Debug($"strategy {Name}: streaming (content-type={contentType})");
+            _log.LogDebug("strategy {Name}: streaming (content-type={ContentType})", Name, contentType);
         }
         else
         {
@@ -86,7 +91,8 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             try
             {
                 ctx.Response.BufferedBody = await resp.Content.ReadAsByteArrayAsync(ctx.Ct);
-                Log.Debug($"strategy {Name}: buffered status={ctx.Response.Status} bytes={ctx.Response.BufferedBody.Length}");
+                _log.LogDebug("strategy {Name}: buffered status={Status} bytes={Bytes}",
+                    Name, ctx.Response.Status, ctx.Response.BufferedBody.Length);
             }
             finally
             {

@@ -59,6 +59,12 @@ references/
 .mcp.json
 *-this-session-is-being-continued-*.txt
 
+# Claude Code's own npm install lands at the repo root when the user runs
+# `claude` here — those artifacts have nothing to do with this .NET project.
+node_modules/
+package.json
+package-lock.json
+
 # Encrypted GitHub token (DPAPI-protected, but never commit it anyway)
 github_token.dat
 

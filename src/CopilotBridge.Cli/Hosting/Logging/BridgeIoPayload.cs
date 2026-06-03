@@ -27,7 +27,22 @@ internal sealed class BridgeIoPayload
     /// <summary>Monotonic per-process sequence (shared with the inbound endpoint's audit seq).</summary>
     public required int Seq { get; init; }
 
-    /// <summary>UTC timestamp used to build the audit filename's <c>yyyyMMdd-HHmmss</c> prefix.</summary>
+    /// <summary>
+    /// Stable per-request identifier built once at the inbound endpoint as
+    /// <c>{yyyyMMdd-HHmmss}-{seq:D4}</c>. All four audit artifacts of one
+    /// request carry the SAME value, and the per-request INFO summary line
+    /// embeds the same string as <c>req#{TraceId}</c>. Operators grep the
+    /// log for the trace id, then <c>ls *{TraceId}*</c> in the trace
+    /// directory to pull the matching JSON files.
+    /// </summary>
+    public required string TraceId { get; init; }
+
+    /// <summary>
+    /// UTC timestamp written to this specific audit artifact's JSON body —
+    /// each of the four audits captures its own wall-clock moment so the
+    /// operator can see how long the upstream call took, when the SSE
+    /// stream finished, etc. Unrelated to file naming (see <see cref="TraceId"/>).
+    /// </summary>
     public required DateTime TimestampUtc { get; init; }
 
     /// <summary>One of: <c>inbound-req</c>, <c>inbound-resp</c>, <c>upstream-req</c>, <c>upstream-resp</c>.</summary>
