@@ -67,6 +67,18 @@ internal sealed class BridgeContext<TBody> where TBody : class
     /// </summary>
     public Dictionary<string, string?> CopilotHeaderOverrides { get; init; } =
         new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The model id the client put on the wire, captured BEFORE any pipeline
+    /// rewrite (normalize / user-routing / profile variant). Set by
+    /// <c>ModelRouterStage</c> as its very first step; <c>ResponseModelRewriteStage</c>
+    /// reads it back at the end to restore the original name in the response
+    /// body and the <c>message_start</c> SSE event, so client-side accounting
+    /// (ccusage, Claude Code's own session log) keeps reporting the model the
+    /// user actually asked for — not the back-end variant the bridge routed to.
+    /// Null until the model router runs.
+    /// </summary>
+    public string? OriginalRequestedModel { get; set; }
 }
 
 /// <summary>One SSE event a response stage chose not to forward downstream.</summary>
