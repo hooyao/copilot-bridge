@@ -43,6 +43,15 @@ internal sealed class RequestSummary
     public long DurationMs { get; set; }
 
     /// <summary>
+    /// When the pipeline / endpoint throws, the exception's type + message
+    /// land here so the INFO line surfaces what failed (e.g.
+    /// <c>NullReferenceException: Object reference not set</c>) without
+    /// requiring the operator to also fish out the stack-trace log line.
+    /// Null on success.
+    /// </summary>
+    public string? Error { get; set; }
+
+    /// <summary>
     /// "max" (in==out), "max→xhigh" (in!=out), or "(none)" when no effort
     /// was set on either side.
     /// </summary>

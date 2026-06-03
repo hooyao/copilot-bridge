@@ -122,8 +122,14 @@ internal static class ClaudeCodeMessagesEndpoint
             }
 
             // Snapshot the pre-pipeline state for the INFO summary log.
+            // Pre-seed ResolvedModel with the requested name so that if the
+            // pipeline throws before the post-pipeline block runs (e.g.
+            // ModelRouterStage fails), the summary still names which model
+            // the client asked for rather than rendering "?".
             summary.RequestedModel = clientBody.Model;
+            summary.ResolvedModel = clientBody.Model;
             summary.InboundEffort = clientBody.OutputConfig?.Effort;
+            summary.OutboundEffort = clientBody.OutputConfig?.Effort;
             summary.MaxTokens = clientBody.MaxTokens;
 
             // Short-circuit on Anthropic server tools Copilot doesn't support.
@@ -234,6 +240,7 @@ internal static class ClaudeCodeMessagesEndpoint
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             endpointError = "cancelled by client";
+            summary.Error = "cancelled by client";
             endpointLog.LogDebug("endpoint cancelled by client");
             throw;
         }
@@ -245,6 +252,7 @@ internal static class ClaudeCodeMessagesEndpoint
             // model error rather than a transport failure; the message
             // ([copilot-bridge] prefix) tells the operator what to fix.
             endpointError = ex.Message;
+            summary.Error = ex.Message;
             if (!httpCtx.Response.HasStarted)
             {
                 responseStatus = StatusCodes.Status400BadRequest;
@@ -271,6 +279,7 @@ internal static class ClaudeCodeMessagesEndpoint
             // so the operator sees the signal without being misled into
             // hunting a regression.
             endpointError = ex.Message;
+            summary.Error = $"{ex.GetType().Name}: {ex.Message}";
             endpointLog.LogWarning("endpoint upstream-disconnect: {Type}: {Message}", ex.GetType().Name, ex.Message);
             if (!httpCtx.Response.HasStarted)
             {
@@ -278,18 +287,35 @@ internal static class ClaudeCodeMessagesEndpoint
                 httpCtx.Response.StatusCode = responseStatus;
                 await httpCtx.Response.WriteAsync($"upstream disconnected: {ex.Message}", CancellationToken.None);
             }
+            else
+            {
+                // Already sent response headers (mid-stream disconnect); we
+                // cannot rewrite the status, so reflect what the wire sees:
+                // a 200 stream that was cut short. The Warning + summary
+                // error field tell the operator why.
+                responseStatus = httpCtx.Response.StatusCode;
+            }
         }
         catch (Exception ex)
         {
             // Genuinely unexpected — keep the stack trace, it's the only
             // diagnostic we have.
             endpointError = ex.Message;
+            summary.Error = $"{ex.GetType().Name}: {ex.Message}";
             endpointLog.LogError(ex, "endpoint exception: {Type}: {Message}", ex.GetType().Name, ex.Message);
             if (!httpCtx.Response.HasStarted)
             {
                 responseStatus = StatusCodes.Status502BadGateway;
                 httpCtx.Response.StatusCode = responseStatus;
                 await httpCtx.Response.WriteAsync($"upstream error: {ex.Message}", CancellationToken.None);
+            }
+            else
+            {
+                // Same as the transient branch: headers already sent, we
+                // can only record the wire-visible status so the summary
+                // line doesn't claim a misleading 500 from the initial
+                // default value.
+                responseStatus = httpCtx.Response.StatusCode;
             }
         }
         finally
