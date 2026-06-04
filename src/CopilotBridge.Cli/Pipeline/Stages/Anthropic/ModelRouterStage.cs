@@ -46,6 +46,9 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
     public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
     {
         var requested = ctx.Request.Body.Model;
+        // Stash the original, pre-normalize id so the response pipeline can
+        // restore it on the way back out (see ResponseModelRewriteStage).
+        ctx.OriginalRequestedModel = requested;
 
         // 1. Normalize.
         var canonical = Routing.CopilotModelRegistry.Normalize(requested);

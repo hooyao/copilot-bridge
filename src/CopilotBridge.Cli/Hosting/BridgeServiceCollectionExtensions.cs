@@ -75,6 +75,7 @@ internal static class BridgeServiceCollectionExtensions
         services.Configure<TracingOptions>(config.GetSection("Tracing"));
         services.Configure<RoutesConfig>(config.GetSection("Routing"));
         services.Configure<OutboundBetaPolicyOptions>(config.GetSection("Pipeline:OutboundBeta"));
+        services.Configure<ResponseModelRewriteOptions>(config.GetSection("Pipeline:ResponseModelRewrite"));
 
         // Kestrel listens on the (post-PostConfigure) port + uses our generous
         // keep-alive limits. Configured via IConfigureOptions so it can pull
@@ -144,6 +145,7 @@ internal static class BridgeServiceCollectionExtensions
         services.AddSingleton<ToolsSanitizeStage>();
         services.AddSingleton<HeadersOutboundStage>();
         services.AddSingleton<DoneFilterStage>();
+        services.AddSingleton<ResponseModelRewriteStage>();
         services.AddSingleton<CopilotMessagesPassthroughStrategy>();
 
         services.AddSingleton(BuildAnthropicPipeline);
@@ -198,6 +200,9 @@ internal static class BridgeServiceCollectionExtensions
             ResponseStages =
             [
                 sp.GetRequiredService<DoneFilterStage>(),
+                // After DoneFilter so the rewrite wrapper only sees events
+                // that will actually reach the client.
+                sp.GetRequiredService<ResponseModelRewriteStage>(),
             ],
             Strategies = new StrategyRegistry<MessagesRequest>(
             [
