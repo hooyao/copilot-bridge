@@ -31,6 +31,22 @@ internal static class ProfileAdjuster
     {
         profile = ApplyEffort(ctx, profile, catalog, log);
         ApplyThinking(ctx, profile, log);
+
+        // ApplyThinking can DERIVE output_config.effort from the thinking budget
+        // (ThinkingPolicy.DeriveEffortFromBudgetOnCoerce) when it coerces an
+        // adaptive-only model's thinking:enabled → adaptive — and that derived
+        // value never passed effort validation. Re-run ApplyEffort so the derived
+        // effort is validated against the (possibly variant-switched) target the
+        // same way a client-sent one is: kept if accepted, else stripped or routed
+        // to a -high/-xhigh sibling. Without this, Claude Code sending
+        // thinking:enabled with a budget that derives to 'high'/'xhigh' makes
+        // opus-4.8 and opus-4.7 base (both accept only 'medium') 400 with
+        // "output_config.effort 'high' is not supported by model …; supported
+        // values: [medium]" (verified live: opus-4.8 enabled+budget=32000 → 400).
+        // Idempotent for every other path: models that don't derive an effort
+        // leave the field untouched, so the second pass is a no-op for them.
+        profile = ApplyEffort(ctx, profile, catalog, log);
+
         if (!profile.AcceptsMidConversationSystem)
         {
             FoldMidConversationSystem(ctx, log);

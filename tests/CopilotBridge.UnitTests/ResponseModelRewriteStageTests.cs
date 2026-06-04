@@ -114,6 +114,32 @@ public class ResponseModelRewriteStageTests
     }
 
     [Fact]
+    public async Task BufferedBody_UpstreamPromptTooLongError_RelayedVerbatim()
+    {
+        // Graceful degradation for sonnet/haiku "1M": Claude Code believes the
+        // window is 1M (it picked <family>[1m]) but Copilot's real limit is 200k.
+        // When CC overfills, Copilot returns this exact 400, and CC only
+        // self-heals if it still reads "prompt is too long" (errors.ts
+        // toErrorType / parsePromptTooLongTokenCounts). The rewrite must NEVER
+        // touch an error body — it has no top-level "model" key, so
+        // TryRewriteBufferedBody returns null and the bytes pass through byte-for-
+        // byte. Verified live: Copilot returns
+        // 'prompt is too long: 206217 tokens > 200000 maximum'.
+        var errorBody = Encoding.UTF8.GetBytes(
+            """{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 206217 tokens > 200000 maximum"},"request_id":"req_vrtx_x"}""");
+        // original != resolved forces the stage to actually run (e.g. the opus
+        // 1M route) — proving the guard holds even on the path that DOES rewrite.
+        var ctx = Ctx("claude-opus-4-8", "claude-opus-4.7-1m-internal",
+            ResponseMode.Buffered, bufferedBody: errorBody);
+
+        await NewStage().ApplyAsync(ctx);
+
+        // Same reference back = TryRewriteBufferedBody returned null, bytes intact.
+        Assert.Same(errorBody, ctx.Response.BufferedBody);
+        Assert.Contains("prompt is too long", Encoding.UTF8.GetString(ctx.Response.BufferedBody!));
+    }
+
+    [Fact]
     public async Task BufferedBody_OriginalNull_NoOp()
     {
         // Router never ran (e.g. parse-error short circuit) — leave the body alone.

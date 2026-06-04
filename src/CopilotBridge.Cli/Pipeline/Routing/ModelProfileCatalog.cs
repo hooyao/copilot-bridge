@@ -85,6 +85,17 @@ internal sealed class ModelProfileCatalog
             EffortOnUnsupported = EffortHandling.Strip,
             Thinking = ThinkingPolicy.EnabledOnly,
             MaxThinkingBudget = 32000, // /models capabilities.supports.max_thinking_budget
+            // Copilot has no 1M variant for haiku/sonnet (every base model =
+            // 200k input per /models; only opus-4.6-1m / opus-4.7-1m-internal
+            // = 1M). Claude Code still offers "<family>[1m]" and, when picked,
+            // sends bare model + context-1m-2025-08-07 on the wire. Copilot
+            // accepts-and-ignores that token (returns 200), but forwarding a
+            // beta the backend can't honor is misleading, so strip it. NOTE:
+            // this does NOT change Claude Code's own 1M belief (that is decided
+            // client-side from the [1m] suffix, before the request); the user
+            // overfills to 200k and Copilot returns a "prompt is too long: N >
+            // 200000" 400 that Claude Code self-heals on. See docs/context-window.md.
+            StripBetas = ["context-1m-*"],
         };
         yield return new ModelProfile
         {
@@ -93,6 +104,7 @@ internal sealed class ModelProfileCatalog
             EffortOnUnsupported = EffortHandling.Strip,
             Thinking = ThinkingPolicy.EnabledOnly,
             MaxThinkingBudget = 32000,
+            StripBetas = ["context-1m-*"], // no 1M sonnet on Copilot — see claude-haiku-4.5 above
         };
         yield return new ModelProfile
         {
@@ -115,6 +127,7 @@ internal sealed class ModelProfileCatalog
             EffortOnUnsupported = EffortHandling.Strip,
             Thinking = ThinkingPolicy.All,
             MaxThinkingBudget = 32000,
+            StripBetas = ["context-1m-*"], // no 1M sonnet on Copilot — see claude-haiku-4.5 above
         };
         yield return new ModelProfile
         {
