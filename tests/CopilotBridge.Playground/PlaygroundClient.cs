@@ -123,6 +123,42 @@ internal sealed class PlaygroundClient : IDisposable
     }
 
     /// <summary>
+    /// POST <c>/v1/messages</c> with <c>stream:true</c> and read the response
+    /// body as RAW TEXT — no <see cref="SseParser"/>, no event framing logic.
+    /// Returns the entire concatenated SSE payload exactly as Copilot put it on
+    /// the wire. Used to determine whether a field present/absent in the
+    /// bridge's parsed output was already present/absent in the raw upstream
+    /// bytes (i.e. to tell a parser bug apart from an upstream bug). The caller
+    /// must set <c>"stream": true</c> in the JSON body.
+    /// </summary>
+    public async Task<string> PostMessagesRawStreamAsync(
+        string jsonBody,
+        CancellationToken ct = default)
+    {
+        var token = await _auth.GetCopilotTokenAsync(ct);
+        var baseUrl = _auth.CopilotApiBaseUrl
+            ?? throw new InvalidOperationException("CopilotApiBaseUrl is unknown after token fetch.");
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages");
+        _headers.ApplyTo(req, token);
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync(ct);
+            Console.Error.WriteLine($"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            Console.Error.WriteLine(errBody);
+            throw new HttpRequestException($"Copilot returned {(int)resp.StatusCode}");
+        }
+
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return await reader.ReadToEndAsync(ct);
+    }
+
+    /// <summary>
     /// POST <c>/v1/messages</c> with <c>stream:true</c>; yields each SSE item as it arrives.
     /// Caller is responsible for setting <c>"stream": true</c> in the JSON body.
     /// </summary>
