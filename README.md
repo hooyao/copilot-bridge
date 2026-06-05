@@ -60,6 +60,7 @@ dotnet publish src/CopilotBridge.Cli -c Release -r win-x64
 #    Windows, machine-derived AES-256-CBC+HMAC on Linux/macOS — see
 #    docs/token-storage.md) or ~/github_token.dat as fallback, so
 #    subsequent starts are silent.
+#    Startup logs include the app version before the listening URL.
 .\publish\copilot-bridge.exe serve              # default port 8765
 
 # Optional: run the device-code flow up front, without starting the server.

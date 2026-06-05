@@ -31,7 +31,7 @@ internal static class RootCli
         var serveCommand = new Command("serve", "Start the HTTP bridge");
         serveCommand.Options.Add(portOption);
         serveCommand.SetAction((parseResult, ct) =>
-            ServeCommand.RunAsync(parseResult.GetValue(portOption), ct));
+            ServeCommand.RunAsync(productName, productVersion, parseResult.GetValue(portOption), ct));
 
         // --- auth -----------------------------------------------------------
         var authLogin = new Command("login", "Log in to GitHub via device-code flow");
@@ -91,7 +91,7 @@ internal static class RootCli
 
         // Default action when no subcommand is given: behave like 'serve' on
         // the default port (== whatever appsettings.json declares).
-        root.SetAction((_, ct) => ServeCommand.RunAsync(cliPort: null, ct));
+        root.SetAction((_, ct) => ServeCommand.RunAsync(productName, productVersion, cliPort: null, ct));
 
         return root;
     }

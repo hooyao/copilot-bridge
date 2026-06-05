@@ -25,7 +25,11 @@ namespace CopilotBridge.Cli.Hosting;
 /// </summary>
 internal static class ServeCommand
 {
-    public static async Task<int> RunAsync(int? cliPort, CancellationToken ct)
+    public static async Task<int> RunAsync(
+        string productName,
+        string productVersion,
+        int? cliPort,
+        CancellationToken ct)
     {
         if (cliPort is { } port && port is < 1 or > 65535)
         {
@@ -37,6 +41,7 @@ internal static class ServeCommand
 
         builder.AddBridgeConfiguration();
         builder.Logging.AddBridgeLogging();
+        builder.Services.AddSingleton(new ProductInfo(productName, productVersion));
         builder.Services.AddBridgeServer(builder.Configuration, cliPort, PrintDeviceCode);
 
         var app = builder.Build();

@@ -28,6 +28,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
     private readonly IOptions<BridgeServerOptions> _server;
     private readonly IOptions<RoutesConfig> _routes;
     private readonly ModelProfileCatalog _catalog;
+    private readonly ProductInfo _product;
     private readonly Logging.BridgeIoSink? _ioSink;
     private readonly ILogger<BridgeStartupHostedService> _log;
 
@@ -36,6 +37,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
         IOptions<BridgeServerOptions> server,
         IOptions<RoutesConfig> routes,
         ModelProfileCatalog catalog,
+        ProductInfo product,
         ILogger<BridgeStartupHostedService> log,
         Logging.BridgeIoSink? ioSink = null)
     {
@@ -43,6 +45,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
         _server = server;
         _routes = routes;
         _catalog = catalog;
+        _product = product;
         _log = log;
         _ioSink = ioSink;
     }
@@ -87,6 +90,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
         //    other line in the rolling log.
         var port = _server.Value.Port;
         var textLogDir = Path.Combine(AppContext.BaseDirectory, "log");
+        _log.LogInformation("{ProductName} v{ProductVersion} starting", _product.Name, _product.Version);
         _log.LogInformation("copilot-bridge listening on http://localhost:{Port}", port);
         _log.LogInformation("Upstream: {UpstreamUrl}", _auth.CopilotApiBaseUrl);
         _log.LogInformation("Text log: {LogDir} (one file per process start)", textLogDir);
