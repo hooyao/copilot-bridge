@@ -47,10 +47,7 @@ internal static class ProfileAdjuster
         // leave the field untouched, so the second pass is a no-op for them.
         profile = ApplyEffort(ctx, profile, catalog, log);
 
-        if (!profile.AcceptsMidConversationSystem)
-        {
-            FoldMidConversationSystem(ctx, log);
-        }
+        HandleMidConversationSystem(ctx, profile, log);
         CapThinkingBudget(ctx, profile, log);
 
         // Step 5: register beta-strip patterns for HeadersOutboundStage.
@@ -162,44 +159,167 @@ internal static class ProfileAdjuster
             _ => throw new InvalidOperationException($"ThinkingPolicy.CoerceToWhenUnsupported='{shape}' is not a valid shape."),
         };
 
-    private static void FoldMidConversationSystem(BridgeContext<MessagesRequest> ctx, ILogger? log)
+    /// <summary>
+    /// Prefix added to the first text block when a mid-conversation
+    /// <c>role:"system"</c> message is rewritten to <c>role:"user"</c>. Gives
+    /// the LLM a hint that the message is harness-generated (a Claude Code
+    /// task reminder, MCP-server instruction, or queued-while-tool-running
+    /// user message) rather than typed by the user. Stable string — changing
+    /// it invalidates prompt cache for every existing session, so keep it
+    /// frozen unless coordinated with a model-side prompt update.
+    /// </summary>
+    private const string InjectedSystemMarker = "[Claude Code injected]\n";
+
+    /// <summary>
+    /// Handles mid-conversation <c>role:"system"</c> messages in the
+    /// inbound body so the outbound shape matches what
+    /// <paramref name="profile"/> accepts.
+    /// <list type="bullet">
+    ///   <item>When <see cref="ModelProfile.AcceptsMidConversationSystem"/>
+    ///         is <c>false</c>: every mid-conv <c>role:"system"</c> is
+    ///         converted to <c>role:"user"</c> in place, with
+    ///         <see cref="InjectedSystemMarker"/> prefixed onto the first
+    ///         text block of its content. The top-level <c>system</c> field
+    ///         is left untouched — that's what the previous "fold into
+    ///         system[]" behavior got wrong (it grew the system field per
+    ///         turn, breaking cache for every breakpoint downstream).</item>
+    ///   <item>When <c>true</c> (opus-4.8 today): each <c>role:"system"</c>
+    ///         is kept in place if its placement is legal under the 4.8
+    ///         rule (predecessor is <c>role:"user"</c>; successor is
+    ///         <c>role:"assistant"</c> or end-of-array), and converted to
+    ///         <c>role:"user"</c> otherwise. Placement is evaluated against
+    ///         the original message array — converting one entry never
+    ///         changes the predecessor seen by a later entry.</item>
+    /// </list>
+    /// See <c>docs/bug-mid-conversation-system-messages-dropped.md</c> for
+    /// the post-mortem and the cache-impact prototype in
+    /// <c>docs/scratch/midconv-cache-prototype.py</c>.
+    /// </summary>
+    private static void HandleMidConversationSystem(
+        BridgeContext<MessagesRequest> ctx, ModelProfile profile, ILogger? log)
     {
         var body = ctx.Request.Body;
-        if (body.Messages.Count == 0) return;
+        var msgs = body.Messages;
+        if (msgs.Count == 0) return;
 
-        var foldedTexts = new List<TextBlockParam>();
-        var keptMessages = new List<MessageParam>(body.Messages.Count);
-
-        foreach (var msg in body.Messages)
+        // First pass: classify each message as KEEP (non-system, or legally
+        // placed system) vs CONVERT (mid-conv system needing rewrite). We
+        // walk the ORIGINAL array so conversion of an earlier entry can't
+        // change the predecessor seen by a later one.
+        var actions = new MessageAction[msgs.Count];
+        var convertedCount = 0;
+        var keptInPlaceCount = 0;
+        var anySystem = false;
+        for (var i = 0; i < msgs.Count; i++)
         {
-            if (string.Equals(msg.Role, "system", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(msgs[i].Role, "system", StringComparison.OrdinalIgnoreCase))
             {
-                foreach (var block in msg.Content)
-                {
-                    if (block is TextBlockParam tb)
-                    {
-                        foldedTexts.Add(tb);
-                    }
-                }
+                actions[i] = MessageAction.PassThrough;
                 continue;
             }
-            keptMessages.Add(msg);
+            anySystem = true;
+            if (profile.AcceptsMidConversationSystem && IsLegalSystemPlacement(msgs, i))
+            {
+                actions[i] = MessageAction.KeepInPlace;
+                keptInPlaceCount++;
+            }
+            else
+            {
+                actions[i] = MessageAction.ConvertToUser;
+                convertedCount++;
+            }
+        }
+        if (!anySystem) return;
+
+        // Second pass: build the new messages array. Only allocate a new
+        // list when something actually changed.
+        if (convertedCount == 0)
+        {
+            // All system messages are legally placed; nothing to do.
+            log?.LogInformation(
+                "  profile/mid-conv-system: profile='{Profile}' accepts={Accepts} kept_in_place={Kept} converted=0",
+                profile.CanonicalId, profile.AcceptsMidConversationSystem, keptInPlaceCount);
+            return;
         }
 
-        if (foldedTexts.Count == 0) return;
-
-        var newSystem = body.System is { Count: > 0 } existing
-            ? existing.Concat(foldedTexts).ToList()
-            : foldedTexts;
-
-        ctx.Request.Body = body with
+        var rebuilt = new List<MessageParam>(msgs.Count);
+        for (var i = 0; i < msgs.Count; i++)
         {
-            System = newSystem,
-            Messages = keptMessages,
-        };
-        log?.LogDebug(
-            "  profile/mid-conv-system: folded {Count} system message(s) into top-level system field",
-            foldedTexts.Count);
+            rebuilt.Add(actions[i] == MessageAction.ConvertToUser
+                ? ConvertSystemToUser(msgs[i])
+                : msgs[i]);
+        }
+        ctx.Request.Body = body with { Messages = rebuilt };
+
+        log?.LogInformation(
+            "  profile/mid-conv-system: profile='{Profile}' accepts={Accepts} kept_in_place={Kept} converted={Converted}",
+            profile.CanonicalId, profile.AcceptsMidConversationSystem, keptInPlaceCount, convertedCount);
+    }
+
+    /// <summary>
+    /// True iff <c>messages[i]</c> (a <c>role:"system"</c> entry) satisfies
+    /// opus-4.8's placement rule: predecessor is <c>role:"user"</c> AND
+    /// successor is <c>role:"assistant"</c> or end-of-array. Empirically
+    /// verified against Copilot 2026-06-05; see
+    /// <c>tests/CopilotBridge.Playground/ModelProfileProbe.Opus48_MidConversationSystem_PlacementRules</c>.
+    /// The "assistant ending in a server tool result" branch of the
+    /// documented rule is unreachable from Claude Code (it never emits
+    /// server-tool blocks), so we conservatively require <c>user</c> as the
+    /// predecessor.
+    /// </summary>
+    private static bool IsLegalSystemPlacement(IReadOnlyList<MessageParam> msgs, int i)
+    {
+        var prev = i > 0 ? msgs[i - 1] : null;
+        var next = i + 1 < msgs.Count ? msgs[i + 1] : null;
+        var predOk = prev is not null
+            && string.Equals(prev.Role, "user", StringComparison.OrdinalIgnoreCase);
+        var succOk = next is null
+            || string.Equals(next.Role, "assistant", StringComparison.OrdinalIgnoreCase);
+        return predOk && succOk;
+    }
+
+    /// <summary>
+    /// Returns a copy of <paramref name="msg"/> with <c>Role = "user"</c> and
+    /// the <see cref="InjectedSystemMarker"/> prepended to the first text
+    /// block's text. <see cref="CacheControl"/> on the original text block
+    /// is preserved (Claude Code does not set it on mid-conv system entries
+    /// in practice, but we keep the invariant clean). Non-text content
+    /// blocks (none seen in real traces) are passed through unchanged.
+    /// </summary>
+    private static MessageParam ConvertSystemToUser(MessageParam msg)
+    {
+        var content = msg.Content;
+        var rebuiltContent = new List<ContentBlockParam>(content.Count > 0 ? content.Count : 1);
+        var markerInjected = false;
+        for (var j = 0; j < content.Count; j++)
+        {
+            var block = content[j];
+            if (!markerInjected && block is TextBlockParam tb)
+            {
+                rebuiltContent.Add(tb with { Text = InjectedSystemMarker + tb.Text });
+                markerInjected = true;
+            }
+            else
+            {
+                rebuiltContent.Add(block);
+            }
+        }
+        if (!markerInjected)
+        {
+            // No text block to prefix (empty content, or only non-text blocks
+            // — both pathological for a system message but tolerated). Inject
+            // the marker as a leading text block so the LLM still sees the
+            // signal.
+            rebuiltContent.Insert(0, new TextBlockParam { Text = InjectedSystemMarker });
+        }
+        return msg with { Role = "user", Content = rebuiltContent };
+    }
+
+    private enum MessageAction
+    {
+        PassThrough,
+        KeepInPlace,
+        ConvertToUser,
     }
 
     private static void CapThinkingBudget(BridgeContext<MessagesRequest> ctx, ModelProfile profile, ILogger? log)

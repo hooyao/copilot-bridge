@@ -59,11 +59,17 @@ internal sealed class ModelProfileCatalog
     /// <list type="bullet">
     ///   <item>No model accepts <c>output_config.effort = "max"</c>. Copilot
     ///         rejects "max" universally — strip it everywhere.</item>
-    ///   <item>No model — including opus-4.8 — accepts non-first
-    ///         <c>role:"system"</c> messages. Copilot's gateway rejects them
-    ///         with "Unexpected role 'system'" regardless of model. So
+    ///   <item>Of the Anthropic models on Copilot, <b>only</b> opus-4.8 accepts
+    ///         non-first <c>role:"system"</c> messages — and even there, only
+    ///         in legal placements (predecessor=user, successor=assistant or
+    ///         end-of-array). Every other model 400s with "Unexpected role
+    ///         'system'" regardless of position, so
     ///         <see cref="ModelProfile.AcceptsMidConversationSystem"/> is
-    ///         <c>false</c> for every entry; the fold runs unconditionally.</item>
+    ///         <c>true</c> for opus-4.8 and <c>false</c> for all others;
+    ///         <see cref="Routing.ProfileAdjuster"/> converts mid-conv system
+    ///         to user (with an injected-context marker prefix) when the
+    ///         profile says <c>false</c>, and only placement-fixes the bad
+    ///         positions when <c>true</c>.</item>
     ///   <item><c>thinking.budget_tokens</c> must always be &lt;
     ///         <c>max_tokens</c>; otherwise Copilot 400s on that constraint
     ///         before evaluating the shape at all.</item>
@@ -120,6 +126,12 @@ internal sealed class ModelProfileCatalog
         // shapes AND the three lower effort levels. xhigh and max → 400
         // ("supported values: [low medium high]") → strip; no -high/-xhigh
         // variants exist for this family, so RouteToVariant isn't useful.
+        // Note on sonnet-4.6 context: Copilot serves sonnet-4.6 with native
+        // 1M ctx — re-probed 2026-06-05 (851k-token padded prompt returns
+        // 200; see ModelProfileProbe.NonOpus_LargePrompt_Probe200kBoundary).
+        // PR #7's "no 1M sonnet on Copilot" + StripBetas=["context-1m-*"]
+        // claim is now stale; the strip has been removed so a 1M-capable
+        // beta hint passes through.
         yield return new ModelProfile
         {
             CanonicalId = "claude-sonnet-4.6",
@@ -127,7 +139,6 @@ internal sealed class ModelProfileCatalog
             EffortOnUnsupported = EffortHandling.Strip,
             Thinking = ThinkingPolicy.All,
             MaxThinkingBudget = 32000,
-            StripBetas = ["context-1m-*"], // no 1M sonnet on Copilot — see claude-haiku-4.5 above
         };
         yield return new ModelProfile
         {
@@ -201,8 +212,18 @@ internal sealed class ModelProfileCatalog
         // rejects enabled with the exact same message). Effort: ONLY medium
         // accepted; no -high/-xhigh siblings exist on Copilot for 4.8, so
         // every other value gets stripped. Mid-conversation system messages
-        // are REJECTED even on 4.8 — Copilot's gateway hasn't picked up that
-        // 4.8 protocol extension. Fold runs.
+        // are ACCEPTED on 4.8 (re-probed 2026-06-05: Copilot enabled the
+        // 4.8 protocol extension; error surface changed from "role unknown"
+        // to placement-specific errors). Placement rule:
+        // <see cref="Routing.ProfileAdjuster"/> keeps S in place when
+        // predecessor=user AND successor=assistant-or-end-of-array, and
+        // converts to role:"user" with an injected-context prefix otherwise.
+        // 1M context: opus-4.8 natively supports 1M ctx on Copilot — no
+        // -1m-internal sibling exists or is needed (probed 2026-06-05: a
+        // 260k-token prompt returns 200 with or without the
+        // context-1m-2025-08-07 beta). So no StripBetas entry for
+        // context-1m-* — the beta is silently accepted and the routing
+        // table no longer downgrades opus-4.8 + 1M to 4.7-1m-internal.
         yield return new ModelProfile
         {
             CanonicalId = "claude-opus-4.8",
@@ -210,7 +231,7 @@ internal sealed class ModelProfileCatalog
             EffortOnUnsupported = EffortHandling.Strip,
             Thinking = ThinkingPolicy.AdaptiveOnly,
             MaxThinkingBudget = 32000,
-            AcceptsMidConversationSystem = false, // empirical: Copilot rejects role:"system" mid-conv even on 4.8
+            AcceptsMidConversationSystem = true,  // empirical 2026-06-05: 4.8 accepts S in legal placements
             AcceptsSpeedFast = false,             // DTO doesn't model speed; unverified, leaving conservative
         };
     }

@@ -115,18 +115,35 @@ public class ProfileAdjusterTests
         Assert.Null(ctx.Request.Body.OutputConfig?.Effort);
     }
 
-    // ── sonnet/haiku register the context-1m strip (no 1M on Copilot) ─────
+    // ── sonnet-4.5/haiku-4.5 register the context-1m strip (still 200k on Copilot) ─────
 
     [Theory]
     [InlineData("claude-sonnet-4.5")]
-    [InlineData("claude-sonnet-4.6")]
     [InlineData("claude-haiku-4.5")]
-    public void SonnetHaiku_RegisterContext1mStrip(string profileId)
+    public void Sonnet45Haiku_RegisterContext1mStrip(string profileId)
     {
         var ctx = TestCtx.Build(profileId);
 
         Adjust(ctx, profileId);
 
         Assert.Contains("context-1m-*", ctx.PendingBetaStrips);
+    }
+
+    /// <summary>
+    /// sonnet-4.6 must NOT strip the context-1m beta — Copilot re-probed
+    /// 2026-06-05 to serve sonnet-4.6 with native 1M ctx (851k-token padded
+    /// prompt returns 200; see <c>ModelProfileProbe.NonOpus_LargePrompt_Probe200kBoundary</c>).
+    /// Stripping the beta the way PR #7 originally did would silently drop
+    /// the only signal the bridge passes downstream about the client wanting
+    /// 1M; identity passthrough is now correct.
+    /// </summary>
+    [Fact]
+    public void Sonnet46_DoesNotStripContext1m()
+    {
+        var ctx = TestCtx.Build("claude-sonnet-4.6");
+
+        Adjust(ctx, "claude-sonnet-4.6");
+
+        Assert.DoesNotContain("context-1m-*", ctx.PendingBetaStrips);
     }
 }
