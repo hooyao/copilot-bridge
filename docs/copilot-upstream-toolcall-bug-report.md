@@ -1,5 +1,16 @@
 # Bug report: opus-4.8 (and sonnet-4.6) intermittently omit a **required** tool-call input field when streaming via the native Anthropic `/v1/messages` endpoint
 
+> **Filing note.** GitHub Copilot has no public issue tracker; feedback goes to
+> GitHub Community Discussions (`github.com/orgs/community/discussions`,
+> *Copilot Conversations* category). That repo **only accepts discussions
+> created through the web UI using its templates** — a discussion created via
+> the GraphQL/`gh` API is auto-closed by a bot ("We currently only accept
+> discussions created through the GitHub UI using our provided discussion
+> templates"). So this must be filed manually in the browser:
+> `https://github.com/orgs/community/discussions/new?category=copilot-conversations`
+> — Discussion Type = **Bug**, Topic Area = **Copilot in GitHub**, title from the
+> H1 below, body = everything under it.
+
 ## Summary
 
 When streaming a tool call from `claude-opus-4.8` through Copilot's native
