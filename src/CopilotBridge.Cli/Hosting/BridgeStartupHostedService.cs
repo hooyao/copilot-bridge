@@ -52,6 +52,8 @@ internal sealed class BridgeStartupHostedService : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        _log.LogInformation("{ProductName} v{ProductVersion} starting", _product.Name, _product.Version);
+
         // 1. Routes config — invalid shape is a user-fixable mistake; surface
         //    as BridgeStartupException so FatalErrorHandler renders just the
         //    message (no noisy stack trace).
@@ -90,7 +92,6 @@ internal sealed class BridgeStartupHostedService : IHostedService
         //    other line in the rolling log.
         var port = _server.Value.Port;
         var textLogDir = Path.Combine(AppContext.BaseDirectory, "log");
-        _log.LogInformation("{ProductName} v{ProductVersion} starting", _product.Name, _product.Version);
         _log.LogInformation("copilot-bridge listening on http://localhost:{Port}", port);
         _log.LogInformation("Upstream: {UpstreamUrl}", _auth.CopilotApiBaseUrl);
         _log.LogInformation("Text log: {LogDir} (one file per process start)", textLogDir);
