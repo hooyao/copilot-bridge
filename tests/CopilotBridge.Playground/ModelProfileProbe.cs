@@ -109,6 +109,98 @@ public class ModelProfileProbe
     }
 
     /// <summary>
+    /// Focused re-probe of opus-4.8's effort acceptance — <c>/models</c> now
+    /// advertises <c>effort=[low,medium,high,xhigh,max]</c> for opus-4.8
+    /// (it previously listed only up to xhigh, and the catalog was built when
+    /// only <c>medium</c> was actually accepted). <c>/models</c> capabilities
+    /// have been wrong before (haiku advertises adaptive thinking but rejects
+    /// it at runtime), so this probes each effort value directly against the
+    /// live endpoint — both standalone AND combined with adaptive thinking
+    /// (the exact shape Claude Code sends for opus). The two-axis combination
+    /// matters: the bridge derives effort from the thinking budget, so the
+    /// real request always has both fields.
+    /// </summary>
+    [Theory]
+    [InlineData("low",    false)]
+    [InlineData("medium", false)]
+    [InlineData("high",   false)]
+    [InlineData("xhigh",  false)]
+    [InlineData("max",    false)]
+    [InlineData("low",    true)]
+    [InlineData("medium", true)]
+    [InlineData("high",   true)]
+    [InlineData("xhigh",  true)]
+    [InlineData("max",    true)]
+    public async Task Opus48_Effort_ReProbe(string effort, bool withAdaptiveThinking)
+    {
+        var thinkingBlock = withAdaptiveThinking ? ""","thinking":{"type":"adaptive"}""" : "";
+        // max_tokens must exceed any derived thinking budget; keep it modest
+        // so the probe returns fast even at effort=max.
+        var payload = $$"""
+          {
+            "model": "claude-opus-4.8",
+            "max_tokens": 64,
+            "messages": [{"role":"user","content":"reply: ok"}],
+            "output_config":{"effort":"{{effort}}"}{{thinkingBlock}}
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-opus-4.8] effort={effort} adaptive-thinking={withAdaptiveThinking} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 280)}");
+    }
+
+    /// <summary>
+    /// Re-probe effort acceptance for the rest of the Anthropic family whose
+    /// <c>/models</c> capability now advertises higher effort tiers than the
+    /// catalog's <c>AcceptedEfforts</c> currently allows (opus-4.8 covered
+    /// separately above). As of 2026-06-05 <c>/models</c> shows:
+    /// <list type="bullet">
+    ///   <item>opus-4.6 / opus-4.6-1m: <c>[low,medium,high,max]</c> (catalog: low/medium/high)</item>
+    ///   <item>opus-4.7 / opus-4.7-1m-internal: <c>[low,medium,high,xhigh,max]</c> (catalog base: medium only)</item>
+    ///   <item>sonnet-4.6: <c>[low,medium,high,max]</c> (catalog: low/medium/high)</item>
+    /// </list>
+    /// <c>/models</c> has lied before, so this probes each NEW tier (the ones
+    /// the catalog doesn't yet allow) directly. Only the deltas are tested —
+    /// low/medium are already known-good for these models. Pure effort, no
+    /// thinking, small max_tokens for speed.
+    /// </summary>
+    [Theory]
+    // opus-4.6 family — new tier to confirm: max
+    [InlineData("claude-opus-4.6",            "high")]
+    [InlineData("claude-opus-4.6",            "xhigh")]
+    [InlineData("claude-opus-4.6",            "max")]
+    [InlineData("claude-opus-4.6-1m",         "high")]
+    [InlineData("claude-opus-4.6-1m",         "xhigh")]
+    [InlineData("claude-opus-4.6-1m",         "max")]
+    // opus-4.7 base — catalog only allows medium today; confirm high/xhigh/max
+    [InlineData("claude-opus-4.7",            "high")]
+    [InlineData("claude-opus-4.7",            "xhigh")]
+    [InlineData("claude-opus-4.7",            "max")]
+    // opus-4.7-1m-internal — catalog allows low..xhigh; confirm max
+    [InlineData("claude-opus-4.7-1m-internal", "xhigh")]
+    [InlineData("claude-opus-4.7-1m-internal", "max")]
+    // sonnet-4.6 — catalog allows low/medium/high; confirm xhigh/max
+    [InlineData("claude-sonnet-4.6",          "high")]
+    [InlineData("claude-sonnet-4.6",          "xhigh")]
+    [InlineData("claude-sonnet-4.6",          "max")]
+    public async Task Family_Effort_ReProbe(string model, string effort)
+    {
+        var payload = $$"""
+          {
+            "model": "{{model}}",
+            "max_tokens": 32,
+            "messages": [{"role":"user","content":"reply: ok"}],
+            "output_config":{"effort":"{{effort}}"}
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[{model}] effort={effort} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 240)}");
+    }
+
+    /// <summary>
     /// Mid-conversation <c>role:"system"</c> support. opus-4.8 adds this; everything
     /// else (4.7 and older) should 400. Distinguishes targets that need
     /// <c>ProfileAdjuster.FoldMidConversationSystem</c> from those that don't.
