@@ -59,11 +59,21 @@ internal sealed record ModelProfile
     public int MaxThinkingBudget { get; init; } = 64000;
 
     /// <summary>
-    /// True only for opus-4.8+: the backend accepts <c>role:"system"</c>
-    /// messages in non-first positions of the <c>messages</c> array. When
-    /// false and such messages are present, <see cref="ProfileAdjuster"/> folds
-    /// them into the top-level <c>system</c> field so a 4.8→4.7 fallback does
-    /// not 400.
+    /// True if the backend accepts <c>role:"system"</c> messages in non-first
+    /// positions of the <c>messages</c> array (the Anthropic 4.8+ protocol
+    /// extension). True for opus-4.8 only as of 2026-06-05; every other
+    /// Copilot Anthropic model still rejects mid-conv system unconditionally.
+    /// <para>
+    /// When <c>true</c>, <see cref="ProfileAdjuster"/> keeps each mid-conv
+    /// <c>role:"system"</c> in place if its placement is legal under the 4.8
+    /// rule (predecessor is <c>user</c>; successor is <c>assistant</c> or
+    /// end-of-array) and converts to <c>role:"user"</c> with an
+    /// injected-context prefix otherwise. When <c>false</c>, every mid-conv
+    /// <c>role:"system"</c> is converted unconditionally — see the bug
+    /// post-mortem <c>docs/bug-mid-conversation-system-messages-dropped.md</c>
+    /// for why folding into the top-level <c>system</c> field (the previous
+    /// behavior) lost user input and broke cache.
+    /// </para>
     /// </summary>
     public bool AcceptsMidConversationSystem { get; init; }
 

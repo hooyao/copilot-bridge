@@ -396,40 +396,12 @@ internal static class ClaudeCodeMessagesEndpoint
     /// failures (Copilot dropping the socket during the cert exchange),
     /// gateway timeouts, IO errors on read. Caller logs these at Warning
     /// (no stack) instead of Error (with stack) so a transient hiccup
-    /// doesn't look like a regression in the bridge's own code.
+    /// doesn't look like a regression in the bridge's own code. Delegates to
+    /// the shared <see cref="Copilot.TransientUpstreamError"/> classifier
+    /// (the same one CopilotClient uses to decide whether to retry).
     /// </summary>
-    private static bool IsTransientUpstreamError(Exception ex)
-    {
-        // Walk the exception chain — these failures arrive wrapped through
-        // multiple layers (HttpRequestException → IOException → SocketException
-        // or AuthenticationException etc).
-        for (var current = ex; current is not null; current = current.InnerException)
-        {
-            switch (current)
-            {
-                // Premature EOF reading the response body — Copilot closed
-                // the socket while we were mid-stream.
-                case System.Net.Http.HttpIOException:
-                // SSL handshake failures (net_http_ssl_connection_failed) and
-                // generic request-level connectivity issues (DNS / refused /
-                // reset). HttpRequestException itself can carry either; we
-                // accept it as a class regardless of inner type since every
-                // member of this family is "upstream / network", not a bug
-                // in our code path.
-                case System.Net.Http.HttpRequestException:
-                case System.Net.Sockets.SocketException:
-                case System.Security.Authentication.AuthenticationException:
-                    return true;
-                // Catch the underlying "net_io_eof" / "ResponseEnded" forms
-                // that surface as a plain IOException.
-                case IOException io when io.Message.Contains("eof", StringComparison.OrdinalIgnoreCase)
-                                         || io.Message.Contains("premature", StringComparison.OrdinalIgnoreCase)
-                                         || io.Message.Contains("ResponseEnded", StringComparison.OrdinalIgnoreCase):
-                    return true;
-            }
-        }
-        return false;
-    }
+    private static bool IsTransientUpstreamError(Exception ex) =>
+        Copilot.TransientUpstreamError.Is(ex);
 
     /// <summary>
     /// Read the inbound HTTP body into a pooled buffer. Caller (or its

@@ -14,7 +14,14 @@ public class ModelRouteResolverTests
     private static RoutesConfig OneLoc(MatchExpression when, LocationUse use) =>
         new() { Locations = [new RouteLocation { When = when, Use = use }] };
 
-    /// <summary>opus-4.7 OR opus-4.8, AND the 1M beta — the shipped nested shape.</summary>
+    /// <summary>
+    /// opus-4.7 OR opus-4.8, AND the 1M beta — a representative nested shape
+    /// for exercising <see cref="ModelRouteResolver.Apply"/>. Note this is
+    /// kept as a TEST FIXTURE only; production appsettings.json no longer
+    /// routes opus-4.8 through this rule because Copilot's opus-4.8 natively
+    /// supports 1M context (probed 2026-06-05 — see
+    /// <c>tests/CopilotBridge.Playground/ModelProfileProbe.Opus48_LargePrompt_ProbeOneMillionContextSupport</c>).
+    /// </summary>
     private static MatchExpression OneMWhen() => new()
     {
         AllOf =

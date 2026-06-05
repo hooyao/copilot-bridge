@@ -23,7 +23,12 @@ internal static class DebugCommand
 
         using var http = CreateHttpClient();
         using var auth = new AuthService(http);
-        var copilot = new CopilotClient(http, auth, new CopilotHeaderFactory());
+        // GetModelsAsync doesn't use the retry path; supply defaults + a null
+        // logger so this throwaway debug command needn't wire up DI.
+        var copilot = new CopilotClient(
+            http, auth, new CopilotHeaderFactory(),
+            Microsoft.Extensions.Options.Options.Create(new Hosting.Options.UpstreamRetryOptions()),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<CopilotClient>.Instance);
 
         try
         {

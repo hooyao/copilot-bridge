@@ -57,13 +57,28 @@ internal sealed class ModelProfileCatalog
     /// <remarks>
     /// Cross-cutting facts learned from probing all 11 models:
     /// <list type="bullet">
-    ///   <item>No model accepts <c>output_config.effort = "max"</c>. Copilot
-    ///         rejects "max" universally — strip it everywhere.</item>
-    ///   <item>No model — including opus-4.8 — accepts non-first
-    ///         <c>role:"system"</c> messages. Copilot's gateway rejects them
-    ///         with "Unexpected role 'system'" regardless of model. So
+    ///   <item>Effort acceptance was re-probed 2026-06-05 (Copilot had widened
+    ///         it since the catalog was first built). The current matrix is per
+    ///         <c>ModelProfileProbe.Family_Effort_ReProbe</c> /
+    ///         <c>Opus48_Effort_ReProbe</c>: opus-4.6 / opus-4.6-1m / sonnet-4.6
+    ///         accept <c>low/medium/high/max</c> but REJECT <c>xhigh</c>
+    ///         (effort tiers are NOT monotonic — <c>max</c> works where
+    ///         <c>xhigh</c> 400s); opus-4.7 base / opus-4.7-1m-internal /
+    ///         opus-4.8 accept all of <c>low/medium/high/xhigh/max</c>;
+    ///         haiku-4.5 / sonnet-4.5 / opus-4.5 reject the effort field
+    ///         entirely. "max" is no longer stripped universally — only on the
+    ///         models that actually reject it.</item>
+    ///   <item>Of the Anthropic models on Copilot, <b>only</b> opus-4.8 accepts
+    ///         non-first <c>role:"system"</c> messages — and even there, only
+    ///         in legal placements (predecessor=user, successor=assistant or
+    ///         end-of-array). Every other model 400s with "Unexpected role
+    ///         'system'" regardless of position, so
     ///         <see cref="ModelProfile.AcceptsMidConversationSystem"/> is
-    ///         <c>false</c> for every entry; the fold runs unconditionally.</item>
+    ///         <c>true</c> for opus-4.8 and <c>false</c> for all others;
+    ///         <see cref="Routing.ProfileAdjuster"/> converts mid-conv system
+    ///         to user (with an injected-context marker prefix) when the
+    ///         profile says <c>false</c>, and only placement-fixes the bad
+    ///         positions when <c>true</c>.</item>
     ///   <item><c>thinking.budget_tokens</c> must always be &lt;
     ///         <c>max_tokens</c>; otherwise Copilot 400s on that constraint
     ///         before evaluating the shape at all.</item>
@@ -115,24 +130,32 @@ internal sealed class ModelProfileCatalog
             MaxThinkingBudget = 32000,
         };
 
-        // ── Family: "all thinking shapes" + low/medium/high effort ───────
+        // ── Family: "all thinking shapes" + effort low/medium/high/max ───
         // sonnet-4.6 and opus-4.6 (base + 1m) accept all three thinking
-        // shapes AND the three lower effort levels. xhigh and max → 400
-        // ("supported values: [low medium high]") → strip; no -high/-xhigh
-        // variants exist for this family, so RouteToVariant isn't useful.
+        // shapes. Effort re-probed 2026-06-05: low/medium/high/MAX accepted,
+        // xhigh REJECTED ("supported values: [low medium high max]"). Note the
+        // non-monotonicity — max works but xhigh doesn't, so AcceptedEfforts
+        // lists max explicitly and the adjuster strips a stray xhigh. No
+        // -high/-xhigh sibling ids exist for this family, so RouteToVariant
+        // isn't useful.
+        // Note on sonnet-4.6 context: Copilot serves sonnet-4.6 with native
+        // 1M ctx — re-probed 2026-06-05 (851k-token padded prompt returns
+        // 200; see ModelProfileProbe.NonOpus_LargePrompt_Probe200kBoundary).
+        // PR #7's "no 1M sonnet on Copilot" + StripBetas=["context-1m-*"]
+        // claim is now stale; the strip has been removed so a 1M-capable
+        // beta hint passes through.
         yield return new ModelProfile
         {
             CanonicalId = "claude-sonnet-4.6",
-            AcceptedEfforts = ["low", "medium", "high"],
+            AcceptedEfforts = ["low", "medium", "high", "max"],
             EffortOnUnsupported = EffortHandling.Strip,
             Thinking = ThinkingPolicy.All,
             MaxThinkingBudget = 32000,
-            StripBetas = ["context-1m-*"], // no 1M sonnet on Copilot — see claude-haiku-4.5 above
         };
         yield return new ModelProfile
         {
             CanonicalId = "claude-opus-4.6",
-            AcceptedEfforts = ["low", "medium", "high"],
+            AcceptedEfforts = ["low", "medium", "high", "max"],
             EffortOnUnsupported = EffortHandling.Strip,
             Thinking = ThinkingPolicy.All,
             MaxThinkingBudget = 32000,
@@ -140,7 +163,7 @@ internal sealed class ModelProfileCatalog
         yield return new ModelProfile
         {
             CanonicalId = "claude-opus-4.6-1m",
-            AcceptedEfforts = ["low", "medium", "high"],
+            AcceptedEfforts = ["low", "medium", "high", "max"],
             EffortOnUnsupported = EffortHandling.Strip,
             Thinking = ThinkingPolicy.All,
             MaxThinkingBudget = 32000,
@@ -149,19 +172,23 @@ internal sealed class ModelProfileCatalog
 
         // ── opus-4.7 family ──────────────────────────────────────────────
         // Adaptive-only thinking ("thinking.type.enabled is not supported …
-        // Use thinking.type.adaptive and output_config.effort"). The base
-        // model accepts ONLY effort=medium; high/xhigh route to dedicated
-        // sibling ids; low has no sibling → strip (the model uses default
-        // medium). The 1m-internal variant is special: it accepts effort
-        // low/medium/high/xhigh on its own (no variant routing needed).
+        // Use thinking.type.adaptive and output_config.effort"). Effort
+        // re-probed 2026-06-05: the base model now accepts low/medium/high/
+        // xhigh/max directly (Copilot widened it — it previously took only
+        // medium). With every value accepted, the EffortToVariant routes to
+        // the -high/-xhigh siblings are now DEAD (ApplyEffort returns early on
+        // an accepted effort and never consults the map). They're left in
+        // place — harmless and still correct if Copilot ever narrows the base
+        // again — but the common path is now a direct accept, no sibling hop.
         yield return new ModelProfile
         {
             CanonicalId = "claude-opus-4.7",
-            AcceptedEfforts = ["medium"],
+            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
             EffortOnUnsupported = EffortHandling.RouteToVariant,
             EffortToVariant = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
-                // low → no sibling exists → adjuster falls through to strip
+                // Fallback siblings, only consulted if the base ever stops
+                // accepting these directly again.
                 ["high"]  = "claude-opus-4.7-high",
                 ["xhigh"] = "claude-opus-4.7-xhigh",
             },
@@ -189,7 +216,7 @@ internal sealed class ModelProfileCatalog
         yield return new ModelProfile
         {
             CanonicalId = "claude-opus-4.7-1m-internal",
-            AcceptedEfforts = ["low", "medium", "high", "xhigh"],
+            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
             EffortOnUnsupported = EffortHandling.Strip,
             Thinking = ThinkingPolicy.AdaptiveOnly,
             MaxThinkingBudget = 32000,
@@ -198,19 +225,31 @@ internal sealed class ModelProfileCatalog
 
         // ── opus-4.8 ─────────────────────────────────────────────────────
         // Same thinking contract as the opus-4.7 base (adaptive-only;
-        // rejects enabled with the exact same message). Effort: ONLY medium
-        // accepted; no -high/-xhigh siblings exist on Copilot for 4.8, so
-        // every other value gets stripped. Mid-conversation system messages
-        // are REJECTED even on 4.8 — Copilot's gateway hasn't picked up that
-        // 4.8 protocol extension. Fold runs.
+        // rejects enabled with the exact same message). Effort re-probed
+        // 2026-06-05: low/medium/high/xhigh/MAX all accepted (Copilot widened
+        // it — the catalog previously allowed only medium and was silently
+        // stripping the user's requested max down to the model default). No
+        // -high/-xhigh sibling ids exist for 4.8, but none are needed now that
+        // the base takes every tier. Mid-conversation system messages are
+        // ACCEPTED on 4.8 (Copilot enabled the 4.8 protocol extension; error
+        // surface changed from "role unknown" to placement-specific errors).
+        // Placement rule: <see cref="Routing.ProfileAdjuster"/> keeps S in
+        // place when predecessor=user AND successor=assistant-or-end-of-array,
+        // and converts to role:"user" with an injected-context prefix
+        // otherwise. 1M context: opus-4.8 natively supports 1M ctx on Copilot
+        // — no -1m-internal sibling exists or is needed (probed 2026-06-05: a
+        // 260k-token prompt returns 200 with or without the
+        // context-1m-2025-08-07 beta). So no StripBetas entry for
+        // context-1m-* — the beta is silently accepted and the routing
+        // table no longer downgrades opus-4.8 + 1M to 4.7-1m-internal.
         yield return new ModelProfile
         {
             CanonicalId = "claude-opus-4.8",
-            AcceptedEfforts = ["medium"],
+            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
             EffortOnUnsupported = EffortHandling.Strip,
             Thinking = ThinkingPolicy.AdaptiveOnly,
             MaxThinkingBudget = 32000,
-            AcceptsMidConversationSystem = false, // empirical: Copilot rejects role:"system" mid-conv even on 4.8
+            AcceptsMidConversationSystem = true,  // empirical 2026-06-05: 4.8 accepts S in legal placements
             AcceptsSpeedFast = false,             // DTO doesn't model speed; unverified, leaving conservative
         };
     }

@@ -47,19 +47,26 @@ public sealed class BridgeFixture : IAsyncLifetime
             builder.Configuration.AddJsonFile(prodAppsettings, optional: false, reloadOnChange: false);
         }
         var ioDir = Path.Combine(AppContext.BaseDirectory, "request-traces");
+        // Pick an OS-assigned ephemeral port up front so we don't collide with
+        // the user's own bridge on 8765. Can't simply add UseUrls(":0") here:
+        // KestrelOptionsConfigurator unconditionally calls
+        // options.ListenLocalhost(BridgeServerOptions.Port), which ADDS a
+        // listen endpoint (8765 by default) on top of any UseUrls value —
+        // and Kestrel then tries to bind BOTH, failing with
+        // AddressInUseException whenever the production bridge already owns
+        // 8765 (the common dev setup). Overriding Server:Port in config
+        // routes through the same code path; production validates >= 1, so
+        // we materialize a free port via a transient socket bind.
+        var freePort = GetFreeLoopbackPort();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Tracing:Enabled"] = "true",
             ["Tracing:Directory"] = ioDir,
+            ["Server:Port"] = freePort.ToString(),
         });
 
         builder.Logging.AddBridgeLogging();
         builder.Services.AddBridgeServer(builder.Configuration, cliPort: null, deviceCodePrinter: null);
-
-        // Random ephemeral port — but the production AddBridgeServer wires
-        // Kestrel via IConfigureOptions<KestrelServerOptions>.ListenLocalhost(port).
-        // Override that here with a UseUrls so the OS picks the port.
-        builder.WebHost.UseUrls("http://127.0.0.1:0");
 
         _app = builder.Build();
 
@@ -103,5 +110,28 @@ public sealed class BridgeFixture : IAsyncLifetime
             dir = dir.Parent;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Reserve a free loopback TCP port by briefly binding a socket to
+    /// <c>127.0.0.1:0</c>, reading the OS-assigned port, and releasing it.
+    /// Race window: between this call and Kestrel's own bind another process
+    /// could grab the same port — rare on a developer box, and the resulting
+    /// AddressInUseException is at least obvious. Avoids the much more common
+    /// "production bridge owns 8765" collision that the previous fixture
+    /// design ran into.
+    /// </summary>
+    private static int GetFreeLoopbackPort()
+    {
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        }
+        finally
+        {
+            listener.Stop();
+        }
     }
 }

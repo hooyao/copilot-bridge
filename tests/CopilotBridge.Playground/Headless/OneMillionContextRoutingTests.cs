@@ -164,16 +164,16 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
     }
 
     /// <summary>
-    /// opus-4.8 + 1M beta — Copilot has no opus-4.8 1M variant; the bridge
-    /// silently falls back to <c>claude-opus-4.7-1m-internal</c> (the closest
-    /// 1M-capable model on the catalog). User gets 1M context at the cost of
-    /// a silent model version downgrade. Per
-    /// <c>CopilotGapProbes.CrossVersion1mFallback_ProbeUpstreamAcceptance</c>,
-    /// the wire shape Claude Code sends for opus-4.8 is accepted by 1m-internal
-    /// for the simple no-thinking case.
+    /// opus-4.8 + 1M beta — Copilot's <c>claude-opus-4.8</c> natively
+    /// supports 1M context (probed 2026-06-05: a 260k-token prompt returns
+    /// 200 with or without <c>context-1m-2025-08-07</c>), so the bridge no
+    /// longer downgrades the request to <c>claude-opus-4.7-1m-internal</c>.
+    /// Upstream model stays as <c>claude-opus-4.8</c>; the beta header
+    /// passes through verbatim (no <c>StripBetas</c> entry on the 4.8
+    /// profile — Copilot silently accepts the token).
     /// </summary>
     [Fact]
-    public async Task Opus48_With1mBeta_SilentlyFallsBackTo1mInternal()
+    public async Task Opus48_With1mBeta_RoutesToCopilotOpus48_NoDowngrade()
     {
         var seenBefore = SnapshotLogFiles();
 
@@ -194,8 +194,10 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
         var upstreamBeta = upstreamReq["headers"]?["anthropic-beta"]?.GetValue<string>() ?? "";
         _output.WriteLine($"upstream: model={upstreamModel} beta={upstreamBeta}");
 
-        Assert.Equal("claude-opus-4.7-1m-internal", upstreamModel);
-        Assert.DoesNotContain("context-1m", upstreamBeta, StringComparison.OrdinalIgnoreCase);
+        // No model swap — opus-4.8 stays opus-4.8.
+        Assert.Equal("claude-opus-4.8", upstreamModel);
+        // Beta passes through verbatim (no per-profile strip for opus-4.8).
+        Assert.Contains("context-1m-2025-08-07", upstreamBeta, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -229,6 +231,47 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
         Assert.Equal("claude-opus-4.8", upstreamModel);
         Assert.Equal("adaptive", upstreamThinkingType);
         Assert.NotNull(upstreamEffort);
+    }
+
+    /// <summary>
+    /// sonnet-4.6 + 1M beta — the bridge has NO routing rule for sonnet
+    /// (rules #1/#2 are opus-only), so the request flows through identity
+    /// passthrough exactly like opus-4.8: upstream model stays
+    /// <c>claude-sonnet-4.6</c>, beta header passes through verbatim. There
+    /// is no "fallback to 200k" — Copilot's sonnet-4.6 natively serves 1M
+    /// context (probed 2026-06-05 in
+    /// <c>ModelProfileProbe.Sonnet46_LargePrompt_ProbeOneMillionContextSupport</c>:
+    /// a 638k-token prompt returns 200 with and without the beta), so no
+    /// model swap is needed. This test guards against accidentally adding
+    /// a sonnet-4.6 → sonnet-4.6-old rule later that would silently downgrade.
+    /// </summary>
+    [Fact]
+    public async Task Sonnet46_With1mBeta_NoDowngrade_PassthroughToCopilotSonnet46()
+    {
+        var seenBefore = SnapshotLogFiles();
+
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
+        req.Headers.TryAddWithoutValidation("anthropic-beta", "context-1m-2025-08-07");
+        req.Content = new StringContent(
+            """{"model":"claude-sonnet-4-6","max_tokens":16,"messages":[{"role":"user","content":"reply: ok"}]}""",
+            Encoding.UTF8, "application/json");
+
+        using var resp = await http.SendAsync(req);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        var upstreamReq = FindUpstreamRequestSince(seenBefore);
+        Assert.NotNull(upstreamReq);
+
+        var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
+        var upstreamBeta = upstreamReq["headers"]?["anthropic-beta"]?.GetValue<string>() ?? "";
+        _output.WriteLine($"upstream: model={upstreamModel} beta={upstreamBeta}");
+
+        // No model swap — sonnet-4.6 stays sonnet-4.6 (no -200k fallback,
+        // no -1m variant lookup).
+        Assert.Equal("claude-sonnet-4.6", upstreamModel);
+        // Beta passes through verbatim — no per-profile strip for sonnet-4.6.
+        Assert.Contains("context-1m-2025-08-07", upstreamBeta, StringComparison.OrdinalIgnoreCase);
     }
 
     private HashSet<string> SnapshotLogFiles() =>
