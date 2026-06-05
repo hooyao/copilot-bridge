@@ -41,8 +41,8 @@ the tool was `AskUserQuestion`):
 
 ```json
 {"questions":[
-  {"header":"502 retry?","multiSelect":false,"options":[ ... ]},
-  {"header":"effort fix scope","multiSelect":false,"options":[ ... ]}
+  {"header":"Database","multiSelect":false,"options":[ ... ]},
+  {"header":"Deploy target","multiSelect":false,"options":[ ... ]}
 ]}
 ```
 
