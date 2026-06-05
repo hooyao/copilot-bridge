@@ -14,29 +14,16 @@ Ships as a single ~12 MB `.exe` with no .NET runtime dependency.
 
 ## Status
 
-**Alpha / personal-use.** M1 MVP is functional for Claude Code → Copilot
-Anthropic (the hot path; see [`docs/pipeline-design.md`](docs/pipeline-design.md)
-for what's in M2/M3/M4). End-to-end verified:
+**Beta / personal-use.** Claude Code → Copilot Anthropic is the working hot
+path (text, tool round-trips, MCP tools, streaming, prompt-cache hits). OpenAI
+(Codex) and Gemini paths are M3/M4 — see
+[`docs/pipeline-design.md`](docs/pipeline-design.md).
 
-- `claude -p` round-trips through the bridge succeed (text, tool round-trip,
-  MCP tools, multi-effort).
-- Identical-body streaming requests hit Copilot's prompt cache via the bridge
-  (`cache_read_input_tokens > 0` on the second request) — proves the bridge's
-  `DoneFilterStage` is cache-neutral. The `[DONE]` SSE terminator is dropped
-  on the response side without affecting the next request's cache key.
-- `SystemSanitizeStage` strips Claude Code's volatile `# currentDate`
-  injection from request bodies so the cacheable prefix stays stable across
-  days.
-- **Hand-curated `ModelProfileCatalog`** (`Pipeline/Routing/`) describes what
-  Copilot's variant of each model actually accepts on the wire, sourced from
-  a playground probe matrix in `tests/CopilotBridge.Playground/ModelProfileProbe.cs`.
-  Unknown models surface as 400 + Anthropic-format error (with diagnostics)
-  rather than silent passthrough.
-- **Headless test harness** (xUnit + real `claude.exe`) covers a (model × effort
-  × tool-use) matrix: sonnet-4.5/4.6, opus-4.5/4.6/4.7 (with `-high` / `-xhigh`
-  variants), opus-4.7-1m-internal, opus-4.6-1m, opus-4.8, haiku-4.5 — plus
-  Bash tool round-trip, MCP server round-trip, and direct API diffing against
-  `api.anthropic.com`.
+Per-model wire behavior (which effort levels, thinking shapes, and context
+windows each Copilot model actually accepts) is probed, not guessed — see the
+matrix in `tests/CopilotBridge.Playground/ModelProfileProbe.cs` that feeds
+`ModelProfileCatalog`. Unknown models surface a 400 + Anthropic-format error,
+never a silent passthrough.
 
 ## Quick start
 
@@ -71,8 +58,7 @@ Point Claude Code at the bridge:
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
-    "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "claude-sonnet-4.6"
+    "ANTHROPIC_AUTH_TOKEN": "dummy"
   }
 }
 ```
@@ -101,63 +87,34 @@ match → `Use` change-set that can swap model, remap effort, set/remove a
 whitelisted header), then looks the result up in
 `ModelProfileCatalog` and runs `ProfileAdjuster` to coerce the body to the
 target's wire contract (effort, thinking shape, mid-conversation `system`
-fold, beta strips). See [`docs/pipeline-design.md §7`](docs/pipeline-design.md)
+handling, beta strips). See [`docs/pipeline-design.md §7`](docs/pipeline-design.md)
 for the full flow and [`docs/copilot-api-research.md`](docs/copilot-api-research.md)
 for the underlying protocol facts.
 
 ## Limitations
 
-The bridge passes through whatever Copilot's `/v1/messages` accepts. Copilot's
-gateway has a curated subset of Anthropic's API surface, so a few Claude Code
-features behave differently than they would against a paid Anthropic
-subscription:
+The bridge passes through whatever Copilot's `/v1/messages` accepts — a curated
+subset of Anthropic's API surface. A few Claude Code features differ from a paid
+Anthropic subscription:
 
 - **WebSearch tool doesn't work.** Claude Code's built-in WebSearch uses
-  Anthropic's server-side search capability, which Copilot does not expose on
-  any model. The bridge intercepts these requests and returns a friendly
-  error. **Workaround:** configure a search MCP server in your Claude Code
-  config (e.g. via `--mcp-config` or `.mcp.json`) and disable the built-in
-  WebSearch tool. MCP tools flow through the bridge transparently.
+  Anthropic's server-side search, which Copilot exposes on no model. The bridge
+  returns a friendly error. **Workaround:** use a search MCP server (via
+  `--mcp-config` or `.mcp.json`) and disable the built-in WebSearch tool. MCP
+  tools flow through transparently.
 
-- **`max` effort is universally stripped.** Probing every Copilot model with
-  `effort=max` returns 400 (`output_config.effort "max" is not supported by
-  model …`). The bridge strips the field for every profile, so any client
-  that sends `max` gets the model's default effort instead of an upstream
-  rejection. The richest sized variants Copilot offers are
-  `claude-opus-4.7-xhigh` and `claude-opus-4.7-1m-internal` (which itself
-  accepts `low/medium/high/xhigh`).
+- **`max` / `xhigh` effort isn't universal.** Per-model effort support is probed,
+  not guessed (`tests/CopilotBridge.Playground/ModelProfileProbe.cs`), and is
+  non-monotonic: `opus-4.8` / `opus-4.7` accept `low`–`max`; `opus-4.6` /
+  `sonnet-4.6` accept `max` but reject `xhigh`; `sonnet-4.5` / `haiku-4.5` /
+  `opus-4.5` take no effort field at all. The bridge strips an effort the target
+  rejects rather than letting it 400.
 
-- **`opus-4.7` non-medium effort selects a sized variant.** The base
-  `claude-opus-4-7` model only accepts `effort=medium`. For `high` / `xhigh`
-  the bridge automatically rewrites the model id to `claude-opus-4-7-high` /
-  `claude-opus-4-7-xhigh` (each a fixed-effort variant Copilot exposes
-  separately). Transparent to the user — `--model claude-opus-4-7 --effort
-  xhigh` just works.
-
-- **`opus-4.8` effort is medium-only, with no sized variants.** Copilot has
-  no `-high` / `-xhigh` siblings for 4.8 (only for 4.7). The bridge strips
-  any non-medium effort for 4.8; reasoning depth is left to the model's
-  default. Until Copilot ships sized 4.8 variants this is the best the
-  bridge can do without lying about availability.
-
-- **No mid-conversation `role:"system"` even on opus-4.8.** Anthropic's
-  4.8 protocol adds `system` messages outside the first slot; Copilot's
-  gateway rejects them on every model. The bridge folds these messages
-  into the top-level `system` field automatically so opus-4.8 clients
-  keep working — but the model gets the directive as a system prompt
-  prefix, not as a turn-position-aware injection.
-
-- **1M context is opus-only.** Copilot ships `claude-opus-4.6-1m` and
-  `claude-opus-4.7-1m-internal` as separate model ids. Sonnet and Haiku do
-  not have 1M variants on Copilot regardless of what Anthropic offers
-  natively. There is no `claude-opus-4.8-1m` either; requests for
-  `opus-4.8 + context-1m-2025-08-07` are redirected to
-  `claude-opus-4.7-1m-internal` as the closest fallback.
-
-- **No thinking on older models.** `claude-sonnet-4.5`, `claude-opus-4.5`,
-  and `claude-haiku-4.5` don't declare any reasoning-effort capability on
-  Copilot. Setting `--effort` for these has no effect (bridge strips the
-  field before forwarding).
+- **Resume reverts `[1m]` to 200k.** The 1M context flag lives in the model
+  string (`opus[1m]`), which isn't persisted across `--resume`. The backend
+  still serves the larger window, but Claude Code's own auto-compaction triggers
+  at 200k until you re-select `opus[1m]`. See
+  [`docs/context-window.md`](docs/context-window.md).
 
 - **Cost / quota counts against your Copilot subscription**, not Anthropic
   billing. The bridge has no Anthropic API key and never falls back to
