@@ -188,6 +188,9 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job has no checkout (it only downloads artifacts), so `gh` can't
+          # infer the repo from a local .git. Point it at the repo explicitly.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           version="${{ needs.version.outputs.version }}"
