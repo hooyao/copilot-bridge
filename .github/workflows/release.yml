@@ -13,12 +13,15 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: windows-latest
-
+  # ---------------------------------------------------------------------------
+  # 1. Resolve the version once, share it with every build arm + the release job.
+  # ---------------------------------------------------------------------------
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+      prerelease: ${{ steps.version.outputs.PRERELEASE }}
     steps:
-      - uses: actions/checkout@v4
-
       - name: Parse version from tag
         id: version
         shell: pwsh
@@ -37,57 +40,169 @@ jobs:
           }
           Write-Host "Version: $version, Prerelease: $($version -match '-')"
 
+  # ---------------------------------------------------------------------------
+  # 2. Build the AOT binary per RID on its own runner. Native AOT cannot
+  #    cross-OS compile, so linux builds on ubuntu, osx on macos-14, windows
+  #    on windows runners (win-arm64 natively on windows-11-arm). Each arm
+  #    packages its own archive (.zip for Windows, .tar.gz for unix so the
+  #    executable bit survives) and uploads it as an artifact.
+  # ---------------------------------------------------------------------------
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: windows-11-arm
+            rid: win-arm64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-14
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
 
-      - name: Restore dependencies
-        run: dotnet restore CopilotBridge.slnx
-
-      - name: Build (Release)
-        run: dotnet build CopilotBridge.slnx -c Release --no-restore
-
-      - name: Publish AOT executable
+      # A bare `dotnet publish` drives the AOT native link on every hosted image
+      # (MSVC on Windows incl. native ARM64; clang+binutils on ubuntu; Xcode CLT
+      # on macos-14). The local build-aot.bat / vswhere dance is only needed on
+      # dev machines where vswhere isn't on PATH — CI images expose the toolchain
+      # to the SDK's AOT targets directly.
+      - name: Publish AOT (${{ matrix.rid }})
         shell: pwsh
         run: |
           dotnet publish src/CopilotBridge.Cli/CopilotBridge.Cli.csproj `
-            -c Release -r win-x64 `
-            "-p:Version=${{ steps.version.outputs.VERSION }}" `
+            -c Release -r ${{ matrix.rid }} `
+            "-p:Version=${{ needs.version.outputs.version }}" `
             -o ./publish-aot
 
-      - name: Package release archive
+      # Smoke the freshly-built binary before packaging: proves it loads on the
+      # real OS and (on unix) that machine-id-derived encryption round-trips with
+      # 0600 perms. Non-destructive — never touches a real token.
+      - name: Smoke test (unix)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          chmod +x ./publish-aot/copilot-bridge
+          ./publish-aot/copilot-bridge --version
+          ./publish-aot/copilot-bridge debug selftest-tokenstore
+
+      - name: Smoke test (windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $version = "${{ steps.version.outputs.VERSION }}"
+          ./publish-aot/copilot-bridge.exe --version
+          ./publish-aot/copilot-bridge.exe debug selftest-tokenstore
+
+      # --- Package: Windows → .zip ------------------------------------------
+      # Both files are required at runtime: appsettings.json carries the Routing,
+      # Server (port), and Tracing config the bridge loads with
+      # AddJsonFile(optional:false). Without it the exe fails fast.
+      - name: Package (Windows zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ needs.version.outputs.version }}"
+          $rid = "${{ matrix.rid }}"
           $exe = Get-Item ./publish-aot/copilot-bridge.exe
-          $settings = Get-Item ./publish-aot/appsettings.json
           $sizeMB = [math]::Round($exe.Length / 1MB, 2)
-          Write-Host "Packaging copilot-bridge.exe ($sizeMB MB) + appsettings.json into copilot-bridge-$version-win-x64.zip"
-          # Both files are required at runtime: appsettings.json carries the
-          # Routing, Server (port), and Tracing config the bridge loads with
-          # AddJsonFile(optional:false) at startup. Without it the exe fails
-          # fast with a FileNotFoundException.
+          Write-Host "Packaging copilot-bridge.exe ($sizeMB MB) + appsettings.json into copilot-bridge-$version-$rid.zip"
           Compress-Archive `
             -Path ./publish-aot/copilot-bridge.exe, ./publish-aot/appsettings.json `
-            -DestinationPath "copilot-bridge-$version-win-x64.zip" `
+            -DestinationPath "copilot-bridge-$version-$rid.zip" `
             -CompressionLevel Optimal
-          Get-Item "copilot-bridge-$version-win-x64.zip"
+
+      # --- Package: unix → .tar.gz (preserves the +x bit; zip does not) ------
+      - name: Package (unix tar.gz)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          version="${{ needs.version.outputs.version }}"
+          rid="${{ matrix.rid }}"
+          chmod +x ./publish-aot/copilot-bridge
+          tar -czf "copilot-bridge-$version-$rid.tar.gz" \
+            -C ./publish-aot copilot-bridge appsettings.json
+          ls -la "copilot-bridge-$version-$rid.tar.gz"
+
+      # --- macOS only: also build an unsigned .pkg installer ----------------
+      # Installs the binary + appsettings.json together into
+      # /usr/local/copilot-bridge and symlinks the binary onto PATH at
+      # /usr/local/bin/copilot-bridge. They must stay co-located because the
+      # bridge resolves appsettings.json from AppContext.BaseDirectory (the real
+      # binary dir, symlinks resolved) — not the CWD.
+      - name: Package (macOS .pkg)
+        if: matrix.rid == 'osx-arm64'
+        run: |
+          set -euo pipefail
+          version="${{ needs.version.outputs.version }}"
+          root="pkgroot"
+          mkdir -p "$root/usr/local/copilot-bridge" "$root/usr/local/bin"
+          cp ./publish-aot/copilot-bridge "$root/usr/local/copilot-bridge/copilot-bridge"
+          cp ./publish-aot/appsettings.json "$root/usr/local/copilot-bridge/appsettings.json"
+          chmod +x "$root/usr/local/copilot-bridge/copilot-bridge"
+          ln -s ../copilot-bridge/copilot-bridge "$root/usr/local/bin/copilot-bridge"
+          pkgbuild --identifier com.hooyao.copilot-bridge \
+            --version "$version" \
+            --root "$root" \
+            --install-location / \
+            "copilot-bridge-$version-osx-arm64.pkg"
+          ls -la "copilot-bridge-$version-osx-arm64.pkg"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.rid }}
+          path: |
+            copilot-bridge-*.zip
+            copilot-bridge-*.tar.gz
+            copilot-bridge-*.pkg
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 3. Collect every arm's archive and publish ONE GitHub Release with all of
+  #    them attached.
+  # ---------------------------------------------------------------------------
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: pwsh
+          # This job has no checkout (it only downloads artifacts), so `gh` can't
+          # infer the repo from a local .git. Point it at the repo explicitly.
+          GH_REPO: ${{ github.repository }}
         run: |
-          $version = "${{ steps.version.outputs.VERSION }}"
-          $prerelease = "${{ steps.version.outputs.PRERELEASE }}"
-          $ghArgs = @(
-            "release", "create", "v$version",
-            "--title", "copilot-bridge $version",
-            "--generate-notes",
-            "copilot-bridge-$version-win-x64.zip"
-          )
-          if ($prerelease -eq "true") {
-            $ghArgs += "--prerelease"
-          }
-          gh @ghArgs
+          set -euo pipefail
+          version="${{ needs.version.outputs.version }}"
+          prerelease="${{ needs.version.outputs.prerelease }}"
+          args=(release create "v$version"
+            --title "copilot-bridge $version"
+            --generate-notes)
+          if [ "$prerelease" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          # Attach every built archive/installer.
+          for f in dist/*; do
+            args+=("$f")
+          done
+          gh "${args[@]}"

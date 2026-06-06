@@ -9,9 +9,11 @@ for how to build, run, and contribute** — `docs/` holds the deep references.
 
 A .NET 10 **Native AOT** reverse proxy that re-exposes the **GitHub Copilot LLM
 API** under per-client URL prefixes, so Claude Code / Codex / Gemini CLI can use
-Copilot as their model backend. Ships as a single **~12 MB `.exe`** with no .NET
-runtime dependency — Native AOT is chosen specifically to keep the binary small,
-so trimming + source-generated JSON are mandatory, not optional.
+Copilot as their model backend. Ships as a single **~12 MB native binary** with
+no .NET runtime dependency — Native AOT is chosen specifically to keep the binary
+small, so trimming + source-generated JSON are mandatory, not optional. Builds
+for **win-x64, win-arm64, linux-x64, osx-arm64** (each on its own runner — Native
+AOT cannot cross-OS compile).
 
 **As-built (M1, done):** Claude Code (Anthropic Messages shape) →
 `POST /cc/v1/messages` → **byte-level passthrough** to Copilot's *native*
@@ -29,9 +31,14 @@ Gemini shapes is future work (M3/M4).
 
 ## Environment
 
-- **Windows** + PowerShell as the default shell (Bash also available for POSIX scripts).
+- **Cross-platform**: builds + runs on Windows, Linux, and macOS. Development is
+  primarily on **Windows** + PowerShell (Bash also available for POSIX scripts).
 - **.NET 10 SDK**.
-- **Visual Studio C++ Build Tools** workload + **Windows SDK** — required only for the AOT native linker (JIT build/run/test work without them).
+- **AOT linker toolchain** (only needed to *publish* the native binary, per OS;
+  JIT build/run/test need none of it): Windows → **Visual Studio C++ Build Tools**
+  + **Windows SDK**; Linux → **`clang` + `zlib1g-dev`**; macOS → **Xcode Command
+  Line Tools**. You can only AOT-build for the OS you are on — Native AOT does not
+  cross-OS compile, so the four release RIDs each build on their own CI runner.
 
 ## Setup
 
@@ -70,26 +77,35 @@ dotnet test tests/CopilotBridge.Playground
 dotnet test --filter FullyQualifiedName~<TestName>       # single test
 ```
 
-**Publish the single-file AOT exe (the release artifact):**
+**Publish the single-file AOT binary (the release artifact):**
 
 ```pwsh
+# Windows (local convenience wrapper):
 .\build-aot.bat
 #  → .\publish\copilot-bridge.exe
+
+# Any OS, explicit RID (win-x64 | win-arm64 | linux-x64 | osx-arm64):
+dotnet publish src/CopilotBridge.Cli -c Release -r <rid> -o ./publish
 ```
 
-`build-aot.bat` handles the Windows AOT-linker prerequisites for you: it adds
-`vswhere.exe` to PATH, uses it to locate the VS install, runs `VsDevCmd.bat` to
-put MSVC `link.exe` on PATH, then calls `dotnet publish`.
+`build-aot.bat` handles the **Windows-local** AOT-linker prerequisites for you:
+it adds `vswhere.exe` to PATH, uses it to locate the VS install, runs
+`VsDevCmd.bat` to put MSVC `link.exe` on PATH, then calls `dotnet publish`.
 
-⚠️ **Why the script (don't skip it):** a bare `dotnet publish -c Release` fails
-the AOT native-link step on most setups. The compiler (ILC) shells out to
-`vswhere.exe` to find `link.exe`, but `vswhere`
+⚠️ **Why the script locally (don't skip it on a Windows dev box):** a bare
+`dotnet publish -c Release` fails the AOT native-link step on most local setups.
+The compiler (ILC) shells out to `vswhere.exe` to find `link.exe`, but `vswhere`
 (`C:\Program Files (x86)\Microsoft Visual Studio\Installer\`) isn't on PATH by
 default — not even inside a VS Developer prompt — so it fails with
 `'vswhere.exe' is not recognized`. The script fixes exactly that. JIT
-`run`/`build`/`test` need none of this.
+`run`/`build`/`test` need none of this. **CI does not use the script**: the
+GitHub-hosted images expose the toolchain (MSVC / clang / Xcode CLT) to the SDK's
+AOT targets directly, so the workflows call a plain `dotnet publish -r <rid>`.
+The release pipeline builds all four RIDs, each on its own runner
+(`windows-latest`, `windows-11-arm`, `ubuntu-latest`, `macos-14`), and attaches
+every archive (+ a macOS `.pkg`) to one GitHub Release.
 
-After any dependency change, eyeball the published `.exe` size — a
+After any dependency change, eyeball the published binary size — a
 non-trim-friendly package can easily double it (`docs/size-history.md` tracks it).
 
 ## First run + pointing a client at the bridge
@@ -150,6 +166,14 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
 - **`AuthService` is a sealed facade.** Callers only call
   `GetCopilotTokenAsync()`; they never touch device-code flows, token files, or
   refresh timers. Don't pierce the abstraction.
+- **Token storage dispatches on the OS at runtime, not at compile time.**
+  `TokenStore` keeps one public surface and picks `WindowsDpapiTokenProtector`
+  (DPAPI) on Windows vs `DerivedKeyTokenProtector` (machine-derived
+  AES-256-CBC+HMAC) on Linux/macOS via `OperatingSystem.IsWindows()`. The DPAPI
+  type is the **only** `[SupportedOSPlatform("windows")]`-attributed surface in
+  the assembly — **do not re-add an assembly-level platform attribute** (it
+  re-breaks the non-Windows build) and do not call DPAPI outside that guarded
+  type. See `docs/token-storage.md`.
 - **Match the official VS Code Copilot client on the wire.** For any
   header / version / beta detail, mirror
   `references/copilot-api/src/lib/api-config.ts` and the VS Code `chatEndpoint.ts`

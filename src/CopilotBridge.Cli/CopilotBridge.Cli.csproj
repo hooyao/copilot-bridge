@@ -20,18 +20,17 @@
          PublishAot=true since .NET 9, declared explicitly so the JIT build
          takes the same path and so the intent is visible in the csproj. -->
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+    <!-- Supported publish RIDs: win-x64, win-arm64, linux-x64, osx-arm64. Not
+         declared as <RuntimeIdentifiers> because that forces an eager restore of
+         every RID's runtime assets on a plain build; each publish passes -r
+         explicitly instead. The token store dispatches on the OS at runtime
+         (DPAPI on Windows, AES-256-CBC+HMAC machine-derived key on Linux/macOS),
+         so there is intentionally NO assembly-wide [SupportedOSPlatform("windows")]
+         — the only Windows-attributed type is Auth/WindowsDpapiTokenProtector,
+         constructed solely under an OperatingSystem.IsWindows() guard, which is
+         what satisfies CA1416. Do not re-add an assembly-level platform attribute:
+         it re-breaks the non-Windows build. -->
   </PropertyGroup>
-
-  <!-- Windows-only by design (DPAPI for the encrypted token store).
-       Emitted as an assembly-level [SupportedOSPlatform("windows")] so all
-       cross-platform-warning analyzers (CA1416) treat the assembly as
-       Windows-specific. Replaces the per-file attribute that used to live
-       at the top of Program.cs. -->
-  <ItemGroup>
-    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
-      <_Parameter1>windows</_Parameter1>
-    </AssemblyAttribute>
-  </ItemGroup>
 
   <!-- Release-only: trim debug-shaped support to shrink the binary further. -->
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">

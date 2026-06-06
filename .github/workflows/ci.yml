@@ -99,3 +99,72 @@ jobs:
           a DPAPI-encrypted GitHub token (Windows). Run locally with
           \`dotnet test\` after \`auth login\`.
           "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+  # Cross-platform AOT gate. The token store dispatches on the OS at runtime
+  # (DPAPI on Windows; AES-256-CBC+HMAC machine-derived key on Linux/macOS), so
+  # the non-Windows targets must actually compile, AOT-link, start, and round-trip
+  # their crypto. Native AOT cannot cross-OS compile, so each RID builds on its own
+  # runner. This is a PR-blocking signal that nobody reintroduced a Windows-only API.
+  aot-crossplat:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-14
+            rid: osx-arm64
+          - os: windows-11-arm
+            rid: win-arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      # Publish only the CLI project for this RID. A bare `dotnet publish` drives
+      # the AOT native link: clang+binutils on ubuntu, Xcode CLT on macos-14, and
+      # the MSVC toolchain (incl. native ARM64) on windows-11-arm are all present
+      # on the hosted images — no extra toolchain install has been needed.
+      - name: Publish AOT (${{ matrix.rid }})
+        run: >
+          dotnet publish src/CopilotBridge.Cli/CopilotBridge.Cli.csproj
+          -c Release -r ${{ matrix.rid }} -o ./publish-ci
+
+      # Smoke: does the AOT binary load + run on the real OS? `--version` proves
+      # startup/runtime init; `auth status` exercises the TokenStore facade + path
+      # resolution offline; `debug selftest-tokenstore` is the high-value check —
+      # it runs the REAL machine-id probing (/etc/machine-id or `ioreg`) and the
+      # AES-CBC+HMAC round-trip + 0600 file mode, the one thing Windows unit tests
+      # (with a fake provider) can't cover. Non-destructive: never touches a real token.
+      - name: Smoke test (unix)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          chmod +x ./publish-ci/copilot-bridge
+          ./publish-ci/copilot-bridge --version
+          ./publish-ci/copilot-bridge auth status
+          ./publish-ci/copilot-bridge debug selftest-tokenstore
+
+      - name: Smoke test (windows-arm)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./publish-ci/copilot-bridge.exe --version
+          ./publish-ci/copilot-bridge.exe auth status
+          ./publish-ci/copilot-bridge.exe debug selftest-tokenstore
+
+      - name: Report binary size
+        shell: pwsh
+        run: |
+          $name = if ($IsWindows) { 'copilot-bridge.exe' } else { 'copilot-bridge' }
+          $exe = Get-Item "./publish-ci/$name"
+          $sizeMB = [math]::Round($exe.Length / 1MB, 2)
+          Write-Host "${{ matrix.rid }}: $name = $sizeMB MB ($($exe.Length) bytes)"
+          "| \`${{ matrix.rid }}\` | $sizeMB MB |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
