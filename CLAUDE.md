@@ -44,7 +44,7 @@ Browser     ──► / (HTML config + auth)            ┘
 
 Critical protocol details — easy to get wrong:
 
-- **Two tokens, different lifetimes.** A long-lived **GitHub OAuth token** (obtained via device code, persisted as `github_token.dat` **next to the .exe**, encrypted via Windows DPAPI in `CurrentUser` scope — Windows owns the key, we never touch it) and a **short-lived Copilot token** kept only in memory and refreshed on a `refresh_in - 60s` timer.
+- **Two tokens, different lifetimes.** A long-lived **GitHub OAuth token** (obtained via device code, persisted as `github_token.dat` **next to the .exe**, encrypted at rest — **Windows: DPAPI** in `CurrentUser` scope, Windows owns the key; **Linux/macOS: AES-256-CBC + HMAC-SHA256** with a key derived from machine id + username, since DPAPI is Windows-only — see `docs/token-storage.md`) and a **short-lived Copilot token** kept only in memory and refreshed on a `refresh_in - 60s` timer.
 - **Account type changes the URL.** `individual` → `api.githubcopilot.com`; `business`/`enterprise` → `api.<type>.githubcopilot.com`. Make this configurable.
 - **Copilot expects VS Code-shaped requests.** `editor-version`, `editor-plugin-version`, `user-agent`, `copilot-integration-id`, `x-request-id`, `x-github-api-version`, etc. Replicate the set in `references/copilot-api/src/lib/api-config.ts` exactly — missing or mismatched values cause silent rejections.
 - **`X-Initiator` header**: set to `agent` if any incoming message has role `assistant` or `tool`, else `user`. Affects Copilot quota accounting.

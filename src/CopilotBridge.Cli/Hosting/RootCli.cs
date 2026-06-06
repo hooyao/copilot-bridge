@@ -68,8 +68,19 @@ internal static class RootCli
         listModelsCommand.SetAction((parseResult, _) =>
             DebugCommand.ListModelsAsync(parseResult.GetValue(allOption)));
 
+        // Hidden: non-destructive token-store self-test. Used by CI to smoke-test the
+        // machine-id-derived encryption on Linux/macOS (which we can't build locally) without
+        // requiring a real login. Not shown in --help.
+        var selfTestCommand = new Command("selftest-tokenstore",
+            "Verify the token store can encrypt/decrypt on this platform (non-destructive)")
+        {
+            Hidden = true,
+        };
+        selfTestCommand.SetAction((_, _) => Task.FromResult(DebugCommand.SelfTestTokenStore()));
+
         var debugCommand = new Command("debug", "Diagnostic tools");
         debugCommand.Subcommands.Add(listModelsCommand);
+        debugCommand.Subcommands.Add(selfTestCommand);
 
         // --- root -----------------------------------------------------------
         var root = new RootCommand(

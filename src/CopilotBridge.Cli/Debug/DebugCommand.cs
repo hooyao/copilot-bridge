@@ -84,4 +84,12 @@ internal static class DebugCommand
         http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
         return http;
     }
+
+    /// <summary>
+    /// Non-destructive token-store self-test (hidden command, used by CI smoke on Linux/macOS where we
+    /// can't build locally). Verifies the active protector's machine-id probing + crypto round-trip +
+    /// Unix 0600 file mode against a temp file, without touching the user's real token. Exit 0 = pass.
+    /// </summary>
+    public static int SelfTestTokenStore() =>
+        TokenStore.RunSelfTest(Console.Out) ? 0 : 1;
 }

@@ -10,7 +10,9 @@ Codex       (OpenAI shape)    ──► /codex/v1/chat/completions   ├─► c
 Gemini CLI  (Gemini shape)    ──► /gemini/v1/...               ┘
 ```
 
-Ships as a single ~12 MB `.exe` with no .NET runtime dependency.
+Ships as a single ~12 MB native binary with no .NET runtime dependency. Builds
+for **win-x64, win-arm64, linux-x64, and osx-arm64** (each on its own runner —
+Native AOT can't cross-compile across operating systems).
 
 ## Status
 
@@ -27,21 +29,37 @@ never a silent passthrough.
 
 ## Quick start
 
-Requires Windows + .NET 10 SDK + Visual Studio C++ Build Tools (for the AOT
-linker).
+**Prebuilt binaries** for win-x64, win-arm64, linux-x64, and osx-arm64 are
+attached to each [GitHub Release](https://github.com/hooyao/copilot-bridge/releases)
+(`.zip` for Windows, `.tar.gz` for Linux/macOS, plus an unsigned `.pkg` installer
+for macOS). Download, extract (keep `copilot-bridge` and `appsettings.json`
+together — the bridge loads the config from its own directory), and run.
+
+> **macOS Gatekeeper:** the binary is unsigned/un-notarized, so first run is
+> blocked. Clear the quarantine flag once with
+> `xattr -dr com.apple.quarantine ./copilot-bridge` (or the install dir for the
+> `.pkg`), then run normally.
+
+**Build from source** requires the **.NET 10 SDK**, plus a C/C++ toolchain for
+the AOT linker on whichever OS you're building for (Windows: Visual Studio C++
+Build Tools; Linux: `clang` + `zlib1g-dev`; macOS: Xcode Command Line Tools).
+You can only AOT-build for the OS you're on.
 
 ```pwsh
-# 1. Clone + build
+# 1. Clone + build (Windows shown; swap the RID on Linux/macOS)
 git clone https://github.com/hooyao/copilot-bridge
 cd copilot-bridge
 dotnet publish src/CopilotBridge.Cli -c Release -r win-x64
 #  → produces .\publish\copilot-bridge.exe at the repo root
+#  (linux-x64 / osx-arm64 / win-arm64 produce ./publish/copilot-bridge)
 
 # 2. Start the server. If no GitHub OAuth token is on disk (first run,
 #    fresh machine), it prints a device-code URL + user code to stdout
 #    and blocks polling GitHub until you complete the browser handshake;
-#    the resulting token is DPAPI-encrypted and saved next to the exe
-#    (or ~\github_token.dat as fallback) so subsequent starts are silent.
+#    the resulting token is encrypted and saved next to the exe (DPAPI on
+#    Windows, machine-derived AES-256-CBC+HMAC on Linux/macOS — see
+#    docs/token-storage.md) or ~/github_token.dat as fallback, so
+#    subsequent starts are silent.
 .\publish\copilot-bridge.exe serve              # default port 8765
 
 # Optional: run the device-code flow up front, without starting the server.
@@ -120,12 +138,22 @@ Anthropic subscription:
   billing. The bridge has no Anthropic API key and never falls back to
   `api.anthropic.com` at runtime.
 
+- **Non-Windows token storage is weaker than DPAPI.** The saved GitHub OAuth
+  token is always encrypted at rest, but the scheme is platform-specific:
+  Windows uses **DPAPI** (OS-owned, per-user key); Linux/macOS use
+  **AES-256-CBC + HMAC-SHA256** with a key derived from the machine id +
+  username (no OS keystore — deliberately, so it works on headless servers and
+  stays AOT-clean). It defends against the token file being copied off the host
+  and is **never plaintext**, but a local attacker running as the same user on
+  the same host could re-derive the key. See
+  [`docs/token-storage.md`](docs/token-storage.md) for the full threat model.
+
 ## Roadmap
 
 | Milestone | Scope |
 | --- | --- |
 | ✅ M1 | Claude Code → Copilot Anthropic; identity adapters; full preprocessing pipeline |
-| M2 | HTML config page; cross-platform publish (linux-x64, osx-arm64) |
+| M2 | HTML config page; cross-platform publish (win-x64, win-arm64, linux-x64, osx-arm64) |
 | M3 | Codex (OpenAI shape) client + IR↔OpenAI translators (request body + streaming SSE state machine) |
 | M4 | Gemini CLI client + IR↔Gemini translators |
 
@@ -133,13 +161,16 @@ Anthropic subscription:
 
 ```pwsh
 dotnet build CopilotBridge.slnx                     # Debug
-dotnet publish src/CopilotBridge.Cli -c Release -r win-x64
+dotnet publish src/CopilotBridge.Cli -c Release -r win-x64   # or win-arm64 / linux-x64 / osx-arm64
 dotnet test tests/CopilotBridge.Playground          # requires `auth login` first
 ```
 
-CI runs Debug build + Release AOT publish on every push to `main` (no live
-Copilot tests). Tagging `release-X.Y.Z` triggers the release workflow which
-zips the AOT exe and publishes a GitHub Release.
+CI runs Debug build + unit tests + a Release AOT publish on `windows-latest`,
+plus a cross-platform AOT gate (`ubuntu-latest`/linux-x64, `macos-14`/osx-arm64,
+`windows-11-arm`/win-arm64) that publishes and smoke-tests each binary on every
+push to `main`. Tagging `release-X.Y.Z` triggers the release workflow, which
+builds all four RIDs on their respective runners and publishes a single GitHub
+Release with every archive (and the macOS `.pkg`) attached.
 
 ## Diagnostics
 

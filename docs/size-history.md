@@ -1,7 +1,7 @@
 # Binary size history
 
-Tracks the size of `copilot-bridge.exe` after each significant change, built
-under Release / win-x64 AOT publish. Lets us catch a runaway dependency early.
+Tracks the size of the published `copilot-bridge` binary after each significant
+change, built under Release AOT publish. Lets us catch a runaway dependency early.
 
 How to measure (Windows, PowerShell):
 
@@ -9,6 +9,11 @@ How to measure (Windows, PowerShell):
 .\aot_publish.bat
 (Get-Item .\publish\copilot-bridge.exe).Length / 1KB
 ```
+
+Cross-platform sizes (linux-x64, osx-arm64, win-arm64) can't be produced on a
+Windows dev box — Native AOT doesn't cross-OS compile. They're reported by the CI
+`aot-crossplat` job and the release build matrix (see the job summary on each
+run). Expect the unix ELF/Mach-O binaries to be in the same ballpark as win-x64.
 
 | Date | Commit / tag | .exe size | Notes |
 | --- | --- | --- | --- |
@@ -24,3 +29,4 @@ How to measure (Windows, PowerShell):
 | 2026-05-07 | Legacy endpoint cleanup | **9.50 MB** | Migration plan step 9: deleted `Endpoints/{Messages,CountTokens,Models}Endpoint.cs` (the unprefixed `/v1/...` set kept around as fallback) and removed their imports + `Map` calls from `KestrelServer`. The pipeline-driven `/cc/v1/...` endpoints now own all routing. Step 10 regression: playground **24/24 pass** (18 original + 6 BetaAcceptance), harness prompts 01 (simple-text) and 02 (bash-list) both succeed via `claude -p` through the bridge, all 3 captured logs show `0` `currentDate` occurrences in upstream bodies. AOT delta: **-69 KB**. |
 | 2026-05-07 | Routing config (first cut) | **9.52 MB** | First-pass routing-config layer: `appsettings.json` ships next to the .exe with `Routing.ShapeRewrites` + `Routing.VariantRoutes` two-phase scheme. New types `Pipeline/Routing/{RoutesConfig,ModelRouteResolver,RoutesValidator}.cs`; `ModelRouterStage` consumes `IOptions<RoutesConfig>`; `ThinkingRewriteStage.cs` deleted (its rules moved to JSON). `KestrelServer` adds `IConfiguration` JSON binding + fail-fast `RoutesValidator` at startup. `BridgeRequestLogger` gains `BRIDGE_VERBOSE_LOG` env var to mirror per-request bodies to stderr. Verified the opus-4.7 + effort:max regression (Copilot 400 "not supported by model claude-opus-4.7") routes correctly to `claude-opus-4.7-xhigh` after the rewrite. AOT delta: **+20 KB** — pure data + a small resolver. |
 | 2026-05-08 | Capability layer + Serilog + System.CommandLine | **11.01 MB** | Three independent migrations landed together. (1) **Routing redesign**: `RoutesConfig.VariantRoutes` removed; per-model effort routing folded into `CopilotModelRegistry.EffortAware` (a C# capability dictionary keyed by canonical model id). `appsettings.json` keeps only `Routing.Rules` for user preferences (Match → Rewrite). Resolver: phase 1 walks user rules first-match-wins; phase 2 calls `IModelRegistry.ApplyEffortRouting(model, effort)`. User rule that sets `Effort` claims that field — phase 2 capability is skipped for it (so `{Effort:"xhigh"}` round-trips even when the model isn't in the capability table). (2) **Logger swap**: `Pipeline/DiagTracer.cs` deleted; replaced by Serilog 4.3.1 (PR #2175 makes the destructuring path AOT-clean) with `Sinks.Console` 6.1.1 + `Sinks.File` 7.0.0. All 30+ `DiagTracer.Log(...)` call sites become `Log.Debug(...)`. File sink writes `<exe>/log/bridge-{YYYYMMDD-HHMMSS}.log` (one file per process start, no rolling). Console sink mirrors to stderr from level Verbose+. `BRIDGE_LOG_LEVEL` env var (default Debug) controls minimum level. (3) **CLI**: `Program.cs` rewritten with `System.CommandLine` 3.0.0-preview.3 — typed options (`--port`, `--all`), nested commands (`auth login/whoami/status/copilot-status/logout`, `debug list-models`), auto-generated `--help` / `--version`. `ServeCommand.RunAsync(int)` / `DebugCommand.ListModelsAsync(bool)` / `AuthCommand.{LoginAsync,WhoAmIAsync,...}` are typed entry points; the hand-rolled string[] parsing removed. Stable patches alongside: ProtectedData 10.0.0 → 10.0.7, Test.Sdk 17.14.1 → 18.5.1, xunit.runner.visualstudio 3.1.4 → 3.1.5. AOT publish 0/0 (Serilog 4.3.0+ closes the IL2072 trim warning). AOT delta: **+1.49 MB** ≈ +16% — almost entirely Serilog (~700 KB) + System.CommandLine (~700 KB) + new sinks. |
+| 2026-06-06 | M2 cross-platform (win-x64) | **11.30 MB** | Cross-platform token storage: `TokenStore` split into a runtime-dispatching facade over `ITokenProtector` — `WindowsDpapiTokenProtector` (DPAPI, unchanged on Windows) vs `DerivedKeyTokenProtector` (HKDF-SHA256 → AES-256-CBC + HMAC-SHA256, key from `MachineKeyProvider`) on Linux/macOS. Removed the assembly-wide `[SupportedOSPlatform("windows")]`; the DPAPI type is now the only Windows-attributed surface (CA1416 satisfied via `OperatingSystem.IsWindows()` guard). New hidden `debug selftest-tokenstore` command for CI smoke. win-x64 only — measured locally (`11,850,752` bytes). linux-x64 / osx-arm64 / win-arm64 sizes are reported by CI (can't build cross-OS locally). AOT delta: **+0.29 MB** — the HKDF/AES/HMAC primitives are all in the BCL, so this is mostly the new protector/provider types. |
