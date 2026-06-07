@@ -121,6 +121,14 @@ Anthropic subscription:
   `--mcp-config` or `.mcp.json`) and disable the built-in WebSearch tool. MCP
   tools flow through transparently.
 
+- **Malformed tool calls from Copilot.** Copilot's backend occasionally generates malformed
+  JSON for complex Anthropic tools (e.g., omitting required fields, or serializing arrays
+  as strings). This causes Claude Code to fail with "Invalid tool parameters". **Workaround:** 
+  Set `"ToolCallRepair": { "Enabled": true }` in `appsettings.json`. The bridge will buffer 
+  streaming tool calls and repair the JSON using the client-provided schema before 
+  forwarding it (note: this briefly delays the streaming output of tool calls until the 
+  block finishes generating).
+
 - **`max` / `xhigh` effort isn't universal.** Per-model effort support is probed,
   not guessed (`tests/CopilotBridge.Playground/ModelProfileProbe.cs`), and is
   non-monotonic: `opus-4.8` / `opus-4.7` accept `low`–`max`; `opus-4.6` /
