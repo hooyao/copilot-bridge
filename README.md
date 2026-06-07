@@ -127,7 +127,10 @@ Anthropic subscription:
   Set `"ToolCallRepair": { "Enabled": true }` in `appsettings.json`. The bridge will buffer 
   streaming tool calls and repair the JSON using the client-provided schema before 
   forwarding it (note: this briefly delays the streaming output of tool calls until the 
-  block finishes generating).
+  block finishes generating). **Tip for Opus 4.8 users:** Add instructions to your `CLAUDE.md` 
+  forcing Claude Code to use pure English for its reasoning and tool calling. This lowers the 
+  translation overhead on the model and significantly reduces the probability of these 
+  serialization errors.
 
 - **`max` / `xhigh` effort isn't universal.** Per-model effort support is probed,
   not guessed (`tests/CopilotBridge.Playground/ModelProfileProbe.cs`), and is
