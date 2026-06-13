@@ -1,5 +1,4 @@
 using System.CommandLine;
-using System.Reflection;
 using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Hosting.Logging;
 using Serilog;
@@ -9,8 +8,6 @@ using Serilog;
 // this for the full pipeline (console + rolling file + optional audit sink).
 Log.Logger = SerilogBootstrapper.BuildBootstrap();
 AppDomain.CurrentDomain.ProcessExit += (_, _) => Log.CloseAndFlush();
-
-const string ProductName = "copilot-bridge";
 
 // Disable System.CommandLine 2.0's built-in exception handler — without this
 // the library swallows our uncaught exceptions and prints "Unhandled
@@ -25,7 +22,7 @@ var invocationConfig = new InvocationConfiguration
 
 try
 {
-    return await RootCli.Build(ProductName, ResolveProductVersion())
+    return await RootCli.Build()
         .Parse(args)
         .InvokeAsync(invocationConfig);
 }
@@ -38,14 +35,4 @@ catch (Exception ex)
     // before the window vanishes.
     FatalErrorHandler.PauseAndExit(ex);
     return 1;
-}
-
-static string ResolveProductVersion()
-{
-    var info = Assembly.GetExecutingAssembly()
-        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-        ?.InformationalVersion;
-    if (string.IsNullOrEmpty(info)) return "0.0.0-dev";
-    var plus = info.IndexOf('+');
-    return plus >= 0 ? info[..plus] : info;
 }

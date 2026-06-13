@@ -49,6 +49,8 @@ internal sealed class BridgeStartupHostedService : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        _log.LogInformation("{ProductName} v{ProductVersion} starting", ProductInfo.Name, ProductInfo.Version);
+
         // 1. Routes config — invalid shape is a user-fixable mistake; surface
         //    as BridgeStartupException so FatalErrorHandler renders just the
         //    message (no noisy stack trace).

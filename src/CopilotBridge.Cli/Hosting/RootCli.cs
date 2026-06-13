@@ -18,7 +18,7 @@ internal static class RootCli
     /// 2.0 invocation pipeline (which wires up Ctrl+C automatically — no
     /// manual <c>Console.CancelKeyPress</c> needed).
     /// </summary>
-    public static RootCommand Build(string productName, string productVersion)
+    public static RootCommand Build()
     {
         // --- serve ----------------------------------------------------------
         var portOption = new Option<int?>("--port", "-p")
@@ -84,7 +84,7 @@ internal static class RootCli
 
         // --- root -----------------------------------------------------------
         var root = new RootCommand(
-            $"{productName} v{productVersion}: GitHub Copilot reverse proxy for Claude Code");
+            $"{ProductInfo.Name} v{ProductInfo.Version}: GitHub Copilot reverse proxy for Claude Code");
         root.Subcommands.Add(serveCommand);
         root.Subcommands.Add(authCommand);
         root.Subcommands.Add(debugCommand);
