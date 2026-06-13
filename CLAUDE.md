@@ -77,6 +77,15 @@ Layers, outer depends on inner only:
 
 - Develop: `dotnet run --project src/CopilotBridge.Cli`
 - Publish single-file AOT exe (Windows): **`.\build-aot.bat`** (wraps `dotnet publish src/CopilotBridge.Cli -c Release -r win-x64`; requires the VS C++ Build Tools workload + Windows SDK). The script exists because a bare `dotnet publish` fails the AOT native link: ILC shells out to `vswhere.exe` to find `link.exe`, but `vswhere` (`C:\Program Files (x86)\Microsoft Visual Studio\Installer\`) isn't on PATH by default — not even in a VS Developer prompt. `build-aot.bat` adds it, runs `VsDevCmd.bat`, then publishes. JIT `dotnet run`/`build`/`test` need none of this.
+  - **Agents: do NOT wrap `build-aot.bat` through the Bash tool.** Its internal `call VsDevCmd.bat` exits the parent script early when invoked as `cmd /c "build-aot.bat > log 2>&1"`, so `dotnet publish` silently never runs (you get a 3-line cmd banner and a stale exe); and `cmd /c build-aot.bat | tee log | tail` reports `tail`'s exit code, not the build's — both fake success. Instead run this **one PowerShell block** (verified working — imports the VS x64 env into the session, then publishes directly):
+    ```powershell
+    $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+    $dir = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    $env = & cmd /c "`"$dir\Common7\Tools\VsDevCmd.bat`" -arch=x64 -host_arch=x64 >nul 2>&1 && set"
+    foreach ($l in $env) { if ($l -match '^([^=]+)=(.*)$') { Set-Item "Env:$($matches[1])" $matches[2] } }
+    dotnet publish src/CopilotBridge.Cli -c Release -r win-x64
+    ```
+    Confirm success by the published exe's **mtime** (`publish\copilot-bridge.exe`, ≈11 MB), not the exit code — capture the mtime before building and prove it advanced. ILC native compile takes a few minutes; run it in the background and watch for `Generating native code` → `PUBLISH_EXIT: 0`.
 - Unit tests (CI-safe, no Copilot): `dotnet test tests/CopilotBridge.UnitTests`, or solution-wide skipping the integration harness: `dotnet test --filter "Category!=Integration"`.
 - Integration harness (live Copilot + claude.exe): `dotnet test tests/CopilotBridge.Playground` — tagged `[Trait("Category","Integration")]`. New playground tests must carry that trait or CI will try to run them. Routing config reference: `docs/routing.md`.
 - Single test: `dotnet test --filter FullyQualifiedName~<TestName>`
