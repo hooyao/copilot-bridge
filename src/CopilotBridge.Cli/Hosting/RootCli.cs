@@ -18,7 +18,7 @@ internal static class RootCli
     /// 2.0 invocation pipeline (which wires up Ctrl+C automatically — no
     /// manual <c>Console.CancelKeyPress</c> needed).
     /// </summary>
-    public static RootCommand Build(string productName, string productVersion)
+    public static RootCommand Build()
     {
         // --- serve ----------------------------------------------------------
         var portOption = new Option<int?>("--port", "-p")
@@ -31,7 +31,7 @@ internal static class RootCli
         var serveCommand = new Command("serve", "Start the HTTP bridge");
         serveCommand.Options.Add(portOption);
         serveCommand.SetAction((parseResult, ct) =>
-            ServeCommand.RunAsync(productName, productVersion, parseResult.GetValue(portOption), ct));
+            ServeCommand.RunAsync(parseResult.GetValue(portOption), ct));
 
         // --- auth -----------------------------------------------------------
         var authLogin = new Command("login", "Log in to GitHub via device-code flow");
@@ -84,14 +84,14 @@ internal static class RootCli
 
         // --- root -----------------------------------------------------------
         var root = new RootCommand(
-            $"{productName} v{productVersion}: GitHub Copilot reverse proxy for Claude Code");
+            $"{ProductInfo.Name} v{ProductInfo.Version}: GitHub Copilot reverse proxy for Claude Code");
         root.Subcommands.Add(serveCommand);
         root.Subcommands.Add(authCommand);
         root.Subcommands.Add(debugCommand);
 
         // Default action when no subcommand is given: behave like 'serve' on
         // the default port (== whatever appsettings.json declares).
-        root.SetAction((_, ct) => ServeCommand.RunAsync(productName, productVersion, cliPort: null, ct));
+        root.SetAction((_, ct) => ServeCommand.RunAsync(cliPort: null, ct));
 
         return root;
     }

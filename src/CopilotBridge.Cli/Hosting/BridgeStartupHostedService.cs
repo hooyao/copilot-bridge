@@ -28,7 +28,6 @@ internal sealed class BridgeStartupHostedService : IHostedService
     private readonly IOptions<BridgeServerOptions> _server;
     private readonly IOptions<RoutesConfig> _routes;
     private readonly ModelProfileCatalog _catalog;
-    private readonly ProductInfo _product;
     private readonly Logging.BridgeIoSink? _ioSink;
     private readonly ILogger<BridgeStartupHostedService> _log;
 
@@ -37,7 +36,6 @@ internal sealed class BridgeStartupHostedService : IHostedService
         IOptions<BridgeServerOptions> server,
         IOptions<RoutesConfig> routes,
         ModelProfileCatalog catalog,
-        ProductInfo product,
         ILogger<BridgeStartupHostedService> log,
         Logging.BridgeIoSink? ioSink = null)
     {
@@ -45,14 +43,13 @@ internal sealed class BridgeStartupHostedService : IHostedService
         _server = server;
         _routes = routes;
         _catalog = catalog;
-        _product = product;
         _log = log;
         _ioSink = ioSink;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        _log.LogInformation("{ProductName} v{ProductVersion} starting", _product.Name, _product.Version);
+        _log.LogInformation("{ProductName} v{ProductVersion} starting", ProductInfo.Name, ProductInfo.Version);
 
         // 1. Routes config — invalid shape is a user-fixable mistake; surface
         //    as BridgeStartupException so FatalErrorHandler renders just the
