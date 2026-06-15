@@ -1,6 +1,7 @@
-# IR definition — final design (for review, will be FROZEN)
+# IR definition — final design (FROZEN)
 
-> Status: **DRAFT for review · will FREEZE the IR on approval** · 2026-06-14
+> Status: **FROZEN 2026-06-15** (change `freeze-ir-provider-extensions`) ·
+> drafted 2026-06-14 · see §10 for as-built notes
 >
 > Decision (yours, this session): keep our **hand-rolled Anthropic Messages DTOs
 > as the IR**, and **steal Vercel AI SDK's `providerOptions` namespaced
@@ -390,4 +391,51 @@ F4 is the one with real fidelity stakes; it's answered empirically by the round-
 
 - `docs/codex-protocol-research.md` — the Codex/Copilot wire facts (frozen, verified). Unchanged.
 - `docs/codex-implementation-design.md` — the T1–T4 translator + endpoint design. **This doc supersedes its IR/DTO sections** (§5, §8): the IR is Anthropic-shape + bag, not a new shape; reasoning/tool fidelity comes from existing DTOs + bag.
-- `docs/pipeline-design.md` §3 — update on approval to name Anthropic-shape-as-IR + the `ProviderExtensions` bag as the official IR contract.
+- `docs/pipeline-design.md` §3 — updated to name Anthropic-shape-as-IR + the `ProviderExtensions` bag as the official IR contract (done with `freeze-ir-provider-extensions`).
+
+---
+
+## 10. As-built notes (FROZEN 2026-06-15 — change `freeze-ir-provider-extensions`)
+
+The IR is frozen. Open questions resolved as built:
+
+- **F1 resolved → explicit property, and it was forced.** `ProviderExtensions`
+  is `Models/Common/ProviderExtensions.cs`, a record with an explicit
+  `Dictionary<string,JsonElement> ByProvider` property serializing as
+  `"provider_extensions":{"by_provider":{"<provider>":{…}}}`. `[JsonExtensionData]`
+  (the flat-shape alternative) is not merely dispreferred but **impossible** here:
+  STJ throws `ExtensionDataCannotBindToCtorParam` when the extension-data
+  dictionary also binds a record primary-constructor parameter. The wrapper
+  segment is harmless — this field never reaches a real upstream wire (null on
+  `/cc`; consumed and discarded by Codex's T2).
+- **F2 resolved → shipped at both levels.** Request-level (`MessagesRequest`) and
+  part-level (`ContentBlockParam` base record). Part-level ships unused by Claude
+  Code; Codex/Gemini populate it later.
+- **AOT** — publish is **0 warnings**; the `JsonElement` bag is source-gen-clean.
+  Binary delta **+26 KB** (`docs/size-history.md`).
+- **Hot path** — H1 proves `/cc` upstream bytes are byte-identical (the bag is
+  inert when null). H2: the full existing suite passes unchanged.
+- F3/F4 unchanged from §8 (F3: keep `MessagesRequest` as the IR; F4: decided
+  empirically by Codex's change-3 round-trip tests, not here).
+
+### 10.1 Known pre-existing fidelity gap surfaced by A1 — `input_schema` (NOT fixed here)
+
+The A1 round-trip self-inverse test surfaced a **pre-existing** lossy mapping
+(not introduced by this change): `InputSchema`
+(`Models/Anthropic/Request/Tool.cs`) models only `type` / `properties` /
+`required`, so other JSON-Schema keywords a real Claude Code tool definition
+carries — `$schema`, `additionalProperties`, … — are dropped when the IR is
+serialized upstream. This was already true in production: committed
+`request-traces/*-upstream-req.json` captures show the bridge has always sent
+`input_schema` with keys `[type, properties, required]` only, and Copilot accepts
+the reduced schema.
+
+It is **out of scope for this change** because making `input_schema`
+byte-faithful (hold it as a whole `JsonElement`, like `ToolUseBlockParam.Input`
+already is) would **change the `/cc` upstream bytes** — directly violating this
+change's H1 byte-equality gate. So A1 classifies the dropped keywords as a
+documented *allowed-transform* (keeping A1 honest about what we actually do), and
+the fix is logged here as a **follow-up**: a future change should make tool
+`input_schema` lossless, since byte-faithful tool schemas are exactly the
+LiteLLM #1 lesson (§1) this IR design is built around. Tracked in memory
+(`reference_input_schema_lossy_modeling`).

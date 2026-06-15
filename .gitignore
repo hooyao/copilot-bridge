@@ -76,10 +76,9 @@ request-traces/
 tests/harness/last-stdout.txt
 tests/harness/last-stderr.txt
 
-# Codex Track-B capture scratch (real session ids / git metadata / exec dumps).
-# Throwaway, never commit — see docs/codex-protocol-research.md §3.4.
-docs/scratch/codex-capture/
-docs/scratch/codex-capture-server.ps1
-docs/scratch/codex-exec-stdout.txt
-docs/scratch/codex-exec-stderr.txt
-docs/scratch/responses-models-dump.txt
+# docs/scratch/ is throwaway working material — capture scripts, raw session
+# dumps with real ids/git metadata, de-identification helpers. The committed
+# artifacts they produce live elsewhere (de-identified fixtures under
+# tests/.../Fixtures/, design docs under docs/). Never commit scratch itself.
+# See docs/codex-protocol-research.md §3.4 + tests/.../Fixtures/README.md.
+docs/scratch/

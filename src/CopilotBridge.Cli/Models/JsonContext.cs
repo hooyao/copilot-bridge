@@ -4,6 +4,7 @@ using CopilotBridge.Cli.Models.Anthropic.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Models.Anthropic.Response;
 using CopilotBridge.Cli.Models.Anthropic.Stream;
+using CopilotBridge.Cli.Models.Common;
 using CopilotBridge.Cli.Models.Copilot;
 using CopilotBridge.Cli.Models.GitHub;
 
@@ -40,6 +41,12 @@ namespace CopilotBridge.Cli.Models;
 // types at runtime via options.GetTypeInfo(...).
 [JsonSerializable(typeof(ContentBlockParam))]
 [JsonSerializable(typeof(TextBlockParam))]
+// The IR's namespaced provider-extensions escape-hatch
+// (docs/ir-definition-design.md §3). Reachable from MessagesRequest /
+// ContentBlockParam, but registered explicitly so the source generator emits
+// metadata for the [JsonExtensionData] Dictionary<string,JsonElement> shape
+// directly (AOT-clean — JsonElement values copied verbatim, no reflection).
+[JsonSerializable(typeof(ProviderExtensions))]
 // Bridge-generated error responses (e.g. unknown model → 400).
 [JsonSerializable(typeof(ErrorResponse))]
 // Usage-probe envelopes — minimal POCOs read by UsageProbe to extract token

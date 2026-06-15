@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CopilotBridge.Cli.Models.Anthropic.Common;
+using CopilotBridge.Cli.Models.Common;
 
 namespace CopilotBridge.Cli.Models.Anthropic.Request;
 
@@ -18,7 +19,19 @@ namespace CopilotBridge.Cli.Models.Anthropic.Request;
 [JsonDerivedType(typeof(ToolResultBlockParam), "tool_result")]
 [JsonDerivedType(typeof(ThinkingBlockParam), "thinking")]
 [JsonDerivedType(typeof(RedactedThinkingBlockParam), "redacted_thinking")]
-internal abstract record ContentBlockParam;
+internal abstract record ContentBlockParam
+{
+    /// <summary>
+    /// Part-level namespaced escape-hatch (<c>docs/ir-definition-design.md</c>
+    /// §3.2). Defined on the base so every variant inherits it; carries
+    /// per-part provider data the Anthropic block shape can't type (e.g. a
+    /// Responses item's <c>id</c>/<c>encrypted_content</c> when not expressible
+    /// as a thinking block). <c>null</c> for every Claude Code block — and
+    /// <c>WhenWritingNull</c> then omits it, so existing blocks serialize
+    /// byte-identically. Defined for symmetry / future Gemini; MAY ship unused.
+    /// </summary>
+    public ProviderExtensions? ProviderExtensions { get; init; }
+}
 
 internal sealed record TextBlockParam : ContentBlockParam
 {

@@ -157,6 +157,29 @@ Reasons:
 - **DTOs already exist** from M1 step 3; IR is "free" — no separate IR types
   to design.
 
+**Frozen IR contract (2026-06-15, `freeze-ir-provider-extensions`).** The IR is
+now formally frozen — see **[`docs/ir-definition-design.md`](ir-definition-design.md)** §6
+for the authoritative contract. In brief:
+
+- IR body = `MessagesRequest` + `MessageParam` + the `ContentBlockParam`
+  tagged-union (existing). Reasoning = `ThinkingBlockParam{Thinking,Signature}` /
+  `RedactedThinkingBlockParam{Data}` + `OutputConfig.Effort`. Tool input/result =
+  byte-faithful `JsonElement`. Streaming IR = the Anthropic SSE event model.
+- **The IR body does NOT grow per-provider fields.** Anything a non-Anthropic
+  client/backend sends that the body can't type (Codex's `store`, `service_tier`,
+  `include`, `prompt_cache_key`, `text.verbosity`, …) rides a namespaced
+  escape-hatch — `ProviderExtensions` (`Models/Common/ProviderExtensions.cs`), a
+  `provider-name → opaque JsonElement` bag stolen from the Vercel AI SDK's
+  `providerOptions` pattern — attached at request and content-part level, opaque
+  to the pipeline, copied verbatim. It is `null`/absent for Claude Code, so the
+  hot path serializes byte-for-byte as before (proven by the H1 byte-equality
+  test).
+- The freeze is guarded by the **A-invariant suite**
+  (`tests/CopilotBridge.UnitTests/Invariant/`): round-trip self-inverse,
+  opaque-field byte-passthrough, bag survival/transport, and hot-path
+  byte-equality — asserted on real, de-identified `claude.exe` captures used as
+  input samples (never as oracles; `ir-definition-design.md` §7.0).
+
 ### 3.3 Translator inventory
 
 Request side (client → IR → backend):
