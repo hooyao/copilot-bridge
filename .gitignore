@@ -75,3 +75,11 @@ log/
 request-traces/
 tests/harness/last-stdout.txt
 tests/harness/last-stderr.txt
+
+# Codex Track-B capture scratch (real session ids / git metadata / exec dumps).
+# Throwaway, never commit — see docs/codex-protocol-research.md §3.4.
+docs/scratch/codex-capture/
+docs/scratch/codex-capture-server.ps1
+docs/scratch/codex-exec-stdout.txt
+docs/scratch/codex-exec-stderr.txt
+docs/scratch/responses-models-dump.txt

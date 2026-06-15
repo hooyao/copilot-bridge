@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **The authoritative, agent-agnostic project guide is [`AGENTS.md`](AGENTS.md)** — environment, setup, build/publish (including the AOT `vswhere` gotcha), the architecture map, and the hard invariants live there. This file keeps Claude-Code-specific notes plus the deeper protocol detail below. Where the two disagree, **AGENTS.md + `docs/pipeline-design.md` are as-built**; some "planned" sections here predate the M1 OpenAI→Anthropic-passthrough pivot.
+> **`CLAUDE.md` (this file, for Claude Code) and [`AGENTS.md`](AGENTS.md) (for other agents) are parallel and equivalent** — same project guidance for different agent harnesses. Keep them in sync: a substantive edit to one must be mirrored in the other. Both are as-built alongside `docs/pipeline-design.md`; some "planned" sections below predate the M1 OpenAI→Anthropic-passthrough pivot and are flagged as such.
 
 ## Project intent
 
@@ -86,6 +86,7 @@ One project for now (per RamDrive's pattern early on). If size or compile time p
 
 ## Working with the codebase
 
+- **This project plans and tracks work with OpenSpec.** For *current* work — what's proposed, in progress, or pending implementation — read `openspec/changes/` (each change has `proposal.md` / `design.md` / `specs/` / `tasks.md`). Run `openspec list` to see active changes and `openspec status --change "<name>"` for remaining tasks; `/opsx:apply <name>` to implement, `/opsx:propose` to start a new change. **Do not record progress or status in this file** — `CLAUDE.md` / `AGENTS.md` are the project's stable constitution (how to build, the invariants, the conventions), not a status log. When a change introduces a durable architectural fact, fold *that fact* into the design docs under `docs/` once it's implemented — not the in-flight task state.
 - **Language conventions.**
   - **Files in the repo** — `CLAUDE.md`, everything under `docs/`, code comments, commit messages, etc. — are always written in **English**, regardless of the user's chat language.
   - **Claude Code's chat replies to the user** match the user's language: if they write in Chinese, respond in Chinese; if English, respond in English. Don't mix unless the user does.

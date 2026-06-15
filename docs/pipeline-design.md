@@ -107,6 +107,25 @@ full set:
 
 ## 3. Hub-IR translation pattern
 
+> **2026-06-12 — Codex correction (see `docs/codex-protocol-research.md`).** The
+> matrix below classifies the **OpenAI/Codex client → Copilot** cell as
+> "translate" via the Anthropic-shape hub-IR. **Evidence refutes this for
+> Codex.** Two-track research (live `/responses` probe + reading the open-source
+> Codex Rust client) established: Codex speaks the **Responses API only**
+> (`WireApi` has a single variant; `wire_api="chat"` is a hard error), and
+> Copilot exposes a **native `/responses`** endpoint that accepts Codex's
+> request shape near-verbatim. The Codex path is therefore a **native-`/responses`
+> passthrough**, structurally parallel to Claude Code → `/v1/messages` — **not**
+> an OpenAI-Chat↔IR translation. It needs only 3 mechanical coercions
+> (`reasoning.effort=minimal` strip/remap, `service_tier` strip,
+> `image_generation` tool drop), no IR, no streaming state machine, no
+> `[DONE]` filter. The hub-IR pattern below remains the design for **Gemini**
+> (which genuinely has no native Copilot endpoint); the OpenAI-client row of the
+> §3.1 matrix should be read as "passthrough to Copilot `/responses`", and the
+> `OpenAiToBridgeRequestAdapter` / `BridgeToOpenAiResponseAdapter` entries in
+> §3.3 are not required for the Codex client. The follow-up implementation change
+> updates this section in full once the `/codex` endpoint lands.
+
 ### 3.1 The matrix problem
 
 3 client shapes × 2 effective backend shapes = 6 (client, backend) pairs:
