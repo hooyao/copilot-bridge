@@ -6,7 +6,7 @@ Gemini CLI can all use Copilot as their model backend.
 
 ```
 Claude Code (Anthropic shape) ──► /cc/v1/messages              ┐
-Codex       (OpenAI shape)    ──► /codex/v1/chat/completions   ├─► copilot-bridge ─► api.githubcopilot.com
+Codex       (Responses shape) ──► /codex/responses             ├─► copilot-bridge ─► api.githubcopilot.com
 Gemini CLI  (Gemini shape)    ──► /gemini/v1/...               ┘
 ```
 
@@ -16,10 +16,16 @@ Native AOT can't cross-compile across operating systems).
 
 ## Status
 
-**Beta / personal-use.** Claude Code → Copilot Anthropic is the working hot
-path (text, tool round-trips, MCP tools, streaming, prompt-cache hits). OpenAI
-(Codex) and Gemini paths are M3/M4 — see
-[`docs/pipeline-design.md`](docs/pipeline-design.md).
+**Beta / personal-use.** Two working paths:
+
+- **Claude Code → Copilot Anthropic** (`/cc/v1/messages`) — the hot path (text,
+  tool round-trips, MCP tools, streaming, prompt-cache hits).
+- **Codex → Copilot Responses** (`/codex/responses`) — the real `codex.exe`
+  driven end-to-end through the bridge (plain turns + tool round-trips), routed
+  through the shared Anthropic-shape IR via the T1–T4 translators. See
+  [`docs/codex-implementation-design.md`](docs/codex-implementation-design.md).
+
+Gemini is M4 — see [`docs/pipeline-design.md`](docs/pipeline-design.md).
 
 Per-model wire behavior (which effort levels, thinking shapes, and context
 windows each Copilot model actually accepts) is probed, not guessed — see the
@@ -153,8 +159,8 @@ Anthropic subscription:
 | Milestone | Scope |
 | --- | --- |
 | ✅ M1 | Claude Code → Copilot Anthropic; identity adapters; full preprocessing pipeline |
-| M2 | HTML config page; cross-platform publish (win-x64, win-arm64, linux-x64, osx-arm64) |
-| M3 | Codex (OpenAI shape) client + IR↔OpenAI translators (request body + streaming SSE state machine) |
+| ✅ M2 | Cross-platform publish (win-x64, win-arm64, linux-x64, osx-arm64) |
+| ✅ M3 | Codex (Responses shape) client → `/codex/responses`; the T1–T4 translators routing Codex through the shared Anthropic-shape IR; per-model effort profile catalog; live `codex.exe` end-to-end |
 | M4 | Gemini CLI client + IR↔Gemini translators |
 
 ## Build from source

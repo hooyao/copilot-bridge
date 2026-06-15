@@ -7,11 +7,13 @@ using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
+using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Response;
 using CopilotBridge.Cli.Pipeline.Routing;
 using CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 using CopilotBridge.Cli.Pipeline.Strategies;
 using CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
+using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -149,6 +151,16 @@ internal static class BridgeServiceCollectionExtensions
         services.AddSingleton<ResponseModelRewriteStage>();
         services.AddSingleton<CopilotMessagesPassthroughStrategy>();
 
+        // --- Codex / Responses (change 3) ---------------------------------
+        // The Codex client edge (T1/T4 real translators) + the Responses backend
+        // strategy (T2/T3) + the per-model effort profile catalog. All register
+        // into the SAME shared Pipeline<MessagesRequest> below; the strategy
+        // registry picks by target.Vendor (CopilotAnthropic vs CopilotResponses).
+        services.AddSingleton<CodexModelProfileCatalog>();
+        services.AddSingleton<ResponsesToIrInboundAdapter>();
+        services.AddSingleton<IrToResponsesOutboundAdapter>();
+        services.AddSingleton<CopilotResponsesStrategy>();
+
         services.AddSingleton(BuildAnthropicPipeline);
 
         // --- New per-request summary logger -------------------------------
@@ -208,6 +220,9 @@ internal static class BridgeServiceCollectionExtensions
             Strategies = new StrategyRegistry<MessagesRequest>(
             [
                 sp.GetRequiredService<CopilotMessagesPassthroughStrategy>(),
+                // Codex/Responses backend — selected when the model resolves to
+                // CopilotResponses (gpt-5.x). Same shared pipeline; routing by vendor.
+                sp.GetRequiredService<CopilotResponsesStrategy>(),
             ]),
         };
 }

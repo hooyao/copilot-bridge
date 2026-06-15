@@ -9,6 +9,25 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 /// </summary>
 internal sealed class CopilotModelRegistry : IModelRegistry
 {
+    /// <summary>
+    /// The Codex/Responses model ids — these resolve to the native
+    /// <c>/responses</c> backend (<see cref="BackendVendor.CopilotResponses"/>),
+    /// not the legacy <c>/chat/completions</c>. The set is the live-confirmed
+    /// Responses-capable models (<c>docs/codex-protocol-research.md</c> §2.1 /
+    /// the change-2 contract snapshot), matched on the normalized id. Membership
+    /// is an explicit list, never a family-name prefix — sibling gpt ids that are
+    /// NOT in this set keep the existing <c>CopilotOpenAi</c> routing.
+    /// </summary>
+    private static readonly HashSet<string> ResponsesModelIds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "gpt-5.3-codex",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.5",
+        "gpt-5-mini",
+        "mai-code-1-flash-internal",
+    };
+
     public RouteTarget? Resolve(string requestedModelId)
     {
         var normalized = Normalize(requestedModelId);
@@ -17,11 +36,22 @@ internal sealed class CopilotModelRegistry : IModelRegistry
         {
             return new RouteTarget(BackendVendor.CopilotAnthropic, "/v1/messages", normalized);
         }
-        // GPT / o-series / Gemini all served by Copilot via the OpenAI shape.
-        // The actual backend strategy isn't implemented until M3, but we
-        // recognize the prefix here so requests for those don't silently fall
-        // through. Requests will fail at the strategy registry (no handler)
-        // until M3 lands — that's a clear runtime error, not silent breakage.
+
+        // Codex / Responses-native models → Copilot's native /responses endpoint.
+        // This is the backend the Codex CLI speaks (wire_api=responses); the
+        // CopilotResponsesStrategy + T1–T4 translators serve it through the shared
+        // Anthropic-shape IR. Matched on the explicit id set (snapshot-derived),
+        // so a non-Codex gpt id still falls through to the OpenAI-chat branch.
+        if (ResponsesModelIds.Contains(normalized))
+        {
+            return new RouteTarget(BackendVendor.CopilotResponses, "/responses", normalized);
+        }
+
+        // GPT / o-series / Gemini all served by Copilot via the OpenAI Chat shape.
+        // The actual backend strategy isn't implemented (no /chat/completions
+        // strategy ships), so these recognize the prefix but fail at the strategy
+        // registry with a clear "no handler" error rather than silently falling
+        // through.
         if (normalized.StartsWith("gpt-",  StringComparison.OrdinalIgnoreCase)
          || normalized.StartsWith("o3-",   StringComparison.OrdinalIgnoreCase)
          || normalized.StartsWith("o4-",   StringComparison.OrdinalIgnoreCase)

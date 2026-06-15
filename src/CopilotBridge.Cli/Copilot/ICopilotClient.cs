@@ -45,4 +45,22 @@ internal interface ICopilotClient
     ValueTask<HttpResponseMessage> PostCountTokensAsync(
         ReadOnlyMemory<byte> body,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// <c>POST {baseUrl}/responses</c> — Copilot's native OpenAI Responses
+    /// endpoint (the Codex backend). Forwards the already-serialized Responses
+    /// request body (post-T2) and returns the response with headers read, body
+    /// still streaming, so the caller can pump SSE bytes through. Uses the same
+    /// official VS Code Copilot header set as <see cref="PostMessagesAsync"/>
+    /// (the factory is endpoint-agnostic — no <c>anthropic-version</c>); Codex's
+    /// own <c>x-codex-*</c> headers are dropped (replaced by the official set,
+    /// like <c>/cc</c>). Pass <paramref name="vision"/>=true when the body
+    /// contains an <c>input_image</c> (adds <c>Copilot-Vision-Request</c>).
+    /// Mirror of <see cref="PostMessagesAsync"/> incl. transient-failure retry.
+    /// Caller owns + disposes the returned <see cref="HttpResponseMessage"/>.
+    /// </summary>
+    ValueTask<HttpResponseMessage> PostResponsesAsync(
+        ReadOnlyMemory<byte> body,
+        bool vision = false,
+        CancellationToken ct = default);
 }

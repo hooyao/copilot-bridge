@@ -107,24 +107,29 @@ full set:
 
 ## 3. Hub-IR translation pattern
 
-> **2026-06-12 — Codex correction (see `docs/codex-protocol-research.md`).** The
-> matrix below classifies the **OpenAI/Codex client → Copilot** cell as
-> "translate" via the Anthropic-shape hub-IR. **Evidence refutes this for
-> Codex.** Two-track research (live `/responses` probe + reading the open-source
-> Codex Rust client) established: Codex speaks the **Responses API only**
-> (`WireApi` has a single variant; `wire_api="chat"` is a hard error), and
-> Copilot exposes a **native `/responses`** endpoint that accepts Codex's
-> request shape near-verbatim. The Codex path is therefore a **native-`/responses`
-> passthrough**, structurally parallel to Claude Code → `/v1/messages` — **not**
-> an OpenAI-Chat↔IR translation. It needs only 3 mechanical coercions
-> (`reasoning.effort=minimal` strip/remap, `service_tier` strip,
-> `image_generation` tool drop), no IR, no streaming state machine, no
-> `[DONE]` filter. The hub-IR pattern below remains the design for **Gemini**
-> (which genuinely has no native Copilot endpoint); the OpenAI-client row of the
-> §3.1 matrix should be read as "passthrough to Copilot `/responses`", and the
-> `OpenAiToBridgeRequestAdapter` / `BridgeToOpenAiResponseAdapter` entries in
-> §3.3 are not required for the Codex client. The follow-up implementation change
-> updates this section in full once the `/codex` endpoint lands.
+> **2026-06-15 — Codex shipped via the hub-IR (`add-codex-responses-client`).**
+> An earlier 2026-06-12 note proposed treating Codex as a native-`/responses`
+> *passthrough* that skips the IR. **That was superseded** (see
+> `docs/codex-implementation-design.md` §1, v2): the hard requirement of
+> cross-model substitution — Claude Code using GPT-5, Codex using Opus — means
+> routing must happen on a backend-agnostic body, so **every client (Codex
+> included) transits the single Anthropic-shape IR** and is routed by model.
+> Codex is therefore a real pair of edge translators, not a passthrough:
+> **T1** (`ResponsesToIrInboundAdapter`, Codex `ResponsesRequest` → IR) and
+> **T4** (`IrToResponsesOutboundAdapter`, IR stream → Responses SSE) on the
+> client edge, plus **T2/T3** inside `CopilotResponsesStrategy` (IR → Responses
+> wire / Responses SSE → IR). They run on the **same shared
+> `Pipeline<MessagesRequest>`**; the strategy registry picks by
+> `target.Vendor` (`CopilotAnthropic` → `/v1/messages`, `CopilotResponses` →
+> `/responses`). The research's three coercions (per-model `reasoning.effort`
+> clamp, `service_tier` strip, `image_generation` drop) live **inside T2**,
+> driven by the snapshot-grounded `CodexModelProfileCatalog`. The deliberate
+> hub-IR cost — even Codex's own gpt path round-trips through the Anthropic IR
+> (`Responses →T1→ IR →T2→ Responses`) — is guarded by the A-invariant
+> round-trip tests and proven by a live `codex.exe` end-to-end run (plain +
+> tool turns). The §3.3 inventory's `OpenAiToBridge*` rows are now realized as
+> these Codex translators. Gemini (M4) remains genuinely IR-translated for the
+> same reasons.
 
 ### 3.1 The matrix problem
 
@@ -187,24 +192,25 @@ Request side (client → IR → backend):
 | Direction | Translator | Status |
 | --- | --- | --- |
 | Anthropic client → IR | identity | M1 |
-| OpenAI client → IR | `OpenAiToBridgeRequestAdapter` | M3 |
+| Codex/Responses client → IR | `ResponsesToIrInboundAdapter` (T1) | ✅ M3 |
 | Gemini client → IR | `GeminiToBridgeRequestAdapter` | M4 |
 | IR → Anthropic backend | identity | M1 |
-| IR → OpenAI backend | `BridgeToOpenAiRequestAdapter` | M3 |
+| IR → Responses backend | T2 (in `CopilotResponsesStrategy`) | ✅ M3 |
 
 Response side (backend → IR → client; all streaming variants are stateful):
 
 | Direction | Translator | Status |
 | --- | --- | --- |
 | Anthropic backend → IR | identity | M1 |
-| OpenAI backend → IR | `OpenAiToBridgeResponseAdapter` | M3 |
+| Responses backend → IR | T3 (in `CopilotResponsesStrategy`) | ✅ M3 |
 | IR → Anthropic client | identity | M1 |
-| IR → OpenAI client | `BridgeToOpenAiResponseAdapter` | M3 |
+| IR → Codex/Responses client | `IrToResponsesOutboundAdapter` (T4) | ✅ M3 |
 | IR → Gemini client | `BridgeToGeminiResponseAdapter` | M4 |
 
 **Total non-identity translators: 6** (3 in each direction). Each request
-transits at most 2. Adding a new client = 1 inbound + 1 outbound adapter; a new
-backend shape = 1 of each. Linear growth.
+transits at most 2. The Codex/Responses set (T1–T4) shipped in M3; Gemini (T?)
+is M4. Adding a new client = 1 inbound + 1 outbound adapter; a new backend shape
+= 1 of each. Linear growth.
 
 ### 3.4 Feature preservation across shapes
 

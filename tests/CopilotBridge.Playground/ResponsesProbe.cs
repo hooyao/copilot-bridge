@@ -269,4 +269,61 @@ public partial class ResponsesProbe
 
     private static string Truncate(string s, int max) =>
         s.Length <= max ? s : s[..max] + "…";
+
+    /// <summary>
+    /// Task 5.2 — capture real <c>/responses</c> SSE streams (a text stream and a
+    /// forced tool-call stream) and write them as committed fixtures for the A6
+    /// stream round-trip test (T3→IR→T4). Run with
+    /// <c>BRIDGE_REGEN_CONTRACT_SNAPSHOT=1</c> to (re)write; otherwise it just
+    /// verifies the fixtures parse. Live (Integration). The captured bytes are
+    /// the real Responses event grammar — no PII (no session ids in the body).
+    /// </summary>
+    [Fact]
+    public async Task CaptureResponsesSseFixtures()
+    {
+        const string toolPayload = """
+          {"model":"gpt-5.3-codex","instructions":"When asked the time, call the get_time tool.",
+           "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"What time is it? Use the get_time tool."}]}],
+           "stream":true,"store":false,"tool_choice":"auto",
+           "tools":[{"type":"function","name":"get_time","description":"Get the current time","parameters":{"type":"object","properties":{"tz":{"type":"string"}},"required":[]},"strict":false}]}
+          """;
+        const string textPayload = """
+          {"model":"gpt-5.3-codex","instructions":"Reply with a short greeting.",
+           "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Say hi in three words."}]}],
+           "stream":true,"store":false}
+          """;
+
+        using var client = new PlaygroundClient();
+        var (toolStatus, toolRaw) = await client.TryPostResponsesRawStreamAsync(toolPayload);
+        var (textStatus, textRaw) = await client.TryPostResponsesRawStreamAsync(textPayload);
+        _output.WriteLine($"tool-stream → {(int)toolStatus}; text-stream → {(int)textStatus}");
+
+        Assert.InRange((int)toolStatus, 200, 299);
+        Assert.InRange((int)textStatus, 200, 299);
+        // Both must end with response.completed (Codex's parser requires it).
+        Assert.Contains("response.completed", toolRaw, StringComparison.Ordinal);
+        Assert.Contains("response.function_call_arguments.delta", toolRaw, StringComparison.Ordinal);
+        Assert.Contains("response.output_text.delta", textRaw, StringComparison.Ordinal);
+        Assert.DoesNotContain("[DONE]", toolRaw, StringComparison.Ordinal);
+
+        if (Environment.GetEnvironmentVariable("BRIDGE_REGEN_CONTRACT_SNAPSHOT") == "1")
+        {
+            var dir = FindFixturesDir();
+            File.WriteAllText(Path.Combine(dir, "responses-sse-toolcall.txt"), toolRaw);
+            File.WriteAllText(Path.Combine(dir, "responses-sse-text.txt"), textRaw);
+            _output.WriteLine($"[seeded] responses-sse-*.txt → {dir}");
+        }
+    }
+
+    private static string FindFixturesDir()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            var candidate = Path.Combine(dir.FullName, "tests", "CopilotBridge.UnitTests", "Fixtures");
+            if (Directory.Exists(candidate)) return candidate;
+            dir = dir.Parent;
+        }
+        throw new InvalidOperationException("Could not locate tests/CopilotBridge.UnitTests/Fixtures from " + AppContext.BaseDirectory);
+    }
 }

@@ -7,6 +7,7 @@ using CopilotBridge.Cli.Models.Anthropic.Stream;
 using CopilotBridge.Cli.Models.Common;
 using CopilotBridge.Cli.Models.Copilot;
 using CopilotBridge.Cli.Models.GitHub;
+using CopilotBridge.Cli.Models.Responses;
 
 namespace CopilotBridge.Cli.Models;
 
@@ -47,6 +48,17 @@ namespace CopilotBridge.Cli.Models;
 // metadata for the [JsonExtensionData] Dictionary<string,JsonElement> shape
 // directly (AOT-clean — JsonElement values copied verbatim, no reflection).
 [JsonSerializable(typeof(ProviderExtensions))]
+// Codex Responses-API surface (docs/codex-implementation-design.md §8). The
+// /codex/responses endpoint deserializes ResponsesRequest (T1) and the strategy
+// re-serializes it (T2); the streaming translators read/write the SSE event
+// shapes. Polymorphic derived types (input items, content parts, tool variants,
+// stream events) are auto-discovered via [JsonDerivedType]; only the top-level
+// bases need explicit registration. Fully typed (no JsonElement envelope) per Q2.
+[JsonSerializable(typeof(ResponsesRequest))]
+[JsonSerializable(typeof(ResponsesInputItem))]
+[JsonSerializable(typeof(ResponsesContentPart))]
+[JsonSerializable(typeof(TextControls))]
+[JsonSerializable(typeof(ResponsesStreamEvent))]
 // Bridge-generated error responses (e.g. unknown model → 400).
 [JsonSerializable(typeof(ErrorResponse))]
 // Usage-probe envelopes — minimal POCOs read by UsageProbe to extract token

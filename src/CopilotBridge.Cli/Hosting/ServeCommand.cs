@@ -1,5 +1,6 @@
 using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
+using CopilotBridge.Cli.Endpoints.Codex;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -44,6 +45,7 @@ internal static class ServeCommand
         app.MapMessages();
         app.MapCountTokens();
         app.MapModels();
+        app.MapCodexResponses();
 
         try
         {

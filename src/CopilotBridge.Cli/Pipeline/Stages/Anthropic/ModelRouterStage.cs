@@ -61,6 +61,24 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
         var (matchedLoc, locIndex) = Routing.ModelRouteResolver.Apply(ctx, _routes, _resolverLog);
         var afterRule = ctx.Request.Body.Model;
 
+        // 2b. Vendor dispatch on the post-rule id. Do this BEFORE the Anthropic
+        //     profile lookup: a Codex/Responses model (gpt-*) has no entry in the
+        //     Anthropic ModelProfileCatalog and must NOT run ProfileAdjuster
+        //     (thinking-shape coercion, effort-to-variant, mid-conv-system fold
+        //     are all Anthropic-specific). Its per-model effort coercion lives in
+        //     T2 (CodexModelProfileCatalog), applied in the Responses strategy.
+        //     The Anthropic profile machinery (steps 3-4) is for the /v1/messages
+        //     backend only.
+        var resolvedEarly = _registry.Resolve(afterRule);
+        if (resolvedEarly is { Vendor: BackendVendor.CopilotResponses })
+        {
+            ctx.Target = resolvedEarly;
+            _log.LogDebug(
+                "stage {Name}: '{Requested}' → '{FinalModel}'  target={Vendor}:{Endpoint}  (Codex/Responses — Anthropic profile skipped)",
+                Name, requested, afterRule, resolvedEarly.Vendor, resolvedEarly.Endpoint);
+            return Task.CompletedTask;
+        }
+
         // 3. Profile lookup. Miss = hard error with actionable diagnostics.
         var profile = _profiles.Get(afterRule);
         if (profile is null)
