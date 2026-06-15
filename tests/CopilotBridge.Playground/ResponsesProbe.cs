@@ -26,7 +26,7 @@ namespace CopilotBridge.Playground;
 /// </remarks>
 [SupportedOSPlatform("windows")]
 [Trait("Category", "Integration")]
-public class ResponsesProbe
+public partial class ResponsesProbe
 {
     private readonly ITestOutputHelper _output;
     public ResponsesProbe(ITestOutputHelper output) => _output = output;

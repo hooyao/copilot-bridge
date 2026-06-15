@@ -22,7 +22,7 @@ namespace CopilotBridge.Playground;
 /// </remarks>
 [SupportedOSPlatform("windows")]
 [Trait("Category", "Integration")]
-public class ModelProfileProbe
+public partial class ModelProfileProbe
 {
     private readonly ITestOutputHelper _output;
     public ModelProfileProbe(ITestOutputHelper output) => _output = output;
