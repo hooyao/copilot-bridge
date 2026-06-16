@@ -3,11 +3,13 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Pipeline.Strategies.Codex;
 
@@ -24,15 +26,18 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
 {
     private readonly ICopilotClient _copilot;
     private readonly CodexModelProfileCatalog _profiles;
+    private readonly bool _tracingEnabled;
     private readonly ILogger<CopilotResponsesStrategy> _log;
 
     public CopilotResponsesStrategy(
         ICopilotClient copilot,
         CodexModelProfileCatalog profiles,
+        IOptions<TracingOptions> tracing,
         ILogger<CopilotResponsesStrategy> log)
     {
         _copilot = copilot;
         _profiles = profiles;
+        _tracingEnabled = tracing.Value.Enabled;
         _log = log;
     }
 
@@ -70,9 +75,14 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         if (streaming)
         {
             ctx.Response.Mode = ResponseMode.Streaming;
+            // When tracing is on, tee the raw Copilot /responses SSE into a
+            // capture so upstream-resp records what Copilot sent on the wire,
+            // BEFORE T3 translation. Off ⇒ capture null ⇒ no tee, no allocation.
+            var capture = _tracingEnabled ? new RawResponseCapture() : null;
+            ctx.Response.RawUpstreamResponseCapture = capture;
             // T3: translate Responses SSE → IR (Anthropic) SSE on the fly. The
             // response stages + the outbound T4 adapter then operate on IR shape.
-            ctx.Response.EventStream = TranslateStreamAsync(resp, ctx.Request.Body.Model, ctx.Ct);
+            ctx.Response.EventStream = TranslateStreamAsync(resp, ctx.Request.Body.Model, capture, ctx.Ct);
             _log.LogDebug("strategy {Name}: T3 streaming (content-type={ContentType})", Name, contentType);
         }
         else
@@ -84,6 +94,9 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
                 // success path this is a Responses JSON object T4 will translate;
                 // on the error path it's the Copilot error envelope, passed through.
                 ctx.Response.BufferedBody = await resp.Content.ReadAsByteArrayAsync(ctx.Ct);
+                // Stash the original reference for upstream-resp before any stage
+                // could rewrite BufferedBody (mirrors the /cc passthrough path).
+                if (_tracingEnabled) ctx.Response.RawUpstreamResponseBody = ctx.Response.BufferedBody;
                 _log.LogDebug("strategy {Name}: buffered status={Status} bytes={Bytes}",
                     Name, ctx.Response.Status, ctx.Response.BufferedBody.Length);
             }
@@ -106,15 +119,18 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
     private async IAsyncEnumerable<SseItem<string>> TranslateStreamAsync(
         HttpResponseMessage resp,
         string model,
+        RawResponseCapture? capture,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var sm = new ResponsesToAnthropicStream(model, _log);
-        Stream? stream = null;
+        Stream? rawStream = null;
         Exception? fault = null;
         try
         {
-            stream = await resp.Content.ReadAsStreamAsync(ct);
-            var parser = SseParser.Create(stream);
+            rawStream = await resp.Content.ReadAsStreamAsync(ct);
+            // Tee the raw Copilot SSE when capturing; otherwise parse directly.
+            var readStream = capture is null ? rawStream : new TeeReadStream(rawStream, capture);
+            var parser = SseParser.Create(readStream);
             // Iterate manually so a mid-stream upstream fault (premature EOF /
             // transient disconnect) still lets us flush a terminal — Codex's
             // parser requires one, and T4 turns a faulted terminal into
@@ -132,7 +148,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         }
         finally
         {
-            if (stream is not null) await stream.DisposeAsync();
+            if (rawStream is not null) await rawStream.DisposeAsync();
             resp.Dispose();
         }
 

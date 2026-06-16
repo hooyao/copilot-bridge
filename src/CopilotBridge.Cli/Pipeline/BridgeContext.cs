@@ -137,6 +137,30 @@ internal sealed class BridgeResponse
     /// body. Lets the endpoint audit the real wire bytes, not the IR.
     /// </summary>
     public byte[]? UpstreamWireBody { get; set; }
+
+    /// <summary>
+    /// RAW upstream response bytes for the BUFFERED path, captured by the
+    /// strategy BEFORE any response stage rewrites <see cref="BufferedBody"/>.
+    /// It is the same array reference the strategy first assigned to
+    /// <see cref="BufferedBody"/>; <c>ResponseModelRewriteStage</c> reassigns
+    /// <see cref="BufferedBody"/> to a NEW array when it rewrites the model, so
+    /// this keeps pointing at Copilot's original wire bytes. The endpoint
+    /// prefers this over <see cref="BufferedBody"/> when writing the
+    /// <c>upstream-resp</c> audit. Null when tracing is disabled or on the
+    /// streaming path (see <see cref="RawUpstreamResponseCapture"/>).
+    /// </summary>
+    public byte[]? RawUpstreamResponseBody { get; set; }
+
+    /// <summary>
+    /// RAW upstream response capture for the STREAMING path. The strategy tees
+    /// the network stream into this as <c>SseParser</c> reads it, so it ends up
+    /// holding the exact SSE bytes Copilot sent — pre-stage, pre-translation.
+    /// Filled lazily by the relay loop; the endpoint reads it in its
+    /// <c>finally</c> AFTER enumeration completes (the buffer is fully
+    /// populated by then). Null when tracing is disabled or on the buffered
+    /// path (see <see cref="RawUpstreamResponseBody"/>).
+    /// </summary>
+    public RawResponseCapture? RawUpstreamResponseCapture { get; set; }
 }
 
 internal enum ResponseMode { Streaming, Buffered }

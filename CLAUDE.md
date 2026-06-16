@@ -81,11 +81,16 @@ Layers, outer depends on inner only:
     ```powershell
     $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
     $dir = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-    $env = & cmd /c "`"$dir\Common7\Tools\VsDevCmd.bat`" -arch=x64 -host_arch=x64 >nul 2>&1 && set"
-    foreach ($l in $env) { if ($l -match '^([^=]+)=(.*)$') { Set-Item "Env:$($matches[1])" $matches[2] } }
+    $envLines = & cmd /c "`"$dir\Common7\Tools\VsDevCmd.bat`" -arch=x64 -host_arch=x64 >nul 2>&1 && set"
+    foreach ($l in $envLines) { if ($l -match '^([^=]+)=(.*)$') { Set-Item "Env:$($matches[1])" $matches[2] } }
+    # REQUIRED: VsDevCmd does NOT put the VS Installer dir (vswhere.exe) on PATH,
+    # but ILC's native-link step shells out to a bare `vswhere.exe` — without this
+    # line the link fails with `'vswhere.exe' is not recognized` (exit 123) AFTER
+    # `Generating native code`. This mirrors build-aot.bat's first line.
+    $env:PATH = "$env:PATH;C:\Program Files (x86)\Microsoft Visual Studio\Installer\"
     dotnet publish src/CopilotBridge.Cli -c Release -r win-x64
     ```
-    Confirm success by the published exe's **mtime** (`publish\copilot-bridge.exe`, ≈11 MB), not the exit code — capture the mtime before building and prove it advanced. ILC native compile takes a few minutes; run it in the background and watch for `Generating native code` → `PUBLISH_EXIT: 0`.
+    Confirm success by the published exe's **mtime** (`publish\copilot-bridge.exe`, ≈11 MB), not the exit code — capture the mtime before building and prove it advanced. ILC native compile takes a few minutes; run it in the background and watch for `Generating native code` → `PUBLISH_EXIT: 0`. If you see `Generating native code` followed by `'vswhere.exe' is not recognized`, you skipped the PATH line above.
 - Unit tests (CI-safe, no Copilot): `dotnet test tests/CopilotBridge.UnitTests`, or solution-wide skipping the integration harness: `dotnet test --filter "Category!=Integration"`.
 - Integration harness (live Copilot + claude.exe): `dotnet test tests/CopilotBridge.Playground` — tagged `[Trait("Category","Integration")]`. New playground tests must carry that trait or CI will try to run them. Routing config reference: `docs/routing.md`.
 - Single test: `dotnet test --filter FullyQualifiedName~<TestName>`

@@ -2,9 +2,11 @@ using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 
@@ -20,13 +22,16 @@ namespace CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<MessagesRequest>
 {
     private readonly ICopilotClient _copilot;
+    private readonly bool _tracingEnabled;
     private readonly ILogger<CopilotMessagesPassthroughStrategy> _log;
 
     public CopilotMessagesPassthroughStrategy(
         ICopilotClient copilot,
+        IOptions<TracingOptions> tracing,
         ILogger<CopilotMessagesPassthroughStrategy> log)
     {
         _copilot = copilot;
+        _tracingEnabled = tracing.Value.Enabled;
         _log = log;
     }
 
@@ -80,9 +85,14 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
         if (streaming)
         {
             ctx.Response.Mode = ResponseMode.Streaming;
+            // When tracing is on, tee the raw upstream stream into a capture so
+            // the upstream-resp audit gets Copilot's exact SSE bytes (pre-stage).
+            // Off ⇒ capture is null ⇒ StreamEventsAsync is byte-identical passthrough.
+            var capture = _tracingEnabled ? new RawResponseCapture() : null;
+            ctx.Response.RawUpstreamResponseCapture = capture;
             // Ownership of `resp` transfers to the iterator — disposed when
             // the consumer (the endpoint writer) finishes enumeration.
-            ctx.Response.EventStream = StreamEventsAsync(resp, ctx.Ct);
+            ctx.Response.EventStream = StreamEventsAsync(resp, capture, ctx.Ct);
             _log.LogDebug("strategy {Name}: streaming (content-type={ContentType})", Name, contentType);
         }
         else
@@ -91,6 +101,10 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             try
             {
                 ctx.Response.BufferedBody = await resp.Content.ReadAsByteArrayAsync(ctx.Ct);
+                // Stash the original reference BEFORE any response stage can
+                // rewrite BufferedBody (ResponseModelRewriteStage reassigns it
+                // to a new array), so upstream-resp shows Copilot's wire bytes.
+                if (_tracingEnabled) ctx.Response.RawUpstreamResponseBody = ctx.Response.BufferedBody;
                 _log.LogDebug("strategy {Name}: buffered status={Status} bytes={Bytes}",
                     Name, ctx.Response.Status, ctx.Response.BufferedBody.Length);
             }
@@ -103,13 +117,17 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
 
     private static async IAsyncEnumerable<SseItem<string>> StreamEventsAsync(
         HttpResponseMessage resp,
+        RawResponseCapture? capture,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        Stream? stream = null;
+        Stream? rawStream = null;
         try
         {
-            stream = await resp.Content.ReadAsStreamAsync(ct);
-            var parser = SseParser.Create(stream);
+            rawStream = await resp.Content.ReadAsStreamAsync(ct);
+            // Tee only when capturing; otherwise hand the raw stream straight to
+            // the parser (no wrapper, no allocation, byte-identical passthrough).
+            var readStream = capture is null ? rawStream : new TeeReadStream(rawStream, capture);
+            var parser = SseParser.Create(readStream);
             await foreach (var evt in parser.EnumerateAsync(ct))
             {
                 yield return evt;
@@ -117,7 +135,8 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
         }
         finally
         {
-            if (stream is not null) await stream.DisposeAsync();
+            // Dispose the raw network stream — the tee deliberately doesn't own it.
+            if (rawStream is not null) await rawStream.DisposeAsync();
             resp.Dispose();
         }
     }

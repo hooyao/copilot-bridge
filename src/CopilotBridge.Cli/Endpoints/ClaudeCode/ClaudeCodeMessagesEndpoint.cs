@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Hosting.Logging;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Errors;
 using CopilotBridge.Cli.Models.Anthropic.Request;
@@ -13,6 +14,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 
@@ -40,12 +42,16 @@ internal static class ClaudeCodeMessagesEndpoint
         ClaudeCodeOutboundAdapter outboundAdapter,
         ModelProfileCatalog profiles,
         RequestSummaryLogger summaryLogger,
+        IOptions<TracingOptions> tracingOptions,
         ILogger<MessagesRequest> ioLogger,
         ILogger<ClaudeCodeMessagesEndpointTag> endpointLog)
     {
         var ct = httpCtx.RequestAborted;
         var sw = Stopwatch.StartNew();
         var seq = BridgeIoSeq.Next();
+        // Gate all trace-only buffering (raw upstream capture, per-event list)
+        // on this — when tracing is off there must be zero extra allocation.
+        var tracingEnabled = tracingOptions.Value.Enabled;
         // One trace id pins the four audit files for this request and the
         // INFO summary line together — see BridgeIoSeq.BuildTraceId.
         var traceId = BridgeIoSeq.BuildTraceId(seq, DateTime.UtcNow);
@@ -90,6 +96,12 @@ internal static class ClaudeCodeMessagesEndpoint
         var upstreamStatus = 0;
         Dictionary<string, string>? upstreamResponseHeaders = null;
         byte[]? upstreamBufferedBody = null;   // non-streaming response body for the audit
+        // RAW Copilot response bytes, captured pre-stage by the strategy. The
+        // finally prefers these over upstreamBufferedBody so upstream-resp is
+        // Copilot's exact wire bytes (buffered: pre-rewrite array; streaming:
+        // teed SSE bytes finalized once the relay loop drains). Null off-trace.
+        byte[]? rawUpstreamBufferedResp = null;
+        RawResponseCapture? rawUpstreamStreamCapture = null;
 
         // Per-request summary, populated as the pipeline progresses. Always
         // emitted in finally regardless of error path.
@@ -192,6 +204,11 @@ internal static class ClaudeCodeMessagesEndpoint
             // arrives as SSE events captured separately on the inbound-resp
             // side, so upstream-resp's body remains empty by design.
             upstreamBufferedBody = bridgeCtx.Response.BufferedBody;
+            // Snapshot the raw upstream captures (set by the strategy pre-stage)
+            // into finally-visible locals. For streaming this is the capture
+            // OBJECT reference — the relay loop below fills it before finally runs.
+            rawUpstreamBufferedResp = bridgeCtx.Response.RawUpstreamResponseBody;
+            rawUpstreamStreamCapture = bridgeCtx.Response.RawUpstreamResponseCapture;
 
             responseStatus = bridgeCtx.Response.Status;
             foreach (var (k, v) in bridgeCtx.Response.Headers)
@@ -209,20 +226,26 @@ internal static class ClaudeCodeMessagesEndpoint
 
             if (bridgeCtx.Response.Mode == ResponseMode.Streaming && bridgeCtx.Response.EventStream is not null)
             {
-                capturedEvents = new List<CapturedSseEvent>();
+                // Only buffer per-event copies for the inbound-resp audit when
+                // tracing is on — off-trace this stays null and we never grow a
+                // list (the SSE body can be large; this is the hot path).
+                capturedEvents = tracingEnabled ? new List<CapturedSseEvent>() : null;
                 var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, bridgeCtx, ct);
                 await foreach (var evt in clientStream.WithCancellation(ct))
                 {
-                    capturedEvents.Add(new CapturedSseEvent(evt.EventType, evt.Data, Filtered: false));
+                    capturedEvents?.Add(new CapturedSseEvent(evt.EventType, evt.Data, Filtered: false));
                     // Sniff usage from message_start / message_delta as they
                     // pass through — Anthropic emits cumulative values so the
                     // probe simply overwrites the snapshot on each event.
                     UsageProbe.TryUpdateFromStreamEvent(evt.EventType, evt.Data, usageSnapshot);
                     await WriteSseEventAsync(httpCtx.Response, evt.EventType, evt.Data, ct);
                 }
-                foreach (var d in bridgeCtx.DroppedEvents)
+                if (capturedEvents is not null)
                 {
-                    capturedEvents.Add(new CapturedSseEvent(d.EventType, d.Data, Filtered: true));
+                    foreach (var d in bridgeCtx.DroppedEvents)
+                    {
+                        capturedEvents.Add(new CapturedSseEvent(d.EventType, d.Data, Filtered: true));
+                    }
                 }
             }
             else if (bridgeCtx.Response.BufferedBody is not null)
@@ -337,15 +360,20 @@ internal static class ClaudeCodeMessagesEndpoint
                     upstreamBodyLen,
                     upstreamBodyPooled);
 
-                // Surface what Copilot actually sent back. For buffered
-                // responses (errors, non-streaming completions) this is
-                // bridgeCtx.Response.BufferedBody; for streaming responses
-                // the body is delivered as a sequence of SSE events captured
-                // by the relay loop (`capturedEvents`) and recorded on the
-                // inbound-resp side, so the upstream-resp body is empty.
-                // Without this, every 4xx/5xx from Copilot showed an empty
-                // body in the audit and we had to guess at the error.
-                var upstreamRespBody = upstreamBufferedBody ?? Array.Empty<byte>();
+                // Surface exactly what Copilot put on the wire, pre-stage. For
+                // buffered responses this is the raw pre-rewrite array the
+                // strategy stashed (ResponseModelRewriteStage reassigns
+                // BufferedBody to a NEW array, so we can't trust that here). For
+                // streaming responses it's the teed SSE bytes — finalized now,
+                // because the relay loop above has finished draining the stream.
+                // Falls back to upstreamBufferedBody only when tracing was off
+                // for the strategy (unreachable when this audit runs, since the
+                // audit only fires with tracing on) or for safety.
+                var upstreamRespBody =
+                    rawUpstreamBufferedResp
+                    ?? rawUpstreamStreamCapture?.ToArray()
+                    ?? upstreamBufferedBody
+                    ?? Array.Empty<byte>();
                 ioLogger.LogUpstreamResponse(
                     seq,
                     traceId,

@@ -105,6 +105,14 @@ The release pipeline builds all four RIDs, each on its own runner
 (`windows-latest`, `windows-11-arm`, `ubuntu-latest`, `macos-14`), and attaches
 every archive (+ a macOS `.pkg`) to one GitHub Release.
 
+> **Agents publishing manually (when you can't run `build-aot.bat` directly):**
+> importing the VsDevCmd environment is **not enough** — VsDevCmd does not add the
+> VS Installer dir (where `vswhere.exe` lives) to PATH, and ILC's link step calls a
+> bare `vswhere.exe`. After importing the VS env you MUST also append
+> `;C:\Program Files (x86)\Microsoft Visual Studio\Installer\` to `PATH`, or the
+> link fails with `'vswhere.exe' is not recognized` (exit 123) right after
+> `Generating native code`. The verified one-block recipe is in `CLAUDE.md`.
+
 After any dependency change, eyeball the published binary size — a
 non-trim-friendly package can easily double it (`docs/size-history.md` tracks it).
 
