@@ -173,6 +173,22 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
 
 ## Hard invariants — don't fight these
 
+- **🔴 Tests are written from the CONTRACT, never by reading the implementation.**
+  A test asserts *what the behaviour is required to be* (from the requirement /
+  spec / case), not *what the code currently does*. Mirroring the implementation
+  back into assertions is forbidden — it freezes bugs into the suite (green on
+  buggy code → can never catch that bug) and manufactures false confidence.
+  Discipline: (1) state the contract in words first — *given X, the system must
+  do Y, because Z* — and assert that; if you can't articulate it without pointing
+  at a code line, you don't yet understand what to test. (2) Assert observable
+  behaviour and invariants (bytes out, events emitted, error surfaced,
+  idempotence, "zero allocation when off") over internal state. (3) **A new test
+  that passes on the first try is suspect** — mutation-check it: break the product
+  code and watch it go red; if it stays green it guards nothing. (4) When a
+  from-contract test fails, assume the *code* (or your understanding of the
+  contract) is wrong — investigate before touching the test; never weaken an
+  assertion just to get green. This outranks convenience: fewer contract-true
+  tests beat many implementation-mirrors.
 - **Native AOT is non-negotiable.** `<PublishAot>true</PublishAot>`. No
   reflection-based serialization, no `Activator.CreateInstance`, no
   runtime-loaded assemblies, no `System.Reflection.Emit`.
