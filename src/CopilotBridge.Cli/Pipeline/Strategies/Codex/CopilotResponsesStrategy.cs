@@ -47,6 +47,10 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         // ── T2: IR MessagesRequest → Responses wire bytes ──
         var (body, vision) = ResponsesRequestBuilder.Build(ctx.Request.Body, _profiles);
 
+        // Stash the real wire bytes so the endpoint audits what we POSTed upstream
+        // (not the IR). Null on passthrough paths; here we always translated. (Contract A)
+        ctx.Response.UpstreamWireBody = body;
+
         _log.LogDebug("strategy {Name}: T2 built Responses body bytes={Bytes} vision={Vision} model={Model}",
             Name, body.Length, vision, ctx.Request.Body.Model);
 
@@ -104,24 +108,44 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         string model,
         [EnumeratorCancellation] CancellationToken ct)
     {
+        var sm = new ResponsesToAnthropicStream(model, _log);
         Stream? stream = null;
+        Exception? fault = null;
         try
         {
             stream = await resp.Content.ReadAsStreamAsync(ct);
             var parser = SseParser.Create(stream);
-            var sm = new ResponsesToAnthropicStream(model);
-            await foreach (var evt in parser.EnumerateAsync(ct))
+            // Iterate manually so a mid-stream upstream fault (premature EOF /
+            // transient disconnect) still lets us flush a terminal — Codex's
+            // parser requires one, and T4 turns a faulted terminal into
+            // response.failed rather than a headless stream.
+            await using var e = parser.EnumerateAsync(ct).GetAsyncEnumerator(ct);
+            while (true)
             {
-                foreach (var irItem in sm.Translate(evt))
+                bool moved;
+                try { moved = await e.MoveNextAsync(); }
+                catch (Exception ex) { fault = ex; break; }
+                if (!moved) break;
+                foreach (var irItem in sm.Translate(e.Current))
                     yield return irItem;
             }
-            foreach (var tail in sm.Flush())
-                yield return tail;
         }
         finally
         {
             if (stream is not null) await stream.DisposeAsync();
             resp.Dispose();
+        }
+
+        // Always emit a terminal (even on fault / empty stream). On a fault, latch
+        // the IR error stop so T4 emits response.failed; the endpoint records the
+        // underlying error separately.
+        foreach (var tail in sm.FlushTerminal(failed: fault is not null))
+            yield return tail;
+
+        if (fault is not null)
+        {
+            _log.LogWarning("strategy {Name}: T3 upstream stream faulted ({Type}: {Message}); "
+                + "flushed a failed terminal", Name, fault.GetType().Name, fault.Message);
         }
     }
 }

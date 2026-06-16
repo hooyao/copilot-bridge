@@ -96,7 +96,7 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                         {
                             Id = fc.CallId,
                             Name = fc.Name,
-                            Input = ParseArgumentsToElement(fc.Arguments),
+                            Input = ParseArgumentsToElement(fc.Arguments, fc.CallId),
                         }],
                     });
                     break;
@@ -116,14 +116,22 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
 
                 case ResponsesReasoningItem reasoning:
                     // Encrypted reasoning echo → a redacted-thinking block on an
-                    // assistant message (opaque blob slot). If there's no blob,
-                    // skip (nothing to carry).
+                    // assistant message (opaque blob slot). The item's id rides the
+                    // part-level ProviderExtensions bag so multi-turn reasoning
+                    // identity survives the round trip; summary/content are still
+                    // dropped (no typed home, not echoed by Codex on the way out).
+                    // If there's no blob, skip — a redacted_thinking block needs
+                    // Data, and an id-only reasoning item carries nothing forwardable.
                     if (!string.IsNullOrEmpty(reasoning.EncryptedContent))
                     {
                         messages.Add(new MessageParam
                         {
                             Role = Role.Assistant,
-                            Content = [new RedactedThinkingBlockParam { Data = reasoning.EncryptedContent }],
+                            Content = [new RedactedThinkingBlockParam
+                            {
+                                Data = reasoning.EncryptedContent,
+                                ProviderExtensions = BuildReasoningPartBag(reasoning.Id),
+                            }],
                         });
                     }
                     break;
@@ -212,15 +220,39 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
     /// (the IR <c>tool_use.input</c> is a JsonElement object). Byte-faithful: the
     /// underlying JSON text is parsed once; T2 reserializes it back to a string.
     /// </summary>
-    private static JsonElement ParseArgumentsToElement(string arguments)
+    /// <remarks>
+    /// <c>arguments</c> is client data — prior tool calls the MODEL produced and
+    /// Codex echoed back — so a malformed value is a client fault, not an upstream
+    /// one (upstream is never contacted at T1). Surface it as
+    /// <see cref="CodexBadRequestException"/> → HTTP 400, naming the offending
+    /// <c>call_id</c>; letting the raw <see cref="JsonException"/> escape would hit
+    /// the endpoint's generic catch and mis-report a 502. A non-object value (a
+    /// JSON scalar or array) parses fine but violates the IR contract that
+    /// <c>tool_use.input</c> is an object, so it is rejected the same way. Empty or
+    /// whitespace arguments → <c>{}</c> (a valid empty-input tool call).
+    /// </remarks>
+    private static JsonElement ParseArgumentsToElement(string arguments, string callId)
     {
         if (string.IsNullOrWhiteSpace(arguments))
         {
             using var empty = JsonDocument.Parse("{}");
             return empty.RootElement.Clone();
         }
-        using var doc = JsonDocument.Parse(arguments);
-        return doc.RootElement.Clone();
+        JsonElement root;
+        try
+        {
+            using var doc = JsonDocument.Parse(arguments);
+            root = doc.RootElement.Clone();
+        }
+        catch (JsonException ex)
+        {
+            throw new CodexBadRequestException(
+                $"function_call '{callId}' has malformed JSON arguments: {ex.Message}");
+        }
+        if (root.ValueKind != JsonValueKind.Object)
+            throw new CodexBadRequestException(
+                $"function_call '{callId}' arguments must be a JSON object, got {root.ValueKind}.");
+        return root;
     }
 
     /// <summary>
@@ -285,6 +317,33 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                 w.WritePropertyName("client_metadata");
                 cm.WriteTo(w);
             }
+            w.WriteEndObject();
+        }
+
+        using var doc = JsonDocument.Parse(buffer.ToArray());
+        return new ProviderExtensions
+        {
+            ByProvider = new Dictionary<string, JsonElement> { [OpenAiProviderKey] = doc.RootElement.Clone() },
+        };
+    }
+
+    /// <summary>
+    /// Build the part-level <c>openai</c> bag for a reasoning item, carrying its
+    /// <c>id</c> so multi-turn reasoning identity survives T1→IR→T2 (T2 has no
+    /// other place to recover it from a <see cref="RedactedThinkingBlockParam"/>).
+    /// Null when there's no id — keeps the block's bag <c>null</c> so it stays
+    /// inert for every Claude Code block (H1). Same AOT-clean
+    /// <see cref="Utf8JsonWriter"/> style as <see cref="BuildOpenAiBag"/>.
+    /// </summary>
+    private static ProviderExtensions? BuildReasoningPartBag(string? id)
+    {
+        if (string.IsNullOrEmpty(id)) return null;
+
+        using var buffer = new MemoryStream();
+        using (var w = new Utf8JsonWriter(buffer))
+        {
+            w.WriteStartObject();
+            w.WriteString("reasoning_id", id);
             w.WriteEndObject();
         }
 

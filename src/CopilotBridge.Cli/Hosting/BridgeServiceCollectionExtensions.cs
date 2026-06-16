@@ -10,6 +10,7 @@ using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Response;
 using CopilotBridge.Cli.Pipeline.Routing;
+using CopilotBridge.Cli.Pipeline.Stages;
 using CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 using CopilotBridge.Cli.Pipeline.Strategies;
 using CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
@@ -193,22 +194,38 @@ internal static class BridgeServiceCollectionExtensions
                 //    mechanically shapes the body to what the target
                 //    profile accepts. A missing profile throws
                 //    UnknownModelException, surfaced as a 400 by the endpoint.
+                //    NOT vendor-gated: this stage resolves ctx.Target that the
+                //    gate below reads, and it short-circuits internally for
+                //    CopilotResponses targets.
                 sp.GetRequiredService<ModelRouterStage>(),
 
-                // 2-5. Body-level cleanups, each independent of model family.
+                // 2-6. Anthropic-backend-only stages. The shared pipeline also
+                //    carries the Codex/Responses IR (gpt-* → CopilotResponses);
+                //    these stages encode /v1/messages-specific assumptions and
+                //    MUST NOT mutate a Codex request. MessagesSanitizeStage in
+                //    particular appends a "Please continue." user turn when the
+                //    IR ends with an assistant message — which is exactly the
+                //    shape T1 produces for a Codex input[] ending in a reasoning
+                //    item or bare function_call, corrupting it. So each is wrapped
+                //    by CopilotAnthropicOnlyStage: for a CopilotAnthropic target it
+                //    delegates verbatim (the /cc hot path is byte-identical); for
+                //    any other vendor it is a no-op.
                 //
                 //  Note: CacheControlCleanStage from research §3.6 rule 1 is
                 //  intentionally not present. The DTO does not model
                 //  `cache_control.scope`, so the field is silently dropped at
                 //  deserialize time. If the DTO ever grows a Scope property,
                 //  add the stage to actively clear it.
-                sp.GetRequiredService<AssistantThinkingFilterStage>(),
-                sp.GetRequiredService<SystemSanitizeStage>(),
-                sp.GetRequiredService<MessagesSanitizeStage>(),
-                sp.GetRequiredService<ToolsSanitizeStage>(),
+                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<AssistantThinkingFilterStage>()),
+                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<SystemSanitizeStage>()),
+                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<MessagesSanitizeStage>()),
+                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<ToolsSanitizeStage>()),
 
-                // 6. Always last — generates outbound headers from the FINAL body shape.
-                sp.GetRequiredService<HeadersOutboundStage>(),
+                // 6. Always last for the Anthropic backend — generates outbound
+                //    headers from the FINAL body shape. Harmless to skip for Codex
+                //    (the Responses strategy ignores ctx.Request.Headers and builds
+                //    its own via CopilotHeaderFactory), but gated for consistency.
+                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<HeadersOutboundStage>()),
             ],
             ResponseStages =
             [
@@ -235,6 +252,42 @@ internal static class BridgeServiceCollectionExtensions
 /// </summary>
 internal sealed class ModelRouteResolverLog { }
 internal sealed class ProfileAdjusterLog { }
+
+/// <summary>
+/// Decorator that runs an Anthropic-backend-only request stage only when the
+/// resolved target is <see cref="BackendVendor.CopilotAnthropic"/>, and no-ops
+/// for any other vendor (today: <see cref="BackendVendor.CopilotResponses"/> —
+/// the Codex/Responses path that shares this one <c>Pipeline&lt;MessagesRequest&gt;</c>).
+/// </summary>
+/// <remarks>
+/// <para>The shared IR pipeline carries both the /cc Anthropic body and the
+/// Codex IR. The body-mutating Anthropic stages (e.g. MessagesSanitizeStage
+/// appending a "Please continue." turn after a trailing assistant message)
+/// encode /v1/messages-specific assumptions that corrupt a Codex request, so
+/// they must not touch a non-Anthropic target. Gating happens here, at pipeline
+/// assembly, rather than inside each stage — the stages stay single-purpose and
+/// vendor-agnostic.</para>
+/// <para>For a CopilotAnthropic target the decorator delegates verbatim, so the
+/// /cc hot path is byte-identical (this wrapper adds no behavior to it). The
+/// gate runs after ModelRouterStage has set <c>ctx.Target</c>; if Target were
+/// somehow still null the stage would be skipped, but the runner already
+/// guarantees ModelRouterStage runs first.</para>
+/// </remarks>
+internal sealed class CopilotAnthropicOnlyStage : IRequestStage<MessagesRequest>
+{
+    private readonly IRequestStage<MessagesRequest> _inner;
+
+    private CopilotAnthropicOnlyStage(IRequestStage<MessagesRequest> inner) => _inner = inner;
+
+    public static CopilotAnthropicOnlyStage Wrap(IRequestStage<MessagesRequest> inner) => new(inner);
+
+    public string Name => _inner.Name;
+
+    public Task ApplyAsync(BridgeContext<MessagesRequest> ctx) =>
+        ctx.Target?.Vendor == BackendVendor.CopilotAnthropic
+            ? _inner.ApplyAsync(ctx)
+            : Task.CompletedTask;
+}
 
 /// <summary>
 /// Configures Kestrel to listen on the port stored in

@@ -213,4 +213,119 @@ public class CodexARoundTripTests
         // arguments preserved as a JSON string.
         Assert.Equal("{\"command\":\"ls\"}", fc["arguments"]!.GetValue<string>());
     }
+
+    // ── A7: conversation input[] (roles + text + order) survives T1→T2 ───────
+    // The existing A1 only checks bag knobs/scalars, never the messages. This
+    // asserts the actual turns round-trip (a reviewer-flagged gap).
+
+    [Theory]
+    [MemberData(nameof(Fixtures))]
+    public void A7_InputMessages_SurviveRoundTrip(string slug)
+    {
+        var inbound = CodexRoundTrip.LoadBodyJson(slug);
+        var original = CodexRoundTrip.ParseNode(inbound).AsObject();
+        var emitted = CodexRoundTrip.RoundTrip(inbound).AsObject();
+
+        // Collect (role, concatenated input_text) for the user/assistant message
+        // items on each side. developer-role items fold into instructions (A8),
+        // so compare only the non-developer messages.
+        static List<(string role, string text)> Msgs(JsonNode body)
+        {
+            var result = new List<(string, string)>();
+            foreach (var item in body["input"]!.AsArray())
+            {
+                if (item!["type"]?.GetValue<string>() != "message") continue;
+                var role = item["role"]!.GetValue<string>();
+                if (role is "developer" or "system") continue;
+                var sb = new System.Text.StringBuilder();
+                foreach (var part in item["content"]!.AsArray())
+                {
+                    var pt = part!["type"]?.GetValue<string>();
+                    if (pt is "input_text" or "output_text")
+                        sb.Append(part["text"]!.GetValue<string>());
+                }
+                result.Add((role, sb.ToString()));
+            }
+            return result;
+        }
+
+        var origMsgs = Msgs(original);
+        var emitMsgs = Msgs(emitted);
+        Assert.Equal(origMsgs.Count, emitMsgs.Count);
+        for (var i = 0; i < origMsgs.Count; i++)
+        {
+            Assert.Equal(origMsgs[i].role, emitMsgs[i].role);   // role + order preserved
+            Assert.Equal(origMsgs[i].text, emitMsgs[i].text);   // text preserved
+        }
+        Assert.NotEmpty(origMsgs); // the fixtures do carry user turns
+    }
+
+    // ── A8: developer-role messages fold into instructions ───────────────────
+
+    [Fact]
+    public void A8_DeveloperMessage_FoldsIntoInstructions()
+    {
+        var requestJson = """
+          {
+            "model": "gpt-5.3-codex",
+            "instructions": "BASE-INSTRUCTIONS",
+            "input": [
+              {"type":"message","role":"developer","content":[{"type":"input_text","text":"DEV-PREAMBLE"}]},
+              {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}
+            ],
+            "stream": true, "store": false
+          }
+          """;
+        var ir = CodexRoundTrip.ToIr(CodexRoundTrip.ParseRequest(requestJson));
+        var emitted = JsonNode.Parse(CodexRoundTrip.ToResponsesWire(ir))!.AsObject();
+
+        var instructions = emitted["instructions"]!.GetValue<string>();
+        Assert.Contains("BASE-INSTRUCTIONS", instructions);
+        Assert.Contains("DEV-PREAMBLE", instructions);   // developer content was folded in, not dropped
+        // The developer message must NOT survive as an input[] message.
+        Assert.DoesNotContain(emitted["input"]!.AsArray(),
+            i => i!["type"]?.GetValue<string>() == "message"
+                 && i["role"]?.GetValue<string>() == "developer");
+    }
+
+    // ── A9: malformed tool arguments → CodexBadRequestException (400, not 502) ─
+
+    [Fact]
+    public void A9_MalformedToolArguments_ThrowsTypedBadRequest()
+    {
+        var requestJson = """
+          {
+            "model": "gpt-5.3-codex",
+            "instructions": "x",
+            "input": [
+              {"type":"function_call","call_id":"call_1","name":"shell","arguments":"{not valid json"}
+            ],
+            "stream": true, "store": false
+          }
+          """;
+        var req = CodexRoundTrip.ParseRequest(requestJson);
+        var ex = Assert.Throws<CopilotBridge.Cli.Pipeline.Adapters.Codex.CodexBadRequestException>(
+            () => CodexRoundTrip.ToIr(req));
+        Assert.Contains("call_1", ex.Message);   // names the offending call
+    }
+
+    [Fact]
+    public void A9b_NonObjectToolArguments_ThrowsTypedBadRequest()
+    {
+        // arguments that parse as valid JSON but are a scalar/array violate the
+        // tool_use.input-is-an-object contract.
+        var requestJson = """
+          {
+            "model": "gpt-5.3-codex",
+            "instructions": "x",
+            "input": [
+              {"type":"function_call","call_id":"call_2","name":"shell","arguments":"[1,2,3]"}
+            ],
+            "stream": true, "store": false
+          }
+          """;
+        var req = CodexRoundTrip.ParseRequest(requestJson);
+        Assert.Throws<CopilotBridge.Cli.Pipeline.Adapters.Codex.CodexBadRequestException>(
+            () => CodexRoundTrip.ToIr(req));
+    }
 }

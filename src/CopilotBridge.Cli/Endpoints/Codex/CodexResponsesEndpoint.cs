@@ -134,11 +134,15 @@ internal static class CodexResponsesEndpoint
             summary.TargetEndpoint = bridgeCtx.Target?.Endpoint;
 
             upstreamUrl = bridgeCtx.Target?.Endpoint;
-            // The upstream body the strategy actually sent is Responses-shaped
-            // (T2 built it); the IR body here is for the audit's IR view. Record
-            // the IR body bytes so the four-file audit shows the IR the pipeline
-            // produced (the wire Responses body is internal to the strategy).
-            var upBody = JsonSerializer.SerializeToUtf8Bytes(bridgeCtx.Request.Body, JsonContext.Default.MessagesRequest);
+            // Audit the bytes the Codex strategy actually POSTed upstream: T2
+            // built a Responses-shaped body and stashed it on
+            // Response.UpstreamWireBody (Contract A). Prefer that real wire body;
+            // fall back to serializing the IR when null (a passthrough path that
+            // never translated). Note: this is the upstream REQUEST body only —
+            // the raw upstream SSE before T3 is consumed inside the strategy and
+            // isn't captured here.
+            var upBody = bridgeCtx.Response.UpstreamWireBody
+                ?? JsonSerializer.SerializeToUtf8Bytes(bridgeCtx.Request.Body, JsonContext.Default.MessagesRequest);
             upstreamBody = upBody;
             upstreamBodyLen = upBody.Length;
             upstreamHeaders = new Dictionary<string, string>(bridgeCtx.Request.Headers, StringComparer.OrdinalIgnoreCase);
@@ -187,6 +191,26 @@ internal static class CodexResponsesEndpoint
         }
         catch (UnknownModelException ex)
         {
+            endpointError = ex.Message;
+            summary.Error = ex.Message;
+            if (!httpCtx.Response.HasStarted)
+            {
+                responseStatus = StatusCodes.Status400BadRequest;
+                httpCtx.Response.StatusCode = responseStatus;
+                httpCtx.Response.ContentType = "application/json";
+                var error = new ErrorResponse { Error = new ErrorBody { Type = "invalid_request_error", Message = ex.Message } };
+                var bytes = JsonSerializer.SerializeToUtf8Bytes(error, JsonContext.Default.ErrorResponse);
+                responseBody = bytes; responseBodyLen = bytes.Length;
+                httpCtx.Response.ContentLength = bytes.Length;
+                await httpCtx.Response.Body.WriteAsync(bytes, CancellationToken.None);
+            }
+        }
+        catch (CodexBadRequestException ex)
+        {
+            // A client-side fault in the Codex request (e.g. malformed tool
+            // arguments the model echoed back, surfaced by T1) — surface as 400
+            // with an Anthropic-shape error envelope, NOT a 502. Mirrors the
+            // UnknownModelException branch above.
             endpointError = ex.Message;
             summary.Error = ex.Message;
             if (!httpCtx.Response.HasStarted)

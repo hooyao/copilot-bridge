@@ -64,15 +64,30 @@ internal static class ResponsesRequestBuilder
             w.WriteEndArray();
 
             // effort: from IR OutputConfig, clamped to what the model accepts.
+            // summary: rode the bag as "reasoning_summary" (T1); re-emit it INSIDE
+            // the reasoning object alongside effort so a Codex-sent reasoning.summary
+            // survives. Emit a reasoning object if EITHER is present — if coercion
+            // dropped effort but a summary exists, reasoning:{summary:…} still carries
+            // it (WriteBagFields drops "reasoning_summary" at the top level).
             var effort = CoerceEffort(ir.OutputConfig?.Effort, profile);
-            if (effort is not null)
+            var reasoningSummary = TryGetBagString(bag, "reasoning_summary");
+            if (effort is not null || reasoningSummary is not null)
             {
                 w.WritePropertyName("reasoning");
                 w.WriteStartObject();
-                w.WriteString("effort", effort);
-                // reasoning.summary rides the bag (re-applied below); don't duplicate here.
+                if (effort is not null)
+                    w.WriteString("effort", effort);
+                if (reasoningSummary is not null)
+                    w.WriteString("summary", reasoningSummary);
                 w.WriteEndObject();
             }
+
+            // max_output_tokens: T1 maps the IR's MaxTokens from Codex's
+            // max_output_tokens (default 0 when Codex omits it). Emit only when set
+            // (> 0) so current Codex traffic — which omits it — round-trips with no
+            // added field, while a future Codex that sends it survives.
+            if (ir.MaxTokens > 0)
+                w.WriteNumber("max_output_tokens", ir.MaxTokens);
 
             if (ir.Stream is { } stream)
                 w.WriteBoolean("stream", stream);
@@ -123,6 +138,11 @@ internal static class ResponsesRequestBuilder
                     textImageParts.Clear();
                     w.WriteStartObject();
                     w.WriteString("type", "reasoning");
+                    // Recover the reasoning item's id from the part-level openai bag
+                    // T1 stashed it in, so multi-turn reasoning identity survives the
+                    // round trip. Absent → omit (Codex tolerates a blob-only item).
+                    if (TryGetReasoningId(rt.ProviderExtensions, out var reasoningId))
+                        w.WriteString("id", reasoningId);
                     w.WriteString("encrypted_content", rt.Data);
                     w.WriteEndObject();
                     break;
@@ -174,6 +194,39 @@ internal static class ResponsesRequestBuilder
     };
 
     /// <summary>
+    /// Read a top-level string property out of the openai bag, or null if the bag
+    /// is absent, not an object, or lacks a string value at <paramref name="name"/>.
+    /// Used to lift <c>reasoning_summary</c> back into the reasoning object.
+    /// </summary>
+    private static string? TryGetBagString(JsonElement? bag, string name) =>
+        bag is { ValueKind: JsonValueKind.Object } obj
+        && obj.TryGetProperty(name, out var v)
+        && v.ValueKind == JsonValueKind.String
+            ? v.GetString()
+            : null;
+
+    /// <summary>
+    /// Pull the reasoning item's <c>id</c> back out of a redacted-thinking block's
+    /// part-level <c>openai</c> bag (where T1 stashed it as <c>reasoning_id</c>).
+    /// Returns false when the block carries no bag or no id — every Claude Code
+    /// block has a null bag, so this is inert on the hot path.
+    /// </summary>
+    private static bool TryGetReasoningId(Models.Common.ProviderExtensions? ext, out string id)
+    {
+        id = "";
+        if (ext?.ByProvider.TryGetValue(
+                ResponsesToIrInboundAdapter.OpenAiProviderKey, out var bag) == true
+            && bag.ValueKind == JsonValueKind.Object
+            && bag.TryGetProperty("reasoning_id", out var rid)
+            && rid.ValueKind == JsonValueKind.String)
+        {
+            id = rid.GetString() ?? "";
+            return id.Length > 0;
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Re-emit the bag's un-modeled knobs, applying the two uniform coercions:
     /// strip <c>service_tier</c> (Copilot 400s it), drop the
     /// <c>image_generation</c> tool (Copilot 400s it). <c>store</c> is only
@@ -198,9 +251,9 @@ internal static class ResponsesRequestBuilder
                     WriteToolsWithDrops(w, prop.Value, profile);
                     break;
                 case "reasoning_summary":
-                    // This was reasoning.summary — it belongs inside the reasoning
-                    // object, which we already wrote. Skip re-emitting at top level;
-                    // the summary is carried but Codex tolerates its absence here.
+                    // This was reasoning.summary — re-emitted INSIDE the reasoning
+                    // object (see Build), not at the top level. Skip here so it isn't
+                    // also written as a stray top-level key.
                     continue;
                 default:
                     // tool_choice, parallel_tool_calls, include, prompt_cache_key,
@@ -250,12 +303,15 @@ internal static class ResponsesRequestBuilder
         // Not accepted — clamp to the nearest accepted neighbor. The two profiles:
         //   large rejects "minimal" → map to "low".
         //   small rejects "none" → drop (return null); rejects "xhigh" → "high".
+        // Neighbor lookups use OrdinalIgnoreCase to match the accept check above
+        // (AcceptedEfforts values are lowercase today, but stay case-insensitive
+        // for consistency so a future mixed-case profile entry can't silently miss).
         return effort.ToLowerInvariant() switch
         {
-            "minimal" => profile.AcceptedEfforts.Contains("low") ? "low" : null,
-            "xhigh" => profile.AcceptedEfforts.Contains("high") ? "high" : null,
+            "minimal" => profile.AcceptedEfforts.Contains("low", StringComparer.OrdinalIgnoreCase) ? "low" : null,
+            "xhigh" => profile.AcceptedEfforts.Contains("high", StringComparer.OrdinalIgnoreCase) ? "high" : null,
             "none" => null,  // small models reject none and there's no neighbor
-            _ => profile.AcceptedEfforts.Contains("medium") ? "medium" : null,
+            _ => profile.AcceptedEfforts.Contains("medium", StringComparer.OrdinalIgnoreCase) ? "medium" : null,
         };
     }
 }

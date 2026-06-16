@@ -34,12 +34,42 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
         _log.LogDebug("adapter {Name}: streaming IR→Responses", Name);
-        var sm = new AnthropicToResponsesStream(ctx.Request.Body.Model);
-        await foreach (var irEvt in irStream.WithCancellation(ct))
-            foreach (var outEvt in sm.Translate(irEvt))
+        var sm = new AnthropicToResponsesStream(ctx.Request.Body.Model, _log);
+
+        // C2 — Codex's parser REQUIRES a terminal (response.completed/failed). The
+        // happy-path Flush below only runs if the await-foreach completes; if the
+        // upstream IR stream throws mid-relay (transient disconnect / premature
+        // EOF, common on long streams), a plain `await foreach` would skip Flush
+        // and hand Codex a headless stream that hangs. So iterate manually,
+        // capture any fault, ALWAYS flush a terminal (response.failed on fault,
+        // response.completed otherwise), then rethrow a non-transient fault.
+        await using var e = irStream.GetAsyncEnumerator(ct);
+        Exception? fault = null;
+        while (true)
+        {
+            bool moved;
+            try { moved = await e.MoveNextAsync(); }
+            catch (Exception ex) { fault = ex; break; }
+            if (!moved) break;
+            foreach (var outEvt in sm.Translate(e.Current))
                 yield return outEvt;
-        foreach (var tail in sm.Flush())
+        }
+
+        foreach (var tail in sm.FlushTerminal(failed: fault is not null))
             yield return tail;
+
+        if (fault is not null)
+        {
+            _log.LogWarning("adapter {Name}: upstream IR stream faulted mid-relay ({Type}: {Message}); "
+                + "emitted a terminal response.failed before propagating",
+                Name, fault.GetType().Name, fault.Message);
+            // Cancellation is expected on client disconnect — don't wrap it.
+            if (fault is OperationCanceledException) throw fault;
+            // A transient upstream fault is handled by the endpoint's transient
+            // branch; rethrow so it's classified there. Non-transient too — the
+            // terminal is already on the wire, the endpoint records the error.
+            throw fault;
+        }
     }
 
     public ValueTask<byte[]> AdaptBufferedAsync(
@@ -68,6 +98,7 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
 internal sealed class AnthropicToResponsesStream
 {
     private readonly string _model;
+    private readonly ILogger? _log;
     private int _seq;
     private bool _created;
     private int _outputIndex = -1;
@@ -78,19 +109,28 @@ internal sealed class AnthropicToResponsesStream
     private string _argsBuffer = "";
     private string _textBuffer = "";
     private string _stopReason = "end_turn";
+    private long _inputTokens;
+    private long _outputTokens;
     // Accumulated completed output items, for the response.completed `output[]`.
     private readonly List<string> _completedItems = [];
 
-    public AnthropicToResponsesStream(string model)
+    public AnthropicToResponsesStream(string model, ILogger? log = null)
     {
         _model = model;
+        _log = log;
     }
 
     public IEnumerable<SseItem<string>> Translate(SseItem<string> irEvt)
     {
         JsonDocument doc;
         try { doc = JsonDocument.Parse(irEvt.Data); }
-        catch (JsonException) { yield break; }
+        catch (JsonException ex)
+        {
+            if (!string.IsNullOrWhiteSpace(irEvt.Data))
+                _log?.LogWarning("T4: dropped unparseable IR stream event (type={EventType}): {Error}",
+                    irEvt.EventType, ex.Message);
+            yield break;
+        }
         using (doc)
         {
             var root = doc.RootElement;
@@ -120,11 +160,16 @@ internal sealed class AnthropicToResponsesStream
                     break;
 
                 case "message_delta":
-                    // Carry the stop_reason for the terminal status.
+                    // Carry the stop_reason + usage for the terminal status.
                     if (root.TryGetProperty("delta", out var md)
                         && md.TryGetProperty("stop_reason", out var sr)
                         && sr.ValueKind == JsonValueKind.String)
                         _stopReason = sr.GetString()!;
+                    if (root.TryGetProperty("usage", out var u) && u.ValueKind == JsonValueKind.Object)
+                    {
+                        if (u.TryGetProperty("input_tokens", out var it) && it.TryGetInt64(out var i)) _inputTokens = i;
+                        if (u.TryGetProperty("output_tokens", out var ot) && ot.TryGetInt64(out var o)) _outputTokens = o;
+                    }
                     break;
 
                 case "message_stop":
@@ -138,8 +183,32 @@ internal sealed class AnthropicToResponsesStream
     {
         if (!_created) yield break;
         foreach (var s in OnBlockStop()) yield return s;
-        yield return Ev("response.completed", CompletedEnvelope());
+        // Honest terminal: an IR-internal error stop (T3's marker for an upstream
+        // response.failed) becomes a real response.failed; everything else is
+        // response.completed (with status incomplete for max_tokens).
+        yield return IsFailed()
+            ? Ev("response.failed", FailedEnvelope())
+            : Ev("response.completed", CompletedEnvelope());
         _created = false;
+    }
+
+    /// <summary>
+    /// Guarantee a terminal even when the IR stream ended/threw without a
+    /// message_stop (C2). <paramref name="failed"/> forces response.failed. If no
+    /// message_start was seen (empty stream), synthesize the opening envelopes so
+    /// the terminal is well-formed and Codex's parser always sees a complete turn.
+    /// </summary>
+    public IEnumerable<SseItem<string>> FlushTerminal(bool failed)
+    {
+        if (failed && _stopReason != Strategies.Codex.ResponsesToAnthropicStream.ErrorStopReason)
+            _stopReason = Strategies.Codex.ResponsesToAnthropicStream.ErrorStopReason;
+        if (!_created)
+        {
+            _created = true;
+            yield return Ev("response.created", ResponseEnvelope("response.created", "in_progress"));
+            yield return Ev("response.in_progress", ResponseEnvelope("response.in_progress", "in_progress"));
+        }
+        foreach (var s in Flush()) yield return s;
     }
 
     private IEnumerable<SseItem<string>> OnBlockStart(JsonElement root)
@@ -238,8 +307,21 @@ internal sealed class AnthropicToResponsesStream
     private string CompletedEnvelope()
     {
         var output = "[" + string.Join(",", _completedItems) + "]";
-        return $"{{\"type\":\"response.completed\",\"sequence_number\":{_seq++},\"response\":{{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":{Enc(MapStatus())},\"model\":{Enc(_model)},\"output\":{output}}}}}";
+        return $"{{\"type\":\"response.completed\",\"sequence_number\":{_seq++},\"response\":{{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":{Enc(MapStatus())},\"model\":{Enc(_model)},\"output\":{output},\"usage\":{UsageJson()}}}}}";
     }
+
+    private string FailedEnvelope()
+    {
+        // Honest failure terminal. Codex's parser models response.failed; carry
+        // whatever output was assembled before the failure plus an error object.
+        var output = "[" + string.Join(",", _completedItems) + "]";
+        return $"{{\"type\":\"response.failed\",\"sequence_number\":{_seq++},\"response\":{{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":\"failed\",\"model\":{Enc(_model)},\"output\":{output},\"error\":{{\"code\":\"upstream_error\",\"message\":\"the upstream model backend failed mid-stream\"}},\"usage\":{UsageJson()}}}}}";
+    }
+
+    private string UsageJson() =>
+        $"{{\"input_tokens\":{_inputTokens},\"output_tokens\":{_outputTokens}}}";
+
+    private bool IsFailed() => _stopReason == Strategies.Codex.ResponsesToAnthropicStream.ErrorStopReason;
 
     private string MapStatus() => _stopReason == "max_tokens" ? "incomplete" : "completed";
 
