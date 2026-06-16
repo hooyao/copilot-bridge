@@ -128,6 +128,55 @@ internal sealed class CopilotClient(
         return await http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
     }
 
+    public async ValueTask<HttpResponseMessage> PostResponsesAsync(
+        ReadOnlyMemory<byte> body,
+        bool vision = false,
+        CancellationToken ct = default)
+    {
+        var (token, baseUrl) = await ResolveAuthAsync(ct);
+
+        // Same idempotent transient-retry contract as PostMessagesAsync: retry
+        // only connection-layer failures that throw BEFORE SendAsync returns
+        // headers (the request body never reached upstream, so re-send is safe);
+        // once headers are in hand, never retry (SSE may have started). The Codex
+        // backend emits no [DONE] — that's the strategy's concern, not the
+        // client's; here we just forward bytes.
+        var attempt = 0;
+        while (true)
+        {
+            var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/responses")
+            {
+                Content = new ReadOnlyMemoryContent(body)
+                {
+                    Headers = { ContentType = new MediaTypeHeaderValue("application/json") },
+                },
+            };
+            // Endpoint-agnostic official Copilot header set (no anthropic-version);
+            // Codex's x-codex-* headers are intentionally NOT forwarded — the
+            // bridge presents as the official VS Code client, like /cc.
+            headers.ApplyTo(req, token, vision);
+
+            try
+            {
+                return await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            }
+            catch (Exception ex) when (
+                attempt < _retry.MaxRetries
+                && !ct.IsCancellationRequested
+                && TransientUpstreamError.Is(ex))
+            {
+                req.Dispose();
+                attempt++;
+                var delayMs = ComputeBackoffMs(attempt);
+                log.LogWarning(
+                    "upstream POST /responses transient failure ({Type}: {Message}); "
+                    + "retry {Attempt}/{Max} in {DelayMs}ms",
+                    ex.GetType().Name, ex.Message, attempt, _retry.MaxRetries, delayMs);
+                await Task.Delay(delayMs, ct);
+            }
+        }
+    }
+
     private async ValueTask<(string Token, string BaseUrl)> ResolveAuthAsync(CancellationToken ct)
     {
         var token = await auth.GetCopilotTokenAsync(ct);

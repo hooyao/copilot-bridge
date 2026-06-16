@@ -1,0 +1,255 @@
+{
+  "_meta": {
+    "backend": "copilot-anthropic",
+    "endpoint": "/v1/messages",
+    "account_type": "enterprise",
+    "models_probed": 11,
+    "note": "Live wire-truth of what Copilot\u0027s /v1/messages accepts per model. Drift here (B2) fails B_AnthropicContract_SweepAssertAndDetectDrift; regenerate with BRIDGE_REGEN_CONTRACT_SNAPSHOT=1 and review. Guards ModelProfileCatalog (B3 in the same test)."
+  },
+  "models": {
+    "claude-haiku-4.5": {
+      "effort": {
+        "accepted": [],
+        "rejected": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "thinking": {
+        "accepted": [
+          "enabled",
+          "disabled"
+        ],
+        "rejected": [
+          "adaptive"
+        ]
+      },
+      "mid_conv_system": false
+    },
+    "claude-sonnet-4.5": {
+      "effort": {
+        "accepted": [],
+        "rejected": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "thinking": {
+        "accepted": [
+          "enabled",
+          "disabled"
+        ],
+        "rejected": [
+          "adaptive"
+        ]
+      },
+      "mid_conv_system": false
+    },
+    "claude-sonnet-4.6": {
+      "effort": {
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "rejected": [
+          "xhigh"
+        ]
+      },
+      "thinking": {
+        "accepted": [
+          "adaptive",
+          "enabled",
+          "disabled"
+        ],
+        "rejected": []
+      },
+      "mid_conv_system": false
+    },
+    "claude-opus-4.5": {
+      "effort": {
+        "accepted": [],
+        "rejected": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "thinking": {
+        "accepted": [
+          "enabled",
+          "disabled"
+        ],
+        "rejected": [
+          "adaptive"
+        ]
+      },
+      "mid_conv_system": false
+    },
+    "claude-opus-4.6": {
+      "effort": {
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "rejected": [
+          "xhigh"
+        ]
+      },
+      "thinking": {
+        "accepted": [
+          "adaptive",
+          "enabled",
+          "disabled"
+        ],
+        "rejected": []
+      },
+      "mid_conv_system": false
+    },
+    "claude-opus-4.6-1m": {
+      "effort": {
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "rejected": [
+          "xhigh"
+        ]
+      },
+      "thinking": {
+        "accepted": [
+          "adaptive",
+          "enabled",
+          "disabled"
+        ],
+        "rejected": []
+      },
+      "mid_conv_system": false
+    },
+    "claude-opus-4.7": {
+      "effort": {
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "rejected": []
+      },
+      "thinking": {
+        "accepted": [
+          "adaptive",
+          "disabled"
+        ],
+        "rejected": [
+          "enabled"
+        ]
+      },
+      "mid_conv_system": false
+    },
+    "claude-opus-4.7-high": {
+      "effort": {
+        "accepted": [
+          "high"
+        ],
+        "rejected": [
+          "low",
+          "medium",
+          "xhigh",
+          "max"
+        ]
+      },
+      "thinking": {
+        "accepted": [
+          "adaptive",
+          "disabled"
+        ],
+        "rejected": [
+          "enabled"
+        ]
+      },
+      "mid_conv_system": false
+    },
+    "claude-opus-4.7-xhigh": {
+      "effort": {
+        "accepted": [
+          "xhigh"
+        ],
+        "rejected": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ]
+      },
+      "thinking": {
+        "accepted": [
+          "adaptive",
+          "disabled"
+        ],
+        "rejected": [
+          "enabled"
+        ]
+      },
+      "mid_conv_system": false
+    },
+    "claude-opus-4.7-1m-internal": {
+      "effort": {
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "rejected": []
+      },
+      "thinking": {
+        "accepted": [
+          "adaptive",
+          "disabled"
+        ],
+        "rejected": [
+          "enabled"
+        ]
+      },
+      "mid_conv_system": false
+    },
+    "claude-opus-4.8": {
+      "effort": {
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "rejected": []
+      },
+      "thinking": {
+        "accepted": [
+          "adaptive",
+          "disabled"
+        ],
+        "rejected": [
+          "enabled"
+        ]
+      },
+      "mid_conv_system": true
+    }
+  }
+}

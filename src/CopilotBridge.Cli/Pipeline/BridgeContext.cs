@@ -130,6 +130,13 @@ internal sealed class BridgeResponse
 
     /// <summary>Non-streaming response payload. Stages parse / mutate / re-serialize.</summary>
     public byte[]? BufferedBody { get; set; }
+
+    /// <summary>
+    /// The exact bytes a translating strategy POSTed upstream (Codex /responses
+    /// T2 body). Null on passthrough paths (/cc), where the IR body IS the wire
+    /// body. Lets the endpoint audit the real wire bytes, not the IR.
+    /// </summary>
+    public byte[]? UpstreamWireBody { get; set; }
 }
 
 internal enum ResponseMode { Streaming, Buffered }

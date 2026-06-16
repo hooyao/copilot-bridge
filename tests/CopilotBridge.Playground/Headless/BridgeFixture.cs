@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
+using CopilotBridge.Cli.Endpoints.Codex;
 using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Hosting.Logging;
 using Microsoft.AspNetCore.Builder;
@@ -76,6 +77,7 @@ public sealed class BridgeFixture : IAsyncLifetime
         _app.MapMessages();
         _app.MapCountTokens();
         _app.MapModels();
+        _app.MapCodexResponses();
 
         await _app.StartAsync();
 

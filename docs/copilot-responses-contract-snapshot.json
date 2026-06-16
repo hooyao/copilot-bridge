@@ -1,0 +1,148 @@
+{
+  "_meta": {
+    "backend": "copilot-responses",
+    "endpoint": "/responses",
+    "account_type": "enterprise",
+    "models_probed": 6,
+    "note": "Live wire-truth of what Copilot\u0027s /responses accepts per model. RECORDED FOR change 3 (add-codex-responses-client): its Codex profile catalog \u002B coercions are built against THIS snapshot (no catalog exists yet, so there is no B3 here). Drift (B2) fails B_ResponsesContract_SweepAssertAndDetectDrift; regenerate with BRIDGE_REGEN_CONTRACT_SNAPSHOT=1 and review."
+  },
+  "models": {
+    "gpt-5.3-codex": {
+      "effort": {
+        "accepted": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "rejected": [
+          "minimal"
+        ]
+      },
+      "fields_rejected": [
+        "store_true",
+        "service_tier"
+      ],
+      "tools_rejected": [
+        "image_generation"
+      ]
+    },
+    "gpt-5.4-mini": {
+      "effort": {
+        "accepted": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "rejected": [
+          "minimal"
+        ]
+      },
+      "fields_rejected": [
+        "store_true",
+        "service_tier"
+      ],
+      "tools_rejected": [
+        "image_generation"
+      ]
+    },
+    "gpt-5.4": {
+      "effort": {
+        "accepted": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "rejected": [
+          "minimal"
+        ]
+      },
+      "fields_rejected": [
+        "store_true",
+        "service_tier"
+      ],
+      "tools_rejected": [
+        "image_generation"
+      ]
+    },
+    "gpt-5.5": {
+      "effort": {
+        "accepted": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "rejected": [
+          "minimal"
+        ]
+      },
+      "fields_rejected": [
+        "store_true",
+        "service_tier"
+      ],
+      "tools_rejected": [
+        "image_generation"
+      ]
+    },
+    "gpt-5-mini": {
+      "effort": {
+        "accepted": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ],
+        "rejected": [
+          "none",
+          "xhigh"
+        ]
+      },
+      "fields_rejected": [
+        "store_true",
+        "service_tier"
+      ],
+      "tools_rejected": [
+        "image_generation"
+      ]
+    },
+    "mai-code-1-flash-internal": {
+      "effort": {
+        "accepted": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ],
+        "rejected": [
+          "none",
+          "xhigh"
+        ]
+      },
+      "fields_rejected": [
+        "store_true",
+        "service_tier"
+      ],
+      "tools_rejected": [
+        "custom_apply_patch",
+        "image_generation"
+      ]
+    }
+  },
+  "sse_event_types": [
+    "response.completed",
+    "response.created",
+    "response.function_call_arguments.delta",
+    "response.function_call_arguments.done",
+    "response.in_progress",
+    "response.output_item.added",
+    "response.output_item.done",
+    "\u003Cno-done-terminator\u003E"
+  ]
+}

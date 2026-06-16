@@ -130,6 +130,17 @@ The `/cc` suffix is the Claude Code URL prefix — don't omit it.
 
 ## Architecture map — where to read
 
+> **This project plans and tracks work with OpenSpec.** For *current* work —
+> what's proposed, in progress, or pending implementation — read
+> `openspec/changes/` (each change has `proposal.md` / `design.md` / `specs/` /
+> `tasks.md`). Run `openspec list` to see active changes and `openspec status
+> --change "<name>"` for remaining tasks; `/opsx:apply <name>` to implement,
+> `/opsx:propose` to start a new change. **Do not record progress or status in
+> this file** — AGENTS.md / CLAUDE.md are the project's stable constitution
+> (how to build, the invariants, the conventions), not a status log. When a
+> change introduces a durable architectural fact, fold *that fact* into the
+> design docs below once it's implemented — not the in-flight task state.
+
 - **`docs/pipeline-design.md`** — the architectural contract. Typed pipeline,
   stages, strategies, adapters; the routing system (§7: per-model profiles +
   nginx-style `Routing.Locations`); logging/tracing (§9). **Update this doc

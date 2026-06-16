@@ -1,0 +1,24 @@
+{
+  "_meta": {
+    "slug": "plain-opus48",
+    "note": "minimal: model+messages+thinking:enabled, no system/tools (A1/H1 baseline)",
+    "client_version": "claude-cli/2.1.158",
+    "capture_date": "2026-06-04 (single-turn) / 2026-06-15 (tool-call multi-turn)",
+    "source_kind": "claude.exe -> BridgeFixture inbound-req (de-identified)",
+    "purpose": "A-invariant input sample (NOT a Copilot-behavior oracle)"
+  },
+  "body": {
+    "model": "claude-opus-4-8",
+    "max_tokens": 32,
+    "messages": [
+      {
+        "role": "user",
+        "content": "reply: ok"
+      }
+    ],
+    "thinking": {
+      "type": "enabled",
+      "budget_tokens": 16384
+    }
+  }
+}

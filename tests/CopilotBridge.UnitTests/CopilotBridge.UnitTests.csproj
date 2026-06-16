@@ -29,4 +29,13 @@
     <ProjectReference Include="..\..\src\CopilotBridge.Cli\CopilotBridge.Cli.csproj" />
   </ItemGroup>
 
+  <!-- Real, de-identified Claude Code request captures used as A-invariant
+       INPUT SAMPLES (docs/ir-definition-design.md §7.0/§7.2) — never as
+       Copilot-behavior oracles. Refresh procedure: docs/scratch/deidentify-cc-fixtures.py.
+       Copied next to the test assembly so tests load them by relative path. -->
+  <ItemGroup>
+    <Content Include="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Fixtures\**\*.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

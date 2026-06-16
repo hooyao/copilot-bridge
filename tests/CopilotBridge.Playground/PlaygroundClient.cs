@@ -97,6 +97,59 @@ internal sealed class PlaygroundClient : IDisposable
     }
 
     /// <summary>
+    /// POST <c>/responses</c> (Copilot's native OpenAI Responses endpoint, the
+    /// Codex backend) with the given JSON body. Returns status + body without
+    /// throwing so Track-A probes can OBSERVE acceptance/rejection. Uses the same
+    /// official-VS-Code header set as <c>/v1/messages</c> (the header factory is
+    /// endpoint-agnostic — no anthropic-version). Caller controls
+    /// <c>"stream"</c> in the body; for non-streaming probes set it false/omit.
+    /// </summary>
+    public async Task<(System.Net.HttpStatusCode Status, string Body)> TryPostResponsesAsync(
+        string jsonBody,
+        bool vision = false,
+        CancellationToken ct = default)
+    {
+        var token = await _auth.GetCopilotTokenAsync(ct);
+        var baseUrl = _auth.CopilotApiBaseUrl
+            ?? throw new InvalidOperationException("CopilotApiBaseUrl is unknown after token fetch.");
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/responses");
+        _headers.ApplyTo(req, token, vision);
+        req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        return (resp.StatusCode, body);
+    }
+
+    /// <summary>
+    /// POST <c>/responses</c> with <c>stream:true</c> and read the RAW SSE text
+    /// (no parser) — to capture the exact event sequence Copilot emits and spot
+    /// any non-spec terminator (e.g. <c>[DONE]</c>). Returns status + raw body;
+    /// on non-2xx the body is the error payload (does not throw). Caller must set
+    /// <c>"stream": true</c> in the JSON body.
+    /// </summary>
+    public async Task<(System.Net.HttpStatusCode Status, string RawBody)> TryPostResponsesRawStreamAsync(
+        string jsonBody,
+        CancellationToken ct = default)
+    {
+        var token = await _auth.GetCopilotTokenAsync(ct);
+        var baseUrl = _auth.CopilotApiBaseUrl
+            ?? throw new InvalidOperationException("CopilotApiBaseUrl is unknown after token fetch.");
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/responses");
+        _headers.ApplyTo(req, token);
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        var raw = await reader.ReadToEndAsync(ct);
+        return (resp.StatusCode, raw);
+    }
+
+    /// <summary>
     /// Sends an arbitrary HTTP request to a Copilot-relative path. Generic
     /// escape hatch for one-shot gap probes (e.g. <c>GET /v1/files</c>,
     /// <c>POST /v1/messages/batches</c>) without adding a dedicated method per
