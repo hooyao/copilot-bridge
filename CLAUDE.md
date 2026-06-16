@@ -81,14 +81,20 @@ Layers, outer depends on inner only:
     ```powershell
     $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
     $dir = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-    $env = & cmd /c "`"$dir\Common7\Tools\VsDevCmd.bat`" -arch=x64 -host_arch=x64 >nul 2>&1 && set"
-    foreach ($l in $env) { if ($l -match '^([^=]+)=(.*)$') { Set-Item "Env:$($matches[1])" $matches[2] } }
+    $envLines = & cmd /c "`"$dir\Common7\Tools\VsDevCmd.bat`" -arch=x64 -host_arch=x64 >nul 2>&1 && set"
+    foreach ($l in $envLines) { if ($l -match '^([^=]+)=(.*)$') { Set-Item "Env:$($matches[1])" $matches[2] } }
+    # REQUIRED: VsDevCmd does NOT put the VS Installer dir (vswhere.exe) on PATH,
+    # but ILC's native-link step shells out to a bare `vswhere.exe` — without this
+    # line the link fails with `'vswhere.exe' is not recognized` (exit 123) AFTER
+    # `Generating native code`. This mirrors build-aot.bat's first line.
+    $env:PATH = "$env:PATH;C:\Program Files (x86)\Microsoft Visual Studio\Installer\"
     dotnet publish src/CopilotBridge.Cli -c Release -r win-x64
     ```
-    Confirm success by the published exe's **mtime** (`publish\copilot-bridge.exe`, ≈11 MB), not the exit code — capture the mtime before building and prove it advanced. ILC native compile takes a few minutes; run it in the background and watch for `Generating native code` → `PUBLISH_EXIT: 0`.
+    Confirm success by the published exe's **mtime** (`publish\copilot-bridge.exe`, ≈11 MB), not the exit code — capture the mtime before building and prove it advanced. ILC native compile takes a few minutes; run it in the background and watch for `Generating native code` → `PUBLISH_EXIT: 0`. If you see `Generating native code` followed by `'vswhere.exe' is not recognized`, you skipped the PATH line above.
 - Unit tests (CI-safe, no Copilot): `dotnet test tests/CopilotBridge.UnitTests`, or solution-wide skipping the integration harness: `dotnet test --filter "Category!=Integration"`.
 - Integration harness (live Copilot + claude.exe): `dotnet test tests/CopilotBridge.Playground` — tagged `[Trait("Category","Integration")]`. New playground tests must carry that trait or CI will try to run them. Routing config reference: `docs/routing.md`.
 - Single test: `dotnet test --filter FullyQualifiedName~<TestName>`
+- **🔴 HIGHEST-PRIORITY TESTING DIRECTIVE — write tests from the CONTRACT, never by reading the implementation.** A test must assert *what the behaviour is required to be* — derived from the requirement/spec/case — not *what the code currently does*. Reading the implementation and asserting it back is forbidden: it freezes bugs into the suite (the test goes green on the buggy code, so it can never catch that bug) and gives false confidence. Concretely: (1) before writing a test, state the contract in words — given X, the system must do Y, *because* Z — and assert that; if you cannot articulate the contract without pointing at a line of code, you do not yet understand what to test. (2) Prefer asserting *observable behaviour and invariants* (bytes out, events emitted, error surfaced, idempotence, "zero allocation when off") over internal state. (3) **A new test that passes on the first run is suspect** — confirm it actually guards the contract by mutation-checking: temporarily break the product code and watch the test go red; if it stays green, it asserts nothing. (4) When a from-contract test fails, the default hypothesis is *the code (or your understanding of the contract) is wrong* — investigate before you touch the test; never weaken an assertion just to make it pass. This directive outranks convenience: a smaller suite of contract-true tests beats a large suite of implementation-mirrors.
 - **NEVER bind the default port (8765) when running the bridge from a test or local script.** The user often has a real bridge running on 8765; collisions surface as a generic "address already in use" startup failure that's easy to misdiagnose. Always pass a non-8765 port: in-process fixtures use `WebHost.UseUrls("http://127.0.0.1:0")` (ephemeral); manual `dotnet run` for ad-hoc smoke tests should pass `serve --port 18765` (or any free high port). The Playground's `BridgeFixture` already follows this rule.
 
 One project for now (per RamDrive's pattern early on). If size or compile time pushes back, the natural seam is to split out `CopilotBridge.Core` containing `Translation/`, `Copilot/`, `Auth/`, `Configuration/`, `Models/`, `State/`, leaving `Cli/` as `Program.cs` + `Hosting/` + `Endpoints/` + `WebAssets/`. Subdomains live as folders inside the single project until then — extra `.csproj` files each pay an AOT cost.

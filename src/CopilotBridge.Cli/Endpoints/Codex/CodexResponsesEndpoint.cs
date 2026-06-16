@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Hosting.Logging;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Errors;
 using CopilotBridge.Cli.Models.Anthropic.Request;
@@ -15,6 +16,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Endpoints.Codex;
 
@@ -43,6 +45,7 @@ internal static class CodexResponsesEndpoint
         ResponsesToIrInboundAdapter inboundAdapter,
         IrToResponsesOutboundAdapter outboundAdapter,
         RequestSummaryLogger summaryLogger,
+        IOptions<TracingOptions> tracingOptions,
         ILogger<MessagesRequest> ioLogger,
         ILogger<CodexResponsesEndpointTag> endpointLog)
     {
@@ -50,6 +53,8 @@ internal static class CodexResponsesEndpoint
         var sw = Stopwatch.StartNew();
         var seq = BridgeIoSeq.Next();
         var traceId = BridgeIoSeq.BuildTraceId(seq, DateTime.UtcNow);
+        // Gate all trace-only buffering on this (parity with /cc).
+        var tracingEnabled = tracingOptions.Value.Enabled;
 
         endpointLog.LogDebug("endpoint {Path}: enter remote={Remote}",
             httpCtx.Request.Path, httpCtx.Connection.RemoteIpAddress);
@@ -77,7 +82,9 @@ internal static class CodexResponsesEndpoint
         var upstreamBodyLen = 0;
         var upstreamStatus = 0;
         Dictionary<string, string>? upstreamResponseHeaders = null;
-        byte[]? upstreamBufferedBody = null;
+        // Pipeline response snapshot; the finally reads the raw upstream-resp bytes
+        // off it (finalizing the streaming capture). Null if the pipeline threw.
+        BridgeResponse? pipelineResponse = null;
 
         var summary = new RequestSummary { Kind = "responses", TraceId = traceId };
 
@@ -148,7 +155,10 @@ internal static class CodexResponsesEndpoint
             upstreamHeaders = new Dictionary<string, string>(bridgeCtx.Request.Headers, StringComparer.OrdinalIgnoreCase);
             upstreamStatus = bridgeCtx.Response.Status;
             upstreamResponseHeaders = new Dictionary<string, string>(bridgeCtx.Response.Headers, StringComparer.OrdinalIgnoreCase);
-            upstreamBufferedBody = bridgeCtx.Response.BufferedBody;
+            // Snapshot the response so the finally can read the raw upstream-resp
+            // bytes (the streaming capture is filled by the relay loop below
+            // before finally finalizes it).
+            pipelineResponse = bridgeCtx.Response;
 
             responseStatus = bridgeCtx.Response.Status;
             foreach (var (k, v) in bridgeCtx.Response.Headers)
@@ -162,13 +172,24 @@ internal static class CodexResponsesEndpoint
             if (bridgeCtx.Response.Mode == ResponseMode.Streaming && bridgeCtx.Response.EventStream is not null)
             {
                 httpCtx.Response.ContentType = "text/event-stream";
-                capturedEvents = new List<CapturedSseEvent>();
+                // Only buffer per-event copies for the audit when tracing is on.
+                capturedEvents = tracingEnabled ? new List<CapturedSseEvent>() : null;
                 // T4: IR (Anthropic) stream → Responses SSE back to Codex.
                 var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, bridgeCtx, ct);
                 await foreach (var evt in clientStream.WithCancellation(ct))
                 {
-                    capturedEvents.Add(new CapturedSseEvent(evt.EventType, evt.Data, Filtered: false));
+                    capturedEvents?.Add(new CapturedSseEvent(evt.EventType, evt.Data, Filtered: false));
                     await WriteSseEventAsync(httpCtx.Response, evt.EventType, evt.Data, ct);
+                }
+                // The Codex strategy CATCHES a mid-stream upstream fault internally
+                // (to flush a response.failed terminal) instead of throwing, so it
+                // never reaches the catch blocks below. Surface it here so the
+                // truncated upstream-resp carries the real error rather than a
+                // misleading clean 200.
+                if (bridgeCtx.Response.UpstreamStreamFault is { } streamFault && endpointError is null)
+                {
+                    endpointError = streamFault.Message;
+                    summary.Error = $"{streamFault.GetType().Name}: {streamFault.Message}";
                 }
             }
             else if (bridgeCtx.Response.BufferedBody is not null)
@@ -261,7 +282,10 @@ internal static class CodexResponsesEndpoint
             if (upstreamUrl is not null && upstreamHeaders is not null)
             {
                 ioLogger.LogUpstreamRequest(seq, traceId, "POST", upstreamUrl, upstreamHeaders, upstreamBody, upstreamBodyLen, bodyPooled: false);
-                var upstreamRespBody = upstreamBufferedBody ?? Array.Empty<byte>();
+                // Copilot's raw /responses wire bytes, pre-T3/T4 (buffered
+                // pre-rewrite array, or the streaming tee finalized after the
+                // relay loop). See BridgeResponse.RawUpstreamRespBytesOrNull.
+                var upstreamRespBody = pipelineResponse?.RawUpstreamRespBytesOrNull() ?? Array.Empty<byte>();
                 ioLogger.LogUpstreamResponse(seq, traceId, upstreamStatus,
                     upstreamResponseHeaders ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     upstreamRespBody, upstreamRespBody.Length, bodyPooled: false, error: endpointError);

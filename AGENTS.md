@@ -105,6 +105,14 @@ The release pipeline builds all four RIDs, each on its own runner
 (`windows-latest`, `windows-11-arm`, `ubuntu-latest`, `macos-14`), and attaches
 every archive (+ a macOS `.pkg`) to one GitHub Release.
 
+> **Agents publishing manually (when you can't run `build-aot.bat` directly):**
+> importing the VsDevCmd environment is **not enough** — VsDevCmd does not add the
+> VS Installer dir (where `vswhere.exe` lives) to PATH, and ILC's link step calls a
+> bare `vswhere.exe`. After importing the VS env you MUST also append
+> `;C:\Program Files (x86)\Microsoft Visual Studio\Installer\` to `PATH`, or the
+> link fails with `'vswhere.exe' is not recognized` (exit 123) right after
+> `Generating native code`. The verified one-block recipe is in `CLAUDE.md`.
+
 After any dependency change, eyeball the published binary size — a
 non-trim-friendly package can easily double it (`docs/size-history.md` tracks it).
 
@@ -165,6 +173,22 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
 
 ## Hard invariants — don't fight these
 
+- **🔴 Tests are written from the CONTRACT, never by reading the implementation.**
+  A test asserts *what the behaviour is required to be* (from the requirement /
+  spec / case), not *what the code currently does*. Mirroring the implementation
+  back into assertions is forbidden — it freezes bugs into the suite (green on
+  buggy code → can never catch that bug) and manufactures false confidence.
+  Discipline: (1) state the contract in words first — *given X, the system must
+  do Y, because Z* — and assert that; if you can't articulate it without pointing
+  at a code line, you don't yet understand what to test. (2) Assert observable
+  behaviour and invariants (bytes out, events emitted, error surfaced,
+  idempotence, "zero allocation when off") over internal state. (3) **A new test
+  that passes on the first try is suspect** — mutation-check it: break the product
+  code and watch it go red; if it stays green it guards nothing. (4) When a
+  from-contract test fails, assume the *code* (or your understanding of the
+  contract) is wrong — investigate before touching the test; never weaken an
+  assertion just to get green. This outranks convenience: fewer contract-true
+  tests beat many implementation-mirrors.
 - **Native AOT is non-negotiable.** `<PublishAot>true</PublishAot>`. No
   reflection-based serialization, no `Activator.CreateInstance`, no
   runtime-loaded assemblies, no `System.Reflection.Emit`.

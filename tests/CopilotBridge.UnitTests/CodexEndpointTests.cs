@@ -62,6 +62,7 @@ public class CodexEndpointTests
             new ResponsesToIrInboundAdapter(NullLogger<ResponsesToIrInboundAdapter>.Instance),
             new IrToResponsesOutboundAdapter(NullLogger<IrToResponsesOutboundAdapter>.Instance),
             new RequestSummaryLogger(NullLogger<RequestSummaryLogger>.Instance),
+            Microsoft.Extensions.Options.Options.Create(new CopilotBridge.Cli.Hosting.Options.TracingOptions()),
             NullLogger<MessagesRequest>.Instance,
             NullLogger<CodexResponsesEndpointTag>.Instance);
 
