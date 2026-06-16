@@ -19,12 +19,39 @@ namespace CopilotBridge.Cli.Pipeline;
 internal sealed class RawResponseCapture
 {
     private readonly ArrayBufferWriter<byte> _buf = new();
+    private bool _sealed;
 
-    public void Write(ReadOnlySpan<byte> bytes) => _buf.Write(bytes);
+    /// <summary>
+    /// Append raw bytes. Must NOT be called after <see cref="ToArray"/> has
+    /// finalized the capture: the relay loop writes, then the endpoint reads
+    /// exactly once. A post-finalize write is a wiring bug, so it throws rather
+    /// than silently producing a capture that disagrees with what was read.
+    /// (<see cref="TeeReadStream"/> guards this call, so such a throw can never
+    /// reach — and truncate — the client's stream.)
+    /// </summary>
+    public void Write(ReadOnlySpan<byte> bytes)
+    {
+        if (_sealed)
+        {
+            throw new InvalidOperationException(
+                "RawResponseCapture written after ToArray() finalized it.");
+        }
+        _buf.Write(bytes);
+    }
 
     public int Length => _buf.WrittenCount;
 
-    public byte[] ToArray() => _buf.WrittenSpan.ToArray();
+    /// <summary>
+    /// Snapshot the captured bytes into a fresh array and seal the buffer against
+    /// further writes. The copy decouples the audit payload's lifetime from this
+    /// buffer; sealing turns the documented "write phase then read phase"
+    /// ordering into an enforced one.
+    /// </summary>
+    public byte[] ToArray()
+    {
+        _sealed = true;
+        return _buf.WrittenSpan.ToArray();
+    }
 }
 
 /// <summary>
@@ -36,16 +63,25 @@ internal sealed class RawResponseCapture
 /// </summary>
 /// <remarks>
 /// <para><b>Read-only / observe-only.</b> Write and seek throw; this never
-/// mutates the stream, so the bytes forwarded to Claude Code stay identical.</para>
-/// <para><b>Does NOT own the inner stream.</b> <see cref="Dispose(bool)"/>
-/// deliberately never touches <c>_inner</c>: the SSE iterator's own
-/// <c>finally</c> disposes the raw network stream, and double-disposing it
-/// would be a bug. This wrapper holds no disposable state of its own.</para>
+/// mutates the stream, so the bytes forwarded to the client stay identical.
+/// A capture-side failure is swallowed (see <see cref="Capture"/>) so the trace
+/// can never perturb the real response — observability, not the response
+/// contract.</para>
+/// <para><b>Does NOT own the inner stream.</b> No <c>Dispose</c> override: the
+/// SSE iterator's own <c>finally</c> disposes the raw network stream, and
+/// double-disposing it would be a bug. This wrapper holds no disposable state of
+/// its own, and the base <see cref="Stream.Dispose(bool)"/> never touches
+/// <c>_inner</c> — so the non-ownership guarantee rests on the absence of any
+/// dispose logic here. Do not add one.</para>
 /// </remarks>
 internal sealed class TeeReadStream : Stream
 {
     private readonly Stream _inner;
     private readonly RawResponseCapture _capture;
+    // Latches once a capture write fails (e.g. ArrayBufferWriter OOM / 2 GB cap)
+    // so we stop attempting it — a failed capture must perturb the read path at
+    // most once, never repeatedly.
+    private bool _captureFailed;
 
     public TeeReadStream(Stream inner, RawResponseCapture capture)
     {
@@ -66,14 +102,14 @@ internal sealed class TeeReadStream : Stream
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
     {
         var n = await _inner.ReadAsync(buffer, ct).ConfigureAwait(false);
-        if (n > 0) _capture.Write(buffer.Span.Slice(0, n));
+        if (n > 0) Capture(buffer.Span.Slice(0, n));
         return n;
     }
 
     public override int Read(Span<byte> buffer)
     {
         var n = _inner.Read(buffer);
-        if (n > 0) _capture.Write(buffer.Slice(0, n));
+        if (n > 0) Capture(buffer.Slice(0, n));
         return n;
     }
 
@@ -88,6 +124,24 @@ internal sealed class TeeReadStream : Stream
     public override void SetLength(long value) => throw new NotSupportedException();
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
-    // Intentionally does NOT dispose _inner — the SSE iterator owns it.
-    protected override void Dispose(bool disposing) => base.Dispose(disposing);
+    /// <summary>
+    /// Copy the just-read bytes into the capture, best-effort. A capture failure
+    /// (OOM growing the buffer, the writer's hard size cap) must NEVER propagate
+    /// into the read path and truncate the client's stream — the bytes have
+    /// already been pulled off the socket into the caller's buffer, so the read
+    /// itself succeeded. On failure we keep whatever was captured so far and
+    /// stop capturing for the rest of the stream.
+    /// </summary>
+    private void Capture(ReadOnlySpan<byte> bytes)
+    {
+        if (_captureFailed) return;
+        try
+        {
+            _capture.Write(bytes);
+        }
+        catch
+        {
+            _captureFailed = true;
+        }
+    }
 }

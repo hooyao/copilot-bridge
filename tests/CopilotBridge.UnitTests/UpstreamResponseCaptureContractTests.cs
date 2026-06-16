@@ -256,4 +256,150 @@ public class UpstreamResponseCaptureContractTests
 
         Assert.Null(ctx.Response.RawUpstreamResponseCapture);
     }
+
+    // ── Gap (d): Codex BUFFERED path stashes the raw reference too ────────────
+
+    /// <summary>
+    /// Contract: the Codex buffered (non-streaming) path must stash Copilot's raw
+    /// response bytes for the audit, symmetric with /cc — "Codex symmetric" is a
+    /// stated contract, so assert it directly rather than trust structural parity.
+    /// </summary>
+    [Fact]
+    public async Task Codex_TracingOn_Buffered_StashesRawBody()
+    {
+        var copilotBody = Encoding.UTF8.GetBytes("""{"id":"resp_1","object":"response"}""");
+        var strategy = new CopilotResponsesStrategy(
+            new StubClient(BufferedResponse(copilotBody)),
+            new CodexModelProfileCatalog(),
+            Options.Create(new TracingOptions { Enabled = true }),
+            NullLogger<CopilotResponsesStrategy>.Instance);
+
+        var ctx = Ctx("gpt-5.3-codex", stream: false);
+
+        await strategy.ForwardAsync(ctx);
+
+        Assert.NotNull(ctx.Response.RawUpstreamResponseBody);
+        Assert.Equal(copilotBody, ctx.Response.RawUpstreamResponseBody);
+    }
+
+    // ── Gap (e): with the tee ON, the events the client sees are unperturbed ──
+
+    /// <summary>
+    /// Contract: turning the capture ON must not change a single byte of what the
+    /// client receives. The tracing-on streaming test asserts capture==raw but
+    /// discards the drained events; this asserts the *downstream* events are
+    /// byte-identical to a no-tee parse, so a tee that captured correctly but
+    /// corrupted the forwarded stream would be caught.
+    /// </summary>
+    [Fact]
+    public async Task TracingOn_Streaming_ClientEventsIdenticalToNoTee()
+    {
+        var raw = SampleSse();
+        var baseline = await DrainAsync(SseParser.Create(new MemoryStream(raw)).EnumerateAsync());
+
+        var strategy = CcStrategy(new StubClient(StreamingResponse(raw)), tracing: true);
+        var ctx = Ctx("claude-opus-4-8", stream: true);
+        await strategy.ForwardAsync(ctx);
+        var got = await DrainAsync(ctx.Response.EventStream!);
+
+        Assert.Equal(baseline.Count, got.Count);
+        for (var i = 0; i < baseline.Count; i++)
+        {
+            Assert.Equal(baseline[i].EventType, got[i].EventType);
+            Assert.Equal(baseline[i].Data, got[i].Data);
+        }
+    }
+
+    // ── Gap (b): mid-stream upstream fault → partial capture is still recorded ─
+
+    // A stream that yields `prefix` then throws on the next read, simulating a
+    // mid-stream upstream disconnect.
+    private sealed class FaultingStream(byte[] prefix) : Stream
+    {
+        private int _pos;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => _pos; set => throw new NotSupportedException(); }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            await Task.Yield();
+            if (_pos >= prefix.Length) throw new IOException("simulated mid-stream disconnect");
+            var n = Math.Min(buffer.Length, prefix.Length - _pos);
+            prefix.AsSpan(_pos, n).CopyTo(buffer.Span);
+            _pos += n;
+            return n;
+        }
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+        public override void Flush() { }
+        public override long Seek(long o, SeekOrigin r) => throw new NotSupportedException();
+        public override void SetLength(long v) => throw new NotSupportedException();
+        public override void Write(byte[] b, int o, int c) => throw new NotSupportedException();
+    }
+
+    private static HttpResponseMessage FaultingStreamingResponse(byte[] prefix)
+    {
+        var resp = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new FaultingStream(prefix)) };
+        resp.Content.Headers.TryAddWithoutValidation("Content-Type", "text/event-stream");
+        return resp;
+    }
+
+    /// <summary>
+    /// Contract: when the upstream stream faults mid-way, the /cc capture must
+    /// still hold the bytes received before the fault (so upstream-resp shows a
+    /// partial body, not nothing), and the fault must propagate to the caller
+    /// (the /cc strategy does not swallow it).
+    /// </summary>
+    [Fact]
+    public async Task Cc_MidStreamFault_PartialCaptureKept_AndFaultPropagates()
+    {
+        // A complete first event, then the stream dies before any terminator.
+        var prefix = Encoding.UTF8.GetBytes(
+            "event: message_start\ndata: {\"type\":\"message_start\"}\n\n");
+        var strategy = CcStrategy(new StubClient(FaultingStreamingResponse(prefix)), tracing: true);
+        var ctx = Ctx("claude-opus-4-8", stream: true);
+
+        await strategy.ForwardAsync(ctx);
+
+        await Assert.ThrowsAnyAsync<IOException>(async () =>
+            await DrainAsync(ctx.Response.EventStream!));
+
+        // Partial bytes captured before the fault are retained.
+        Assert.NotNull(ctx.Response.RawUpstreamResponseCapture);
+        var captured = ctx.Response.RawUpstreamResponseCapture!.ToArray();
+        Assert.NotEmpty(captured);
+        Assert.Equal(prefix, captured);
+    }
+
+    /// <summary>
+    /// Contract: the Codex strategy CATCHES a mid-stream fault (to flush a
+    /// response.failed terminal) — so draining must NOT throw — but it must
+    /// surface the fault on <see cref="BridgeResponse.UpstreamStreamFault"/> so the
+    /// endpoint can stop logging a truncated upstream-resp as a clean success.
+    /// The partial capture is retained either way.
+    /// </summary>
+    [Fact]
+    public async Task Codex_MidStreamFault_Swallowed_ButFaultSurfaced_AndPartialKept()
+    {
+        var prefix = Encoding.UTF8.GetBytes(
+            "event: response.created\ndata: {\"type\":\"response.created\"}\n\n");
+        var strategy = new CopilotResponsesStrategy(
+            new StubClient(FaultingStreamingResponse(prefix)),
+            new CodexModelProfileCatalog(),
+            Options.Create(new TracingOptions { Enabled = true }),
+            NullLogger<CopilotResponsesStrategy>.Instance);
+        var ctx = Ctx("gpt-5.3-codex", stream: true);
+
+        await strategy.ForwardAsync(ctx);
+        // Codex swallows the fault internally and flushes a terminal — no throw.
+        await DrainAsync(ctx.Response.EventStream!);
+
+        Assert.NotNull(ctx.Response.UpstreamStreamFault);
+        Assert.IsType<IOException>(ctx.Response.UpstreamStreamFault);
+        Assert.NotNull(ctx.Response.RawUpstreamResponseCapture);
+        Assert.Equal(prefix, ctx.Response.RawUpstreamResponseCapture!.ToArray());
+    }
 }
+

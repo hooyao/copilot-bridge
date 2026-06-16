@@ -140,4 +140,50 @@ public class RawResponseCaptureTests
         Assert.Equal(0, capture.Length);
         Assert.Empty(capture.ToArray());
     }
+
+    /// <summary>
+    /// Contract: the capture has two ordered phases — write (relay loop), then
+    /// read-once (endpoint finally). Writing after <see cref="RawResponseCapture.ToArray"/>
+    /// finalizes it is a wiring bug and must throw, not silently produce a capture
+    /// that disagrees with what was already read out.
+    /// </summary>
+    [Fact]
+    public void Capture_WriteAfterToArray_Throws()
+    {
+        var capture = new RawResponseCapture();
+        capture.Write(new byte[] { 1, 2, 3 });
+        var snapshot = capture.ToArray();
+
+        Assert.Equal(new byte[] { 1, 2, 3 }, snapshot);
+        Assert.Throws<InvalidOperationException>(() => capture.Write(new byte[] { 4 }));
+    }
+
+    /// <summary>
+    /// Contract: a capture-side failure must NEVER reach the read path and
+    /// truncate the client's stream — the trace is best-effort observability, not
+    /// part of the response contract. Force the failure by pre-sealing the capture
+    /// (a sealed capture throws on Write); the tee must still deliver every byte.
+    /// </summary>
+    [Fact]
+    public async Task Tee_CaptureFailure_DoesNotBreakReads()
+    {
+        var raw = SampleSse();
+        var capture = new RawResponseCapture();
+        capture.ToArray(); // seal it → any subsequent Write throws
+
+        using var inner = new MemoryStream(raw);
+        await using var tee = new TeeReadStream(inner, capture);
+
+        // Reads must succeed and return the full content despite the capture
+        // throwing internally on every write.
+        var sink = new MemoryStream();
+        var buf = new byte[7]; // small buffer → many reads, each hits the failing capture
+        int n;
+        while ((n = await tee.ReadAsync(buf.AsMemory(0, buf.Length))) > 0)
+        {
+            sink.Write(buf, 0, n);
+        }
+
+        Assert.Equal(raw, sink.ToArray());
+    }
 }

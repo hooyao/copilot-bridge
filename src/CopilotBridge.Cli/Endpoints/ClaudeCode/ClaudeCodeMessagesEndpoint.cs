@@ -95,13 +95,11 @@ internal static class ClaudeCodeMessagesEndpoint
         var upstreamBodyPooled = false;
         var upstreamStatus = 0;
         Dictionary<string, string>? upstreamResponseHeaders = null;
-        byte[]? upstreamBufferedBody = null;   // non-streaming response body for the audit
-        // RAW Copilot response bytes, captured pre-stage by the strategy. The
-        // finally prefers these over upstreamBufferedBody so upstream-resp is
-        // Copilot's exact wire bytes (buffered: pre-rewrite array; streaming:
-        // teed SSE bytes finalized once the relay loop drains). Null off-trace.
-        byte[]? rawUpstreamBufferedResp = null;
-        RawResponseCapture? rawUpstreamStreamCapture = null;
+        // The pipeline response, snapshotted post-RunAsync so the finally can read
+        // the raw upstream-resp bytes (BridgeResponse.RawUpstreamRespBytesOrNull,
+        // which finalizes the streaming capture). Null if the pipeline threw before
+        // producing a response.
+        BridgeResponse? pipelineResponse = null;
 
         // Per-request summary, populated as the pipeline progresses. Always
         // emitted in finally regardless of error path.
@@ -198,17 +196,11 @@ internal static class ClaudeCodeMessagesEndpoint
             upstreamHeaders = new Dictionary<string, string>(bridgeCtx.Request.Headers, StringComparer.OrdinalIgnoreCase);
             upstreamStatus = bridgeCtx.Response.Status;
             upstreamResponseHeaders = new Dictionary<string, string>(bridgeCtx.Response.Headers, StringComparer.OrdinalIgnoreCase);
-            // BufferedBody is what Copilot returned for non-streaming
-            // responses (including error responses with their JSON body).
-            // For streaming responses BufferedBody stays null — the body
-            // arrives as SSE events captured separately on the inbound-resp
-            // side, so upstream-resp's body remains empty by design.
-            upstreamBufferedBody = bridgeCtx.Response.BufferedBody;
-            // Snapshot the raw upstream captures (set by the strategy pre-stage)
-            // into finally-visible locals. For streaming this is the capture
-            // OBJECT reference — the relay loop below fills it before finally runs.
-            rawUpstreamBufferedResp = bridgeCtx.Response.RawUpstreamResponseBody;
-            rawUpstreamStreamCapture = bridgeCtx.Response.RawUpstreamResponseCapture;
+            // Snapshot the response so the finally can read the raw upstream-resp
+            // bytes. For streaming, the capture inside it is filled by the relay
+            // loop below BEFORE the finally finalizes it; for buffered, the raw
+            // pre-rewrite reference is already set.
+            pipelineResponse = bridgeCtx.Response;
 
             responseStatus = bridgeCtx.Response.Status;
             foreach (var (k, v) in bridgeCtx.Response.Headers)
@@ -360,20 +352,14 @@ internal static class ClaudeCodeMessagesEndpoint
                     upstreamBodyLen,
                     upstreamBodyPooled);
 
-                // Surface exactly what Copilot put on the wire, pre-stage. For
-                // buffered responses this is the raw pre-rewrite array the
-                // strategy stashed (ResponseModelRewriteStage reassigns
-                // BufferedBody to a NEW array, so we can't trust that here). For
-                // streaming responses it's the teed SSE bytes — finalized now,
-                // because the relay loop above has finished draining the stream.
-                // Falls back to upstreamBufferedBody only when tracing was off
-                // for the strategy (unreachable when this audit runs, since the
-                // audit only fires with tracing on) or for safety.
-                var upstreamRespBody =
-                    rawUpstreamBufferedResp
-                    ?? rawUpstreamStreamCapture?.ToArray()
-                    ?? upstreamBufferedBody
-                    ?? Array.Empty<byte>();
+                // Surface exactly what Copilot put on the wire, pre-stage: the
+                // buffered pre-rewrite array, or the streaming tee (finalized now
+                // that the relay loop above has drained the stream). See
+                // BridgeResponse.RawUpstreamRespBytesOrNull. The BufferedBody
+                // fallback inside it only matters when no raw field was set; the
+                // sink itself is null unless tracing is on, so nothing persists
+                // off-trace regardless.
+                var upstreamRespBody = pipelineResponse?.RawUpstreamRespBytesOrNull() ?? Array.Empty<byte>();
                 ioLogger.LogUpstreamResponse(
                     seq,
                     traceId,

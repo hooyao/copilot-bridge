@@ -82,7 +82,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             ctx.Response.RawUpstreamResponseCapture = capture;
             // T3: translate Responses SSE → IR (Anthropic) SSE on the fly. The
             // response stages + the outbound T4 adapter then operate on IR shape.
-            ctx.Response.EventStream = TranslateStreamAsync(resp, ctx.Request.Body.Model, capture, ctx.Ct);
+            ctx.Response.EventStream = TranslateStreamAsync(resp, ctx.Request.Body.Model, capture, ctx.Response, ctx.Ct);
             _log.LogDebug("strategy {Name}: T3 streaming (content-type={ContentType})", Name, contentType);
         }
         else
@@ -120,6 +120,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         HttpResponseMessage resp,
         string model,
         RawResponseCapture? capture,
+        BridgeResponse response,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var sm = new ResponsesToAnthropicStream(model, _log);
@@ -153,13 +154,16 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         }
 
         // Always emit a terminal (even on fault / empty stream). On a fault, latch
-        // the IR error stop so T4 emits response.failed; the endpoint records the
-        // underlying error separately.
+        // the IR error stop so T4 emits response.failed; surface the underlying
+        // exception on ctx.Response so the endpoint folds it into the audit's
+        // error field (otherwise a truncated upstream-resp would log as a clean
+        // 200 — see BridgeResponse.UpstreamStreamFault).
         foreach (var tail in sm.FlushTerminal(failed: fault is not null))
             yield return tail;
 
         if (fault is not null)
         {
+            response.UpstreamStreamFault = fault;
             _log.LogWarning("strategy {Name}: T3 upstream stream faulted ({Type}: {Message}); "
                 + "flushed a failed terminal", Name, fault.GetType().Name, fault.Message);
         }
