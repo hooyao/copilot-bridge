@@ -70,3 +70,31 @@ When Claude Code or the IR changes shape and the fixtures should be re-captured:
    dotnet test tests/CopilotBridge.UnitTests/CopilotBridge.UnitTests.csproj `
      --filter "FullyQualifiedName~HotPath"
    ```
+
+## Codex fixtures (`codex-request-*.json`, `responses-sse-*.txt`)
+
+Real, de-identified Codex `/responses` data for the Codex A-invariant suite
+(`Invariant/Codex*Tests.cs`):
+
+| Fixture | What | Drives |
+| --- | --- | --- |
+| `codex-request-plain-3turn.json` | developer + 2 user messages, full tool defs, reasoning/text/include | A0/A1/A2/A4/A7 |
+| `codex-request-multiturn-8.json` | developer + user + 5 assistant turns | A1/A3/A4/A7 breadth |
+| `codex-request-toolcall-multiturn.json` | REAL tool round-trip: `function_call` (shell_command) + `function_call_output` | A5b tool pairing (live-harvested) |
+| `responses-sse-text.txt` | live text stream | A6 T3→IR→T4 |
+| `responses-sse-toolcall.txt` | live forced-tool stream | A6 tool stream |
+
+Same philosophy: input samples, never oracles. Refresh:
+
+1. **Single-turn / multi-turn** come from a `codex.exe` session captured by the
+   throwaway server in `docs/scratch/` (raw HTTP). **The tool-call fixture** is
+   harvested from the live E1 tool turn
+   (`CodexE2EHeadlessTests.Codex_ToolTurn_CompletesThroughBridge`), whose
+   four-file audit lands in `request-traces/` — copy the `inbound-req.json` to
+   `docs/scratch/codex-capture/toolflow-audit.json`.
+2. De-identify + promote: list sources in `docs/scratch/deidentify-codex-fixtures.py`
+   (`CHOSEN` for raw HTTP, `CHOSEN_AUDIT` for audit-envelope captures), then
+   `python docs/scratch/deidentify-codex-fixtures.py`. It strips UUIDs (session/
+   thread/installation), git user, machine paths, and asserts no PII leaked.
+3. **SSE fixtures** come from `ResponsesProbe.CaptureResponsesSseFixtures` with
+   `BRIDGE_REGEN_CONTRACT_SNAPSHOT=1` (live, regenerable any time).

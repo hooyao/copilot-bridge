@@ -328,4 +328,41 @@ public class CodexARoundTripTests
         Assert.Throws<CopilotBridge.Cli.Pipeline.Adapters.Codex.CodexBadRequestException>(
             () => CodexRoundTrip.ToIr(req));
     }
+
+    // ── A5b: tool pairing on a REAL captured tool turn (not synthetic) ───────
+    // The codex-request-toolcall-multiturn fixture is a real codex.exe tool turn
+    // harvested from the E1 live run: messages + function_call (shell_command) +
+    // function_call_output. Verifies the real call_id linkage + the real output
+    // (a string here) survive T1→IR→T2 — promoting the synthetic A5 to live data.
+
+    [Fact]
+    public void A5b_RealToolTurn_PairingAndOutputSurvive()
+    {
+        var inbound = CodexRoundTrip.LoadBodyJson("toolcall-multiturn");
+        var original = CodexRoundTrip.ParseNode(inbound).AsObject();
+        var emitted = CodexRoundTrip.RoundTrip(inbound).AsObject();
+
+        static (string callId, string name, string args) FnCall(JsonNode body)
+        {
+            var fc = body["input"]!.AsArray().First(i => i!["type"]!.GetValue<string>() == "function_call");
+            return (fc!["call_id"]!.GetValue<string>(), fc["name"]!.GetValue<string>(), fc["arguments"]!.GetValue<string>());
+        }
+        static (string callId, string output) FnOut(JsonNode body)
+        {
+            var fco = body["input"]!.AsArray().First(i => i!["type"]!.GetValue<string>() == "function_call_output");
+            return (fco!["call_id"]!.GetValue<string>(), fco["output"]!.ToJsonString());
+        }
+
+        var (oCallId, oName, oArgs) = FnCall(original);
+        var (eCallId, eName, eArgs) = FnCall(emitted);
+        Assert.Equal(oCallId, eCallId);   // real call_id survives
+        Assert.Equal(oName, eName);       // shell_command
+        Assert.Equal(oArgs, eArgs);       // arguments byte-faithful
+
+        var (oOutId, oOut) = FnOut(original);
+        var (eOutId, eOut) = FnOut(emitted);
+        Assert.Equal(oOutId, eOutId);     // result references the same call
+        Assert.Equal(oCallId, eOutId);    // closed linkage: output ↔ call
+        Assert.Equal(oOut, eOut);         // the real tool output survives
+    }
 }

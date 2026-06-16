@@ -319,7 +319,13 @@ internal sealed class AnthropicToResponsesStream
     }
 
     private string UsageJson() =>
-        $"{{\"input_tokens\":{_inputTokens},\"output_tokens\":{_outputTokens}}}";
+        // Codex's ResponseCompleted parser REQUIRES total_tokens (and tolerates the
+        // *_details sub-objects); omitting total_tokens makes it reject the terminal
+        // with "missing field `total_tokens`" and reconnect-loop. Mirror the real
+        // Copilot /responses usage shape (responses-sse fixtures).
+        $"{{\"input_tokens\":{_inputTokens},\"input_tokens_details\":{{\"cached_tokens\":0}},"
+        + $"\"output_tokens\":{_outputTokens},\"output_tokens_details\":{{\"reasoning_tokens\":0}},"
+        + $"\"total_tokens\":{_inputTokens + _outputTokens}}}";
 
     private bool IsFailed() => _stopReason == Strategies.Codex.ResponsesToAnthropicStream.ErrorStopReason;
 

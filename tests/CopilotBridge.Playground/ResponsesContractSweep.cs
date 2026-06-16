@@ -80,12 +80,23 @@ public partial class ResponsesProbe
                     + "\"instructions\":\"You may use tools.\","
                     + "\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]}],"
                     + "\"stream\":false,\"tool_choice\":\"auto\",\"tools\":[" + toolJson + "]}";
-                var (status, _) = await ProbeRetry.WithRetry(
+                var (status, body) = await ProbeRetry.WithRetry(
                     () => client.TryPostResponsesAsync(payload), $"{model} tool={label}");
-                // custom/apply_patch 500s on mai-code-1-flash-internal (research §2.4) —
-                // treat a 5xx here as "rejected" so the known gap is recorded as a fact,
-                // not thrown as a flaky upstream.
-                if (!WireAcceptance.IsAcceptedTreating5xxAsReject(status))
+                // 5xx handling is scoped to the ONE documented cell where a server
+                // error is the contract fact: mai-code-1-flash-internal 500s on
+                // custom/apply_patch tools (research §2.4). For every other cell a
+                // 5xx is a flaky upstream, not a rejection — use the throwing
+                // classifier so a transient 5xx ABORTS the sweep instead of being
+                // silently recorded as tools_rejected (which would poison the
+                // snapshot and, after a human regen, the Codex catalog). Reviewer
+                // #7: a blanket 5xx-as-reject across all tool probes was too broad.
+                var isFlashCustomCell =
+                    string.Equals(model, "mai-code-1-flash-internal", StringComparison.OrdinalIgnoreCase)
+                    && label == "custom_apply_patch";
+                var accepted = isFlashCustomCell
+                    ? WireAcceptance.IsAcceptedTreating5xxAsReject(status)
+                    : WireAcceptance.IsAccepted(status, body, $"{model} tool={label}");
+                if (!accepted)
                     toolRejected.Add(label);
             }
 
