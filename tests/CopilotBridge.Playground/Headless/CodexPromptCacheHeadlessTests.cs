@@ -44,41 +44,52 @@ public class CodexPromptCacheHeadlessTests : IClassFixture<BridgeFixture>
         _output = output;
     }
 
-    // ~6000+ tokens of stable prefix — comfortably above the prompt-cache minimum
-    // so the second identical request is eligible for a cache hit.
+    // ~14k tokens of stable prefix (≈400 reps). Tuned against live Copilot gpt-5.5:
+    // a ~4k prefix never cached, and a ~50k one didn't commit within a few seconds,
+    // but ~14k caches reliably by the second identical request (probed: shot1
+    // cached=0, shot2+ cached≈12k). Manual integration test — each shot is ~14k
+    // input tokens.
     private static readonly string LongInstructions = string.Concat(Enumerable.Repeat(
         "You are a precise coding assistant running inside a reverse-proxy integration test. " +
-        "Answer tersely with exactly what is asked. Do not paraphrase. Do not restate the question. ", 120));
+        "Answer tersely with exactly what is asked. Do not paraphrase. Do not restate the question. ", 400));
 
     [Fact]
-    public async Task SameCodexBody_SurfacesCacheHitToCodexOnSecondRequest()
+    public async Task CodexCacheHit_SurfacesCachedTokensToClient()
     {
+        // Copilot's gpt-5.5 prompt cache is best-effort: the first request warms
+        // it, later identical requests read it. The bridge must surface that hit
+        // to Codex — pre-fix the Responses→IR→Responses round trip forced
+        // cached_tokens to 0 here regardless of the real hit (verified live:
+        // upstream reported the hit, the client saw 0).
         var body = BuildBody();
         using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
 
-        var u1 = await SendAndReadUsageAsync(client, body);
-        _output.WriteLine($"req1: input={u1.Input} cached={u1.Cached} output={u1.Output} reasoning={u1.Reasoning} total={u1.Total}");
+        var warm = await SendAndReadUsageAsync(client, body);   // shot 1 creates the cache
+        _output.WriteLine($"warmup: input={warm.Input} cached={warm.Cached} output={warm.Output} total={warm.Total}");
 
-        // Brief gap so the server-side cache from req1 is in place (mirrors
-        // StreamingPromptCacheTests). The cache key is stable across both shots.
-        await Task.Delay(TimeSpan.FromSeconds(2));
+        // Read shots: stop as soon as the cache is observed. A few attempts absorb
+        // the best-effort write latency (a single read can race the cache commit).
+        var u = default(Usage);
+        for (var read = 1; read <= 3 && u.Cached == 0; read++)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(6));
+            u = await SendAndReadUsageAsync(client, body);
+            _output.WriteLine($"read{read}: input={u.Input} cached={u.Cached} output={u.Output} reasoning={u.Reasoning} total={u.Total}");
+        }
 
-        var u2 = await SendAndReadUsageAsync(client, body);
-        _output.WriteLine($"req2: input={u2.Input} cached={u2.Cached} output={u2.Output} reasoning={u2.Reasoning} total={u2.Total}");
-
-        // The real assertion: Copilot served the prefix from cache on req2, and
-        // the bridge surfaced that to Codex. Pre-fix this was always 0 regardless
-        // of the actual cache hit.
-        Assert.True(u2.Cached > 0,
-            $"Expected req2 to report a cache hit through the bridge; got cached={u2.Cached}. "
-            + "If Copilot cached the prefix but this is 0, the IR round trip is dropping cached_tokens (the bug).");
+        // The real assertion: Copilot's cache hit reached the client THROUGH the
+        // bridge's T3→IR→T4 round trip.
+        Assert.True(u.Cached > 0,
+            $"Expected the bridge to surface Copilot's prompt-cache hit; got cached={u.Cached}. "
+            + "If the upstream-resp trace shows cached>0 but this is 0, the IR round trip is dropping "
+            + "cached_tokens (the bug). If upstream is also 0, Copilot didn't cache this run (best-effort) — re-run.");
 
         // Surfaced usage must be internally consistent: cached is a SUBSET of
-        // input_tokens, and total = input + output (cached/reasoning are subsets,
+        // input_tokens; total = input + output (cached/reasoning are subsets,
         // never added into the total).
-        Assert.True(u2.Cached <= u2.Input, $"cached ({u2.Cached}) must not exceed input ({u2.Input})");
-        Assert.True(u2.Reasoning <= u2.Output, $"reasoning ({u2.Reasoning}) must not exceed output ({u2.Output})");
-        Assert.Equal(u2.Input + u2.Output, u2.Total);
+        Assert.True(u.Cached <= u.Input, $"cached ({u.Cached}) must not exceed input ({u.Input})");
+        Assert.True(u.Reasoning <= u.Output, $"reasoning ({u.Reasoning}) must not exceed output ({u.Output})");
+        Assert.Equal(u.Input + u.Output, u.Total);
     }
 
     private static string BuildBody() => new JsonObject
