@@ -81,6 +81,21 @@ jobs:
           Write-Output "BINARY_SIZE_MB=$sizeMB" >> $env:GITHUB_OUTPUT
         id: size
 
+      # Make the win-x64 AOT downloadable from the PR's Actions run page. Ships
+      # the exe + appsettings.json (both required at runtime — the bridge loads
+      # appsettings.json with AddJsonFile(optional:false), so the exe fails fast
+      # without it). PR convenience only; official cross-platform packages come
+      # from release.yml.
+      - name: Upload win-x64 AOT artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: copilot-bridge-win-x64
+          path: |
+            ./publish-ci/copilot-bridge.exe
+            ./publish-ci/appsettings.json
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Job summary
         shell: pwsh
         run: |
@@ -93,6 +108,7 @@ jobs:
           | Unit tests (\`Category!=Integration\`) | ✅ |
           | Release AOT publish | ✅ |
           | \`copilot-bridge.exe\` size | **${{ steps.size.outputs.BINARY_SIZE_MB }} MB** |
+          | win-x64 AOT download | artifact \`copilot-bridge-win-x64\` (Actions run → Artifacts) |
 
           Integration tests skipped: \`CopilotBridge.Playground\` is tagged
           \`[Trait("Category","Integration")]\` — it hits live Copilot and needs

@@ -111,6 +111,11 @@ internal sealed class AnthropicToResponsesStream
     private string _stopReason = "end_turn";
     private long _inputTokens;
     private long _outputTokens;
+    // Cache + reasoning sub-counts T3 carried off Copilot's terminal (cached
+    // SUBSET of _inputTokens, reasoning SUBSET of _outputTokens). Restored into
+    // the Responses usage *_details so Codex's prompt-cache telemetry is honest.
+    private long _cachedInputTokens;
+    private long _reasoningOutputTokens;
     // Accumulated completed output items, for the response.completed `output[]`.
     private readonly List<string> _completedItems = [];
 
@@ -169,6 +174,11 @@ internal sealed class AnthropicToResponsesStream
                     {
                         if (u.TryGetProperty("input_tokens", out var it) && it.TryGetInt64(out var i)) _inputTokens = i;
                         if (u.TryGetProperty("output_tokens", out var ot) && ot.TryGetInt64(out var o)) _outputTokens = o;
+                        // T3 stashes Copilot's real cache/reasoning sub-counts here; restore
+                        // them on the terminal (UsageJson) instead of emitting zeros, else
+                        // Codex shows 0% cache even on a near-total prompt-cache hit.
+                        if (u.TryGetProperty("cache_read_input_tokens", out var cr) && cr.TryGetInt64(out var c)) _cachedInputTokens = c;
+                        if (u.TryGetProperty("reasoning_output_tokens", out var rr) && rr.TryGetInt64(out var r)) _reasoningOutputTokens = r;
                     }
                     break;
 
@@ -322,9 +332,13 @@ internal sealed class AnthropicToResponsesStream
         // Codex's ResponseCompleted parser REQUIRES total_tokens (and tolerates the
         // *_details sub-objects); omitting total_tokens makes it reject the terminal
         // with "missing field `total_tokens`" and reconnect-loop. Mirror the real
-        // Copilot /responses usage shape (responses-sse fixtures).
-        $"{{\"input_tokens\":{_inputTokens},\"input_tokens_details\":{{\"cached_tokens\":0}},"
-        + $"\"output_tokens\":{_outputTokens},\"output_tokens_details\":{{\"reasoning_tokens\":0}},"
+        // Copilot /responses usage shape (responses-sse fixtures), restoring the
+        // cached/reasoning sub-counts T3 carried — without them Codex reports 0%
+        // prompt cache even when Copilot served the prefix from cache. cached is a
+        // subset of input_tokens, reasoning a subset of output_tokens, so neither
+        // affects total_tokens (= input + output).
+        $"{{\"input_tokens\":{_inputTokens},\"input_tokens_details\":{{\"cached_tokens\":{_cachedInputTokens}}},"
+        + $"\"output_tokens\":{_outputTokens},\"output_tokens_details\":{{\"reasoning_tokens\":{_reasoningOutputTokens}}},"
         + $"\"total_tokens\":{_inputTokens + _outputTokens}}}";
 
     private bool IsFailed() => _stopReason == Strategies.Codex.ResponsesToAnthropicStream.ErrorStopReason;

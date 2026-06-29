@@ -43,6 +43,16 @@ internal sealed class ResponsesToAnthropicStream
     // the IR message_delta reports Copilot's real counts instead of zeros.
     private long _inputTokens;
     private long _outputTokens;
+    // Cache + reasoning sub-counts, carried verbatim off the upstream Responses
+    // usage so T4 can restore Copilot's real input_tokens_details.cached_tokens /
+    // output_tokens_details.reasoning_tokens on the Codex-facing terminal. Without
+    // them Codex reports 0% prompt cache even when Copilot served ~all of the
+    // prefix from cache. CONVENTION (Codex T3↔T4 hop ONLY, never a Claude Code
+    // client): cache_read here is the cached SUBSET of _inputTokens (the OpenAI
+    // total), and reasoning the SUBSET of _outputTokens — mirroring OpenAI's
+    // *_details, NOT Anthropic's separate-bucket cache semantics.
+    private long _cacheReadInputTokens;
+    private long _reasoningOutputTokens;
 
     public ResponsesToAnthropicStream(string model, ILogger? log = null)
     {
@@ -149,7 +159,7 @@ internal sealed class ResponsesToAnthropicStream
         if (_stopReason is not null)
         {
             yield return Sse("message_delta",
-                $"{{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":{JsonEncode(_stopReason)},\"stop_sequence\":null}},\"usage\":{{\"input_tokens\":{_inputTokens},\"output_tokens\":{_outputTokens}}}}}");
+                $"{{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":{JsonEncode(_stopReason)},\"stop_sequence\":null}},\"usage\":{{\"input_tokens\":{_inputTokens},\"output_tokens\":{_outputTokens},\"cache_read_input_tokens\":{_cacheReadInputTokens},\"reasoning_output_tokens\":{_reasoningOutputTokens}}}}}");
             yield return Sse("message_stop", "{\"type\":\"message_stop\"}");
             _stopReason = null!;
             _messageStarted = false;
@@ -217,8 +227,12 @@ internal sealed class ResponsesToAnthropicStream
 
     /// <summary>
     /// Pull token usage off the upstream terminal. Copilot puts it on
-    /// <c>response.usage</c> (input_tokens/output_tokens) of the completed event.
-    /// Absent → leaves the zeros (acceptable; we never invent counts).
+    /// <c>response.usage</c> of the completed event: <c>input_tokens</c> /
+    /// <c>output_tokens</c> (totals) plus the <c>input_tokens_details.cached_tokens</c>
+    /// and <c>output_tokens_details.reasoning_tokens</c> sub-counts. All four are
+    /// carried so T4 can rebuild the exact Codex-facing usage (the cache sub-count
+    /// in particular drives Codex's prompt-cache telemetry). Absent → leaves the
+    /// zeros (acceptable; we never invent counts).
     /// </summary>
     private void CaptureUsage(JsonElement root)
     {
@@ -228,6 +242,10 @@ internal sealed class ResponsesToAnthropicStream
             return;
         if (usage.TryGetProperty("input_tokens", out var it) && it.TryGetInt64(out var i)) _inputTokens = i;
         if (usage.TryGetProperty("output_tokens", out var ot) && ot.TryGetInt64(out var o)) _outputTokens = o;
+        if (usage.TryGetProperty("input_tokens_details", out var itd) && itd.ValueKind == JsonValueKind.Object
+            && itd.TryGetProperty("cached_tokens", out var ct) && ct.TryGetInt64(out var c)) _cacheReadInputTokens = c;
+        if (usage.TryGetProperty("output_tokens_details", out var otd) && otd.ValueKind == JsonValueKind.Object
+            && otd.TryGetProperty("reasoning_tokens", out var rt) && rt.TryGetInt64(out var r)) _reasoningOutputTokens = r;
     }
 
     private static string ExtractError(JsonElement root)
