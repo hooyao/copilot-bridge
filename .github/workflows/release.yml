@@ -195,9 +195,23 @@ jobs:
           set -euo pipefail
           version="${{ needs.version.outputs.version }}"
           prerelease="${{ needs.version.outputs.prerelease }}"
+          # Pin the notes base explicitly. Without --notes-start-tag, GitHub's
+          # auto-detection of the "previous tag" fails in this repo — every release
+          # commit carries TWO tags (the release-* trigger tag and the v* release
+          # tag), which confuses it — so --generate-notes lists the ENTIRE history
+          # instead of the delta since the last release. This release doesn't exist
+          # yet, so the most recent EXISTING release is the previous one. Use
+          # `release list` (not `release view`, which only surfaces the latest
+          # NON-prerelease, and every build here ships as a prerelease). Empty on
+          # the very first release → omit the flag, where full history is correct.
+          prev_tag=$(gh release list --exclude-drafts -L 1 --json tagName --jq '.[0].tagName // ""')
+          echo "Generating notes since previous release: ${prev_tag:-<none>}"
           args=(release create "v$version"
             --title "copilot-bridge $version"
             --generate-notes)
+          if [ -n "$prev_tag" ]; then
+            args+=(--notes-start-tag "$prev_tag")
+          fi
           if [ "$prerelease" = "true" ]; then
             args+=(--prerelease)
           fi
