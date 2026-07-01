@@ -2,8 +2,8 @@ namespace CopilotBridge.Cli.Hosting.Options;
 
 /// <summary>
 /// Bound from <c>appsettings.json</c> section
-/// <c>Pipeline:ResponseModelRewrite</c>. Controls whether
-/// <see cref="Pipeline.Response.ResponseModelRewriteStage"/> restores the
+/// <c>Pipeline:Detectors:ModelRewrite</c>. Controls whether
+/// <see cref="Pipeline.Response.Detection.ModelRewriteDetector"/> restores the
 /// client-requested model id in the response body / message_start event.
 /// </summary>
 /// <remarks>

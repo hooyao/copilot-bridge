@@ -582,7 +582,7 @@ edges) with O(1) state that retains no content — a signature split across delt
 even character-by-character, is carried by automaton state, so an arbitrarily long
 leaked block is handled without a window the opening tag could scroll out of.
 
-Two orthogonal knobs (`Pipeline:ToolLeakGuard`): `PreserveStream` (default true —
+Two orthogonal knobs (`Pipeline:Detectors:ToolLeakGuard`): `PreserveStream` (default true —
 keep streaming, inject a mid-stream SSE `error` event; false — buffer the whole
 response and emit a real HTTP status) × `Signal` (default `OverloadedError` →
 `overloaded_error`/529, which Claude Code reliably retries and, after 3

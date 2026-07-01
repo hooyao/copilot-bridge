@@ -20,8 +20,8 @@ internal enum ToolLeakSignal
 }
 
 /// <summary>
-/// Bound from <c>appsettings.json</c> section <c>Pipeline:ToolLeakGuard</c>.
-/// Controls <see cref="Pipeline.Response.Detection.ToolLeakDetector"/>, which
+/// Bound from <c>appsettings.json</c> section
+/// <c>Pipeline:Detectors:ToolLeakGuard</c>. Controls <see cref="Pipeline.Response.Detection.ToolLeakDetector"/>, which
 /// detects a Copilot-served Claude model leaking a tool call as literal
 /// <c>&lt;invoke name="X"&gt;…&lt;/invoke&gt;</c> XML inside a text/thinking
 /// block (rather than a real <c>tool_use</c> block) and forces the client to
