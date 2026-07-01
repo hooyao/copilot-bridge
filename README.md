@@ -1,85 +1,78 @@
 # copilot-bridge
 
-A .NET 10 Native AOT reverse proxy that exposes the **GitHub Copilot LLM API**
-under a vendor-neutral URL prefix per client, so Claude Code, Codex, and
-Gemini CLI can all use Copilot as their model backend.
+Use your **GitHub Copilot** subscription as the model backend for **Claude Code**
+and **Codex** (Gemini CLI is on the roadmap). copilot-bridge is a small reverse
+proxy that exposes Copilot's LLM API under a vendor-neutral URL per client, so
+each CLI talks to the bridge as if it were talking to its native provider.
 
 ```
-Claude Code (Anthropic shape) ──► /cc/v1/messages              ┐
-Codex       (Responses shape) ──► /codex/responses             ├─► copilot-bridge ─► api.githubcopilot.com
-Gemini CLI  (Gemini shape)    ──► /gemini/v1/...               ┘
+Claude Code (Anthropic shape) ──► /cc/v1/messages       ┐
+Codex       (Responses shape) ──► /codex/responses       ├─► copilot-bridge ─► GitHub Copilot
+Gemini CLI  (Gemini shape)    ──► /gemini/v1/...  (soon)  ┘
 ```
 
-Ships as a single ~12 MB native binary with no .NET runtime dependency. Builds
-for **win-x64, win-arm64, linux-x64, and osx-arm64** (each on its own runner —
-Native AOT can't cross-compile across operating systems).
+It ships as a single ~12 MB native executable with **no .NET runtime to install**,
+for win-x64, win-arm64, linux-x64, and osx-arm64.
 
-## Status
+---
 
-**Beta / personal-use.** Two working paths:
+# Part 1 — For users
 
-- **Claude Code → Copilot Anthropic** (`/cc/v1/messages`) — the hot path (text,
-  tool round-trips, MCP tools, streaming, prompt-cache hits).
-- **Codex → Copilot Responses** (`/codex/responses`) — the real `codex.exe`
-  driven end-to-end through the bridge (plain turns + tool round-trips), routed
-  through the shared Anthropic-shape IR via the T1–T4 translators. See
-  [`docs/codex-implementation-design.md`](docs/codex-implementation-design.md).
+## Why use it
 
-Gemini is M4 — see [`docs/pipeline-design.md`](docs/pipeline-design.md).
+- **One Copilot subscription, two coding agents.** Point Claude Code at `/cc`
+  and Codex at `/codex` — both run on your existing Copilot plan. Cost counts
+  against Copilot, not an Anthropic/OpenAI bill.
+- **The full current Claude model set.** opus-4.6 / opus-4.7 / **opus-4.8**,
+  sonnet-4.5 / sonnet-4.6 / **sonnet-5**, haiku-4.5 — with **native 1M context**
+  on opus-4.6/4.7/4.8. Codex runs on Copilot's gpt-5.x.
+- **Works with Claude Code 4.8 out of the box.** Claude Code sends beta headers
+  Copilot rejects (e.g. `advisor-tool-2026-03-01`, which 400s on every model).
+  The bridge strips the ones Copilot refuses so your session doesn't error.
+- **Per-model behavior is probed, not guessed.** Which reasoning-effort levels,
+  thinking shapes, and context windows each Copilot model actually accepts is
+  measured against the live API and baked into a profile. The bridge reshapes
+  each request to what the target model accepts, and returns a clear error for
+  an unknown model instead of silently forwarding a request that will fail.
+- **Auto-repairs tool-call leaks.** Copilot-served models occasionally emit a
+  tool call as literal `<invoke …>` text instead of a real tool call. The bridge
+  detects this and makes the client retry the turn cleanly, so it doesn't get
+  stuck (new in 0.2.2-beta).
 
-Per-model wire behavior (which effort levels, thinking shapes, and context
-windows each Copilot model actually accepts) is probed, not guessed — see the
-matrix in `tests/CopilotBridge.Playground/ModelProfileProbe.cs` that feeds
-`ModelProfileCatalog`. Unknown models surface a 400 + Anthropic-format error,
-never a silent passthrough.
+## Install & run
 
-## Quick start
+1. **Download** the archive for your OS from the
+   [Releases page](https://github.com/hooyao/copilot-bridge/releases) — `.zip`
+   for Windows, `.tar.gz` for Linux/macOS, plus an unsigned `.pkg` installer for
+   macOS. **Extract it, keeping `copilot-bridge(.exe)` and `appsettings.json`
+   together** — the bridge loads its config from its own folder.
 
-**Prebuilt binaries** for win-x64, win-arm64, linux-x64, and osx-arm64 are
-attached to each [GitHub Release](https://github.com/hooyao/copilot-bridge/releases)
-(`.zip` for Windows, `.tar.gz` for Linux/macOS, plus an unsigned `.pkg` installer
-for macOS). Download, extract (keep `copilot-bridge` and `appsettings.json`
-together — the bridge loads the config from its own directory), and run.
+   > **macOS only:** the binary is unsigned, so the first run is blocked by
+   > Gatekeeper. Clear the quarantine flag once:
+   > `xattr -dr com.apple.quarantine ./copilot-bridge` (or the install directory
+   > for the `.pkg`), then run normally.
 
-> **macOS Gatekeeper:** the binary is unsigned/un-notarized, so first run is
-> blocked. Clear the quarantine flag once with
-> `xattr -dr com.apple.quarantine ./copilot-bridge` (or the install dir for the
-> `.pkg`), then run normally.
+2. **Start it — just double-click `copilot-bridge.exe`** (or run it from a
+   terminal). It starts the server on port **8765**. On the **first run** it
+   prints a **GitHub device-code URL and a code**:
 
-**Build from source** requires the **.NET 10 SDK**, plus a C/C++ toolchain for
-the AOT linker on whichever OS you're building for (Windows: Visual Studio C++
-Build Tools; Linux: `clang` + `zlib1g-dev`; macOS: Xcode Command Line Tools).
-You can only AOT-build for the OS you're on.
+   ```
+   To authorize, open https://github.com/login/device and enter code: ABCD-1234
+   ```
 
-```pwsh
-# 1. Clone + build (Windows shown; swap the RID on Linux/macOS)
-git clone https://github.com/hooyao/copilot-bridge
-cd copilot-bridge
-dotnet publish src/CopilotBridge.Cli -c Release -r win-x64
-#  → produces .\publish\copilot-bridge.exe at the repo root
-#  (linux-x64 / osx-arm64 / win-arm64 produce ./publish/copilot-bridge)
+   Open that URL in your browser, enter the code, and approve. The bridge saves
+   an **encrypted** token next to the executable, so every later start is silent
+   — no login prompt. (On Windows, double-clicking opens a console window that
+   shows the URL and the live log.)
 
-# 2. Start the server. If no GitHub OAuth token is on disk (first run,
-#    fresh machine), it prints a device-code URL + user code to stdout
-#    and blocks polling GitHub until you complete the browser handshake;
-#    the resulting token is encrypted and saved next to the exe (DPAPI on
-#    Windows, machine-derived AES-256-CBC+HMAC on Linux/macOS — see
-#    docs/token-storage.md) or ~/github_token.dat as fallback, so
-#    subsequent starts are silent.
-#    Startup logs include the app version before the listening URL.
-.\publish\copilot-bridge.exe serve              # default port 8765
+3. Leave it running. Now point your CLI at it.
 
-# Optional: run the device-code flow up front, without starting the server.
-.\publish\copilot-bridge.exe auth login
+## Point Claude Code at the bridge
 
-# Optional: confirm Copilot is reachable + list the available Claude models.
-.\publish\copilot-bridge.exe debug list-models
-```
-
-Point Claude Code at the bridge:
+Add an `env` block to `.claude/settings.local.json` (or your global
+`~/.claude/settings.json`):
 
 ```jsonc
-// .claude/settings.local.json
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
@@ -88,72 +81,195 @@ Point Claude Code at the bridge:
 }
 ```
 
-## How it works
+`ANTHROPIC_AUTH_TOKEN` is unused (the bridge authenticates to Copilot with your
+GitHub token) but Claude Code requires *something* to be set. Pick any Claude
+model in Claude Code as usual — the bridge maps it to the matching Copilot model.
 
-A typed pipeline framework runs every request through the same shape — the
-bridge IR is the Anthropic Messages API. Each stage is a single-purpose
-transformation; new clients/backends extend the pipeline without rewriting
-the core. See [`docs/pipeline-design.md`](docs/pipeline-design.md) for the
-architectural contract (pipeline + adapters + strategies + diag tracer) and
-[`docs/copilot-api-research.md`](docs/copilot-api-research.md) for the
-protocol-level facts driving each stage.
+## Point Codex at the bridge
+
+Edit `~/.codex/config.toml` — set the default model + provider at the top and add
+the provider block:
+
+```toml
+model = "gpt-5.5"
+model_provider = "copilot-bridge"
+model_reasoning_effort = "xhigh"
+model_context_window = 1000000
+
+[model_providers.copilot-bridge]
+name = "copilot-bridge"
+base_url = "http://localhost:8765/codex"
+wire_api = "responses"
+```
+
+## Configuration (`appsettings.json`)
+
+The file next to the executable. A few keys worth knowing:
+
+- **`Server.Port`** — the port the bridge listens on (default `8765`). If you
+  change it, update the `base_url` in your CLI config to match.
+- **`Tracing.Enabled`** — per-request audit logging, **off by default**. Turn it
+  on to dump every request/response as JSON under `request-traces/` when
+  debugging — but note the files contain your full prompts, so turn it back off
+  afterward.
+- **`Pipeline:Detectors:ToolLeakGuard`** — the tool-call-leak auto-repair
+  (`Enabled`, `Signal`). On by default; leave it unless you want to tune the
+  retry signal.
+- **`Routing.Locations`** — optional nginx-style rules to remap a model or tweak
+  headers per request. For example, the shipped rule:
+
+  ```jsonc
+  {
+    "When": { "Model": "gpt-5.5-1m" },
+    "Use":  { "Model": "gpt-5.5" }
+  }
+  ```
+
+  rewrites a request for `gpt-5.5-1m` to the real `gpt-5.5` (Codex uses the
+  `-1m` alias to unlock the 1M window client-side; the bridge maps it back). See
+  [`docs/routing.md`](docs/routing.md) for the full match/rewrite syntax.
+
+## Limitations
+
+The bridge forwards whatever Copilot's API accepts — a curated subset of the
+native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
+
+- **Claude Code's built-in WebSearch doesn't work.** It relies on Anthropic's
+  server-side search, which Copilot exposes on no model; the bridge returns a
+  friendly error. **Workaround:** use a search MCP server (via `--mcp-config` or
+  `.mcp.json`) and disable the built-in WebSearch tool. Other MCP tools flow
+  through transparently.
+- **`max` / `xhigh` reasoning effort isn't universal.** Support is per-model and
+  non-monotonic: opus-4.8 / opus-4.7 accept `low`–`max`; opus-4.6 / sonnet-4.6
+  accept `max` but reject `xhigh`; sonnet-4.5 / haiku-4.5 / opus-4.5 take no
+  effort field. The bridge strips an effort the target rejects instead of letting
+  it fail.
+- **Resume drops the `[1m]` flag back to 200k.** Claude Code stores the 1M toggle
+  in the model string (`opus[1m]`), which isn't persisted across `--resume`. The
+  backend still serves the larger window, but Claude Code's own auto-compaction
+  triggers at 200k until you re-select `opus[1m]`. See
+  [`docs/context-window.md`](docs/context-window.md).
+- **Cost counts against your Copilot subscription.** The bridge has no Anthropic
+  key and never falls back to `api.anthropic.com`.
+- **Token storage is weaker off Windows.** Your GitHub token is always encrypted
+  at rest, but Windows uses OS-owned **DPAPI** while Linux/macOS use
+  **AES-256-CBC + HMAC** with a key derived from machine id + username (no OS
+  keystore — so it works headless and stays AOT-clean). It protects the token
+  file from being copied off the host, but a local attacker running as you on the
+  same host could re-derive the key. Full threat model in
+  [`docs/token-storage.md`](docs/token-storage.md).
+
+---
+
+# Part 2 — For developers
+
+## Architecture
+
+Every request runs through one typed pipeline whose intermediate representation
+is the **Anthropic Messages API**. Each stage is a single-purpose transformation;
+new clients and backends extend the pipeline instead of rewriting the core. The
+full architectural contract (pipeline + client adapters + upstream strategies +
+diagnostic tracer) is in
+[`docs/pipeline-design.md`](docs/pipeline-design.md), and the protocol facts
+driving each stage are in
+[`docs/copilot-api-research.md`](docs/copilot-api-research.md).
 
 The request pipeline for `Pipeline<MessagesRequest>`:
 
 ```
 ModelRouter → AssistantThinkingFilter → SystemSanitize → MessagesSanitize
             → ToolsSanitize → HeadersOutbound
-            → CopilotMessagesPassthroughStrategy → DoneFilter (response side)
+            → CopilotMessagesPassthroughStrategy → ResponseInspection (response side)
 ```
 
-`ModelRouter` normalizes the requested id, applies the first matching
-nginx-style location in `appsettings.json` (`Routing.Locations` — a `When`
-match → `Use` change-set that can swap model, remap effort, set/remove a
-whitelisted header), then looks the result up in
-`ModelProfileCatalog` and runs `ProfileAdjuster` to coerce the body to the
-target's wire contract (effort, thinking shape, mid-conversation `system`
-handling, beta strips). See [`docs/pipeline-design.md §7`](docs/pipeline-design.md)
-for the full flow and [`docs/copilot-api-research.md`](docs/copilot-api-research.md)
-for the underlying protocol facts.
+- **`ModelRouter`** normalizes the requested id, applies the first matching
+  `Routing.Locations` rule, looks the result up in `ModelProfileCatalog`, then
+  runs `ProfileAdjuster` to coerce the body to the target's wire contract
+  (effort, thinking shape, mid-conversation `system` handling, beta strips). See
+  [`docs/pipeline-design.md §7`](docs/pipeline-design.md).
+- **`ResponseInspection`** runs an ordered set of response detectors in a single
+  pass over the SSE stream: the `[DONE]` filter, the model-id rewrite (restores
+  the client-requested id for downstream accounting), and the tool-leak guard.
+  New detectors register into the same stage. See
+  [`docs/pipeline-design.md §6`](docs/pipeline-design.md).
 
-## Limitations
+Codex requests are translated into the same Anthropic-shape IR via the T1–T4
+translators and routed to Copilot's `/responses` backend — see
+[`docs/codex-implementation-design.md`](docs/codex-implementation-design.md).
 
-The bridge passes through whatever Copilot's `/v1/messages` accepts — a curated
-subset of Anthropic's API surface. A few Claude Code features differ from a paid
-Anthropic subscription:
+Per-model wire behavior is probed, not guessed: the matrix in
+`tests/CopilotBridge.Playground/ModelProfileProbe.cs` feeds `ModelProfileCatalog`.
+Unknown models surface a 400 + Anthropic-format error, never a silent passthrough.
 
-- **WebSearch tool doesn't work.** Claude Code's built-in WebSearch uses
-  Anthropic's server-side search, which Copilot exposes on no model. The bridge
-  returns a friendly error. **Workaround:** use a search MCP server (via
-  `--mcp-config` or `.mcp.json`) and disable the built-in WebSearch tool. MCP
-  tools flow through transparently.
+## Build from source
 
-- **`max` / `xhigh` effort isn't universal.** Per-model effort support is probed,
-  not guessed (`tests/CopilotBridge.Playground/ModelProfileProbe.cs`), and is
-  non-monotonic: `opus-4.8` / `opus-4.7` accept `low`–`max`; `opus-4.6` /
-  `sonnet-4.6` accept `max` but reject `xhigh`; `sonnet-4.5` / `haiku-4.5` /
-  `opus-4.5` take no effort field at all. The bridge strips an effort the target
-  rejects rather than letting it 400.
+Requires the **.NET 10 SDK** plus a C/C++ toolchain for the AOT linker on the OS
+you're building for (Windows: Visual Studio C++ Build Tools; Linux: `clang` +
+`zlib1g-dev`; macOS: Xcode Command Line Tools). Native AOT **cannot** cross-compile
+across operating systems — you build for the OS you're on.
 
-- **Resume reverts `[1m]` to 200k.** The 1M context flag lives in the model
-  string (`opus[1m]`), which isn't persisted across `--resume`. The backend
-  still serves the larger window, but Claude Code's own auto-compaction triggers
-  at 200k until you re-select `opus[1m]`. See
-  [`docs/context-window.md`](docs/context-window.md).
+```pwsh
+# JIT build + run (no native toolchain needed) — the fast dev loop
+dotnet run --project src/CopilotBridge.Cli -- serve --port 18765
 
-- **Cost / quota counts against your Copilot subscription**, not Anthropic
-  billing. The bridge has no Anthropic API key and never falls back to
-  `api.anthropic.com` at runtime.
+# Debug build of the whole solution
+dotnet build CopilotBridge.slnx
 
-- **Non-Windows token storage is weaker than DPAPI.** The saved GitHub OAuth
-  token is always encrypted at rest, but the scheme is platform-specific:
-  Windows uses **DPAPI** (OS-owned, per-user key); Linux/macOS use
-  **AES-256-CBC + HMAC-SHA256** with a key derived from the machine id +
-  username (no OS keystore — deliberately, so it works on headless servers and
-  stays AOT-clean). It defends against the token file being copied off the host
-  and is **never plaintext**, but a local attacker running as the same user on
-  the same host could re-derive the key. See
-  [`docs/token-storage.md`](docs/token-storage.md) for the full threat model.
+# Single-file AOT publish (swap the RID: win-arm64 / linux-x64 / osx-arm64)
+dotnet publish src/CopilotBridge.Cli -c Release -r win-x64
+```
+
+> **Windows AOT caveat:** a bare `dotnet publish` can fail the native link
+> because ILC shells out to `vswhere.exe`, which isn't on `PATH` even in a VS
+> developer prompt. Use **`.\build-aot.bat`** (it adds `vswhere` to `PATH`, runs
+> `VsDevCmd.bat`, then publishes), or the PowerShell block documented in
+> [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS.md). CI images expose the
+> toolchain directly, so the workflow uses a bare `dotnet publish`.
+
+## Testing
+
+```pwsh
+# Unit tests — CI-safe, no live Copilot needed
+dotnet test tests/CopilotBridge.UnitTests
+
+# Everything except the live-Copilot integration harness
+dotnet test --filter "Category!=Integration"
+
+# Integration harness — hits live Copilot; run `auth login` first
+dotnet test tests/CopilotBridge.Playground
+```
+
+Playground tests carry `[Trait("Category","Integration")]` so CI skips them.
+See [`docs/routing.md`](docs/routing.md) for the routing config reference and
+[`tests/harness/README.md`](tests/harness/README.md) for the end-to-end harness.
+
+## CI & releases
+
+CI runs the Debug build + unit tests + a Release AOT publish on `windows-latest`,
+plus a cross-platform AOT gate (`ubuntu-latest`/linux-x64, `macos-14`/osx-arm64,
+`windows-11-arm`/win-arm64) that publishes and smoke-tests each binary on every
+push to `main`.
+
+Pushing a **`release-X.Y.Z`** tag triggers the release workflow, which builds all
+four RIDs on their own runners and publishes a single GitHub Release with every
+archive (and the macOS `.pkg`) attached. Release notes are the delta since the
+previous release. The version comes entirely from the tag — no file to bump.
+
+## Diagnostics
+
+Two log channels:
+
+- **Runtime text log** (always on) — Serilog to console (stderr) and a
+  per-startup file at `<exe-dir>/log/bridge-{YYYYMMDD-HHMMSS}.log`. One file per
+  process start makes a single run trivially greppable. Levels are per-category
+  in `appsettings.json`'s `Logging:LogLevel` (default `Debug` for
+  `CopilotBridge.Cli`).
+- **Per-request audit trace** (opt-in, off by default) — set
+  `"Tracing": { "Enabled": true }` to capture four JSON files per request under
+  `request-traces/` (`<utc>-<seq>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`):
+  inbound headers/body, upstream URL/headers/body, all SSE events (including the
+  filtered `[DONE]`), and duration. Off by default because traces contain full
+  prompts — turn it on to debug a cache-hit or protocol mismatch, then off again.
 
 ## Roadmap
 
@@ -161,48 +277,14 @@ Anthropic subscription:
 | --- | --- |
 | ✅ M1 | Claude Code → Copilot Anthropic; identity adapters; full preprocessing pipeline |
 | ✅ M2 | Cross-platform publish (win-x64, win-arm64, linux-x64, osx-arm64) |
-| ✅ M3 | Codex (Responses shape) client → `/codex/responses`; the T1–T4 translators routing Codex through the shared Anthropic-shape IR; per-model effort profile catalog; live `codex.exe` end-to-end |
+| ✅ M3 | Codex (Responses shape) → `/codex/responses`; T1–T4 translators through the shared IR; per-model effort profile catalog; live `codex.exe` end-to-end |
 | M4 | Gemini CLI client + IR↔Gemini translators |
-
-## Build from source
-
-```pwsh
-dotnet build CopilotBridge.slnx                     # Debug
-dotnet publish src/CopilotBridge.Cli -c Release -r win-x64   # or win-arm64 / linux-x64 / osx-arm64
-dotnet test tests/CopilotBridge.Playground          # requires `auth login` first
-```
-
-CI runs Debug build + unit tests + a Release AOT publish on `windows-latest`,
-plus a cross-platform AOT gate (`ubuntu-latest`/linux-x64, `macos-14`/osx-arm64,
-`windows-11-arm`/win-arm64) that publishes and smoke-tests each binary on every
-push to `main`. Tagging `release-X.Y.Z` triggers the release workflow, which
-builds all four RIDs on their respective runners and publishes a single GitHub
-Release with every archive (and the macOS `.pkg`) attached.
-
-## Diagnostics
-
-Two log channels:
-
-- **Runtime text log** (always-on) — Serilog with two sinks: console (stderr)
-  and a per-startup file at `<exe-dir>/log/bridge-{YYYYMMDD-HHMMSS}.log`
-  (startup banner, stage debug, errors). One file per process start makes a
-  single run trivially greppable; old files accumulate until cleaned up.
-  Levels are set per category in `appsettings.json`'s `Logging:LogLevel`
-  section (default `Debug` for `CopilotBridge.Cli`).
-- **Per-request audit trace** (opt-in, **off by default**) — set
-  `"Tracing": { "Enabled": true }` in `appsettings.json` to capture four JSON
-  files per request under `request-traces/`
-  (`<utc>-<seq>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`):
-  inbound headers/body, upstream URL/headers/body, all SSE events (including
-  the filtered `[DONE]`), duration. Off by default because traces contain full
-  prompts; turn it on to debug a cache-hit or protocol mismatch, then off
-  again. Useful for cache-hit verification and protocol-mismatch debugging.
 
 ## References
 
 - [`docs/pipeline-design.md`](docs/pipeline-design.md) — pipeline architecture spec
-- [`docs/routing.md`](docs/routing.md) — `Routing.Locations` config reference (nginx-style match/rewrite)
+- [`docs/routing.md`](docs/routing.md) — `Routing.Locations` config reference
 - [`docs/copilot-api-research.md`](docs/copilot-api-research.md) — Copilot API protocol notes
+- [`docs/codex-implementation-design.md`](docs/codex-implementation-design.md) — Codex `/responses` path
+- [`docs/token-storage.md`](docs/token-storage.md) — token-at-rest threat model
 - [`docs/design.md`](docs/design.md) — original design doc
-- [`docs/size-history.md`](docs/size-history.md) — AOT binary size record per change
-- [`tests/harness/README.md`](tests/harness/README.md) — end-to-end harness instructions
