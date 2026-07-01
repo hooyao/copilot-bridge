@@ -79,6 +79,16 @@ internal sealed class BridgeContext<TBody> where TBody : class
     /// Null until the model router runs.
     /// </summary>
     public string? OriginalRequestedModel { get; set; }
+
+    /// <summary>
+    /// Set true by the tool-leak guard (<c>ResponseInspectionStage</c> /
+    /// <c>ToolLeakDetector</c>) when it detects a leaked tool call and forces a
+    /// retry. The endpoint copies it into the per-request summary
+    /// (<c>toolLeakDetected</c>) so the real-world leak rate is measurable.
+    /// For streaming this is set mid-relay (the endpoint reads it after the
+    /// stream drains); for buffered it is set during the stage.
+    /// </summary>
+    public bool ToolLeakDetected { get; set; }
 }
 
 /// <summary>One SSE event a response stage chose not to forward downstream.</summary>

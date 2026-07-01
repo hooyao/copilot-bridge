@@ -9,6 +9,7 @@ using CopilotBridge.Cli.Models.Copilot;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 using CopilotBridge.Cli.Pipeline.Response;
+using CopilotBridge.Cli.Pipeline.Response.Detection;
 using CopilotBridge.Cli.Pipeline.Routing;
 using CopilotBridge.Cli.Pipeline.Strategies;
 using CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
@@ -159,9 +160,9 @@ public class UpstreamResponseAuditEndpointTests
 
     /// <summary>
     /// Contract: a BUFFERED response whose model the pipeline rewrites must still
-    /// be audited as Copilot's ORIGINAL bytes. Runs the REAL
-    /// <see cref="ResponseModelRewriteStage"/> so the audited body must diverge
-    /// from the (rewritten) client-facing body.
+    /// be audited as Copilot's ORIGINAL bytes. Runs the REAL response inspection
+    /// stage (model-rewrite detector active) so the audited body must diverge from
+    /// the (rewritten) client-facing body.
     /// </summary>
     [Fact]
     public async Task Buffered_AfterModelRewrite_UpstreamRespKeepsCopilotBytes()
@@ -171,11 +172,14 @@ public class UpstreamResponseAuditEndpointTests
         var copilotBody = Encoding.UTF8.GetBytes("""{"model":"claude-opus-4.8","type":"message"}""");
         var requestJson =
             """{"model":"claude-opus-4.8","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"x"}]}""";
+        // Inspection stage with model-rewrite enabled and the tool-leak guard off,
+        // isolating the rewrite behavior this test asserts.
+        var factory = new DetectorSetFactory(
+            Options.Create(new ResponseModelRewriteOptions { Enabled = true }),
+            Options.Create(new ToolLeakGuardOptions { Enabled = false }));
         var stages = new IResponseStage<MessagesRequest>[]
         {
-            new ResponseModelRewriteStage(
-                NullLogger<ResponseModelRewriteStage>.Instance,
-                Options.Create(new ResponseModelRewriteOptions { Enabled = true })),
+            new ResponseInspectionStage(factory, NullLogger<ResponseInspectionStage>.Instance),
         };
 
         var body = await RunAndGetUpstreamRespBody(

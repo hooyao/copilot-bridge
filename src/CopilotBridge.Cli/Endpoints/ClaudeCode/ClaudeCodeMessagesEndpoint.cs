@@ -257,6 +257,10 @@ internal static class ClaudeCodeMessagesEndpoint
                 httpCtx.Response.ContentLength = outBody.Length;
                 await httpCtx.Response.Body.WriteAsync(outBody, ct);
             }
+
+            // Copy the tool-leak flag off the context AFTER the stream has drained
+            // (streaming sets it mid-relay) so the summary line reports it.
+            summary.ToolLeakDetected = bridgeCtx.ToolLeakDetected;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

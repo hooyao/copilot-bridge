@@ -9,6 +9,7 @@ using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Response;
+using CopilotBridge.Cli.Pipeline.Response.Detection;
 using CopilotBridge.Cli.Pipeline.Routing;
 using CopilotBridge.Cli.Pipeline.Stages;
 using CopilotBridge.Cli.Pipeline.Stages.Anthropic;
@@ -78,8 +79,9 @@ internal static class BridgeServiceCollectionExtensions
         services.Configure<TracingOptions>(config.GetSection("Tracing"));
         services.Configure<RoutesConfig>(config.GetSection("Routing"));
         services.Configure<OutboundBetaPolicyOptions>(config.GetSection("Pipeline:OutboundBeta"));
-        services.Configure<ResponseModelRewriteOptions>(config.GetSection("Pipeline:ResponseModelRewrite"));
+        services.Configure<ResponseModelRewriteOptions>(config.GetSection("Pipeline:Detectors:ModelRewrite"));
         services.Configure<UpstreamRetryOptions>(config.GetSection("Pipeline:UpstreamRetry"));
+        services.Configure<ToolLeakGuardOptions>(config.GetSection("Pipeline:Detectors:ToolLeakGuard"));
 
         // Kestrel listens on the (post-PostConfigure) port + uses our generous
         // keep-alive limits. Configured via IConfigureOptions so it can pull
@@ -148,8 +150,13 @@ internal static class BridgeServiceCollectionExtensions
         services.AddSingleton<MessagesSanitizeStage>();
         services.AddSingleton<ToolsSanitizeStage>();
         services.AddSingleton<HeadersOutboundStage>();
-        services.AddSingleton<DoneFilterStage>();
-        services.AddSingleton<ResponseModelRewriteStage>();
+        // Response detection framework: one stage runs an ordered, per-request set
+        // of detectors (DONE-filter, model-rewrite, tool-leak guard). The former
+        // standalone DoneFilterStage / ResponseModelRewriteStage are now detectors
+        // built by DetectorSetFactory (singleton; produces fresh per-request
+        // detectors so streaming state never crosses requests).
+        services.AddSingleton<IDetectorSetFactory, DetectorSetFactory>();
+        services.AddSingleton<ResponseInspectionStage>();
         services.AddSingleton<CopilotMessagesPassthroughStrategy>();
 
         // --- Codex / Responses (change 3) ---------------------------------
@@ -229,10 +236,11 @@ internal static class BridgeServiceCollectionExtensions
             ],
             ResponseStages =
             [
-                sp.GetRequiredService<DoneFilterStage>(),
-                // After DoneFilter so the rewrite wrapper only sees events
-                // that will actually reach the client.
-                sp.GetRequiredService<ResponseModelRewriteStage>(),
+                // One stage runs the whole detector framework in a single stream
+                // wrap: DONE-filter (drop [DONE]) → model-rewrite (restore the
+                // client model id) → tool-leak guard (abort+retry on leaked XML).
+                // Order inside the set is fixed by DetectorSetFactory.
+                sp.GetRequiredService<ResponseInspectionStage>(),
             ],
             Strategies = new StrategyRegistry<MessagesRequest>(
             [
