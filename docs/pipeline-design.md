@@ -622,12 +622,35 @@ The split is **"profile = fact, location = preference, adjuster = mechanism"**:
   messages into the top-level `system` field, cap `budget_tokens`, register
   beta-strip patterns for `HeadersOutboundStage`.
 
-A profile miss is a **hard error**: `ModelRouterStage` throws
-`UnknownModelException`, which the endpoint converts into a 400 +
-Anthropic-format error body. The message tells the operator what to fix
-(add a routing rule, fix the typo, file an issue). The bridge never
-forwards a request for a model it has no profile for — guessing would
-produce a silent Copilot 400 that operators cannot diagnose.
+A profile miss is **best-effort, not a hard fail**: `ModelRouterStage` first
+tries an exact catalog lookup, and on a miss falls back to the *nearest known
+profile* by fuzzy string similarity (`ModelNameMatcher`, Jaccard over character
+bigrams). A Copilot model newer than this build's catalog (e.g. a freshly
+shipped `claude-sonnet-6`) is therefore **forwarded under the closest known
+model's wire contract** — the **real** model id stays on the wire (Copilot has
+the model; only our probed profile is missing), and only the coercion rules
+(thinking policy, accepted efforts, mid-conv-system, beta strips) are borrowed.
+Every fuzzy match is **WARN-logged**: it's a guess, so the operator should
+upgrade the bridge (or add an explicit `Routing.Locations` remap) and watch for
+unexpected behavior if the borrowed contract doesn't fit. Copilot remains the
+final authority — a wrong borrowed shape surfaces as Copilot's own model error.
+
+Only when the requested id is **too dissimilar to any known model** (below the
+`ModelNameMatcher.DefaultMinSimilarity` floor — typically a typo or a foreign
+vendor prefix) does the bridge fall back to the old behavior: throw
+`UnknownModelException` → 400 + Anthropic-format error body naming the nearest
+rejected candidate and its score, plus how to fix it (add a routing rule, fix
+the typo, file an issue). The borrowed profile never rewrites the model id: if
+a borrowed profile used `EffortHandling.RouteToVariant`, the stage neutralizes
+it to `Strip` so a sized-sibling id that may not exist for the new model is
+never substituted.
+
+> **Why this inverts the earlier "never guess" principle.** The old design
+> fail-closed to avoid a *silent* Copilot 400. But the real model id is always
+> what's sent, so a genuinely-new model just works; a mis-borrowed contract
+> produces Copilot's own (visible) error, not a silent one; and the similarity
+> floor still gives a crisp, actionable error for true typos. Net: new models
+> work out of the box, typos still fail loudly.
 
 ### 7.1 Vendor + endpoint dispatch — `IModelRegistry.Resolve`
 
@@ -1242,10 +1265,14 @@ The pipeline framework, runner, response stages, audit log — all reused.
 
 Pipeline stages, audit log, endpoints — all reused.
 
-### 11.3 Substituting a model alias (the immediate case)
+### 11.3 Substituting a model alias (the explicit override)
 
-When Copilot ships a model the bridge has no profile for yet, the operator
-adds a redirect location in `appsettings.json`:
+When Copilot ships a model the bridge has no profile for yet, it is
+**forwarded automatically** under the nearest known profile (see §7 —
+best-effort fuzzy matching), with a WARN log. The operator only needs to act if
+they want to override that automatic choice — e.g. pin a new id to a *specific*
+known model rather than whichever the matcher picks. They do so with a redirect
+location in `appsettings.json`:
 
 ```jsonc
 {
@@ -1254,17 +1281,20 @@ adds a redirect location in `appsettings.json`:
 }
 ```
 
-The redirect is intentionally a user-visible knob, not a static C# table:
-the operator can confirm a fallback works for their workload before a
-release lands, and they can remove the location once the bridge ships a real
-`ModelProfile` for the new id. There is no built-in alias dictionary —
-the bridge prefers a clear `UnknownModelException` (§7.5) over silent
-substitution.
+The redirect is a user-visible knob: the operator can confirm a specific
+fallback works for their workload, and remove the location once the bridge ships
+a real `ModelProfile` for the new id. The fuzzy matcher is the default;
+`ModelNameMatcher` uses Jaccard similarity over character bigrams with a
+family-then-version tie-break, so it already prefers the same-family, highest
+-version sibling — the redirect is for when the operator wants a *different*
+target than that.
 
-Stage: `ModelRouterStage` normalizes the inbound id, runs the location
-matcher to apply the `Use` change-set, looks up the target profile, and runs
-`ProfileAdjuster`. If `Use.Model` points at an id with no profile, the
-bridge 400s with a message that names the offending `Routing.Locations[i]`.
+Stage: `ModelRouterStage` normalizes the inbound id, runs the location matcher
+to apply the `Use` change-set, looks up the target profile (exact, then nearest
+via fuzzy match), and runs `ProfileAdjuster`. Only if the resolved id is too
+dissimilar to *any* known model — below the `ModelNameMatcher` floor — does the
+bridge 400 with a message naming the nearest rejected candidate (and, if a
+routing location produced the id, the offending `Routing.Locations[i]`).
 
 ## 12. Migration plan from current code
 

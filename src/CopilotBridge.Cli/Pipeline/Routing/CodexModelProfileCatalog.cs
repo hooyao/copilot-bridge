@@ -37,6 +37,24 @@ internal sealed class CodexModelProfileCatalog
     public CodexModelProfile? Get(string canonicalId) =>
         _byId.TryGetValue(canonicalId, out var p) ? p : null;
 
+    /// <summary>
+    /// Best-effort fallback: the profile whose canonical id is <b>most similar</b>
+    /// to <paramref name="canonicalId"/> (Jaccard via <see cref="ModelNameMatcher"/>),
+    /// or null below the similarity floor. The Responses-side analog of
+    /// <see cref="ModelProfileCatalog.GetNearest"/> — lets a Codex model newer than
+    /// this build's catalog borrow the nearest known model's effort-clamp +
+    /// custom-tool-drop rules rather than passing through unclamped (which risks a
+    /// Copilot 400/500). The real model id still goes on the wire.
+    /// </summary>
+    public CodexModelProfile? GetNearest(string canonicalId, out string matchedId, out double score)
+    {
+        matchedId = "";
+        var nearest = ModelNameMatcher.FindNearest(canonicalId, KnownIds, out score);
+        if (nearest is null) return null;
+        matchedId = nearest;
+        return Get(nearest);
+    }
+
     /// <summary>All known canonical ids, sorted — used in the unknown-model error body.</summary>
     public IReadOnlyList<string> KnownIds
     {

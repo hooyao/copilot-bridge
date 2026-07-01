@@ -9,9 +9,13 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 /// </summary>
 /// <remarks>
 /// <para>Lookup is by canonical id (post-<see cref="CopilotModelRegistry.Normalize"/>).
-/// A miss is a hard, surfaced error (<see cref="UnknownModelException"/>) — the
-/// bridge never guesses a model's wire shape, because guessing wrong produces a
-/// silent 400 from Copilot that the user cannot diagnose.</para>
+/// An exact miss falls back to the <b>nearest known profile</b> via
+/// <see cref="GetNearest"/> (fuzzy match, <see cref="ModelNameMatcher"/>) so a
+/// Copilot model newer than this build still forwards under the closest known
+/// model's wire contract; only an id too dissimilar to any known model is a hard,
+/// surfaced error (<see cref="UnknownModelException"/>). The catalog stays the
+/// source of probed truth — fuzzy matching is a best-effort bridge until a real
+/// profile is added, not a substitute for probing.</para>
 /// <para>Every value below is sourced from a successful or rejected probe
 /// recorded in <c>tests/CopilotBridge.Playground/ModelProfileProbe.cs</c>.
 /// When Copilot adds or changes a model, re-run that probe and reconcile —
@@ -35,6 +39,27 @@ internal sealed class ModelProfileCatalog
     /// <summary>Profile for <paramref name="canonicalId"/>, or null if unknown.</summary>
     public ModelProfile? Get(string canonicalId) =>
         _byId.TryGetValue(canonicalId, out var p) ? p : null;
+
+    /// <summary>
+    /// Best-effort fallback: the profile whose canonical id is <b>most similar</b>
+    /// to <paramref name="canonicalId"/> (Jaccard via <see cref="ModelNameMatcher"/>),
+    /// or null if nothing clears the similarity floor. Used by
+    /// <see cref="Stages.Anthropic.ModelRouterStage"/> when <see cref="Get"/> misses:
+    /// a Copilot model newer than this build's probed catalog borrows the nearest
+    /// known model's wire contract instead of being hard-refused — the real model
+    /// id still goes on the wire; only the coercion rules are borrowed. A miss
+    /// below the floor (typo / unrelated id) returns null so the caller keeps its
+    /// hard error. <paramref name="matchedId"/> / <paramref name="score"/> report
+    /// the winner (empty / 0 when null).
+    /// </summary>
+    public ModelProfile? GetNearest(string canonicalId, out string matchedId, out double score)
+    {
+        matchedId = "";
+        var nearest = ModelNameMatcher.FindNearest(canonicalId, KnownIds, out score);
+        if (nearest is null) return null;
+        matchedId = nearest;
+        return Get(nearest);
+    }
 
     /// <summary>All known canonical ids, sorted — used in the unknown-model error body.</summary>
     public IReadOnlyList<string> KnownIds

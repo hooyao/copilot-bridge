@@ -75,9 +75,16 @@ public class CodexRequestBuildTests
     [InlineData("gpt-5-mini", "none", null)]          // rejected, no neighbor → dropped (no reasoning object)
     [InlineData("gpt-5-mini", "minimal", "minimal")]  // accepted → kept
     [InlineData("gpt-5-mini", "medium", "medium")]    // accepted → kept
-    // unknown model → no profile → passthrough unclamped (the router validated the id elsewhere).
+    // unknown model → below the fuzzy floor → no profile → passthrough unclamped
+    // (a genuinely unrelated id borrows nothing; the router surfaced it elsewhere).
     [InlineData("totally-unknown-model", "minimal", "minimal")]
     [InlineData("totally-unknown-model", "xhigh", "xhigh")]
+    // unknown-but-CLOSE Codex id → GetNearest borrows the nearest profile's clamp.
+    // 'gpt-5.6' has no exact profile but is closest to the large profiles
+    // (gpt-5.3-codex/5.4/5.5), which accept xhigh → kept. A close SMALL-family id
+    // ('gpt-5-nano' ~ gpt-5-mini) borrows the small clamp → xhigh clamped to high.
+    [InlineData("gpt-5.6", "xhigh", "xhigh")]
+    [InlineData("gpt-5-nano", "xhigh", "high")]
     // case-insensitivity: accepted check is OrdinalIgnoreCase, so an accepted value
     // keeps its original case; a clamped value lowercases via the neighbor table.
     [InlineData("gpt-5.3-codex", "MEDIUM", "MEDIUM")] // accepted case-insensitively → original case preserved

@@ -125,6 +125,30 @@ public class CodexRoutingAndCatalogTests
         Assert.Null(catalog.Get("gpt-9-imaginary"));
     }
 
+    // ── GetNearest: best-effort fuzzy fallback (Get stays exact-only) ─────────
+
+    [Fact]
+    public void Catalog_GetNearest_UnknownButCloseGptId_BorrowsNearestGptProfile()
+    {
+        // A gpt id newer than the catalog borrows the nearest gpt profile's rules
+        // (Get would return null; GetNearest returns a real profile), so its
+        // effort/tool coercion is applied instead of unclamped passthrough.
+        var catalog = new CodexModelProfileCatalog();
+        var profile = catalog.GetNearest("gpt-5.6", out var matched, out var score);
+        Assert.NotNull(profile);
+        Assert.StartsWith("gpt-", matched);
+        Assert.True(score >= ModelNameMatcher.DefaultMinSimilarity, $"score {score} below floor");
+    }
+
+    [Fact]
+    public void Catalog_GetNearest_DissimilarId_ReturnsNull()
+    {
+        // A genuinely unrelated id stays a miss even under GetNearest — the caller
+        // keeps its unclamped-passthrough / hard-error behavior.
+        var catalog = new CodexModelProfileCatalog();
+        Assert.Null(catalog.GetNearest("totally-unrelated-thing", out _, out _));
+    }
+
     // ── H1: registering the Codex strategy must not perturb /cc routing ───────
     // The shared StrategyRegistry now holds BOTH the Anthropic passthrough and
     // the Codex/Responses strategy. A claude target must still select Anthropic;
