@@ -61,8 +61,14 @@ Fixed each real hit:
   switched `EffortOnUnsupported` to `Strip`, dropped the map.
 - `CopilotModelRegistry.ResponsesModelIds` — `mai-code-1-flash-internal` →
   `mai-code-1-flash-picker`.
-- `CodexModelProfileCatalog` — renamed the row; marked it PLAYGROUND-PENDING
-  (liveness-probed, but its effort matrix not re-probed on the new suffix).
+- `CodexModelProfileCatalog` — renamed the row; initially marked it
+  PLAYGROUND-PENDING (liveness-probed, but its effort matrix not re-probed on the
+  new suffix). **Follow-up (2026-07): re-probed directly** —
+  `ResponsesProbe.MaiCodePicker_Effort_ReProbe` / `_Tool_ReProbe` confirmed the
+  extrapolated "small" set + `RejectsCustomTools` were correct on the live
+  `-picker` id (none/xhigh → 400, custom apply_patch → 500), so the pending note
+  was removed. The lesson: extrapolation is a *labeled placeholder*, discharged by
+  a probe — not a permanent guess.
 - `ModelProfileProbe.AllModels` — removed the retired ids.
 - `appsettings.json` — removed the two dead redirect rules.
 - Unit tests keyed on the ids (`CodexRoutingAndCatalogTests`,

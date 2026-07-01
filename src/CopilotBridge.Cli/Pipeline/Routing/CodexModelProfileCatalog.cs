@@ -91,7 +91,8 @@ internal sealed class CodexModelProfileCatalog
     /// <summary>
     /// The baseline profile set, row-by-row from
     /// <c>docs/copilot-responses-contract-snapshot.json</c> (seeded 2026-06-15,
-    /// Enterprise). Two effort profiles:
+    /// Enterprise), with <c>mai-code-1-flash-picker</c> re-probed directly 2026-07
+    /// (see its row). Two effort profiles:
     /// <list type="bullet">
     ///   <item><b>large</b> — <c>gpt-5.3-codex</c>, <c>gpt-5.4</c>,
     ///         <c>gpt-5.4-mini</c>, <c>gpt-5.5</c>: accept
@@ -101,7 +102,8 @@ internal sealed class CodexModelProfileCatalog
     ///         <c>minimal/low/medium/high</c>, reject <c>none</c> AND <c>xhigh</c>
     ///         (the inverse of large at the boundaries).</item>
     /// </list>
-    /// <c>mai-code-1-flash-picker</c> additionally 500s on custom tools.
+    /// <c>mai-code-1-flash-picker</c> additionally 500s on custom tools
+    /// (<c>RejectsCustomTools</c>).
     /// </summary>
     private static IEnumerable<CodexModelProfile> BuildDefault()
     {
@@ -115,18 +117,20 @@ internal sealed class CodexModelProfileCatalog
         // ── "small" effort profile: accept minimal/low/medium/high, reject none+xhigh ──
         string[] small = ["minimal", "low", "medium", "high"];
         yield return new CodexModelProfile { CanonicalId = "gpt-5-mini", AcceptedEfforts = small };
-        // PLAYGROUND-PENDING: mai-code-1-flash-INTERNAL was retired by Copilot (2026
-        // reconciliation — 400 "not available for integrator"); the live Responses id
-        // is mai-code-1-flash-PICKER (200 — ResponsesProbe.MaiCode_LivenessProbe).
-        // The effort profile + custom-tool rejection below are extrapolated from the
-        // retired -internal sibling (same underlying mai-code-1-flash model, different
-        // routing suffix) and NOT yet re-probed on -picker. Re-run the Responses
-        // effort/tool matrix against -picker and reconcile before trusting these.
+        // mai-code-1-flash-INTERNAL was retired by Copilot (2026 reconciliation —
+        // 400 "not available for integrator"); the live Responses id is
+        // mai-code-1-flash-PICKER (200 — ResponsesProbe.MaiCode_LivenessProbe).
+        // Effort + custom-tool contract RE-PROBED directly on -picker 2026-07
+        // (ResponsesProbe.MaiCodePicker_Effort_ReProbe / _Tool_ReProbe; underlying
+        // model 'mai-2-flash-code-2026-05-18'): accepts null/minimal/low/medium/high,
+        // REJECTS none + xhigh (400 "Supported values are: minimal, low, medium,
+        // high") → the "small" set; custom apply_patch → 500 → RejectsCustomTools.
+        // function + web_search → 200. Wire-verified, no longer extrapolated.
         yield return new CodexModelProfile
         {
             CanonicalId = "mai-code-1-flash-picker",
-            AcceptedEfforts = small,
-            RejectsCustomTools = true,   // snapshot: custom_apply_patch in tools_rejected (500)
+            AcceptedEfforts = small,     // MaiCodePicker_Effort_ReProbe: none/xhigh → 400
+            RejectsCustomTools = true,   // MaiCodePicker_Tool_ReProbe: custom apply_patch → 500
         };
     }
 }
