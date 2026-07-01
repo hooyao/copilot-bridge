@@ -14,10 +14,6 @@ Gemini CLI  (Gemini shape)    ──► /gemini/v1/...  (soon)  ┘
 It ships as a single ~12 MB native executable with **no .NET runtime to install**,
 for win-x64, win-arm64, linux-x64, and osx-arm64.
 
----
-
-# Part 1 — For users
-
 ## Why use it
 
 - **One Copilot subscription, two coding agents.** Point Claude Code at `/cc`
@@ -93,8 +89,6 @@ the provider block:
 ```toml
 model = "gpt-5.5"
 model_provider = "copilot-bridge"
-model_reasoning_effort = "xhigh"
-model_context_window = 1000000
 
 [model_providers.copilot-bridge]
 name = "copilot-bridge"
@@ -161,7 +155,7 @@ native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
 
 ---
 
-# Part 2 — For developers
+# Development
 
 ## Architecture
 
