@@ -78,22 +78,41 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
             // The Anthropic ModelProfileCatalog is skipped here (gpt-* has no
             // entry), but the Codex side still needs a profile: T2's per-model
             // CoerceEffort + custom-tool drop are driven by CodexModelProfileCatalog.
-            // Assert one exists. Without this, a routing/catalog drift (id in
-            // CopilotModelRegistry.ResponsesModelIds but absent from the Codex
-            // catalog) would silently disable every coercion — effort passes
+            // Assert one is reachable. Exact miss → best-effort fuzzy fallback (the
+            // Responses strategy re-runs GetNearest to fetch the borrowed rules);
+            // only a miss below the similarity floor is a hard error. Without this,
+            // a routing/catalog drift (id in ResponsesModelIds but with no close
+            // Codex profile) would silently disable every coercion — effort passes
             // through unclamped (Copilot 400s it), custom tools aren't dropped
-            // (Copilot 500s). Surface it as the same actionable 400 the Anthropic
-            // miss raises rather than a downstream upstream error.
+            // (Copilot 500s). Surface that as the same actionable 400 the Anthropic
+            // miss raises. A fuzzy hit is WARN-logged (best-effort guess; upgrade or
+            // add a Routing.Locations remap, and watch for unexpected behavior).
             if (_codexProfiles.Get(afterRule) is null)
             {
-                var codexEx = new Routing.UnknownModelException(
-                    requestedModel: requested,
-                    resolvedModel: afterRule,
-                    appliedLocation: matchedLoc,
-                    appliedLocationIndex: matchedLoc is null ? null : locIndex,
-                    knownProfiles: _codexProfiles.KnownIds);
-                _log.LogError("{Message}", codexEx.Message);
-                throw codexEx;
+                var nearestCodex = _codexProfiles.GetNearest(afterRule, out var matchedCodexId, out var codexScore);
+                if (nearestCodex is null)
+                {
+                    // GetNearest reports the nearest candidate even below the floor
+                    // (matchedId empty only for empty inputs), so the 400 can name it.
+                    var codexEx = new Routing.UnknownModelException(
+                        requestedModel: requested,
+                        resolvedModel: afterRule,
+                        appliedLocation: matchedLoc,
+                        appliedLocationIndex: matchedLoc is null ? null : locIndex,
+                        knownProfiles: _codexProfiles.KnownIds,
+                        bestCandidate: matchedCodexId.Length > 0 ? matchedCodexId : null,
+                        bestScore: codexScore);
+                    _log.LogError("{Message}", codexEx.Message);
+                    throw codexEx;
+                }
+
+                _log.LogWarning(
+                    "stage {Name}: no exact Codex profile for '{Resolved}' — fuzzy-matched to nearest known "
+                    + "model '{Matched}' (jaccard={Score:F2}) and borrowing its effort/tool rules. This is a "
+                    + "best-effort guess; upgrade the bridge for a real profile, or add a Routing.Locations "
+                    + "remap in appsettings.json, and watch for unexpected behavior if the borrowed contract "
+                    + "does not fit.",
+                    Name, afterRule, matchedCodexId, codexScore);
             }
 
             ctx.Target = resolvedEarly;
@@ -103,18 +122,52 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
             return Task.CompletedTask;
         }
 
-        // 3. Profile lookup. Miss = hard error with actionable diagnostics.
+        // 3. Profile lookup. Exact miss → best-effort fuzzy fallback (borrow the
+        //    nearest known model's wire contract), or a hard error below the
+        //    similarity floor. The bridge used to hard-refuse any un-profiled id;
+        //    it now forwards a Copilot model newer than this build's catalog under
+        //    the closest known profile — the REAL id still goes on the wire
+        //    (Copilot has the model; only our probed profile is missing), and only
+        //    the coercion rules are borrowed. A fuzzy match is always WARN-logged:
+        //    it's a best-effort guess, so the operator should upgrade the bridge
+        //    (or add an explicit Routing.Locations remap) and watch for unexpected
+        //    behavior if the borrowed contract doesn't fit.
         var profile = _profiles.Get(afterRule);
         if (profile is null)
         {
-            var ex = new Routing.UnknownModelException(
-                requestedModel: requested,
-                resolvedModel: afterRule,
-                appliedLocation: matchedLoc,
-                appliedLocationIndex: matchedLoc is null ? null : locIndex,
-                knownProfiles: _profiles.KnownIds);
-            _log.LogError("{Message}", ex.Message);
-            throw ex;
+            var nearest = _profiles.GetNearest(afterRule, out var matchedId, out var score);
+            if (nearest is null)
+            {
+                // GetNearest reports the nearest candidate even below the floor
+                // (matchedId empty only for empty inputs), so the 400 can name it.
+                var ex = new Routing.UnknownModelException(
+                    requestedModel: requested,
+                    resolvedModel: afterRule,
+                    appliedLocation: matchedLoc,
+                    appliedLocationIndex: matchedLoc is null ? null : locIndex,
+                    knownProfiles: _profiles.KnownIds,
+                    bestCandidate: matchedId.Length > 0 ? matchedId : null,
+                    bestScore: score);
+                _log.LogError("{Message}", ex.Message);
+                throw ex;
+            }
+
+            // Borrow the nearest profile but NEUTRALIZE variant-routing: a borrowed
+            // profile's EffortToVariant could rewrite body.Model to a sized sibling
+            // id (e.g. '-high') that may not exist for this newer model. Force Strip
+            // so the real requested id is preserved on the wire. (No profile uses
+            // RouteToVariant today, but this keeps the fallback correct if one does.)
+            profile = nearest with
+            {
+                EffortOnUnsupported = Routing.EffortHandling.Strip,
+                EffortToVariant = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            };
+            _log.LogWarning(
+                "stage {Name}: no exact profile for '{Resolved}' — fuzzy-matched to nearest known model "
+                + "'{Matched}' (jaccard={Score:F2}) and borrowing its wire contract. This is a best-effort "
+                + "guess; upgrade the bridge for a real profile, or add a Routing.Locations remap in "
+                + "appsettings.json, and watch for unexpected behavior if the borrowed contract does not fit.",
+                Name, afterRule, matchedId, score);
         }
 
         // 4. Profile-driven body adjustment. May switch profile via variant routing.

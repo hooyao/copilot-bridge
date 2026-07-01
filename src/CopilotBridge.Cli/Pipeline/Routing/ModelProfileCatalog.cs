@@ -9,9 +9,13 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 /// </summary>
 /// <remarks>
 /// <para>Lookup is by canonical id (post-<see cref="CopilotModelRegistry.Normalize"/>).
-/// A miss is a hard, surfaced error (<see cref="UnknownModelException"/>) — the
-/// bridge never guesses a model's wire shape, because guessing wrong produces a
-/// silent 400 from Copilot that the user cannot diagnose.</para>
+/// An exact miss falls back to the <b>nearest known profile</b> via
+/// <see cref="GetNearest"/> (fuzzy match, <see cref="ModelNameMatcher"/>) so a
+/// Copilot model newer than this build still forwards under the closest known
+/// model's wire contract; only an id too dissimilar to any known model is a hard,
+/// surfaced error (<see cref="UnknownModelException"/>). The catalog stays the
+/// source of probed truth — fuzzy matching is a best-effort bridge until a real
+/// profile is added, not a substitute for probing.</para>
 /// <para>Every value below is sourced from a successful or rejected probe
 /// recorded in <c>tests/CopilotBridge.Playground/ModelProfileProbe.cs</c>.
 /// When Copilot adds or changes a model, re-run that probe and reconcile —
@@ -20,32 +24,59 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 internal sealed class ModelProfileCatalog
 {
     private readonly Dictionary<string, ModelProfile> _byId;
+    private readonly IReadOnlyList<string> _knownIds;
 
     public ModelProfileCatalog()
     {
         _byId = BuildDefault().ToDictionary(p => p.CanonicalId, StringComparer.OrdinalIgnoreCase);
+        _knownIds = SortedIds(_byId);
     }
 
     /// <summary>Test-only: build a catalog from an explicit profile set.</summary>
     internal ModelProfileCatalog(IEnumerable<ModelProfile> profiles)
     {
         _byId = profiles.ToDictionary(p => p.CanonicalId, StringComparer.OrdinalIgnoreCase);
+        _knownIds = SortedIds(_byId);
+    }
+
+    private static IReadOnlyList<string> SortedIds(Dictionary<string, ModelProfile> byId)
+    {
+        var ids = new List<string>(byId.Keys);
+        ids.Sort(StringComparer.Ordinal);
+        return ids;
     }
 
     /// <summary>Profile for <paramref name="canonicalId"/>, or null if unknown.</summary>
     public ModelProfile? Get(string canonicalId) =>
         _byId.TryGetValue(canonicalId, out var p) ? p : null;
 
-    /// <summary>All known canonical ids, sorted — used in the unknown-model error body.</summary>
-    public IReadOnlyList<string> KnownIds
+    /// <summary>
+    /// Best-effort fallback: the profile whose canonical id is <b>most similar</b>
+    /// to <paramref name="canonicalId"/> (Jaccard via <see cref="ModelNameMatcher"/>),
+    /// or null if nothing clears the similarity floor. Used by
+    /// <see cref="Stages.Anthropic.ModelRouterStage"/> when <see cref="Get"/> misses:
+    /// a Copilot model newer than this build's probed catalog borrows the nearest
+    /// known model's wire contract instead of being hard-refused — the real model
+    /// id still goes on the wire; only the coercion rules are borrowed.
+    /// <para><paramref name="matchedId"/> / <paramref name="score"/> report the
+    /// nearest candidate <b>whether or not it cleared the floor</b> — so a caller
+    /// that got null (below-floor miss) can still surface "nearest was X at 0.21,
+    /// below the floor" in its error. Only genuinely empty inputs leave them
+    /// empty / 0. The profile return value is null exactly when the score is below
+    /// the floor.</para>
+    /// </summary>
+    public ModelProfile? GetNearest(string canonicalId, out string matchedId, out double score)
     {
-        get
-        {
-            var ids = new List<string>(_byId.Keys);
-            ids.Sort(StringComparer.Ordinal);
-            return ids;
-        }
+        var best = ModelNameMatcher.FindBest(canonicalId, _knownIds, out score);
+        matchedId = best ?? "";
+        if (best is null || score < ModelNameMatcher.DefaultMinSimilarity) return null;
+        return Get(best);
     }
+
+    /// <summary>All known canonical ids, sorted (cached — <c>_byId</c> is immutable
+    /// after construction). Used in the unknown-model error body and by the fuzzy
+    /// matcher's candidate set.</summary>
+    public IReadOnlyList<string> KnownIds => _knownIds;
 
     public int Count => _byId.Count;
 
@@ -55,30 +86,41 @@ internal sealed class ModelProfileCatalog
     /// re-verify without re-running the matrix.
     /// </summary>
     /// <remarks>
-    /// Cross-cutting facts learned from probing all 11 models:
+    /// Cross-cutting facts learned from probing the live Copilot model set (the
+    /// 2026 reconciliation retired opus-4.5, opus-4.6-1m, and the opus-4.7
+    /// -high/-xhigh/-1m-internal variants — all now 400 "not available for
+    /// integrator"; see <c>ModelProfileProbe.RetiredCandidate_LivenessProbe</c>):
     /// <list type="bullet">
-    ///   <item>Effort acceptance was re-probed 2026-06-05 (Copilot had widened
-    ///         it since the catalog was first built). The current matrix is per
+    ///   <item>Effort acceptance was re-probed 2026-06-05 and again during the
+    ///         2026 reconciliation. Per
     ///         <c>ModelProfileProbe.Family_Effort_ReProbe</c> /
-    ///         <c>Opus48_Effort_ReProbe</c>: opus-4.6 / opus-4.6-1m / sonnet-4.6
-    ///         accept <c>low/medium/high/max</c> but REJECT <c>xhigh</c>
-    ///         (effort tiers are NOT monotonic — <c>max</c> works where
-    ///         <c>xhigh</c> 400s); opus-4.7 base / opus-4.7-1m-internal /
-    ///         opus-4.8 accept all of <c>low/medium/high/xhigh/max</c>;
-    ///         haiku-4.5 / sonnet-4.5 / opus-4.5 reject the effort field
-    ///         entirely. "max" is no longer stripped universally — only on the
-    ///         models that actually reject it.</item>
-    ///   <item>Of the Anthropic models on Copilot, <b>only</b> opus-4.8 accepts
-    ///         non-first <c>role:"system"</c> messages — and even there, only
-    ///         in legal placements (predecessor=user, successor=assistant or
+    ///         <c>Opus48_Effort_ReProbe</c> / <c>Sonnet5_Effort_ReProbe</c>:
+    ///         opus-4.6 / sonnet-4.6 accept <c>low/medium/high/max</c> but REJECT
+    ///         <c>xhigh</c> (effort tiers are NOT monotonic — <c>max</c> works
+    ///         where <c>xhigh</c> 400s); opus-4.7 base / opus-4.8 / sonnet-5
+    ///         accept all of <c>low/medium/high/xhigh/max</c> (sonnet-5 is the
+    ///         first Sonnet-tier model to take <c>xhigh</c>); haiku-4.5 /
+    ///         sonnet-4.5 reject the effort field entirely. "max" is not stripped
+    ///         universally — only on the models that actually reject it.</item>
+    ///   <item>Of the Anthropic models on Copilot, <b>opus-4.8 and sonnet-5</b>
+    ///         accept non-first <c>role:"system"</c> messages — and even there,
+    ///         only in legal placements (predecessor=user, successor=assistant or
     ///         end-of-array). Every other model 400s with "Unexpected role
     ///         'system'" regardless of position, so
     ///         <see cref="ModelProfile.AcceptsMidConversationSystem"/> is
-    ///         <c>true</c> for opus-4.8 and <c>false</c> for all others;
-    ///         <see cref="Routing.ProfileAdjuster"/> converts mid-conv system
-    ///         to user (with an injected-context marker prefix) when the
+    ///         <c>true</c> for opus-4.8 / sonnet-5 and <c>false</c> for all
+    ///         others; <see cref="Routing.ProfileAdjuster"/> converts mid-conv
+    ///         system to user (with an injected-context marker prefix) when the
     ///         profile says <c>false</c>, and only placement-fixes the bad
-    ///         positions when <c>true</c>.</item>
+    ///         positions when <c>true</c>. (Note: sonnet-5 mid-conv support
+    ///         contradicts Anthropic's "opus-4.8 only" docs — it was confirmed by
+    ///         live probe, <c>Sonnet5_MidConversationSystem_PlacementRules</c>.)</item>
+    ///   <item>1M context is now native on the opus-4.6 / opus-4.7 / opus-4.8 base
+    ///         ids and on sonnet-5 (all serve &gt;600k-token prompts →&#160;200;
+    ///         <c>OpusBase_LargePrompt_Probe…</c> / <c>Sonnet5_LargePrompt_Probe…</c>).
+    ///         The dedicated <c>-1m</c> / <c>-1m-internal</c> ids that used to
+    ///         unlock it were retired, so their redirects are gone — the base id
+    ///         is passed through.</item>
     ///   <item><c>thinking.budget_tokens</c> must always be &lt;
     ///         <c>max_tokens</c>; otherwise Copilot 400s on that constraint
     ///         before evaluating the shape at all.</item>
@@ -87,12 +129,14 @@ internal sealed class ModelProfileCatalog
     private static IEnumerable<ModelProfile> BuildDefault()
     {
         // ── Family: "enabled-only" thinking, no reasoning_effort ─────────
-        // haiku-4.5, sonnet-4.5, opus-4.5 share the same wire contract:
+        // haiku-4.5, sonnet-4.5 share the same wire contract:
         //   adaptive thinking rejected ("does not match expected tags:
         //     'disabled', 'enabled'" / "adaptive thinking is not supported"),
         //   enabled+disabled accepted,
         //   output_config.effort rejected outright ("does not support
         //     reasoning effort").
+        // (opus-4.5 was in this family but Copilot RETIRED it — 400
+        //  model_not_supported; RetiredCandidate_LivenessProbe.)
         yield return new ModelProfile
         {
             CanonicalId = "claude-haiku-4.5",
@@ -121,14 +165,6 @@ internal sealed class ModelProfileCatalog
             MaxThinkingBudget = 32000,
             StripBetas = ["context-1m-*"], // no 1M sonnet on Copilot — see claude-haiku-4.5 above
         };
-        yield return new ModelProfile
-        {
-            CanonicalId = "claude-opus-4.5",
-            AcceptedEfforts = [],
-            EffortOnUnsupported = EffortHandling.Strip,
-            Thinking = ThinkingPolicy.EnabledOnly,
-            MaxThinkingBudget = 32000,
-        };
 
         // ── Family: "all thinking shapes" + effort low/medium/high/max ───
         // sonnet-4.6 and opus-4.6 (base + 1m) accept all three thinking
@@ -152,6 +188,46 @@ internal sealed class ModelProfileCatalog
             Thinking = ThinkingPolicy.All,
             MaxThinkingBudget = 32000,
         };
+
+        // ── claude-sonnet-5 ──────────────────────────────────────────────
+        // Copilot's newest Sonnet (added to /models 2026, integrator allowlist
+        // confirms). Despite the family name, its wire contract mirrors
+        // OPUS-4.8, not sonnet-4.6 — every field below is live-probed
+        // (ModelProfileProbe.Sonnet5_*), because /models capabilities lie:
+        //   • Thinking: adaptive-ONLY. thinking.type.enabled → 400 ("not
+        //     supported for this model. Use thinking.type.adaptive and
+        //     output_config.effort"), same as opus-4.7/4.8 and UNLIKE sonnet-4.6
+        //     (which is ThinkingPolicy.All). Sonnet5_Thinking_ProbeAcceptance:
+        //     null/adaptive → 200, enabled → 400 (disabled 200).
+        //   • Effort: low/medium/high/xhigh/max ALL accepted directly — the
+        //     first Sonnet-tier model to take xhigh. Sonnet5_Effort_ReProbe:
+        //     every tier → 200, standalone and with adaptive thinking.
+        //   • Mid-conv system: ACCEPTED with the exact opus-4.8 placement rule
+        //     (predecessor=user AND successor=assistant-or-end-of-array), which
+        //     CONTRADICTS Anthropic's "opus-4.8 only" docs — hence we probe.
+        //     Sonnet5_MidConversationSystem_PlacementRules: end-after-user (U·S)
+        //     and U·A·U·S → 200; every predecessor=assistant / successor=user
+        //     placement → 400 with the placement-specific ("must follow a 'user'
+        //     message …" / "must precede an 'assistant' message …") errors, NOT
+        //     the unconditional "Unexpected role 'system'". So true + ProfileAdjuster
+        //     keeps legal placements and converts illegal ones (same path as 4.8).
+        //   • 1M context: native. Sonnet5_ContextOneMillionBeta_ProbeAcceptance
+        //     (baseline/with-beta/bogus-beta all 200 → Copilot ignores unknown
+        //     betas, so the 1m acceptance is genuine) +
+        //     Sonnet5_LargePrompt_ProbeOneMillionContextSupport (677k-token
+        //     padded prompt → 200 with and without the beta). No -1m variant
+        //     exists or is needed; no StripBetas entry — the context-1m beta is
+        //     silently accepted, same as opus-4.8.
+        yield return new ModelProfile
+        {
+            CanonicalId = "claude-sonnet-5",
+            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
+            EffortOnUnsupported = EffortHandling.Strip,
+            Thinking = ThinkingPolicy.AdaptiveOnly,
+            MaxThinkingBudget = 32000,
+            AcceptsMidConversationSystem = true,  // empirical 2026: placement-rule errors, same as opus-4.8
+            AcceptsSpeedFast = false,             // DTO doesn't model speed; unverified, leaving conservative
+        };
         yield return new ModelProfile
         {
             CanonicalId = "claude-opus-4.6",
@@ -160,67 +236,33 @@ internal sealed class ModelProfileCatalog
             Thinking = ThinkingPolicy.All,
             MaxThinkingBudget = 32000,
         };
-        yield return new ModelProfile
-        {
-            CanonicalId = "claude-opus-4.6-1m",
-            AcceptedEfforts = ["low", "medium", "high", "max"],
-            EffortOnUnsupported = EffortHandling.Strip,
-            Thinking = ThinkingPolicy.All,
-            MaxThinkingBudget = 32000,
-            StripBetas = ["context-1m-*"],
-        };
+        // NOTE: claude-opus-4.6-1m was RETIRED by Copilot (2026 reconciliation:
+        // 400 "not available for integrator" — RetiredCandidate_LivenessProbe).
+        // Its profile is deleted. The opus-4.6 BASE id now serves 1M context
+        // natively (OpusBase_LargePrompt_ProbeOneMillionContextSupport: 639k-token
+        // prompt → 200 with and without the beta), so no 1M capability is lost —
+        // the appsettings.json redirect that pointed here is removed too.
 
         // ── opus-4.7 family ──────────────────────────────────────────────
         // Adaptive-only thinking ("thinking.type.enabled is not supported …
         // Use thinking.type.adaptive and output_config.effort"). Effort
-        // re-probed 2026-06-05: the base model now accepts low/medium/high/
-        // xhigh/max directly (Copilot widened it — it previously took only
-        // medium). With every value accepted, the EffortToVariant routes to
-        // the -high/-xhigh siblings are now DEAD (ApplyEffort returns early on
-        // an accepted effort and never consults the map). They're left in
-        // place — harmless and still correct if Copilot ever narrows the base
-        // again — but the common path is now a direct accept, no sibling hop.
+        // re-probed 2026-06-05: the base model accepts low/medium/high/xhigh/max
+        // directly (Copilot widened it — it previously took only medium).
+        // The -high / -xhigh / -1m-internal sibling ids were RETIRED by Copilot
+        // (2026 reconciliation: all three 400 with "not available for integrator"
+        // — RetiredCandidate_LivenessProbe), so their profiles are deleted and the
+        // base no longer routes to them. Effort handling is now plain Strip (the
+        // base accepts every tier directly, so a non-accepted value is impossible
+        // for the Claude Code effort vocabulary — Strip is the safe no-op fallback).
+        // 1M context: the base id serves 1M natively (OpusBase_LargePrompt_Probe…:
+        // 677k-token prompt → 200), so the retired -1m-internal is not missed.
         yield return new ModelProfile
         {
             CanonicalId = "claude-opus-4.7",
             AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
-            EffortOnUnsupported = EffortHandling.RouteToVariant,
-            EffortToVariant = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                // Fallback siblings, only consulted if the base ever stops
-                // accepting these directly again.
-                ["high"]  = "claude-opus-4.7-high",
-                ["xhigh"] = "claude-opus-4.7-xhigh",
-            },
-            Thinking = ThinkingPolicy.AdaptiveOnly,
-            MaxThinkingBudget = 32000,
-        };
-        // Variant-locked siblings — each accepts only its locked effort, so
-        // strip every other value. Adaptive-only thinking, same as base.
-        yield return new ModelProfile
-        {
-            CanonicalId = "claude-opus-4.7-high",
-            AcceptedEfforts = ["high"],
             EffortOnUnsupported = EffortHandling.Strip,
             Thinking = ThinkingPolicy.AdaptiveOnly,
             MaxThinkingBudget = 32000,
-        };
-        yield return new ModelProfile
-        {
-            CanonicalId = "claude-opus-4.7-xhigh",
-            AcceptedEfforts = ["xhigh"],
-            EffortOnUnsupported = EffortHandling.Strip,
-            Thinking = ThinkingPolicy.AdaptiveOnly,
-            MaxThinkingBudget = 32000,
-        };
-        yield return new ModelProfile
-        {
-            CanonicalId = "claude-opus-4.7-1m-internal",
-            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
-            EffortOnUnsupported = EffortHandling.Strip,
-            Thinking = ThinkingPolicy.AdaptiveOnly,
-            MaxThinkingBudget = 32000,
-            StripBetas = ["context-1m-*"],
         };
 
         // ── opus-4.8 ─────────────────────────────────────────────────────

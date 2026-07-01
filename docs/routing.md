@@ -156,43 +156,40 @@ startup (exit code 2) with a message naming the offending `Routing.Locations[i]`
 
 ## Shipped configuration
 
-The bundled `appsettings.json` ships two locations (both "opus 4.x + 1M beta →
-the dedicated 1M model id"):
+The bundled `appsettings.json` ships **one** location — the Codex `gpt-5.5-1m`
+context-window alias:
 
 ```jsonc
 "Locations": [
   {
-    "When": {
-      "AllOf": [
-        { "AnyOf": [ { "Model": "claude-opus-4.7" }, { "Model": "claude-opus-4.8" } ] },
-        { "Header": { "Name": "anthropic-beta", "Contains": "context-1m-2025-08-07" } }
-      ]
-    },
-    "Use": { "Model": "claude-opus-4.7-1m-internal", "EffortMap": { "max": "xhigh" } },
-    "Note": "opus-4.7 OR 4.8 + 1M → 1m-internal (Copilot has no 4.8 1M variant); max→xhigh"
-  },
-  {
-    "When": {
-      "AllOf": [
-        { "Model": "claude-opus-4.6" },
-        { "Header": { "Name": "anthropic-beta", "Contains": "context-1m-2025-08-07" } }
-      ]
-    },
-    "Use": { "Model": "claude-opus-4.6-1m" },
-    "Note": "opus-4.6 + 1M → 4.6-1m variant (tops out at high, so no max→xhigh)"
+    "When": { "Model": "gpt-5.5-1m" },
+    "Use": { "Model": "gpt-5.5" },
+    "Note": "Codex alias: gpt-5.5-1m -> gpt-5.5 (sidesteps Codex's client-side context cap; Copilot's gpt-5.5 is 1M-context natively)"
   }
 ]
 ```
 
-Why these specifics:
-- Copilot exposes 1M context as a **dedicated model id**, not a beta — so the
-  redirect, then the target profile's `StripBetas` drops the now-redundant
-  `context-1m-*` token before it reaches Copilot.
-- Copilot has **no opus-4.8 1M variant**, so 4.8 falls back to 4.7-1m-internal.
-  The fallback works because that profile folds mid-conversation `role:"system"`
-  messages (which a real 4.8 client may send) into the top-level `system` field.
-- `EffortMap {"max":"xhigh"}` sits on the 1m-internal locations because that id
-  is the only one that accepts `xhigh` natively; 4.6-1m omits it.
+### Retired: the opus 1M redirects
+
+Earlier releases shipped two `"opus 4.x + 1M beta → dedicated 1M model id"`
+redirects (opus-4.7/4.8 → `claude-opus-4.7-1m-internal`, opus-4.6 →
+`claude-opus-4.6-1m`). Both were **removed in the 2026 model reconciliation**:
+
+- Copilot **retired** the `claude-opus-4.7-1m-internal` and
+  `claude-opus-4.6-1m` ids — a request for either now 400s with *"not available
+  for integrator"* (verified by `ModelProfileProbe.RetiredCandidate_LivenessProbe`).
+  A redirect to a retired target would be worse than no redirect.
+- The opus-4.6 / opus-4.7 **base** ids now serve 1M context **natively** — a
+  >600k-token prompt returns 200 with and without the `context-1m-2025-08-07`
+  beta (`ModelProfileProbe.OpusBase_LargePrompt_ProbeOneMillionContextSupport`),
+  exactly like opus-4.8 and sonnet-5. So there is nothing to unlock: the 1M beta
+  passes through and the base model handles it.
+
+The net effect for a client is unchanged — opus-4.6/4.7/4.8 + 1M beta all get
+1M context — but now by identity passthrough rather than an id swap. If Copilot
+ever re-introduces a dedicated 1M variant that the base doesn't cover, add the
+redirect back as a location (the mechanism is unchanged).
+
 
 ## Why nginx-style
 

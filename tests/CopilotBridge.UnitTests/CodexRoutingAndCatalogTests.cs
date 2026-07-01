@@ -25,7 +25,7 @@ public class CodexRoutingAndCatalogTests
         new object[] { "gpt-5.4-mini" },
         new object[] { "gpt-5.5" },
         new object[] { "gpt-5-mini" },
-        new object[] { "mai-code-1-flash-internal" },
+        new object[] { "mai-code-1-flash-picker" },
     };
 
     [Theory]
@@ -69,6 +69,27 @@ public class CodexRoutingAndCatalogTests
         Assert.Equal("/v1/messages", target.Endpoint);
     }
 
+    /// <summary>
+    /// claude-sonnet-5 (added in the 2026 reconciliation) routes to the Anthropic
+    /// <c>/v1/messages</c> backend like every other claude id, and Normalize is
+    /// identity on the bare id (no consecutive digit-pair to merge, no date suffix)
+    /// — so the ModelProfileCatalog lookup keyed on the normalized id hits. A
+    /// hypothetical dated form strips its 8-digit suffix back to claude-sonnet-5.
+    /// </summary>
+    [Theory]
+    [InlineData("claude-sonnet-5", "claude-sonnet-5")]
+    [InlineData("claude-sonnet-5-20260601", "claude-sonnet-5")]
+    public void Sonnet5_NormalizesToCanonical_AndRoutesToAnthropic(string sent, string expected)
+    {
+        Assert.Equal(expected, CopilotModelRegistry.Normalize(sent));
+
+        var target = Registry.Resolve(sent);
+        Assert.NotNull(target);
+        Assert.Equal(BackendVendor.CopilotAnthropic, target!.Vendor);
+        Assert.Equal("/v1/messages", target.Endpoint);
+        Assert.Equal(expected, target.ModelId);
+    }
+
     // ── Catalog rows match the change-2 contract snapshot ────────────────────
 
     [Theory]
@@ -77,7 +98,7 @@ public class CodexRoutingAndCatalogTests
     [InlineData("gpt-5.4-mini",  "none,low,medium,high,xhigh", false)]
     [InlineData("gpt-5.5",       "none,low,medium,high,xhigh", false)]
     [InlineData("gpt-5-mini",    "minimal,low,medium,high",    false)]
-    [InlineData("mai-code-1-flash-internal", "minimal,low,medium,high", true)]
+    [InlineData("mai-code-1-flash-picker", "minimal,low,medium,high", true)]
     public void Catalog_EffortProfilesMatchSnapshot(string id, string expectedEfforts, bool rejectsCustom)
     {
         var catalog = new CodexModelProfileCatalog();
@@ -102,6 +123,30 @@ public class CodexRoutingAndCatalogTests
     {
         var catalog = new CodexModelProfileCatalog();
         Assert.Null(catalog.Get("gpt-9-imaginary"));
+    }
+
+    // ── GetNearest: best-effort fuzzy fallback (Get stays exact-only) ─────────
+
+    [Fact]
+    public void Catalog_GetNearest_UnknownButCloseGptId_BorrowsNearestGptProfile()
+    {
+        // A gpt id newer than the catalog borrows the nearest gpt profile's rules
+        // (Get would return null; GetNearest returns a real profile), so its
+        // effort/tool coercion is applied instead of unclamped passthrough.
+        var catalog = new CodexModelProfileCatalog();
+        var profile = catalog.GetNearest("gpt-5.6", out var matched, out var score);
+        Assert.NotNull(profile);
+        Assert.StartsWith("gpt-", matched);
+        Assert.True(score >= ModelNameMatcher.DefaultMinSimilarity, $"score {score} below floor");
+    }
+
+    [Fact]
+    public void Catalog_GetNearest_DissimilarId_ReturnsNull()
+    {
+        // A genuinely unrelated id stays a miss even under GetNearest — the caller
+        // keeps its unclamped-passthrough / hard-error behavior.
+        var catalog = new CodexModelProfileCatalog();
+        Assert.Null(catalog.GetNearest("totally-unrelated-thing", out _, out _));
     }
 
     // ── H1: registering the Codex strategy must not perturb /cc routing ───────

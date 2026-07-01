@@ -149,13 +149,82 @@ public class ProfileAdjusterTests
     /// the only signal the bridge passes downstream about the client wanting
     /// 1M; identity passthrough is now correct.
     /// </summary>
+    /// <summary>
+    /// sonnet-5 must NOT strip the context-1m beta — it serves 1M natively
+    /// (Sonnet5_LargePrompt_ProbeOneMillionContextSupport: 677k-token prompt →
+    /// 200 with and without the beta), so identity passthrough is correct, same
+    /// as opus-4.8 and sonnet-4.6.
+    /// </summary>
     [Fact]
-    public void Sonnet46_DoesNotStripContext1m()
+    public void Sonnet5_DoesNotStripContext1m()
     {
-        var ctx = TestCtx.Build("claude-sonnet-4.6");
+        var ctx = TestCtx.Build("claude-sonnet-5");
 
-        Adjust(ctx, "claude-sonnet-4.6");
+        Adjust(ctx, "claude-sonnet-5");
 
         Assert.DoesNotContain("context-1m-*", ctx.PendingBetaStrips);
+    }
+
+    /// <summary>
+    /// sonnet-5 is adaptive-only (thinking.type.enabled → 400 —
+    /// Sonnet5_Thinking_ProbeAcceptance), UNLIKE its sonnet-4.6 predecessor which
+    /// takes enabled as-is. The contract: an inbound thinking:enabled must be
+    /// coerced to adaptive, and the derived effort must be one sonnet-5 accepts.
+    /// budget 32000 → BudgetToEffort → "high"; sonnet-5 accepts high directly.
+    /// </summary>
+    [Fact]
+    public void Sonnet5_ThinkingEnabled_CoercedToAdaptive_DerivedEffortAccepted()
+    {
+        var ctx = WithThinking("claude-sonnet-5", new ThinkingConfigEnabled { BudgetTokens = 32000 });
+
+        Adjust(ctx, "claude-sonnet-5");
+
+        Assert.Equal("claude-sonnet-5", ctx.Request.Body.Model);
+        Assert.IsType<ThinkingConfigAdaptive>(ctx.Request.Body.Thinking);
+        var effort = ctx.Request.Body.OutputConfig?.Effort;
+        Assert.True(
+            effort is null or "low" or "medium" or "high" or "xhigh" or "max",
+            $"derived effort '{effort}' is not accepted by sonnet-5");
+        Assert.Equal("high", effort);
+    }
+
+    /// <summary>
+    /// sonnet-5 accepts xhigh directly (the first Sonnet-tier model to —
+    /// Sonnet5_Effort_ReProbe), so a client-sent xhigh survives untouched. This
+    /// distinguishes it from sonnet-4.6, which would strip xhigh.
+    /// </summary>
+    [Fact]
+    public void Sonnet5_ClientEffortXhigh_KeptDirectly()
+    {
+        var ctx = TestCtx.Build("claude-sonnet-5", effort: "xhigh");
+
+        Adjust(ctx, "claude-sonnet-5");
+
+        Assert.Equal("claude-sonnet-5", ctx.Request.Body.Model);
+        Assert.Equal("xhigh", ctx.Request.Body.OutputConfig?.Effort);
+    }
+
+    /// <summary>
+    /// Catalog fact: sonnet-5 accepts mid-conversation <c>role:"system"</c> (like
+    /// opus-4.8), so <see cref="ProfileAdjuster"/> routes it through the
+    /// keep-legal-placements path rather than converting every system message.
+    /// Grounded in <c>Sonnet5_MidConversationSystem_PlacementRules</c> (legal
+    /// placements → 200) — and contradicting Anthropic's "opus-4.8 only" docs,
+    /// which is why this is a catalog fact, not an assumption. opus-4.8 stays
+    /// true; every OTHER Copilot Anthropic model stays false.
+    /// </summary>
+    [Theory]
+    [InlineData("claude-sonnet-5", true)]
+    [InlineData("claude-opus-4.8", true)]
+    [InlineData("claude-sonnet-4.6", false)]
+    [InlineData("claude-opus-4.7", false)]
+    [InlineData("claude-opus-4.6", false)]
+    [InlineData("claude-haiku-4.5", false)]
+    [InlineData("claude-sonnet-4.5", false)]
+    public void MidConversationSystem_AcceptanceFlag_MatchesProbedContract(string id, bool accepts)
+    {
+        var profile = Catalog.Get(id);
+        Assert.NotNull(profile);
+        Assert.Equal(accepts, profile!.AcceptsMidConversationSystem);
     }
 }

@@ -90,6 +90,71 @@ public partial class ResponsesProbe
         foreach (var id in responsesModels) _output.WriteLine($"  {id}");
     }
 
+    /// <summary>
+    /// Liveness probe for the <c>mai-code-1-flash</c> Responses ids during the 2026
+    /// model reconciliation. Copilot's <c>/models</c> now lists
+    /// <c>mai-code-1-flash-picker</c>, not the <c>-internal</c> id in
+    /// <see cref="CopilotModelRegistry"/>'s Responses set — but <c>/models</c> has
+    /// been wrong in both directions, so absence isn't grounds to delete. A 200 on a
+    /// minimal request = keep the id; a 4xx = Copilot retired it, swap to whatever
+    /// currently routes. Probes both so the catalog tracks the live id.
+    /// </summary>
+    [Theory]
+    [InlineData("mai-code-1-flash-internal")]
+    [InlineData("mai-code-1-flash-picker")]
+    public async Task MaiCode_LivenessProbe(string model)
+    {
+        var payload = $$"""
+          {
+            "model": "{{model}}",
+            "instructions": "Reply with exactly: ok",
+            "input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"reply: ok"}]}],
+            "stream": false,
+            "store": false
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostResponsesAsync(payload);
+        _output.WriteLine($"[{model}] liveness → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
+    /// <summary>
+    /// 2026 reconciliation follow-up — re-probe <c>mai-code-1-flash-picker</c>'s
+    /// EFFORT contract directly (PR #15 review #3). The catalog row for
+    /// <c>-picker</c> currently carries the "small" effort set
+    /// (<c>minimal/low/medium/high</c>, reject <c>none</c>+<c>xhigh</c>)
+    /// <b>extrapolated</b> from the retired <c>-internal</c> sibling, marked
+    /// PLAYGROUND-PENDING. This probes each effort value against the LIVE
+    /// <c>-picker</c> id so the row can be grounded in wire truth (or corrected).
+    /// Read the "→ HTTP N" lines: 200 = accepted, 400 = rejected.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(MaiCodePickerEffortMatrix))]
+    public Task MaiCodePicker_Effort_ReProbe(string? effort) =>
+        Effort_ProbeAcceptance("mai-code-1-flash-picker", effort);
+
+    public static IEnumerable<object[]> MaiCodePickerEffortMatrix() =>
+        from e in Efforts select new object[] { e! };
+
+    /// <summary>
+    /// 2026 reconciliation follow-up — re-probe <c>mai-code-1-flash-picker</c>'s
+    /// TOOL contract directly (PR #15 review #3). The catalog row asserts
+    /// <c>RejectsCustomTools = true</c> (custom <c>apply_patch</c> → 500),
+    /// extrapolated from <c>-internal</c>. This probes function / custom
+    /// apply_patch / web_search / image_generation against the LIVE <c>-picker</c>
+    /// id. The load-bearing case is <c>apply_patch_custom</c>: a non-200 there
+    /// confirms <c>RejectsCustomTools</c>; a 200 refutes it and the row must drop
+    /// the flag.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(MaiCodePickerToolMatrix))]
+    public Task MaiCodePicker_Tool_ReProbe(string label, string toolJson) =>
+        Tool_ProbeAcceptance("mai-code-1-flash-picker", label, toolJson);
+
+    public static IEnumerable<object[]> MaiCodePickerToolMatrix() =>
+        from t in Tools select new object[] { t.Label, t.Json };
+
     /// <summary>Task 2.4 — reasoning.effort acceptance per model.</summary>
     [Theory]
     [MemberData(nameof(EffortMatrix))]

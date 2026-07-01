@@ -183,7 +183,13 @@ internal static class ClaudeCodeMessagesEndpoint
             // Post-pipeline summary fields.
             summary.ResolvedModel = bridgeCtx.Request.Body.Model;
             summary.OutboundEffort = bridgeCtx.Request.Body.OutputConfig?.Effort;
-            summary.CanonicalProfileId = profiles.Get(bridgeCtx.Request.Body.Model)?.CanonicalId;
+            // Re-lookup the profile for the summary. Use GetNearest so a
+            // fuzzy-matched (un-profiled but forwarded) model reports the borrowed
+            // profile id here rather than blank — matches what the router actually
+            // used to shape the body.
+            summary.CanonicalProfileId =
+                (profiles.Get(bridgeCtx.Request.Body.Model)
+                 ?? profiles.GetNearest(bridgeCtx.Request.Body.Model, out _, out _))?.CanonicalId;
             summary.TargetVendor = bridgeCtx.Target?.Vendor.ToString();
             summary.TargetEndpoint = bridgeCtx.Target?.Endpoint;
             summary.OutboundBetas = ParseOutboundBetas(bridgeCtx.Request.Headers);

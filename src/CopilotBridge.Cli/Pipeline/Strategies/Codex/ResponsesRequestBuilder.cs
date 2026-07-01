@@ -29,7 +29,12 @@ internal static class ResponsesRequestBuilder
     /// </summary>
     public static (byte[] Body, bool Vision) Build(MessagesRequest ir, CodexModelProfileCatalog profiles)
     {
-        var profile = profiles.Get(ir.Model);
+        // Exact profile, or the nearest known one (best-effort fallback for a
+        // Codex model newer than this build's catalog — the router already
+        // WARN-logged the fuzzy match and let the request through; here we just
+        // borrow the closest model's effort-clamp + custom-tool-drop rules). Only
+        // a below-floor id yields null → the existing unclamped passthrough.
+        var profile = profiles.Get(ir.Model) ?? profiles.GetNearest(ir.Model, out _, out _);
 
         // Pull the openai bag (un-modeled knobs T1 stashed). Absent → empty.
         JsonElement? bag = null;

@@ -52,8 +52,21 @@ appsettings.dev.jsonc
 appsettings.local.jsonc
 appsettings.dev.json
 appsettings.local.json
-references/
-.claude/
+# The read-only copilot-api clone at the repo root (a separate checkout; never
+# commit it). Anchored with a leading slash so it matches only the root dir, not
+# a `references/` subfolder elsewhere (e.g. a skill's own references/).
+/references/
+.claude/*
+# ...except this repo's own version-controlled skills, so every clone (and every
+# agent working here) gets them. We do NOT blanket-track .claude/skills/ because
+# other Claude Code plugins install their skills there too (openspec, etc.) —
+# those aren't ours to commit. Un-ignore the skills dir so git can descend into
+# it, ignore everything under it, then re-include only the repo-owned skills by
+# name. (git can't re-include a path whose parent is ignored, hence the layering:
+# .claude/* → !.claude/skills/ → .claude/skills/* → !.claude/skills/<ours>/)
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/copilot-model-sync/
 
 # Local-only: MCP server config + Claude Code session-handoff dumps (never commit)
 .mcp.json

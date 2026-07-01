@@ -2,11 +2,13 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 
 /// <summary>
 /// Thrown by <see cref="Stages.Anthropic.ModelRouterStage"/> when, after
-/// normalize + any matching user routing location, the resolved model id has
-/// no entry in <see cref="ModelProfileCatalog"/>. The bridge cannot send a
-/// request to a model whose wire shape it does not know — guessing produces
-/// a silent 400 from Copilot that users cannot diagnose. Better to surface a
-/// clear actionable error here.
+/// normalize + any matching user routing location, the resolved model id has no
+/// exact entry in <see cref="ModelProfileCatalog"/> <b>and</b> is too dissimilar
+/// to any known model for the best-effort fuzzy fallback to borrow a profile
+/// (see <see cref="ModelNameMatcher"/>). A model that DOES fuzzy-match is
+/// forwarded (with a WARN log), not thrown — this exception is now only the
+/// below-floor / unrecognized-vendor case, where guessing a wire shape would be
+/// unsafe. Better to surface a clear actionable error than a silent Copilot 400.
 /// </summary>
 /// <remarks>
 /// Caught by the endpoint (<c>ClaudeCodeMessagesEndpoint</c>), which converts
@@ -38,19 +40,35 @@ internal sealed class UnknownModelException : Exception
     /// <summary>All canonical ids the catalog does know — listed in the error message so users see their options.</summary>
     public IReadOnlyList<string> KnownProfiles { get; }
 
+    /// <summary>
+    /// The closest known model id the fuzzy matcher found, if any — present only
+    /// when a best-effort match was attempted and the best candidate scored
+    /// <b>below the similarity floor</b> (so it was rejected). Null when no
+    /// candidate came close at all. Surfaced in the message so a below-floor 400
+    /// explains itself ("nearest was 'X' at 0.21, below the 0.30 floor").
+    /// </summary>
+    public string? BestCandidate { get; }
+
+    /// <summary>The Jaccard score of <see cref="BestCandidate"/> (0 when none).</summary>
+    public double BestScore { get; }
+
     public UnknownModelException(
         string requestedModel,
         string resolvedModel,
         RouteLocation? appliedLocation,
         int? appliedLocationIndex,
-        IReadOnlyList<string> knownProfiles)
-        : base(BuildMessage(requestedModel, resolvedModel, appliedLocation, appliedLocationIndex, knownProfiles))
+        IReadOnlyList<string> knownProfiles,
+        string? bestCandidate = null,
+        double bestScore = 0.0)
+        : base(BuildMessage(requestedModel, resolvedModel, appliedLocation, appliedLocationIndex, knownProfiles, bestCandidate, bestScore))
     {
         RequestedModel = requestedModel;
         ResolvedModel = resolvedModel;
         AppliedLocation = appliedLocation;
         AppliedLocationIndex = appliedLocationIndex;
         KnownProfiles = knownProfiles;
+        BestCandidate = bestCandidate;
+        BestScore = bestScore;
     }
 
     private static string BuildMessage(
@@ -58,17 +76,29 @@ internal sealed class UnknownModelException : Exception
         string resolvedModel,
         RouteLocation? loc,
         int? locIndex,
-        IReadOnlyList<string> known)
+        IReadOnlyList<string> known,
+        string? bestCandidate,
+        double bestScore)
     {
         var knownList = known.Count == 0 ? "(catalog is empty)" : string.Join(", ", known);
+
+        // When a fuzzy match was attempted but the best candidate fell below the
+        // floor, say so — it tells the operator whether this is "close but rejected"
+        // (probably a real new model just under the bar → add a remap) vs "nothing
+        // close" (probably a typo).
+        var nearNote = bestCandidate is null
+            ? ""
+            : $"\nNearest known model was '{bestCandidate}' (similarity {bestScore:F2}), below the "
+              + $"{ModelNameMatcher.DefaultMinSimilarity:F2} fuzzy-match floor — so the bridge did "
+              + "not borrow its contract automatically.";
 
         if (loc is null)
         {
             return $"[copilot-bridge] No profile for model '{resolvedModel}'. "
                 + "The bridge keeps a per-model profile (Pipeline/Routing/ModelProfileCatalog.cs) "
-                + "describing what Copilot's variant of that model accepts on the wire, and refuses "
-                + "to forward requests for models it has no profile for — guessing would produce a "
-                + "silent 400 from Copilot. Two ways to fix:\n"
+                + "describing what Copilot's variant of that model accepts on the wire. It best-effort "
+                + "fuzzy-matches an unknown id to the nearest known model, but this one was too "
+                + "dissimilar to match safely." + nearNote + " Two ways to fix:\n"
                 + $"  1. If '{resolvedModel}' exists on Copilot but the bridge's catalog is out of "
                 + "date, add a routing location in appsettings.json that remaps it to a known model:\n"
                 + $"       {{ \"When\": {{ \"Model\": \"{resolvedModel}\" }}, "
@@ -82,8 +112,8 @@ internal sealed class UnknownModelException : Exception
         var note = loc.Note ?? "(no Note)";
         return $"[copilot-bridge] No profile for model '{resolvedModel}', which was selected by a "
             + $"user routing location (appsettings.json {location}: {note}). The rewrite target "
-            + $"'{resolvedModel}' is not in the bridge's profile catalog, so the bridge cannot "
-            + "decide how to shape the request body. Fix either by:\n"
+            + $"'{resolvedModel}' is not in the bridge's profile catalog and was too dissimilar to "
+            + "any known model to fuzzy-match safely." + nearNote + " Fix either by:\n"
             + "  1. Changing this location's Use.Model to a known profile id.\n"
             + "  2. Adding another location (earlier in the list) that further remaps the resolved id.\n"
             + $"Known profiles: {knownList}";

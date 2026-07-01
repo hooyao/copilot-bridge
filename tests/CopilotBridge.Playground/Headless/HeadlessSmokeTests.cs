@@ -23,15 +23,17 @@ public class HeadlessSmokeTests : IClassFixture<BridgeFixture>
         _output = output;
     }
 
-    [Fact]
-    public async Task ClaudeP_MinimalPrompt_ReachesCopilotAnd2xx()
+    [Theory]
+    [InlineData("claude-sonnet-4-6")]
+    [InlineData("claude-sonnet-5")]   // 2026 reconciliation: end-to-end through Normalize→route→profile-adjust
+    public async Task ClaudeP_MinimalPrompt_ReachesCopilotAnd2xx(string model)
     {
         var reader = new BridgeLogReader(_bridge.LogDirectory);
 
         var result = await ClaudeProcess.RunAsync(new ClaudeInvocation(
             BridgeBaseUrl: _bridge.BaseUrl,
             Prompt: "Reply with the single word: ok",
-            Model: "claude-sonnet-4-6",
+            Model: model,
             Effort: null,
             OutputFormat: "json",
             AllowedTools: ""));
@@ -54,8 +56,17 @@ public class HeadlessSmokeTests : IClassFixture<BridgeFixture>
 
         Assert.Equal(0, result.ExitCode);
         Assert.NotEmpty(entries);
-        var messagesEntry = entries.FirstOrDefault(e => e.InboundPath.EndsWith("/v1/messages", StringComparison.Ordinal));
-        Assert.NotNull(messagesEntry);
-        Assert.InRange(messagesEntry.UpstreamStatus, 200, 299);
+        // Contract: the conversation reaches Copilot's /v1/messages and gets a 2xx.
+        // Assert on PRESENCE of a 2xx entry, not the first one: Claude Code fires
+        // background requests (e.g. a non-streaming structured-output title/probe
+        // carrying structured-outputs-* — which the bridge deliberately 400s via
+        // Pipeline.OutboundBeta.GlobalStrip, and Claude Code self-heals from), so
+        // the first /v1/messages entry can legitimately be a 400 the client recovers
+        // from. What matters is that the real prompt turn succeeded.
+        var messagesEntries = entries
+            .Where(e => e.InboundPath.EndsWith("/v1/messages", StringComparison.Ordinal))
+            .ToList();
+        Assert.NotEmpty(messagesEntries);
+        Assert.Contains(messagesEntries, e => e.UpstreamStatus is >= 200 and <= 299);
     }
 }

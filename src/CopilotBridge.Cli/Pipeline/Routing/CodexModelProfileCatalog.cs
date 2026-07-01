@@ -10,9 +10,14 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 /// </summary>
 /// <remarks>
 /// <para>Lookup is by canonical id (post-<see cref="CopilotModelRegistry.Normalize"/>,
-/// which no-ops on the Codex ids). A miss is a hard error
-/// (<see cref="UnknownModelException"/>) — the bridge never guesses a Codex
-/// model's effort contract.</para>
+/// which no-ops on the Codex ids). An exact miss falls back to the <b>nearest
+/// known profile</b> via <see cref="GetNearest"/> (fuzzy match,
+/// <see cref="ModelNameMatcher"/>) so a Copilot Responses model newer than this
+/// build borrows the closest known model's effort-clamp + custom-tool-drop rules
+/// instead of passing through unclamped; only an id too dissimilar to any known
+/// model is a hard, surfaced error (<see cref="UnknownModelException"/>). The
+/// catalog stays the source of probed truth — fuzzy matching is a best-effort
+/// bridge until a real profile is added, not a substitute for probing.</para>
 /// <para>Two uniform coercions apply to EVERY model (research §2.3/§2.4), so they
 /// live as catalog-level facts rather than per-row flags: strip
 /// <c>service_tier</c> (Copilot 400s it) and drop the <c>image_generation</c>
@@ -21,32 +26,57 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 internal sealed class CodexModelProfileCatalog
 {
     private readonly Dictionary<string, CodexModelProfile> _byId;
+    private readonly IReadOnlyList<string> _knownIds;
 
     public CodexModelProfileCatalog()
     {
         _byId = BuildDefault().ToDictionary(p => p.CanonicalId, StringComparer.OrdinalIgnoreCase);
+        _knownIds = SortedIds(_byId);
     }
 
     /// <summary>Test-only: build from an explicit profile set.</summary>
     internal CodexModelProfileCatalog(IEnumerable<CodexModelProfile> profiles)
     {
         _byId = profiles.ToDictionary(p => p.CanonicalId, StringComparer.OrdinalIgnoreCase);
+        _knownIds = SortedIds(_byId);
+    }
+
+    private static IReadOnlyList<string> SortedIds(Dictionary<string, CodexModelProfile> byId)
+    {
+        var ids = new List<string>(byId.Keys);
+        ids.Sort(StringComparer.Ordinal);
+        return ids;
     }
 
     /// <summary>Profile for <paramref name="canonicalId"/>, or null if unknown.</summary>
     public CodexModelProfile? Get(string canonicalId) =>
         _byId.TryGetValue(canonicalId, out var p) ? p : null;
 
-    /// <summary>All known canonical ids, sorted — used in the unknown-model error body.</summary>
-    public IReadOnlyList<string> KnownIds
+    /// <summary>
+    /// Best-effort fallback: the profile whose canonical id is <b>most similar</b>
+    /// to <paramref name="canonicalId"/> (Jaccard via <see cref="ModelNameMatcher"/>),
+    /// or null below the similarity floor. The Responses-side analog of
+    /// <see cref="ModelProfileCatalog.GetNearest"/> — lets a Codex model newer than
+    /// this build's catalog borrow the nearest known model's effort-clamp +
+    /// custom-tool-drop rules rather than passing through unclamped (which risks a
+    /// Copilot 400/500). The real model id still goes on the wire.
+    /// <para><paramref name="matchedId"/> / <paramref name="score"/> report the
+    /// nearest candidate <b>whether or not it cleared the floor</b>, so a
+    /// below-floor caller can surface it in the error; only empty inputs leave them
+    /// empty / 0.</para>
+    /// </summary>
+    public CodexModelProfile? GetNearest(string canonicalId, out string matchedId, out double score)
     {
-        get
-        {
-            var ids = new List<string>(_byId.Keys);
-            ids.Sort(StringComparer.Ordinal);
-            return ids;
-        }
+        var best = ModelNameMatcher.FindBest(canonicalId, _knownIds, out score);
+        matchedId = best ?? "";
+        if (best is null || score < ModelNameMatcher.DefaultMinSimilarity) return null;
+        return Get(best);
     }
+
+    /// <summary>All known canonical ids, sorted (cached — <c>_byId</c> is immutable
+    /// after construction). Used in the unknown-model error body and by the fuzzy
+    /// matcher's candidate set.</summary>
+    public IReadOnlyList<string> KnownIds => _knownIds;
 
     public int Count => _byId.Count;
 
@@ -61,17 +91,19 @@ internal sealed class CodexModelProfileCatalog
     /// <summary>
     /// The baseline profile set, row-by-row from
     /// <c>docs/copilot-responses-contract-snapshot.json</c> (seeded 2026-06-15,
-    /// Enterprise). Two effort profiles:
+    /// Enterprise), with <c>mai-code-1-flash-picker</c> re-probed directly 2026-07
+    /// (see its row). Two effort profiles:
     /// <list type="bullet">
     ///   <item><b>large</b> — <c>gpt-5.3-codex</c>, <c>gpt-5.4</c>,
     ///         <c>gpt-5.4-mini</c>, <c>gpt-5.5</c>: accept
     ///         <c>none/low/medium/high/xhigh</c>, reject <c>minimal</c>.</item>
     ///   <item><b>small</b> — <c>gpt-5-mini</c>,
-    ///         <c>mai-code-1-flash-internal</c>: accept
+    ///         <c>mai-code-1-flash-picker</c>: accept
     ///         <c>minimal/low/medium/high</c>, reject <c>none</c> AND <c>xhigh</c>
     ///         (the inverse of large at the boundaries).</item>
     /// </list>
-    /// <c>mai-code-1-flash-internal</c> additionally 500s on custom tools.
+    /// <c>mai-code-1-flash-picker</c> additionally 500s on custom tools
+    /// (<c>RejectsCustomTools</c>).
     /// </summary>
     private static IEnumerable<CodexModelProfile> BuildDefault()
     {
@@ -85,11 +117,20 @@ internal sealed class CodexModelProfileCatalog
         // ── "small" effort profile: accept minimal/low/medium/high, reject none+xhigh ──
         string[] small = ["minimal", "low", "medium", "high"];
         yield return new CodexModelProfile { CanonicalId = "gpt-5-mini", AcceptedEfforts = small };
+        // mai-code-1-flash-INTERNAL was retired by Copilot (2026 reconciliation —
+        // 400 "not available for integrator"); the live Responses id is
+        // mai-code-1-flash-PICKER (200 — ResponsesProbe.MaiCode_LivenessProbe).
+        // Effort + custom-tool contract RE-PROBED directly on -picker 2026-07
+        // (ResponsesProbe.MaiCodePicker_Effort_ReProbe / _Tool_ReProbe; underlying
+        // model 'mai-2-flash-code-2026-05-18'): accepts null/minimal/low/medium/high,
+        // REJECTS none + xhigh (400 "Supported values are: minimal, low, medium,
+        // high") → the "small" set; custom apply_patch → 500 → RejectsCustomTools.
+        // function + web_search → 200. Wire-verified, no longer extrapolated.
         yield return new CodexModelProfile
         {
-            CanonicalId = "mai-code-1-flash-internal",
-            AcceptedEfforts = small,
-            RejectsCustomTools = true,   // snapshot: custom_apply_patch in tools_rejected (500)
+            CanonicalId = "mai-code-1-flash-picker",
+            AcceptedEfforts = small,     // MaiCodePicker_Effort_ReProbe: none/xhigh → 400
+            RejectsCustomTools = true,   // MaiCodePicker_Tool_ReProbe: custom apply_patch → 500
         };
     }
 }

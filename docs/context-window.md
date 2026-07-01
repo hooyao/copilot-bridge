@@ -24,9 +24,11 @@
   (re-probed 2026-06-05; an 851k-token prompt returns 200). The profile no
   longer carries a `context-1m-*` strip, so Claude Code's 1M belief is honored
   end-to-end without any model swap.
-- **Opus 1M works**: `opus-4.7[1m]` routes to `claude-opus-4.7-1m-internal` (a
-  real 1M backend); `opus-4.8[1m]` is identity passthrough because Copilot's
-  opus-4.8 is natively 1M (also re-probed 2026-06-05; 260k-token prompt 200).
+- **Opus 1M works**: `opus-4.6[1m]` / `opus-4.7[1m]` / `opus-4.8[1m]` are all
+  identity passthrough — Copilot serves 1M on the base id natively (opus-4.8
+  always did; opus-4.6/4.7 base ids were upgraded to 1M and their dedicated
+  `-1m` / `-1m-internal` variants retired in the 2026 reconciliation). No model
+  swap, no beta strip; Claude Code's 1M belief is met by the base model.
 - **Resume caveat**: after `--resume`, Opus reverts to 200k (the `[1m]` tag is
   not persisted). We do **not** fix this by injecting `[1m]` into the response —
   the real Anthropic API never does that, and faithfulness wins. Re-select
@@ -77,13 +79,17 @@ From Copilot's `/models` (projected through `/cc/v1/models`):
 | `claude-sonnet-4.5` | 200000 | 200k (probed: 212k → `prompt is too long`) |
 | `claude-haiku-4.5` | 200000 | 200k (probed: 212k → `prompt is too long`) |
 | `claude-sonnet-4.6` | 1000000 | **1M (probed: 851k → 200 OK)** |
-| `claude-opus-4.5` / `4.6` / `4.7` (base) | 200000 | 200k |
+| `claude-sonnet-5` | 1000000 | **1M (probed: 677k → 200 OK)** |
+| `claude-opus-4.6` / `4.7` (base) | 1000000 | **1M (2026 re-probe: 639k / 677k → 200 OK)** |
 | `claude-opus-4.8` (base) | 1000000 | **1M (probed: 260k → 200 OK)** |
-| `claude-opus-4.6-1m`, `claude-opus-4.7-1m-internal` | **1000000** | 1M |
 
 **The 200k models on Copilot are now: sonnet-4.5 and haiku-4.5.** Everything
-else either is natively 1M (sonnet-4.6, opus-4.8) or has a dedicated `-1m` /
-`-1m-internal` id that does (opus-4.6, opus-4.7). Also verified: sending the
+else — sonnet-4.6, sonnet-5, opus-4.6, opus-4.7, opus-4.8 — is natively 1M on
+the base id. (The 2026 reconciliation: opus-4.6 / opus-4.7 base ids were 200k
+when this doc was first written and needed a redirect to a dedicated `-1m` /
+`-1m-internal` id to reach 1M; Copilot has since **upgraded the base ids to 1M
+and retired those dedicated variants**, so the redirects are gone — see
+`docs/routing.md` → Retired: the opus 1M redirects.) Also verified: sending the
 `context-1m` beta to a 200k model returns **200** — Copilot accepts-and-ignores
 it (it does not 400).
 
@@ -149,26 +155,32 @@ global across all models, so it would also cap a legitimate Opus or sonnet-4.6
 
 ## 4. Opus
 
-`opus-4.7[1m]` works end-to-end: the bridge routes `claude-opus-4.7` +
-`context-1m` → `claude-opus-4.7-1m-internal` (a real 1M backend) and strips the
-now-redundant beta. Claude Code's 1M belief is honoured by a genuinely 1M model.
+`opus-4.7[1m]` and `opus-4.6[1m]` work end-to-end by **identity passthrough**.
+When this doc was first written the opus-4.6 / 4.7 base ids were 200k, so the
+bridge routed `<model> + context-1m` → a dedicated `-1m` / `-1m-internal`
+backend and stripped the beta. The 2026 reconciliation retired those variant ids
+*and* upgraded the base ids to native 1M (re-probed: a 639k / 677k-token padded
+prompt returns 200 with or without `context-1m-2025-08-07`;
+`ModelProfileProbe.OpusBase_LargePrompt_ProbeOneMillionContextSupport`). So there
+is no model swap and no beta strip any more — the request flows straight through,
+Copilot honors the 1M ctx itself, and Claude Code's 1M belief is met by the base
+model.
 
-`opus-4.8[1m]` also works, but via a different mechanism: Copilot's
-claude-opus-4.8 is **natively 1M** (re-probed 2026-06-05: a 260k-token padded
-prompt returns 200 with or without `context-1m-2025-08-07`). So no model swap
-and no beta strip — the request flows through identity passthrough, Copilot
-honors the 1M ctx itself, and the bridge stays out of the way.
+`opus-4.8[1m]` works the same way and always has: Copilot's claude-opus-4.8 is
+**natively 1M** (probed: a 260k-token padded prompt returns 200 with or without
+the beta).
 
-**Effort-derivation fix (same task).** For adaptive-only models (Opus 4.7 base /
-4.8), `ProfileAdjuster` coerces `thinking:enabled` → `adaptive` and *derives*
-`output_config.effort` from the thinking budget. That derived value previously
-skipped effort validation, so Claude Code sending `thinking:enabled` with a
-budget that maps to `high`/`xhigh` produced `400 output_config.effort "high" is
-not supported by model claude-opus-4.8; supported values: [medium]`. Fix:
+**Effort-derivation fix (earlier task).** For adaptive-only models (Opus 4.7
+base / 4.8 / sonnet-5), `ProfileAdjuster` coerces `thinking:enabled` → `adaptive`
+and *derives* `output_config.effort` from the thinking budget. That derived value
+previously skipped effort validation, so Claude Code sending `thinking:enabled`
+with a budget that maps to `high`/`xhigh` produced `400 output_config.effort
+"high" is not supported by model …; supported values: [medium]`. Fix:
 `ProfileAdjuster.Apply` re-runs `ApplyEffort` after `ApplyThinking`, so the
-derived effort is validated like any client-sent one — Opus 4.8 strips it
-(adaptive default, accepted), Opus 4.7 base routes to its `-high`/`-xhigh`
-sibling. See `ProfileAdjusterTests`.
+derived effort is validated like any client-sent one. (Since the 2026 re-probe,
+Opus 4.7 base / 4.8 / sonnet-5 accept `low..max` directly, so a derived
+`high`/`xhigh` is now kept as-is rather than stripped or routed to a sibling.)
+See `ProfileAdjusterTests`.
 
 ## 5. The resume caveat (deliberately not "fixed")
 
@@ -182,7 +194,7 @@ Measured:
 | Moment | model Claude Code restores | window |
 | --- | --- | --- |
 | first run, `--model opus[1m]` | `claude-opus-4-8[1m]` | 1,000,000 |
-| `--resume` (no `--model`) | `claude-opus-4-8` | **1,000,000 if 4.8 (native 1M); 200,000 if 4.7 (routed via -1m-internal)** |
+| `--resume` (no `--model`) | `claude-opus-4-8` | **1,000,000 (all of opus-4.6/4.7/4.8 are native 1M since the 2026 reconciliation)** |
 
 The rewrite fixes the *version* on resume (no longer the 4.7 variant) but the
 `[1m]` tag is not part of the persisted model string, so for 4.7 the **window

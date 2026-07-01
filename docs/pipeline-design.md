@@ -622,12 +622,35 @@ The split is **"profile = fact, location = preference, adjuster = mechanism"**:
   messages into the top-level `system` field, cap `budget_tokens`, register
   beta-strip patterns for `HeadersOutboundStage`.
 
-A profile miss is a **hard error**: `ModelRouterStage` throws
-`UnknownModelException`, which the endpoint converts into a 400 +
-Anthropic-format error body. The message tells the operator what to fix
-(add a routing rule, fix the typo, file an issue). The bridge never
-forwards a request for a model it has no profile for — guessing would
-produce a silent Copilot 400 that operators cannot diagnose.
+A profile miss is **best-effort, not a hard fail**: `ModelRouterStage` first
+tries an exact catalog lookup, and on a miss falls back to the *nearest known
+profile* by fuzzy string similarity (`ModelNameMatcher`, Jaccard over character
+bigrams). A Copilot model newer than this build's catalog (e.g. a freshly
+shipped `claude-sonnet-6`) is therefore **forwarded under the closest known
+model's wire contract** — the **real** model id stays on the wire (Copilot has
+the model; only our probed profile is missing), and only the coercion rules
+(thinking policy, accepted efforts, mid-conv-system, beta strips) are borrowed.
+Every fuzzy match is **WARN-logged**: it's a guess, so the operator should
+upgrade the bridge (or add an explicit `Routing.Locations` remap) and watch for
+unexpected behavior if the borrowed contract doesn't fit. Copilot remains the
+final authority — a wrong borrowed shape surfaces as Copilot's own model error.
+
+Only when the requested id is **too dissimilar to any known model** (below the
+`ModelNameMatcher.DefaultMinSimilarity` floor — typically a typo or a foreign
+vendor prefix) does the bridge fall back to the old behavior: throw
+`UnknownModelException` → 400 + Anthropic-format error body naming the nearest
+rejected candidate and its score, plus how to fix it (add a routing rule, fix
+the typo, file an issue). The borrowed profile never rewrites the model id: if
+a borrowed profile used `EffortHandling.RouteToVariant`, the stage neutralizes
+it to `Strip` so a sized-sibling id that may not exist for the new model is
+never substituted.
+
+> **Why this inverts the earlier "never guess" principle.** The old design
+> fail-closed to avoid a *silent* Copilot 400. But the real model id is always
+> what's sent, so a genuinely-new model just works; a mis-borrowed contract
+> produces Copilot's own (visible) error, not a silent one; and the similarity
+> floor still gives a crisp, actionable error for true typos. Net: new models
+> work out of the box, typos still fail loudly.
 
 ### 7.1 Vendor + endpoint dispatch — `IModelRegistry.Resolve`
 
@@ -651,11 +674,15 @@ descriptive error in that case.
 ### 7.2 Model profile catalog — `ModelProfileCatalog`
 
 The wire-truth table. One `ModelProfile` per Copilot Anthropic model id,
-hand-curated in `Pipeline/Routing/ModelProfileCatalog.cs`. As of the
-2026-05-31 probe run the catalog covers 11 models (every Claude id Copilot
-exposes on this account). The values are sourced from the corresponding
-probe rows in `ModelProfileProbe.cs` — re-run that test after Copilot ships
-or changes any model, then reconcile.
+hand-curated in `Pipeline/Routing/ModelProfileCatalog.cs`. After the 2026 model
+reconciliation the catalog covers 7 models (every Claude id Copilot still
+exposes on this account: haiku-4.5, sonnet-4.5, sonnet-4.6, **sonnet-5**,
+opus-4.6, opus-4.7, opus-4.8). The reconciliation **retired** opus-4.5,
+opus-4.6-1m, and the opus-4.7 -high/-xhigh/-1m-internal variants — all now 400
+"not available for integrator" (`ModelProfileProbe.RetiredCandidate_LivenessProbe`).
+The values are sourced from the corresponding probe rows in
+`ModelProfileProbe.cs` — re-run that test after Copilot ships or changes any
+model, then reconcile.
 
 ```csharp
 internal sealed record ModelProfile
@@ -676,8 +703,9 @@ internal sealed record ModelProfile
     public ThinkingPolicy Thinking { get; init; } = ThinkingPolicy.AdaptiveOnly;
     public int MaxThinkingBudget { get; init; } = 64000;
 
-    // Only opus-4.8 declares the protocol extension; empirically Copilot's
-    // gateway rejects it on every model regardless — kept false everywhere.
+    // opus-4.8 and sonnet-5 accept the protocol extension in legal placements
+    // (pred=user, succ=assistant-or-end); every other model rejects it — see
+    // the cross-cutting facts below.
     public bool AcceptsMidConversationSystem { get; init; }
     public bool AcceptsSpeedFast { get; init; }
 
@@ -695,20 +723,27 @@ internal sealed record ThinkingPolicy
     public bool DeriveEffortFromBudgetOnCoerce { get; init; }
 
     // Three named presets cover today's catalog. Add more as needed.
-    public static ThinkingPolicy AdaptiveOnly { get; } // opus-4.7 family, opus-4.8
-    public static ThinkingPolicy EnabledOnly  { get; } // haiku-4.5, sonnet-4.5, opus-4.5
-    public static ThinkingPolicy All          { get; } // sonnet-4.6, opus-4.6, opus-4.6-1m
+    public static ThinkingPolicy AdaptiveOnly { get; } // opus-4.7, opus-4.8, sonnet-5
+    public static ThinkingPolicy EnabledOnly  { get; } // haiku-4.5, sonnet-4.5
+    public static ThinkingPolicy All          { get; } // sonnet-4.6, opus-4.6
 }
 ```
 
-Cross-cutting facts the probe surfaced and the catalog encodes:
+Cross-cutting facts the probe surfaced and the catalog encodes (re-probed in
+the 2026 reconciliation):
 
-- **No model accepts `effort = "max"`.** Strip everywhere.
-- **No model — including opus-4.8 — accepts non-first `role:"system"`
-  messages.** Copilot's gateway rejects the 4.8 protocol extension with
-  `"Unexpected role 'system'"` regardless of model. So
-  `AcceptsMidConversationSystem` is `false` for every entry, and the fold
-  in §7.3 runs unconditionally.
+- **Effort acceptance is per-model and non-monotonic.** opus-4.7 / opus-4.8 /
+  sonnet-5 accept `low/medium/high/xhigh/max`; opus-4.6 / sonnet-4.6 accept
+  `low/medium/high/max` but reject `xhigh` (max works where xhigh 400s);
+  haiku-4.5 / sonnet-4.5 reject the effort field entirely. So `max` is stripped
+  only on the models that reject it, not universally.
+- **opus-4.8 and sonnet-5 accept non-first `role:"system"` messages** in legal
+  placements (predecessor=user; successor=assistant or end-of-array); every
+  other model rejects the extension with `"Unexpected role 'system'"`. So
+  `AcceptsMidConversationSystem` is `true` for those two and `false` elsewhere,
+  and the §7.3 handler keeps legal placements / converts illegal ones when
+  `true` and converts unconditionally when `false`. (sonnet-5 mid-conv support
+  contradicts Anthropic's "opus-4.8 only" docs — it was confirmed by live probe.)
 - **`thinking.budget_tokens` must always be less than `max_tokens`** or
   Copilot 400s on that constraint before evaluating the shape at all.
 
@@ -769,15 +804,9 @@ Schema:
   "Routing": {
     "Locations": [
       {
-        "When": {
-          "Model": "claude-opus-4.8",
-          "Header": { "Name": "anthropic-beta", "Contains": "context-1m-2025-08-07" }
-        },
-        "Use": {
-          "Model": "claude-opus-4.7-1m-internal",
-          "EffortMap": { "max": "xhigh" }
-        },
-        "Note": "opus-4.8 + 1M — Copilot has no opus-4.8 1M variant; fall back to 4.7 1M-internal; map max→xhigh on this target"
+        "When": { "Model": "gpt-5.5-1m" },
+        "Use": { "Model": "gpt-5.5" },
+        "Note": "Codex alias: gpt-5.5-1m -> gpt-5.5 (sidesteps Codex's client-side context cap)"
       }
     ]
   }
@@ -820,26 +849,29 @@ typo can't produce silent 401s. Identity-header overrides thread through
 `BridgeContext.CopilotHeaderOverrides` into `CopilotHeaderFactory`;
 `anthropic-beta` add/remove flows through `HeadersOutboundStage`.
 
-Today's `appsettings.json` ships three locations, all "opus 4.x + 1M beta →
-the dedicated 1M model id":
+Today's `appsettings.json` ships **one** location — the Codex `gpt-5.5-1m`
+context-window alias:
 
-| `When` model + beta | `Use.Model` | `Use.EffortMap` |
+| `When` model | `Use.Model` | `Use.EffortMap` |
 | --- | --- | --- |
-| `claude-opus-4.7` + `context-1m-2025-08-07` | `claude-opus-4.7-1m-internal` | `max → xhigh` |
-| `claude-opus-4.8` + `context-1m-2025-08-07` | `claude-opus-4.7-1m-internal` | `max → xhigh` |
-| `claude-opus-4.6` + `context-1m-2025-08-07` | `claude-opus-4.6-1m` | — |
+| `gpt-5.5-1m` | `gpt-5.5` | — |
 
-Three things to note:
-- The 1M-internal profile carries `StripBetas = ["context-1m-*"]`, so the
-  beta token doesn't leak through to Copilot after the redirect — that's
-  a profile fact, not a location field.
-- `EffortMap {"max":"xhigh"}` sits on the 1M-internal locations because
-  that model is the only Copilot id that accepts `xhigh` natively; the
-  4.6-1m location omits it (4.6-1m tops out at `high`, so its profile
-  strips `max`/`xhigh`).
-- The opus-4.8→4.7-1m-internal fallback works precisely because the target
-  profile folds mid-conv `role:"system"` messages (which a real 4.8 client
-  may send) into the top-level system field via `ProfileAdjuster`.
+Note:
+- `gpt-5.5-1m` is a Codex-side alias: naming the model `gpt-5.5-1m` (with
+  `model_context_window=1000000` in the Codex config) sidesteps a client-side
+  context cap Codex applies to the literal `gpt-5.5`; the bridge maps it back so
+  Copilot's natively-1M `gpt-5.5` is used. `Normalize` keeps the `-1m` suffix,
+  so the match is on the full `gpt-5.5-1m`.
+
+**Retired: the opus 1M redirects.** Earlier releases shipped
+`"opus 4.x + 1M beta → dedicated 1M model id"` redirects (opus-4.7/4.8 →
+`claude-opus-4.7-1m-internal`, opus-4.6 → `claude-opus-4.6-1m`). The 2026
+reconciliation removed both: Copilot **retired** the `-1m-internal` / `-1m`
+target ids (they 400 "not available for integrator"), and the opus-4.6 / 4.7
+**base** ids now serve 1M context natively (a >600k-token prompt returns 200 —
+`ModelProfileProbe.OpusBase_LargePrompt_ProbeOneMillionContextSupport`), same as
+opus-4.8 and sonnet-5. So the 1M beta now passes through to the base model
+unchanged; no redirect (and no `StripBetas`) is needed.
 - No `claude-haiku-4.5 + 1M`, `claude-sonnet-4.6 + 1M`, etc. locations are
   needed: Copilot has no 1M variant for those families, and the bridge
   refuses to invent one. The inbound beta passes through to Copilot,
@@ -1233,10 +1265,14 @@ The pipeline framework, runner, response stages, audit log — all reused.
 
 Pipeline stages, audit log, endpoints — all reused.
 
-### 11.3 Substituting a model alias (the immediate case)
+### 11.3 Substituting a model alias (the explicit override)
 
-When Copilot ships a model the bridge has no profile for yet, the operator
-adds a redirect location in `appsettings.json`:
+When Copilot ships a model the bridge has no profile for yet, it is
+**forwarded automatically** under the nearest known profile (see §7 —
+best-effort fuzzy matching), with a WARN log. The operator only needs to act if
+they want to override that automatic choice — e.g. pin a new id to a *specific*
+known model rather than whichever the matcher picks. They do so with a redirect
+location in `appsettings.json`:
 
 ```jsonc
 {
@@ -1245,17 +1281,20 @@ adds a redirect location in `appsettings.json`:
 }
 ```
 
-The redirect is intentionally a user-visible knob, not a static C# table:
-the operator can confirm a fallback works for their workload before a
-release lands, and they can remove the location once the bridge ships a real
-`ModelProfile` for the new id. There is no built-in alias dictionary —
-the bridge prefers a clear `UnknownModelException` (§7.5) over silent
-substitution.
+The redirect is a user-visible knob: the operator can confirm a specific
+fallback works for their workload, and remove the location once the bridge ships
+a real `ModelProfile` for the new id. The fuzzy matcher is the default;
+`ModelNameMatcher` uses Jaccard similarity over character bigrams with a
+family-then-version tie-break, so it already prefers the same-family, highest
+-version sibling — the redirect is for when the operator wants a *different*
+target than that.
 
-Stage: `ModelRouterStage` normalizes the inbound id, runs the location
-matcher to apply the `Use` change-set, looks up the target profile, and runs
-`ProfileAdjuster`. If `Use.Model` points at an id with no profile, the
-bridge 400s with a message that names the offending `Routing.Locations[i]`.
+Stage: `ModelRouterStage` normalizes the inbound id, runs the location matcher
+to apply the `Use` change-set, looks up the target profile (exact, then nearest
+via fuzzy match), and runs `ProfileAdjuster`. Only if the resolved id is too
+dissimilar to *any* known model — below the `ModelNameMatcher` floor — does the
+bridge 400 with a message naming the nearest rejected candidate (and, if a
+routing location produced the id, the offending `Routing.Locations[i]`).
 
 ## 12. Migration plan from current code
 
