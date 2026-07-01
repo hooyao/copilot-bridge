@@ -32,13 +32,9 @@ public partial class ModelProfileProbe
         "claude-haiku-4.5",
         "claude-sonnet-4.5",
         "claude-sonnet-4.6",
-        "claude-opus-4.5",
+        "claude-sonnet-5",
         "claude-opus-4.6",
-        "claude-opus-4.6-1m",
         "claude-opus-4.7",
-        "claude-opus-4.7-high",
-        "claude-opus-4.7-xhigh",
-        "claude-opus-4.7-1m-internal",
         "claude-opus-4.8",
     ];
 
@@ -184,6 +180,13 @@ public partial class ModelProfileProbe
     [InlineData("claude-sonnet-4.6",          "high")]
     [InlineData("claude-sonnet-4.6",          "xhigh")]
     [InlineData("claude-sonnet-4.6",          "max")]
+    // sonnet-5 — new to the catalog; /models advertises [low,medium,high,xhigh,max]
+    // (same shape as opus-4.8). /models has lied before (haiku advertises adaptive
+    // but rejects it), so confirm every tier directly — including xhigh, the first
+    // Sonnet-tier model to claim it.
+    [InlineData("claude-sonnet-5",            "high")]
+    [InlineData("claude-sonnet-5",            "xhigh")]
+    [InlineData("claude-sonnet-5",            "max")]
     public async Task Family_Effort_ReProbe(string model, string effort)
     {
         var payload = $$"""
@@ -211,6 +214,7 @@ public partial class ModelProfileProbe
     [InlineData("claude-opus-4.7-1m-internal")]
     [InlineData("claude-opus-4.6")]
     [InlineData("claude-sonnet-4.6")]
+    [InlineData("claude-sonnet-5")]
     [InlineData("claude-haiku-4.5")]
     public async Task MidConversationSystem_ProbeAcceptance(string model)
     {
@@ -571,4 +575,232 @@ public partial class ModelProfileProbe
 
     private static string Truncate(string s, int n) =>
         s.Length > n ? s[..n] + "…" : s;
+
+    /// <summary>
+    /// sonnet-5 mid-conversation <c>role:"system"</c> placement matrix — the analog
+    /// of <see cref="Opus48_MidConversationSystem_PlacementRules"/>. The single
+    /// <c>user→system→user</c> probe returned the placement-specific 4.8-style error
+    /// ("role 'system' must precede an 'assistant' message or end the array") rather
+    /// than the unconditional-reject ("Unexpected role 'system'") that 4.7/4.6/sonnet-4.6
+    /// give — evidence sonnet-5's gateway ACCEPTS mid-conv system but enforces position.
+    /// The catalog must not set <see cref="ModelProfile.AcceptsMidConversationSystem"/>
+    /// = true on the strength of one rejected placement: this matrix confirms the LEGAL
+    /// placements (S after user, ending the array or followed by assistant) actually
+    /// return 200. If they do, sonnet-5 gets the same true+placement-fix path as 4.8.
+    /// </summary>
+    [Theory]
+    [InlineData("end-after-user",          """[{"role":"user","content":"hi"},{"role":"system","content":"S"}]""")]
+    [InlineData("between-two-users",       """[{"role":"user","content":"hi"},{"role":"system","content":"S"},{"role":"user","content":"there"}]""")]
+    [InlineData("end-after-assistant",     """[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"system","content":"S"}]""")]
+    [InlineData("between-assistant-user",  """[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"system","content":"S"},{"role":"user","content":"more"}]""")]
+    [InlineData("between-two-assistants",  """[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"system","content":"S"},{"role":"assistant","content":"world"}]""")]
+    [InlineData("end-after-user-followup", """[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"more"},{"role":"system","content":"S"}]""")]
+    public async Task Sonnet5_MidConversationSystem_PlacementRules(string label, string messagesJson)
+    {
+        var payload = $$"""
+          {
+            "model": "claude-sonnet-5",
+            "max_tokens": 64,
+            "messages": {{messagesJson}}
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-sonnet-5] placement={label} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 240)}");
+    }
+
+    /// <summary>
+    /// After Copilot retired the dedicated 1M variants (opus-4.6-1m,
+    /// opus-4.7-1m-internal — both 400 as of the 2026 reconciliation), the
+    /// appsettings.json routing rules that redirected opus-4.6/4.7 + 1M beta to
+    /// those variants have no valid target. This probe answers the follow-on
+    /// question: do the opus-4.6 / opus-4.7 BASE ids now serve &gt;200k prompts
+    /// natively (the way opus-4.8 does), so removing the redirect keeps 1M — or is
+    /// 1M genuinely lost for those families? A &gt;200k-token incompressible padded
+    /// prompt: 200 = base serves 1M (redirect was only ever an id-swap), 400
+    /// "prompt is too long" = base is 200k and 1M is gone with the variant.
+    /// </summary>
+    [Theory]
+    [InlineData("claude-opus-4.6", null)]
+    [InlineData("claude-opus-4.6", "context-1m-2025-08-07")]
+    [InlineData("claude-opus-4.7", null)]
+    [InlineData("claude-opus-4.7", "context-1m-2025-08-07")]
+    public async Task OpusBase_LargePrompt_ProbeOneMillionContextSupport(string model, string? beta)
+    {
+        var unit = "qZ7$%w!eL#3xR2&Vp9*Jb4@Sk6mTn1Y";
+        var padding = string.Concat(Enumerable.Repeat(unit, 600_000 / unit.Length));
+        var payload = $$"""
+          {
+            "model": "{{model}}",
+            "max_tokens": 16,
+            "messages": [{"role":"user","content":"context follows; reply: ok\n\n{{padding}}"}]
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload, anthropicBeta: beta);
+        _output.WriteLine($"[{model}] padded-prompt beta={beta ?? "<none>"} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
+    /// <summary>
+    /// Liveness probe for catalog ids that are NOT in Copilot's current
+    /// <c>/models</c> list (as of the 2026 reconciliation): opus-4.5, opus-4.6-1m,
+    /// and the opus-4.7 -high / -xhigh / -1m-internal variants. <c>/models</c> is
+    /// unreliable in BOTH directions — the -1m-internal / -high / -xhigh variants
+    /// were originally kept in the catalog precisely because they routed 200 despite
+    /// never being advertised. So absence from the model list is NOT sufficient
+    /// grounds to delete a profile; a genuine retirement must show as a 400/404 on a
+    /// minimal request. This probe is the ground truth for the prune: a 200 means
+    /// "keep (still routable)", a 4xx means "delete (Copilot retired it)".
+    /// </summary>
+    [Theory]
+    [InlineData("claude-opus-4.5")]
+    [InlineData("claude-opus-4.6-1m")]
+    [InlineData("claude-opus-4.7-high")]
+    [InlineData("claude-opus-4.7-xhigh")]
+    [InlineData("claude-opus-4.7-1m-internal")]
+    public async Task RetiredCandidate_LivenessProbe(string model)
+    {
+        var payload = $$"""
+          {
+            "model": "{{model}}",
+            "max_tokens": 16,
+            "messages": [{"role":"user","content":"reply: ok"}]
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[{model}] liveness → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
+    /// <summary>
+    /// Focused re-probe of sonnet-5's effort acceptance — the analog of
+    /// <see cref="Opus48_Effort_ReProbe"/> for the newly-added model. <c>/models</c>
+    /// advertises <c>effort=[low,medium,high,xhigh,max]</c> for sonnet-5 (the first
+    /// Sonnet-tier model to claim <c>xhigh</c>), but capabilities have been wrong
+    /// before (haiku advertises adaptive thinking yet rejects it). Probe each effort
+    /// value directly — both standalone AND combined with adaptive thinking (the
+    /// exact shape Claude Code sends for a modern model: the bridge derives effort
+    /// from the thinking budget, so the real request always carries both fields).
+    /// </summary>
+    [Theory]
+    [InlineData("low",    false)]
+    [InlineData("medium", false)]
+    [InlineData("high",   false)]
+    [InlineData("xhigh",  false)]
+    [InlineData("max",    false)]
+    [InlineData("low",    true)]
+    [InlineData("medium", true)]
+    [InlineData("high",   true)]
+    [InlineData("xhigh",  true)]
+    [InlineData("max",    true)]
+    public async Task Sonnet5_Effort_ReProbe(string effort, bool withAdaptiveThinking)
+    {
+        var thinkingBlock = withAdaptiveThinking ? ""","thinking":{"type":"adaptive"}""" : "";
+        var payload = $$"""
+          {
+            "model": "claude-sonnet-5",
+            "max_tokens": 64,
+            "messages": [{"role":"user","content":"reply: ok"}],
+            "output_config":{"effort":"{{effort}}"}{{thinkingBlock}}
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-sonnet-5] effort={effort} adaptive-thinking={withAdaptiveThinking} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 280)}");
+    }
+
+    /// <summary>
+    /// Per-thinking-shape acceptance for sonnet-5. <c>/models</c> reports
+    /// <c>adaptive_thinking</c> support and the claude-api reference says the
+    /// Sonnet-5 wire contract matches opus-4.7/4.8 (adaptive only —
+    /// <c>thinking.type.enabled</c> returns 400). Verify directly: send each of
+    /// null / adaptive / enabled / disabled and record the status, so the catalog's
+    /// <see cref="ModelProfile.Thinking"/> policy is grounded, not inherited from a
+    /// family-name guess.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("adaptive")]
+    [InlineData("enabled")]
+    [InlineData("disabled")]
+    public async Task Sonnet5_Thinking_ProbeAcceptance(string? thinkingType)
+    {
+        var thinkingBlock = thinkingType switch
+        {
+            null       => "",
+            "enabled"  => ""","thinking":{"type":"enabled","budget_tokens":8192}""",
+            _          => $$$""","thinking":{"type":"{{{thinkingType}}}"}""",
+        };
+        var payload = $$"""
+          {
+            "model": "claude-sonnet-5",
+            "max_tokens": 16384,
+            "messages": [{"role":"user","content":"reply: ok"}]{{thinkingBlock}}
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-sonnet-5] thinking={thinkingType ?? "<null>"} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 280)}");
+    }
+
+    /// <summary>
+    /// Does sonnet-5 accept the <c>context-1m-2025-08-07</c> beta, and does it
+    /// actually serve prompts past the 200k standard window? <c>/models</c> reports
+    /// <c>ctx=1000000, max_prompt=936000</c> for sonnet-5 (same shape as opus-4.8 and
+    /// sonnet-4.6 — no separate <c>-1m-internal</c> variant in the model list). The
+    /// analog of <see cref="Opus48_ContextOneMillionBeta_ProbeAcceptance"/> +
+    /// <see cref="Opus48_LargePrompt_ProbeOneMillionContextSupport"/>: a small
+    /// baseline / with-beta / bogus-beta control, then a &gt;200k-token padded prompt.
+    /// If both hold, sonnet-5 — like opus-4.8 and sonnet-4.6 — needs no routing rule
+    /// to "unlock 1M" and no <c>StripBetas=["context-1m-*"]</c> entry.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("context-1m-2025-08-07")]
+    [InlineData("bogus-nonexistent-beta-99999")]
+    public async Task Sonnet5_ContextOneMillionBeta_ProbeAcceptance(string? beta)
+    {
+        var payload = """
+          {
+            "model": "claude-sonnet-5",
+            "max_tokens": 16,
+            "messages": [{"role":"user","content":"reply: ok"}]
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload, anthropicBeta: beta);
+        _output.WriteLine($"[claude-sonnet-5] beta={beta ?? "<none>"} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
+    /// <summary>
+    /// &gt;200k-token padded prompt against sonnet-5, with and without the 1M beta —
+    /// confirms sonnet-5 honors its advertised 1M context rather than 400ing with
+    /// "prompt is too long". Incompressible padding (repeated pseudo-random string)
+    /// keeps the byte-to-token ratio near 1:3 so ~600k chars lands over the 200k line.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("context-1m-2025-08-07")]
+    public async Task Sonnet5_LargePrompt_ProbeOneMillionContextSupport(string? beta)
+    {
+        var unit = "qZ7$%w!eL#3xR2&Vp9*Jb4@Sk6mTn1Y";
+        var padding = string.Concat(Enumerable.Repeat(unit, 600_000 / unit.Length));
+        var payload = $$"""
+          {
+            "model": "claude-sonnet-5",
+            "max_tokens": 16,
+            "messages": [{"role":"user","content":"context follows; reply: ok\n\n{{padding}}"}]
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload, anthropicBeta: beta);
+        _output.WriteLine($"[claude-sonnet-5] padded-prompt beta={beta ?? "<none>"} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
 }

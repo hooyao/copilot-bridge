@@ -90,6 +90,35 @@ public partial class ResponsesProbe
         foreach (var id in responsesModels) _output.WriteLine($"  {id}");
     }
 
+    /// <summary>
+    /// Liveness probe for the <c>mai-code-1-flash</c> Responses ids during the 2026
+    /// model reconciliation. Copilot's <c>/models</c> now lists
+    /// <c>mai-code-1-flash-picker</c>, not the <c>-internal</c> id in
+    /// <see cref="CopilotModelRegistry"/>'s Responses set — but <c>/models</c> has
+    /// been wrong in both directions, so absence isn't grounds to delete. A 200 on a
+    /// minimal request = keep the id; a 4xx = Copilot retired it, swap to whatever
+    /// currently routes. Probes both so the catalog tracks the live id.
+    /// </summary>
+    [Theory]
+    [InlineData("mai-code-1-flash-internal")]
+    [InlineData("mai-code-1-flash-picker")]
+    public async Task MaiCode_LivenessProbe(string model)
+    {
+        var payload = $$"""
+          {
+            "model": "{{model}}",
+            "instructions": "Reply with exactly: ok",
+            "input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"reply: ok"}]}],
+            "stream": false,
+            "store": false
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostResponsesAsync(payload);
+        _output.WriteLine($"[{model}] liveness → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
     /// <summary>Task 2.4 — reasoning.effort acceptance per model.</summary>
     [Theory]
     [MemberData(nameof(EffortMatrix))]

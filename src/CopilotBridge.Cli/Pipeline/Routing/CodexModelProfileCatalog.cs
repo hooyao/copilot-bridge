@@ -67,11 +67,11 @@ internal sealed class CodexModelProfileCatalog
     ///         <c>gpt-5.4-mini</c>, <c>gpt-5.5</c>: accept
     ///         <c>none/low/medium/high/xhigh</c>, reject <c>minimal</c>.</item>
     ///   <item><b>small</b> — <c>gpt-5-mini</c>,
-    ///         <c>mai-code-1-flash-internal</c>: accept
+    ///         <c>mai-code-1-flash-picker</c>: accept
     ///         <c>minimal/low/medium/high</c>, reject <c>none</c> AND <c>xhigh</c>
     ///         (the inverse of large at the boundaries).</item>
     /// </list>
-    /// <c>mai-code-1-flash-internal</c> additionally 500s on custom tools.
+    /// <c>mai-code-1-flash-picker</c> additionally 500s on custom tools.
     /// </summary>
     private static IEnumerable<CodexModelProfile> BuildDefault()
     {
@@ -85,9 +85,16 @@ internal sealed class CodexModelProfileCatalog
         // ── "small" effort profile: accept minimal/low/medium/high, reject none+xhigh ──
         string[] small = ["minimal", "low", "medium", "high"];
         yield return new CodexModelProfile { CanonicalId = "gpt-5-mini", AcceptedEfforts = small };
+        // PLAYGROUND-PENDING: mai-code-1-flash-INTERNAL was retired by Copilot (2026
+        // reconciliation — 400 "not available for integrator"); the live Responses id
+        // is mai-code-1-flash-PICKER (200 — ResponsesProbe.MaiCode_LivenessProbe).
+        // The effort profile + custom-tool rejection below are extrapolated from the
+        // retired -internal sibling (same underlying mai-code-1-flash model, different
+        // routing suffix) and NOT yet re-probed on -picker. Re-run the Responses
+        // effort/tool matrix against -picker and reconcile before trusting these.
         yield return new CodexModelProfile
         {
-            CanonicalId = "mai-code-1-flash-internal",
+            CanonicalId = "mai-code-1-flash-picker",
             AcceptedEfforts = small,
             RejectsCustomTools = true,   // snapshot: custom_apply_patch in tools_rejected (500)
         };

@@ -25,7 +25,10 @@ internal sealed class CopilotModelRegistry : IModelRegistry
         "gpt-5.4-mini",
         "gpt-5.5",
         "gpt-5-mini",
-        "mai-code-1-flash-internal",
+        // mai-code-1-flash-internal was RETIRED by Copilot (2026 reconciliation:
+        // 400 "not available for integrator"); the live Responses id is now
+        // mai-code-1-flash-picker (200 — ResponsesProbe.MaiCode_LivenessProbe).
+        "mai-code-1-flash-picker",
     };
 
     public RouteTarget? Resolve(string requestedModelId)

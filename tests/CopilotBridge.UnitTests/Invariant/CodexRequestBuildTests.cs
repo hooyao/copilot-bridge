@@ -18,7 +18,7 @@ namespace CopilotBridge.UnitTests.Invariant;
 ///   <item>per-model <c>reasoning.effort</c> clamp (<c>CoerceEffort</c>);</item>
 ///   <item>tool drops in <c>WriteToolsWithDrops</c> (uniform
 ///         <c>image_generation</c> drop; <c>custom</c> drop for
-///         <c>mai-code-1-flash-internal</c>);</item>
+///         <c>mai-code-1-flash-picker</c>);</item>
 ///   <item><c>max_output_tokens</c> round-trip (P2's fix);</item>
 ///   <item><c>service_tier</c> strip and <c>store</c>-only-when-true strip.</item>
 /// </list>
@@ -112,7 +112,7 @@ public class CodexRequestBuildTests
 
     [Theory]
     [InlineData("gpt-5.3-codex", true, 2)]                 // large: custom kept → function + custom
-    [InlineData("mai-code-1-flash-internal", false, 1)]    // flash: custom dropped → function only
+    [InlineData("mai-code-1-flash-picker", false, 1)]    // flash: custom dropped → function only
     public void WriteToolsWithDrops_DropsImageGen_AndCustomForFlash(string model, bool customKept, int expectedCount)
     {
         var emitted = Emit(Ir(model, bag: ToolsBag()));
