@@ -58,11 +58,10 @@ public class HeadlessSmokeTests : IClassFixture<BridgeFixture>
         Assert.NotEmpty(entries);
         // Contract: the conversation reaches Copilot's /v1/messages and gets a 2xx.
         // Assert on PRESENCE of a 2xx entry, not the first one: Claude Code fires
-        // background requests (titles, probes, retries) that can legitimately 400
-        // and self-heal — e.g. a request carrying advisor-tool-*, which the bridge
-        // strips via Pipeline.OutboundBeta.GlobalStrip. So the first /v1/messages
-        // entry can be a non-2xx the client recovers from. What matters is that the
-        // real prompt turn succeeded.
+        // background requests (titles, probes, retries) alongside the real turn, and
+        // any of those can legitimately come back non-2xx and self-heal. So the first
+        // /v1/messages entry can be a non-2xx the client recovers from. What matters
+        // is that the real prompt turn succeeded — i.e. at least one 2xx is present.
         var messagesEntries = entries
             .Where(e => e.InboundPath.EndsWith("/v1/messages", StringComparison.Ordinal))
             .ToList();
