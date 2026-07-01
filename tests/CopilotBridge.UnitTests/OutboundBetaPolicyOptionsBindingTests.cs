@@ -50,8 +50,7 @@ public class OutboundBetaPolicyOptionsBindingTests
     [Fact]
     public void Bind_EmptyArray_ReturnsEmpty()
     {
-        // Operator deliberately clears the list (e.g. Bedrock-only tenant
-        // who wants structured_outputs back). Bound to an empty collection,
+        // Operator deliberately clears the list. Bound to an empty collection,
         // not a defaulted one.
         var opts = ResolveOptions(ConfigFrom(new()
         {

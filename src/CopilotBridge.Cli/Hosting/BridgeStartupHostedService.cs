@@ -28,6 +28,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
     private readonly IOptions<BridgeServerOptions> _server;
     private readonly IOptions<RoutesConfig> _routes;
     private readonly ModelProfileCatalog _catalog;
+    private readonly CodexModelProfileCatalog _codexCatalog;
     private readonly Logging.BridgeIoSink? _ioSink;
     private readonly ILogger<BridgeStartupHostedService> _log;
 
@@ -36,6 +37,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
         IOptions<BridgeServerOptions> server,
         IOptions<RoutesConfig> routes,
         ModelProfileCatalog catalog,
+        CodexModelProfileCatalog codexCatalog,
         ILogger<BridgeStartupHostedService> log,
         Logging.BridgeIoSink? ioSink = null)
     {
@@ -43,6 +45,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
         _server = server;
         _routes = routes;
         _catalog = catalog;
+        _codexCatalog = codexCatalog;
         _log = log;
         _ioSink = ioSink;
     }
@@ -104,11 +107,14 @@ internal sealed class BridgeStartupHostedService : IHostedService
                 "Req trace: disabled — set Tracing.Enabled=true in appsettings.json to capture per-request bodies");
         }
         _log.LogInformation(
-            "Routes:    {LocCount} user locations; catalog: {ModelCount} model profiles",
-            _routes.Value.Locations.Count, _catalog.Count);
+            "Routes:    {LocCount} user locations; catalog: {ModelCount} Anthropic + {CodexCount} Codex model profiles",
+            _routes.Value.Locations.Count, _catalog.Count, _codexCatalog.Count);
         _log.LogInformation(
-            "Model profile catalog loaded with {Count} profiles: {Ids}",
+            "Anthropic profiles ({Count}): {Ids}",
             _catalog.Count, string.Join(", ", _catalog.KnownIds));
+        _log.LogInformation(
+            "Codex profiles ({Count}): {Ids}",
+            _codexCatalog.Count, string.Join(", ", _codexCatalog.KnownIds));
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

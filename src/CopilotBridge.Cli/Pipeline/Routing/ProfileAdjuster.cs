@@ -20,7 +20,7 @@ internal static class ProfileAdjuster
     /// <param name="globalBetaStrips">Operator-configured patterns appended
     /// to <c>ctx.PendingBetaStrips</c> before the per-profile strips. Comes
     /// from <see cref="Hosting.Options.OutboundBetaPolicyOptions"/> and
-    /// defaults to <c>["advisor-tool-*", "structured-outputs-*"]</c> in the
+    /// defaults to <c>["advisor-tool-*"]</c> in the
     /// shipped <c>appsettings.json</c>; empty when this argument is null.</param>
     public static ModelProfile Apply(
         BridgeContext<MessagesRequest> ctx,
