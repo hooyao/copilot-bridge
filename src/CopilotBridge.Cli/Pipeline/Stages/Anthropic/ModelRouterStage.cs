@@ -92,13 +92,15 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
                 var nearestCodex = _codexProfiles.GetNearest(afterRule, out var matchedCodexId, out var codexScore);
                 if (nearestCodex is null)
                 {
+                    // GetNearest reports the nearest candidate even below the floor
+                    // (matchedId empty only for empty inputs), so the 400 can name it.
                     var codexEx = new Routing.UnknownModelException(
                         requestedModel: requested,
                         resolvedModel: afterRule,
                         appliedLocation: matchedLoc,
                         appliedLocationIndex: matchedLoc is null ? null : locIndex,
                         knownProfiles: _codexProfiles.KnownIds,
-                        bestCandidate: codexScore > 0 ? matchedCodexId : null,
+                        bestCandidate: matchedCodexId.Length > 0 ? matchedCodexId : null,
                         bestScore: codexScore);
                     _log.LogError("{Message}", codexEx.Message);
                     throw codexEx;
@@ -136,13 +138,15 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
             var nearest = _profiles.GetNearest(afterRule, out var matchedId, out var score);
             if (nearest is null)
             {
+                // GetNearest reports the nearest candidate even below the floor
+                // (matchedId empty only for empty inputs), so the 400 can name it.
                 var ex = new Routing.UnknownModelException(
                     requestedModel: requested,
                     resolvedModel: afterRule,
                     appliedLocation: matchedLoc,
                     appliedLocationIndex: matchedLoc is null ? null : locIndex,
                     knownProfiles: _profiles.KnownIds,
-                    bestCandidate: score > 0 ? matchedId : null,
+                    bestCandidate: matchedId.Length > 0 ? matchedId : null,
                     bestScore: score);
                 _log.LogError("{Message}", ex.Message);
                 throw ex;

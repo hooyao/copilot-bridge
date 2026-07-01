@@ -10,9 +10,14 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 /// </summary>
 /// <remarks>
 /// <para>Lookup is by canonical id (post-<see cref="CopilotModelRegistry.Normalize"/>,
-/// which no-ops on the Codex ids). A miss is a hard error
-/// (<see cref="UnknownModelException"/>) — the bridge never guesses a Codex
-/// model's effort contract.</para>
+/// which no-ops on the Codex ids). An exact miss falls back to the <b>nearest
+/// known profile</b> via <see cref="GetNearest"/> (fuzzy match,
+/// <see cref="ModelNameMatcher"/>) so a Copilot Responses model newer than this
+/// build borrows the closest known model's effort-clamp + custom-tool-drop rules
+/// instead of passing through unclamped; only an id too dissimilar to any known
+/// model is a hard, surfaced error (<see cref="UnknownModelException"/>). The
+/// catalog stays the source of probed truth — fuzzy matching is a best-effort
+/// bridge until a real profile is added, not a substitute for probing.</para>
 /// <para>Two uniform coercions apply to EVERY model (research §2.3/§2.4), so they
 /// live as catalog-level facts rather than per-row flags: strip
 /// <c>service_tier</c> (Copilot 400s it) and drop the <c>image_generation</c>
@@ -21,16 +26,26 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 internal sealed class CodexModelProfileCatalog
 {
     private readonly Dictionary<string, CodexModelProfile> _byId;
+    private readonly IReadOnlyList<string> _knownIds;
 
     public CodexModelProfileCatalog()
     {
         _byId = BuildDefault().ToDictionary(p => p.CanonicalId, StringComparer.OrdinalIgnoreCase);
+        _knownIds = SortedIds(_byId);
     }
 
     /// <summary>Test-only: build from an explicit profile set.</summary>
     internal CodexModelProfileCatalog(IEnumerable<CodexModelProfile> profiles)
     {
         _byId = profiles.ToDictionary(p => p.CanonicalId, StringComparer.OrdinalIgnoreCase);
+        _knownIds = SortedIds(_byId);
+    }
+
+    private static IReadOnlyList<string> SortedIds(Dictionary<string, CodexModelProfile> byId)
+    {
+        var ids = new List<string>(byId.Keys);
+        ids.Sort(StringComparer.Ordinal);
+        return ids;
     }
 
     /// <summary>Profile for <paramref name="canonicalId"/>, or null if unknown.</summary>
@@ -45,26 +60,23 @@ internal sealed class CodexModelProfileCatalog
     /// this build's catalog borrow the nearest known model's effort-clamp +
     /// custom-tool-drop rules rather than passing through unclamped (which risks a
     /// Copilot 400/500). The real model id still goes on the wire.
+    /// <para><paramref name="matchedId"/> / <paramref name="score"/> report the
+    /// nearest candidate <b>whether or not it cleared the floor</b>, so a
+    /// below-floor caller can surface it in the error; only empty inputs leave them
+    /// empty / 0.</para>
     /// </summary>
     public CodexModelProfile? GetNearest(string canonicalId, out string matchedId, out double score)
     {
-        matchedId = "";
-        var nearest = ModelNameMatcher.FindNearest(canonicalId, KnownIds, out score);
-        if (nearest is null) return null;
-        matchedId = nearest;
-        return Get(nearest);
+        var best = ModelNameMatcher.FindBest(canonicalId, _knownIds, out score);
+        matchedId = best ?? "";
+        if (best is null || score < ModelNameMatcher.DefaultMinSimilarity) return null;
+        return Get(best);
     }
 
-    /// <summary>All known canonical ids, sorted — used in the unknown-model error body.</summary>
-    public IReadOnlyList<string> KnownIds
-    {
-        get
-        {
-            var ids = new List<string>(_byId.Keys);
-            ids.Sort(StringComparer.Ordinal);
-            return ids;
-        }
-    }
+    /// <summary>All known canonical ids, sorted (cached — <c>_byId</c> is immutable
+    /// after construction). Used in the unknown-model error body and by the fuzzy
+    /// matcher's candidate set.</summary>
+    public IReadOnlyList<string> KnownIds => _knownIds;
 
     public int Count => _byId.Count;
 

@@ -108,6 +108,30 @@ public class ModelRouterStageFuzzyTests
     }
 
     [Fact]
+    public async Task BelowFloorMiss_NamesTheNearestRejectedCandidate()
+    {
+        // Contract (PR comment #2): a below-floor 400 must still tell the operator
+        // which known model was closest and how close — that's what distinguishes
+        // "a real new model just under the bar → add a remap" from "a typo → nothing
+        // close". Before the fix the diagnostic was structurally dead: GetNearest
+        // reported an empty candidate + 0 score below the floor, so BestCandidate
+        // was ALWAYS null and the message never named anything. The nearest known
+        // claude id must now be surfaced, with its (sub-floor) similarity.
+        var ctx = TestCtx.Build("claude-zzz-totally-made-up-9999-xyz");
+
+        var ex = await Assert.ThrowsAsync<UnknownModelException>(() => Stage().ApplyAsync(ctx));
+
+        Assert.NotNull(ex.BestCandidate);
+        Assert.StartsWith("claude-", ex.BestCandidate!);
+        Assert.True(ex.BestScore > 0, "a rejected candidate should carry its real similarity, not 0");
+        Assert.True(
+            ex.BestScore < ModelNameMatcher.DefaultMinSimilarity,
+            $"below-floor case must score under the {ModelNameMatcher.DefaultMinSimilarity:F2} floor; got {ex.BestScore}");
+        Assert.Contains("Nearest known model was", ex.Message);
+        Assert.Contains(ex.BestCandidate!, ex.Message);
+    }
+
+    [Fact]
     public async Task ForeignVendorId_UnknownPrefix_Throws()
     {
         // A non-claude, non-gpt prefix has no backend route at all. The registry

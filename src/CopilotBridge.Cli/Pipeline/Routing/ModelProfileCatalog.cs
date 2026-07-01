@@ -24,16 +24,26 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 internal sealed class ModelProfileCatalog
 {
     private readonly Dictionary<string, ModelProfile> _byId;
+    private readonly IReadOnlyList<string> _knownIds;
 
     public ModelProfileCatalog()
     {
         _byId = BuildDefault().ToDictionary(p => p.CanonicalId, StringComparer.OrdinalIgnoreCase);
+        _knownIds = SortedIds(_byId);
     }
 
     /// <summary>Test-only: build a catalog from an explicit profile set.</summary>
     internal ModelProfileCatalog(IEnumerable<ModelProfile> profiles)
     {
         _byId = profiles.ToDictionary(p => p.CanonicalId, StringComparer.OrdinalIgnoreCase);
+        _knownIds = SortedIds(_byId);
+    }
+
+    private static IReadOnlyList<string> SortedIds(Dictionary<string, ModelProfile> byId)
+    {
+        var ids = new List<string>(byId.Keys);
+        ids.Sort(StringComparer.Ordinal);
+        return ids;
     }
 
     /// <summary>Profile for <paramref name="canonicalId"/>, or null if unknown.</summary>
@@ -47,30 +57,26 @@ internal sealed class ModelProfileCatalog
     /// <see cref="Stages.Anthropic.ModelRouterStage"/> when <see cref="Get"/> misses:
     /// a Copilot model newer than this build's probed catalog borrows the nearest
     /// known model's wire contract instead of being hard-refused — the real model
-    /// id still goes on the wire; only the coercion rules are borrowed. A miss
-    /// below the floor (typo / unrelated id) returns null so the caller keeps its
-    /// hard error. <paramref name="matchedId"/> / <paramref name="score"/> report
-    /// the winner (empty / 0 when null).
+    /// id still goes on the wire; only the coercion rules are borrowed.
+    /// <para><paramref name="matchedId"/> / <paramref name="score"/> report the
+    /// nearest candidate <b>whether or not it cleared the floor</b> — so a caller
+    /// that got null (below-floor miss) can still surface "nearest was X at 0.21,
+    /// below the floor" in its error. Only genuinely empty inputs leave them
+    /// empty / 0. The profile return value is null exactly when the score is below
+    /// the floor.</para>
     /// </summary>
     public ModelProfile? GetNearest(string canonicalId, out string matchedId, out double score)
     {
-        matchedId = "";
-        var nearest = ModelNameMatcher.FindNearest(canonicalId, KnownIds, out score);
-        if (nearest is null) return null;
-        matchedId = nearest;
-        return Get(nearest);
+        var best = ModelNameMatcher.FindBest(canonicalId, _knownIds, out score);
+        matchedId = best ?? "";
+        if (best is null || score < ModelNameMatcher.DefaultMinSimilarity) return null;
+        return Get(best);
     }
 
-    /// <summary>All known canonical ids, sorted — used in the unknown-model error body.</summary>
-    public IReadOnlyList<string> KnownIds
-    {
-        get
-        {
-            var ids = new List<string>(_byId.Keys);
-            ids.Sort(StringComparer.Ordinal);
-            return ids;
-        }
-    }
+    /// <summary>All known canonical ids, sorted (cached — <c>_byId</c> is immutable
+    /// after construction). Used in the unknown-model error body and by the fuzzy
+    /// matcher's candidate set.</summary>
+    public IReadOnlyList<string> KnownIds => _knownIds;
 
     public int Count => _byId.Count;
 

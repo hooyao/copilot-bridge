@@ -49,6 +49,32 @@ internal static class ModelNameMatcher
         out double score,
         double minSimilarity = DefaultMinSimilarity)
     {
+        // Reuse the unconditional ranker, then apply the floor. This keeps the
+        // accept/reject decision in one place and lets callers that want the
+        // rejected candidate (for a "nearest was X at 0.21, below the floor"
+        // diagnostic) use FindBest directly.
+        var best = FindBest(requestedId, knownIds, out score);
+        if (best is null || score < minSimilarity)
+        {
+            return null;
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// Returns the single most-similar id in <paramref name="knownIds"/>
+    /// regardless of any floor — <see cref="FindNearest"/> without the accept
+    /// cutoff. Used to surface the nearest <i>rejected</i> candidate (and its
+    /// score) in the unknown-model error, so a below-floor 400 can say "nearest
+    /// was X at 0.21, below the 0.30 floor". Returns <c>null</c> only when the
+    /// inputs are empty; <paramref name="score"/> is the winner's Jaccard score
+    /// (0 when null). Applying the floor is the caller's job.
+    /// </summary>
+    public static string? FindBest(
+        string requestedId,
+        IReadOnlyList<string> knownIds,
+        out double score)
+    {
         score = 0.0;
         if (string.IsNullOrEmpty(requestedId) || knownIds.Count == 0) return null;
 
@@ -83,7 +109,7 @@ internal static class ModelNameMatcher
             }
         }
 
-        if (best is null || bestScore < minSimilarity) return null;
+        if (best is null) return null;
         score = bestScore;
         return best;
     }

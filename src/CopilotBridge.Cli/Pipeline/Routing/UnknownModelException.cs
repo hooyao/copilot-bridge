@@ -89,7 +89,7 @@ internal sealed class UnknownModelException : Exception
         var nearNote = bestCandidate is null
             ? ""
             : $"\nNearest known model was '{bestCandidate}' (similarity {bestScore:F2}), below the "
-              + $"{Routing.ModelNameMatcher.DefaultMinSimilarity:F2} fuzzy-match floor — so the bridge did "
+              + $"{ModelNameMatcher.DefaultMinSimilarity:F2} fuzzy-match floor — so the bridge did "
               + "not borrow its contract automatically.";
 
         if (loc is null)
