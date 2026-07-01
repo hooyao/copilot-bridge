@@ -530,33 +530,75 @@ data in `ModelProfileCatalog`, applied uniformly by `ProfileAdjuster`. User
 effort remap, whitelisted header tweaks) — the target's profile decides every
 wire-shape fact. See §7.
 
-## 6. Response pipeline (M1 example)
+## 6. Response pipeline
+
+As-built, the response side is a single stage — `ResponseInspectionStage` — that
+runs an ordered, **per-request** set of `IResponseDetector`s in one stream wrap
+(one SSE parse, fanned out), replacing the earlier one-stage-per-concern layout:
 
 ```
-ctx.Response.EventStream  (raw events from upstream, or post-translation
-                           if strategy wrapped them)
+ctx.Response.EventStream  (raw events from upstream, or post-translation)
     │
     ▼
-[A] DoneFilterStage               drops the OpenAI-style `event:message
-                                  data:[DONE]` terminator
+ResponseInspectionStage   builds detectors via DetectorSetFactory (fresh per
+    │                     request — streaming state never crosses requests),
+    │                     then renders each event through them in order:
+    │
+    ├─ DoneFilterDetector      DropEvent on `event:message data:[DONE]`
+    ├─ ModelRewriteDetector    RewriteEvent on the first `message_start`
+    │                          (and the buffered body's top-level `model`)
+    └─ ToolLeakDetector        Abort on a leaked tool call (see §6.1)
     │
     ▼
-[B] EventCaptureStage             appends each event to ctx.Log.Events
-                                  for the audit log (always-on)
-    │
-    ▼
-[C] ResponseHeadersStage          drop x-quota-snapshot-*, x-github-* etc.
-                                  from outbound response headers (optional)
-    │
-    ▼
-endpoint writes ctx.Response.EventStream to inbound client
+endpoint writes ctx.Response.EventStream (streaming) or BufferedBody (buffered)
 ```
 
-For non-streaming responses, the `EventStream` is null; stages operate on
-`BufferedBody`. The shape of stages is the same; each checks the `Mode`.
+Each detector returns a `DetectionAction` — `None` (pass through), `DropEvent`
+(swallow + record in `ctx.DroppedEvents`), `RewriteEvent` (replace payload), or
+`Abort` (inject an error and end). The first non-`None` action wins for an event;
+`Abort` short-circuits. Detectors never touch the stream — the stage owns the one
+async-iterator combinator, so consumption (the endpoint's writer) still drives the
+chain lazily. For non-streaming responses `EventStream` is null and detectors run
+via `InspectBuffered` over `BufferedBody`.
 
-Stages that need to **transform** events (rather than drop/observe) wrap the
-async enumerable with their own transformation:
+Detectors are per-request because a streaming detector may carry cross-delta state
+(the tool-leak automaton) that must not be shared across requests. `DetectorSetFactory`
+is the singleton; it produces fresh detector instances each call and omits any
+detector its config disables.
+
+### 6.1 Tool-leak guard
+
+`ToolLeakDetector` detects a Copilot-served Claude model leaking a tool call as
+literal `<invoke name="X">…<parameter…>…</parameter>…</invoke>` XML inside a
+`text`/`thinking` block (instead of a real `tool_use` block) and forces Claude
+Code to retry the turn cleanly. Detection is **structural** and requires all of:
+a closed, balanced `<invoke>…</invoke>` with ≥1 closed `<parameter>`; the tool
+name in the request's `tools[]`; and not inside a markdown code fence. It does
+**not** key off the drifting prefix token (`court`/`call`), `stop_reason` (both
+`tool_use` and `end_turn` observed), or a bare unbalanced `<invoke`.
+
+The scan is a single-pass streaming automaton (`ToolLeakAutomaton`, KMP failure
+edges) with O(1) state that retains no content — a signature split across deltas,
+even character-by-character, is carried by automaton state, so an arbitrarily long
+leaked block is handled without a window the opening tag could scroll out of.
+
+Two orthogonal knobs (`Pipeline:ToolLeakGuard`): `PreserveStream` (default true —
+keep streaming, inject a mid-stream SSE `error` event; false — buffer the whole
+response and emit a real HTTP status) × `Signal` (default `OverloadedError` →
+`overloaded_error`/529, which Claude Code reliably retries and, after 3
+consecutive, falls back opus→Sonnet; or `ApiError` → `api_error`/500). Because
+retry discards the whole attempt (including already-streamed dirty text), the
+dirty bytes never commit to the transcript — this breaks the self-reinforcing
+poisoning loop. See `docs/copilot-upstream-toolcall-bug-report.md` for the leak's
+empirical basis (~2.2% of responses in a poisoned session, all closed/unfenced).
+
+### 6.2 Adding a detector
+
+Implement `IResponseDetector` and add it in `DetectorSetFactory.Build`. The
+`RewriteBlock`-style whole-block transform (e.g. a JSON-repair detector for
+malformed JSON inside real `tool_use` blocks) is the framework's designed
+extension point; it is not implemented in this change. The standard async-iterator
+combinator still applies:
 
 ```csharp
 public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)

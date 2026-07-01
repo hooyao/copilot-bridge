@@ -10,6 +10,7 @@ using CopilotBridge.Cli.Pipeline.Routing;
 using CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using CopilotBridge.Cli.Pipeline.Response;
+using CopilotBridge.Cli.Pipeline.Response.Detection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -190,10 +191,18 @@ public class UpstreamResponseCaptureContractTests
         // Snapshot the raw capture BEFORE the rewrite stage runs (as the endpoint does).
         var rawCapture = ctx.Response.RawUpstreamResponseBody;
 
-        var rewrite = new ResponseModelRewriteStage(
-            NullLogger<ResponseModelRewriteStage>.Instance,
-            Options.Create(new ResponseModelRewriteOptions { Enabled = true }));
-        await rewrite.ApplyAsync(ctx);
+        // Apply the model rewrite the way the inspection stage does on the
+        // buffered path: run ModelRewriteDetector and write its replacement bytes
+        // back to BufferedBody.
+        var rewrite = new ModelRewriteDetector(
+            enabled: true,
+            originalModel: ctx.OriginalRequestedModel,
+            resolvedModel: ctx.Request.Body.Model);
+        var action = rewrite.InspectBuffered(ctx.Response.BufferedBody!);
+        if (action.Kind == DetectionActionKind.RewriteEvent)
+        {
+            ctx.Response.BufferedBody = Encoding.UTF8.GetBytes(action.Event.Data);
+        }
 
         // Client sees the restored requested model…
         Assert.Contains("claude-opus-4-8", Encoding.UTF8.GetString(ctx.Response.BufferedBody!));

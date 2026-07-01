@@ -43,6 +43,13 @@ internal sealed class RequestSummary
     public long DurationMs { get; set; }
 
     /// <summary>
+    /// True when the tool-leak guard detected a leaked tool call and forced a
+    /// client retry this turn. Lets the operator measure the real-world leak rate
+    /// by grepping the summary line. Default false.
+    /// </summary>
+    public bool ToolLeakDetected { get; set; }
+
+    /// <summary>
     /// When the pipeline / endpoint throws, the exception's type + message
     /// land here so the INFO line surfaces what failed (e.g.
     /// <c>NullReferenceException: Object reference not set</c>) without

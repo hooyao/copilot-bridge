@@ -32,7 +32,7 @@ internal sealed class RequestSummaryLogger
             + "target={TargetVendor}:{TargetEndpoint} "
             + "betas_in=[{InboundBetasCsv}] betas_out=[{OutboundBetasCsv}] "
             + "effort={EffortDisplay} max_tokens={MaxTokensDisplay} usage={UsageDisplay} "
-            + "status={StatusCode} streaming={Streaming} duration_ms={DurationMs} error={ErrorDisplay}",
+            + "status={StatusCode} streaming={Streaming} tool_leak={ToolLeakDetected} duration_ms={DurationMs} error={ErrorDisplay}",
             s.TraceId,
             s.Kind,
             s.RequestedModel ?? "?",
@@ -47,6 +47,7 @@ internal sealed class RequestSummaryLogger
             s.Usage.Display,
             s.StatusCode,
             s.Streaming,
+            s.ToolLeakDetected,
             s.DurationMs,
             s.Error ?? "(none)");
     }
