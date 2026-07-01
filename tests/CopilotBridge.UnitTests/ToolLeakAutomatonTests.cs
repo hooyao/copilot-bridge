@@ -206,6 +206,19 @@ public class ToolLeakAutomatonTests
         Assert.False(Detect(s));
     }
 
+    [Fact]
+    public void FencesNotTracked_FencedInvokeStillDetected()
+    {
+        // Contract: thinking blocks have no fence concept — with trackFences:false
+        // a ```-wrapped invoke is still a leak (fences are treated as plain text).
+        var a = new ToolLeakAutomaton(Tools);
+        a.Reset(trackFences: false);
+        var s = "```\n" + MinimalLeak + "\n```";
+        var tripped = false;
+        foreach (var c in s) tripped |= a.Feed(c);
+        Assert.True(tripped);
+    }
+
     // ---- Boundary / reset ------------------------------------------------
 
     [Fact]

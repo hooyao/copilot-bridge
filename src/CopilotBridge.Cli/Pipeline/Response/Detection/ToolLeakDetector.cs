@@ -41,8 +41,11 @@ internal sealed class ToolLeakDetector : IResponseDetector
         switch (evt.EventType)
         {
             case "content_block_start":
-                _automaton.Reset();
-                _blockIsScannable = BlockIsScannable(evt.Data);
+                var type = BlockType(evt.Data);
+                _blockIsScannable = type == "text" || (type == "thinking" && _opts.ScanThinking);
+                // Thinking blocks have no fence concept → always-unfenced; text
+                // blocks track fences so a teaching example inside ``` isn't a leak.
+                _automaton.Reset(trackFences: type != "thinking");
                 break;
 
             case "content_block_delta":
@@ -73,9 +76,9 @@ internal sealed class ToolLeakDetector : IResponseDetector
         return DetectionAction.None;
     }
 
-    /// <summary>True if this block is a text block, or a thinking block while
-    /// <c>ScanThinking</c> is on.</summary>
-    private bool BlockIsScannable(string startData)
+    /// <summary>The content block's type (<c>text</c>/<c>thinking</c>/…), or null
+    /// if the start event can't be parsed.</summary>
+    private static string? BlockType(string startData)
     {
         try
         {
@@ -83,14 +86,13 @@ internal sealed class ToolLeakDetector : IResponseDetector
             if (!doc.RootElement.TryGetProperty("content_block", out var cb)
                 || !cb.TryGetProperty("type", out var t))
             {
-                return false;
+                return null;
             }
-            var type = t.GetString();
-            return type == "text" || (type == "thinking" && _opts.ScanThinking);
+            return t.GetString();
         }
         catch (JsonException)
         {
-            return false;
+            return null;
         }
     }
 

@@ -3,7 +3,7 @@
 ## 1. Configuration & options
 
 - [x] 1.1 Add `ToolLeakGuardOptions` in `Hosting/Options/` with `Enabled` (default true), `PreserveStream` (default true), `Signal` (enum `{OverloadedError, ApiError}`, default `OverloadedError`), `ScanThinking` (default true), `MaxScanChars` (default 10000).
-- [x] 1.2 Add the `Pipeline:ToolLeakGuard` section to `appsettings.json` with per-knob `_Xxx` comments (copy the block from design.md D5).
+- [x] 1.2 Add the `Pipeline:Detectors:ToolLeakGuard` section to `appsettings.json` with per-knob `_Xxx` comments (copy the block from design.md D5).
 - [x] 1.3 Bind and register the options in the hosting setup (mirror `UpstreamRetryOptions`/`ResponseModelRewriteOptions` registration); add to `JsonContext` only if a new DTO requires source-generated serialization.
 
 ## 2. Detection core (automaton, delivery-agnostic, unit-testable)

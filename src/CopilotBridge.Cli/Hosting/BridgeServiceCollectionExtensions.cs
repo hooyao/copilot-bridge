@@ -155,7 +155,7 @@ internal static class BridgeServiceCollectionExtensions
         // standalone DoneFilterStage / ResponseModelRewriteStage are now detectors
         // built by DetectorSetFactory (singleton; produces fresh per-request
         // detectors so streaming state never crosses requests).
-        services.AddSingleton<DetectorSetFactory>();
+        services.AddSingleton<IDetectorSetFactory, DetectorSetFactory>();
         services.AddSingleton<ResponseInspectionStage>();
         services.AddSingleton<CopilotMessagesPassthroughStrategy>();
 

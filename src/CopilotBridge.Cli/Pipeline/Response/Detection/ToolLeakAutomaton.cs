@@ -47,6 +47,7 @@ internal sealed class ToolLeakAutomaton
 
     private int _backtickRun;       // consecutive backticks; a run of >=3 toggles the fence
     private bool _inFence;
+    private bool _trackFences = true; // false for thinking blocks (no fence concept)
     private bool _invokeOpen_;      // inside an <invoke …> whose close we await
     private bool _capturingName;    // between <invoke name=" and the closing "
     private readonly System.Text.StringBuilder _name = new(MaxNameLength);
@@ -63,13 +64,20 @@ internal sealed class ToolLeakAutomaton
     /// <summary>True once a leak has been confirmed in this block. Latches.</summary>
     public bool Tripped => _tripped;
 
-    /// <summary>Reset all state for a new content block.</summary>
-    public void Reset()
+    /// <summary>
+    /// Reset all state for a new content block.
+    /// <paramref name="trackFences"/> selects whether ``` runs toggle a code
+    /// fence: true for <c>text</c> blocks (where a fenced example is teaching,
+    /// not a leak), false for <c>thinking</c> blocks (which have no fence concept
+    /// and are treated as always-unfenced, per the guard's contract).
+    /// </summary>
+    public void Reset(bool trackFences = true)
     {
         _invokeOpen.Reset(); _paramOpen.Reset();
         _paramClose.Reset(); _invokeClose.Reset();
         _backtickRun = 0;
         _inFence = false;
+        _trackFences = trackFences;
         AbandonInvoke();
         _tripped = false;
     }
@@ -86,15 +94,19 @@ internal sealed class ToolLeakAutomaton
         // Toggling at exactly the 3rd backtick makes a longer run (4+, or the
         // closing ``` of the same line) toggle only once, not once-per-3.
         // A genuine leak is bare (never fenced), so an invoke closed while
-        // _inFence is ignored.
-        if (c == '`')
+        // _inFence is ignored. Skipped entirely when fences aren't tracked
+        // (thinking blocks), so _inFence stays false = always unfenced.
+        if (_trackFences)
         {
-            _backtickRun++;
-            if (_backtickRun == 3) _inFence = !_inFence;
-        }
-        else
-        {
-            _backtickRun = 0;
+            if (c == '`')
+            {
+                _backtickRun++;
+                if (_backtickRun == 3) _inFence = !_inFence;
+            }
+            else
+            {
+                _backtickRun = 0;
+            }
         }
 
         // Name capture: characters between <invoke name=" and the closing ".

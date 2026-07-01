@@ -30,10 +30,10 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// </remarks>
 internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
 {
-    private readonly DetectorSetFactory _factory;
+    private readonly IDetectorSetFactory _factory;
     private readonly ILogger<ResponseInspectionStage> _log;
 
-    public ResponseInspectionStage(DetectorSetFactory factory, ILogger<ResponseInspectionStage> log)
+    public ResponseInspectionStage(IDetectorSetFactory factory, ILogger<ResponseInspectionStage> log)
     {
         _factory = factory;
         _log = log;
@@ -46,7 +46,7 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
         var detectors = _factory.Build(ctx);
         if (detectors.Count == 0)
         {
-            return; // nothing enabled → no allocation on the stream
+            return; // defensive: the always-on DONE filter keeps this non-empty
         }
 
         if (ctx.Response.Mode == ResponseMode.Streaming && ctx.Response.EventStream is not null)
@@ -104,8 +104,9 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
                 var a = d.InspectEvent(evt);
                 if (a.Kind != DetectionActionKind.None)
                 {
+                    // First non-None action wins (detector order = precedence).
                     action = a;
-                    if (a.Kind == DetectionActionKind.Abort) break;
+                    break;
                 }
             }
 
@@ -189,12 +190,13 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
                 var a = d.InspectEvent(evt);
                 if (a.Kind != DetectionActionKind.None)
                 {
+                    // First non-None action wins (detector order = precedence).
                     action = a;
                     if (a.Kind == DetectionActionKind.Abort)
                     {
                         log.LogWarning("stage {Name}: detector {Detector} aborted the stream", "ResponseInspection", d.Name);
-                        break;
                     }
+                    break;
                 }
             }
 

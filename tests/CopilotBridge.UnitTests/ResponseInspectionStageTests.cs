@@ -140,6 +140,28 @@ public class ResponseInspectionStageTests
     }
 
     [Fact]
+    public async Task ThinkingBlock_FencedInvoke_StillDetected()
+    {
+        // Contract: thinking blocks have no fence concept — a ```-wrapped invoke
+        // inside a thinking block IS a leak (unlike the same in a text block).
+        var fencedLeak = "reasoning...\n```\n<invoke name=\"Read\">\n<parameter name=\"p\">v</parameter>\n</invoke>\n```";
+        async IAsyncEnumerable<SseItem<string>> ThinkingFenced()
+        {
+            yield return new SseItem<string>("""{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}""", "content_block_start");
+            yield return new SseItem<string>(
+                $"{{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"thinking_delta\",\"thinking\":{System.Text.Json.JsonSerializer.Serialize(fencedLeak)}}}}}",
+                "content_block_delta");
+            await Task.CompletedTask;
+        }
+        var ctx = Ctx(ThinkingFenced());
+        await Stage(new ToolLeakGuardOptions { Enabled = true, ScanThinking = true }).ApplyAsync(ctx);
+
+        var got = await Drain(ctx.Response.EventStream!);
+        Assert.True(ctx.ToolLeakDetected);
+        Assert.Equal("error", got[^1].EventType);
+    }
+
+    [Fact]
     public async Task Disabled_Inert_SameStreamReference()
     {
         // Contract: Enabled=false (and rewrite off) → no detector set → stage does
@@ -221,5 +243,47 @@ public class ResponseInspectionStageTests
         var got = await Drain(ctx.Response.EventStream!);
         Assert.DoesNotContain(got, e => e.Data == "[DONE]");
         Assert.Contains(ctx.DroppedEvents, d => d.Data == "[DONE]");
+    }
+
+    // ---- Action precedence: first non-None wins -------------------------
+
+    [Fact]
+    public async Task FirstNonNoneAction_Wins_OverLaterDetector()
+    {
+        // Contract: when two detectors both act on the same event, the FIRST in
+        // order wins. Here detector A rewrites the event and detector B (later)
+        // would drop it — the output must be A's rewrite, not a drop.
+        var a = new StubDetector("A", _ => DetectionAction.Rewrite(new SseItem<string>("REWRITTEN", "message")));
+        var b = new StubDetector("B", _ => DetectionAction.Drop());
+        var factory = new StubFactory(a, b);
+        var stage = new ResponseInspectionStage(factory, NullLogger<ResponseInspectionStage>.Instance);
+
+        async IAsyncEnumerable<SseItem<string>> One()
+        {
+            yield return new SseItem<string>("orig", "message");
+            await Task.CompletedTask;
+        }
+        var ctx = Ctx(One());
+        await stage.ApplyAsync(ctx);
+
+        var got = await Drain(ctx.Response.EventStream!);
+        Assert.Single(got);
+        Assert.Equal("REWRITTEN", got[0].Data); // A won; B's drop never applied
+        Assert.Empty(ctx.DroppedEvents);
+    }
+
+    private sealed class StubFactory : IDetectorSetFactory
+    {
+        private readonly IResponseDetector[] _detectors;
+        public StubFactory(params IResponseDetector[] detectors) => _detectors = detectors;
+        public IReadOnlyList<IResponseDetector> Build(BridgeContext<MessagesRequest> ctx) => _detectors;
+    }
+
+    private sealed class StubDetector : IResponseDetector
+    {
+        private readonly Func<SseItem<string>, DetectionAction> _on;
+        public StubDetector(string name, Func<SseItem<string>, DetectionAction> on) { Name = name; _on = on; }
+        public string Name { get; }
+        public DetectionAction InspectEvent(in SseItem<string> evt) => _on(evt);
     }
 }
