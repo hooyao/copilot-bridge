@@ -1,5 +1,9 @@
 # copilot-bridge
 
+[![CI](https://github.com/hooyao/copilot-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/hooyao/copilot-bridge/actions/workflows/ci.yml)
+[![Release](https://github.com/hooyao/copilot-bridge/actions/workflows/release.yml/badge.svg?event=push)](https://github.com/hooyao/copilot-bridge/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/hooyao/copilot-bridge)](https://github.com/hooyao/copilot-bridge/releases/latest)
+
 Use your **GitHub Copilot** subscription as the model backend for **Claude Code**
 and **Codex** (Gemini CLI is on the roadmap). copilot-bridge is a small reverse
 proxy that exposes Copilot's LLM API under a vendor-neutral URL per client, so
