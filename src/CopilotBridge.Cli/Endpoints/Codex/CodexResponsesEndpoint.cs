@@ -91,10 +91,10 @@ internal static class CodexResponsesEndpoint
         try
         {
             // Correlate every log line emitted while handling this request (stages,
-            // detectors) with the trace id, via Serilog's LogContext (rendered by
-            // the {ReqTrace} token in the output template). Mirrors the /cc endpoint
-            // so /codex pipeline logs are correlated too. Disposed at request end.
-            using var _traceScope = Serilog.Context.LogContext.PushProperty("ReqTrace", $"req#{traceId} ");
+            // detectors) with the trace id: push the RAW id onto Serilog's LogContext
+            // as "ReqTrace" (ReqTraceFormatEnricher renders it as "[<id>] "). Mirrors
+            // the /cc endpoint so /codex pipeline logs are correlated too.
+            using var _traceScope = Serilog.Context.LogContext.PushProperty("ReqTrace", traceId);
 
             ResponsesRequest? clientBody;
             try

@@ -111,11 +111,11 @@ internal static class ClaudeCodeMessagesEndpoint
         try
         {
             // Correlate every log line emitted while handling this request (stages,
-            // detectors, the tool-leak Warning) with the trace id, via Serilog's
-            // LogContext (rendered by the {ReqTrace} token in the output template).
-            // The trailing space keeps non-request lines gap-free when the property
-            // is absent. Disposed at the end of the request.
-            using var _traceScope = Serilog.Context.LogContext.PushProperty("ReqTrace", $"req#{traceId} ");
+            // detectors, the tool-leak Warning) with the trace id: push the RAW id
+            // onto Serilog's LogContext as "ReqTrace". ReqTraceFormatEnricher turns
+            // it into the bracketed "[<id>] " prefix the output templates render, so
+            // non-request lines carry nothing. Disposed at the end of the request.
+            using var _traceScope = Serilog.Context.LogContext.PushProperty("ReqTrace", traceId);
 
             MessagesRequest? clientBody;
             try

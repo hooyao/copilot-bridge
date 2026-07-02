@@ -22,14 +22,28 @@ namespace CopilotBridge.Cli.Hosting.Logging;
 /// </summary>
 internal static class SerilogBootstrapper
 {
-    // {ReqTrace} renders the per-request "req#<traceId> " prefix pushed onto
-    // Serilog's LogContext by the endpoint (see ClaudeCodeMessagesEndpoint), so
-    // pipeline/stage/detector log lines are correlated to the trace files. It is
-    // empty (Serilog drops the missing-property token) for non-request lines like
-    // the startup banner, and distinct from the summary line's own {TraceId}
-    // message property to avoid a duplicate-property collision.
-    private const string OutputTemplate =
-        "{Timestamp:HH:mm:ss.fff} [{Level:u3}] {ReqTrace}{Message:lj}{NewLine}{Exception}";
+    // {ReqTraceFmt} renders the per-request "[<traceId>] " prefix so pipeline/
+    // stage/detector log lines are correlated to the trace files. The endpoints
+    // push the RAW trace id as the "ReqTrace" property; ReqTraceFormatEnricher
+    // turns it into the bracketed display form "ReqTraceFmt" (data vs presentation
+    // kept separate — change the wrapper in one place, the enricher). It is empty
+    // for non-request lines (startup banner) — no stray "[]" — and distinct from
+    // the summary line's own {TraceId} message property.
+    //
+    // Two templates: the FILE gets plain text (no ANSI — a log file must stay
+    // greppable); the CONSOLE wraps just the {ReqTraceFmt} token in a dim-cyan SGR
+    // pair so the trace id stands out from the message without being loud. The
+    // wrapper emits an (invisible) empty colour span on non-request lines; harmless
+    // on a terminal and never reaches the file.
+    private const string FileTemplate =
+        "{Timestamp:HH:mm:ss.fff} [{Level:u3}] {ReqTraceFmt}{Message:lj}{NewLine}{Exception}";
+
+    // ESC[36m = cyan, ESC[0m = reset. Built from char 27 so no literal ESC lives in
+    // source. Only the trace-id token is coloured; the rest matches FileTemplate.
+    private static readonly string ConsoleTemplate =
+        "{Timestamp:HH:mm:ss.fff} [{Level:u3}] "
+        + (char)27 + "[36m{ReqTraceFmt}" + (char)27 + "[0m"
+        + "{Message:lj}{NewLine}{Exception}";
 
     /// <summary>
     /// Console-only logger written to stderr (so stdout stays clean for any
@@ -51,8 +65,9 @@ internal static class SerilogBootstrapper
         return new LoggerConfiguration()
             .MinimumLevel.Information()
             .Enrich.FromLogContext()
+            .Enrich.With(new ReqTraceFormatEnricher())
             .WriteTo.Console(
-                outputTemplate: OutputTemplate,
+                outputTemplate: ConsoleTemplate,
                 standardErrorFromLevel: LogEventLevel.Verbose)
             .CreateLogger();
     }
@@ -70,6 +85,7 @@ internal static class SerilogBootstrapper
         var config = new LoggerConfiguration()
             .MinimumLevel.Verbose()
             .Enrich.FromLogContext()
+            .Enrich.With(new ReqTraceFormatEnricher())
             // Keep BridgeIoPayload as a live reference instead of letting
             // Serilog stringify it: BridgeIoSink reads scalar.Value back as
             // the typed payload. Without this AsScalar registration the
@@ -90,11 +106,11 @@ internal static class SerilogBootstrapper
         config = config.WriteTo.Logger(lc => lc
             .Filter.ByExcluding(e => e.Properties.ContainsKey("Payload"))
             .WriteTo.Console(
-                outputTemplate: OutputTemplate,
+                outputTemplate: ConsoleTemplate,
                 standardErrorFromLevel: LogEventLevel.Verbose)
             .WriteTo.File(
                 path: logPath,
-                outputTemplate: OutputTemplate,
+                outputTemplate: FileTemplate,
                 flushToDiskInterval: TimeSpan.FromSeconds(2)));
 
         var newLogger = config.CreateLogger();
