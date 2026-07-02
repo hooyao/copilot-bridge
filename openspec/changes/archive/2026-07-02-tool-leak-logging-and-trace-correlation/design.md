@@ -81,8 +81,9 @@ during `PipelineRunner.RunAsync` — response stages only *wrap* the `EventStrea
 there; the actual enumeration (where the detector fires and logs) happens later,
 in the **endpoint's relay loop**, after `RunAsync` returns. A scope opened in the
 runner would already be disposed by then — exactly missing the tool-leak line. So
-the correlation scope is opened in **`ClaudeCodeMessagesEndpoint`**, which owns
-both `RunAsync` and the relay loop:
+the correlation scope is opened in **each pipeline-driving endpoint**
+(`ClaudeCodeMessagesEndpoint` for `/cc` and `CodexResponsesEndpoint` for
+`/codex` — both own `RunAsync` and a relay loop over the shared pipeline):
 
 1. **Push the property** at the top of the endpoint's `try`:
    `using var _ = Serilog.Context.LogContext.PushProperty("ReqTrace", $"req#{traceId} ")`.

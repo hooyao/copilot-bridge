@@ -93,10 +93,11 @@ internal sealed class BridgeContext<TBody> where TBody : class
     /// <summary>
     /// Per-request trace id (<c>BridgeIoSeq.BuildTraceId</c>) — the same id that
     /// names the four <c>&lt;traceId&gt;-*.json</c> trace files and prefixes the
-    /// request-summary line (<c>req#&lt;traceId&gt;</c>). Set by the endpoint before
-    /// the pipeline runs; the endpoint pushes it onto Serilog's <c>LogContext</c>
+    /// request-summary line (<c>req#&lt;traceId&gt;</c>). Set by the pipeline-driving
+    /// endpoints (<c>ClaudeCodeMessagesEndpoint</c> and <c>CodexResponsesEndpoint</c>)
+    /// before the pipeline runs; each also pushes it onto Serilog's <c>LogContext</c>
     /// so every stage/detector log line emitted during the request is correlated
-    /// to the trace. Null if the endpoint didn't set it (e.g. a unit test driving
+    /// to the trace. Null if an endpoint didn't set it (e.g. a unit test driving
     /// the runner directly).
     /// </summary>
     public string? TraceId { get; set; }
