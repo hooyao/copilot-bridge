@@ -257,7 +257,11 @@ Two log channels:
   per-startup file at `<exe-dir>/log/bridge-{YYYYMMDD-HHMMSS}.log`. One file per
   process start makes a single run trivially greppable. Levels are per-category
   in `appsettings.json`'s `Logging:LogLevel` (default `Debug` for
-  `CopilotBridge.Cli`).
+  `CopilotBridge.Cli`). Log lines emitted while handling a request are prefixed
+  with `req#<traceId>` — the same id that names the request's trace JSON files
+  and its summary line — so you can jump from any log line to its trace. Notable
+  events name their subject: a tool-call-leak detection logs one `Warning` naming
+  the leaked tool, block type, and the retry signal (never the leaked content).
 - **Per-request audit trace** (opt-in, off by default) — set
   `"Tracing": { "Enabled": true }` to capture four JSON files per request under
   `request-traces/` (`<utc>-<seq>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`):

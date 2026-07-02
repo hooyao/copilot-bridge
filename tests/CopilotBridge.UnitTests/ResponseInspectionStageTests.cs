@@ -4,6 +4,7 @@ using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Response.Detection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -22,11 +23,15 @@ public class ResponseInspectionStageTests
 {
     private static readonly string[] Tools = { "Read", "Edit", "Bash" };
 
-    private static ResponseInspectionStage Stage(ToolLeakGuardOptions leak, bool rewriteEnabled = false)
+    private static ResponseInspectionStage Stage(
+        ToolLeakGuardOptions leak,
+        bool rewriteEnabled = false,
+        ILogger<ToolLeakDetector>? toolLeakLog = null)
     {
         var factory = new DetectorSetFactory(
             Options.Create(new ResponseModelRewriteOptions { Enabled = rewriteEnabled }),
-            Options.Create(leak));
+            Options.Create(leak),
+            toolLeakLog ?? NullLogger<ToolLeakDetector>.Instance);
         return new ResponseInspectionStage(factory, NullLogger<ResponseInspectionStage>.Instance);
     }
 
@@ -285,5 +290,55 @@ public class ResponseInspectionStageTests
         public StubDetector(string name, Func<SseItem<string>, DetectionAction> on) { Name = name; _on = on; }
         public string Name { get; }
         public DetectionAction InspectEvent(in SseItem<string> evt) => _on(evt);
+    }
+
+    // ---- Detection-point logging ----------------------------------------
+
+    [Fact]
+    public async Task LeakDetection_LogsWarning_NamingToolBlockAction_NotLeakedText()
+    {
+        // Contract: on detection the detector emits exactly one Warning naming the
+        // leaked tool, block type, and action — and NOT the leaked <invoke> text.
+        var log = new CapturingLogger<ToolLeakDetector>();
+        var ctx = Ctx(LeakStream(Leak));
+        await Stage(new ToolLeakGuardOptions { Enabled = true }, toolLeakLog: log).ApplyAsync(ctx);
+        await Drain(ctx.Response.EventStream!);
+
+        var warnings = log.Records.Where(r => r.Level == LogLevel.Warning).ToList();
+        Assert.Single(warnings);
+        var msg = warnings[0].Rendered;
+        Assert.Contains("Read", msg);              // tool
+        Assert.Contains("text", msg);              // block type
+        Assert.Contains("overloaded_error", msg);  // signal/action
+        Assert.Contains("stream", msg);            // delivery
+        Assert.DoesNotContain("<invoke", msg);     // never the leaked markup
+        Assert.DoesNotContain("<parameter", msg);
+    }
+
+    [Fact]
+    public async Task CleanStream_LogsNoWarning()
+    {
+        var log = new CapturingLogger<ToolLeakDetector>();
+        var ctx = Ctx(LeakStream("nothing to see here"));
+        await Stage(new ToolLeakGuardOptions { Enabled = true }, toolLeakLog: log).ApplyAsync(ctx);
+        await Drain(ctx.Response.EventStream!);
+
+        Assert.DoesNotContain(log.Records, r => r.Level == LogLevel.Warning);
+    }
+
+    private sealed class CapturingLogger<T> : ILogger<T>
+    {
+        public readonly List<(LogLevel Level, string Rendered)> Records = new();
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Records.Add((logLevel, formatter(state, exception)));
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+            public void Dispose() { }
+        }
     }
 }

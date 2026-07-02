@@ -22,8 +22,14 @@ namespace CopilotBridge.Cli.Hosting.Logging;
 /// </summary>
 internal static class SerilogBootstrapper
 {
+    // {ReqTrace} renders the per-request "req#<traceId> " prefix pushed onto
+    // Serilog's LogContext by the endpoint (see ClaudeCodeMessagesEndpoint), so
+    // pipeline/stage/detector log lines are correlated to the trace files. It is
+    // empty (Serilog drops the missing-property token) for non-request lines like
+    // the startup banner, and distinct from the summary line's own {TraceId}
+    // message property to avoid a duplicate-property collision.
     private const string OutputTemplate =
-        "{Timestamp:HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception}";
+        "{Timestamp:HH:mm:ss.fff} [{Level:u3}] {ReqTrace}{Message:lj}{NewLine}{Exception}";
 
     /// <summary>
     /// Console-only logger written to stderr (so stdout stays clean for any
@@ -44,6 +50,7 @@ internal static class SerilogBootstrapper
     {
         return new LoggerConfiguration()
             .MinimumLevel.Information()
+            .Enrich.FromLogContext()
             .WriteTo.Console(
                 outputTemplate: OutputTemplate,
                 standardErrorFromLevel: LogEventLevel.Verbose)
@@ -62,6 +69,7 @@ internal static class SerilogBootstrapper
 
         var config = new LoggerConfiguration()
             .MinimumLevel.Verbose()
+            .Enrich.FromLogContext()
             // Keep BridgeIoPayload as a live reference instead of letting
             // Serilog stringify it: BridgeIoSink reads scalar.Value back as
             // the typed payload. Without this AsScalar registration the

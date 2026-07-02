@@ -176,7 +176,8 @@ public class UpstreamResponseAuditEndpointTests
         // isolating the rewrite behavior this test asserts.
         var factory = new DetectorSetFactory(
             Options.Create(new ResponseModelRewriteOptions { Enabled = true }),
-            Options.Create(new ToolLeakGuardOptions { Enabled = false }));
+            Options.Create(new ToolLeakGuardOptions { Enabled = false }),
+            NullLogger<ToolLeakDetector>.Instance);
         var stages = new IResponseStage<MessagesRequest>[]
         {
             new ResponseInspectionStage(factory, NullLogger<ResponseInspectionStage>.Instance),

@@ -1,5 +1,6 @@
 using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
@@ -30,13 +31,16 @@ internal sealed class DetectorSetFactory : IDetectorSetFactory
 {
     private readonly ResponseModelRewriteOptions _rewrite;
     private readonly ToolLeakGuardOptions _leak;
+    private readonly ILogger<ToolLeakDetector> _toolLeakLog;
 
     public DetectorSetFactory(
         IOptions<ResponseModelRewriteOptions> rewrite,
-        IOptions<ToolLeakGuardOptions> leak)
+        IOptions<ToolLeakGuardOptions> leak,
+        ILogger<ToolLeakDetector> toolLeakLog)
     {
         _rewrite = rewrite.Value;
         _leak = leak.Value;
+        _toolLeakLog = toolLeakLog;
     }
 
     /// <summary>
@@ -66,7 +70,7 @@ internal sealed class DetectorSetFactory : IDetectorSetFactory
         // 3. Tool-leak guard — only when enabled.
         if (_leak.Enabled)
         {
-            list.Add(new ToolLeakDetector(_leak, ctx.Request.Body.Tools));
+            list.Add(new ToolLeakDetector(_leak, ctx.Request.Body.Tools, _toolLeakLog));
         }
 
         return list;
