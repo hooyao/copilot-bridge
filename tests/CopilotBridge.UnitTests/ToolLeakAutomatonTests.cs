@@ -27,6 +27,23 @@ public class ToolLeakAutomatonTests
         return a.Tripped;
     }
 
+    [Fact]
+    public void MatchedToolName_ExposedOnLeak_NullOtherwise()
+    {
+        // Contract: on a genuine leak the automaton names the matched tool; on a
+        // clean/non-leak block it stays null. Feeds the tool name the detector
+        // needs to log.
+        var leaked = new ToolLeakAutomaton(Tools);
+        foreach (var c in MinimalLeak) leaked.Feed(c);
+        Assert.True(leaked.Tripped);
+        Assert.Equal("Read", leaked.MatchedToolName);
+
+        var clean = new ToolLeakAutomaton(Tools);
+        foreach (var c in "just prose, no tool call here") clean.Feed(c);
+        Assert.False(clean.Tripped);
+        Assert.Null(clean.MatchedToolName);
+    }
+
     // A minimal genuine leak: closed, balanced, one parameter, real tool, unfenced.
     private const string MinimalLeak =
         "<invoke name=\"Read\">\n<parameter name=\"file_path\">/x</parameter>\n</invoke>";

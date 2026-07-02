@@ -113,7 +113,7 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
             switch (action.Kind)
             {
                 case DetectionActionKind.Abort:
-                    _log.LogWarning("stage {Name}: buffered abort (tool leak); status={Status}", Name, action.HttpStatus);
+                    _log.LogDebug("stage {Name}: buffered abort (tool leak); status={Status}", Name, action.HttpStatus);
                     ctx.Response.Mode = ResponseMode.Buffered;
                     ctx.Response.Status = action.HttpStatus;
                     ctx.Response.BufferedBody = Encoding.UTF8.GetBytes(action.ErrorJson!);
@@ -194,7 +194,7 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
                     action = a;
                     if (a.Kind == DetectionActionKind.Abort)
                     {
-                        log.LogWarning("stage {Name}: detector {Detector} aborted the stream", "ResponseInspection", d.Name);
+                        log.LogDebug("stage {Name}: detector {Detector} aborted the stream", "ResponseInspection", d.Name);
                     }
                     break;
                 }

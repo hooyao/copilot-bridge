@@ -2,6 +2,7 @@ using System.Net.ServerSentEvents;
 using System.Text.Json;
 using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
+using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
@@ -17,13 +18,16 @@ internal sealed class ToolLeakDetector : IResponseDetector
 {
     private readonly ToolLeakGuardOptions _opts;
     private readonly ToolLeakAutomaton _automaton;
+    private readonly ILogger _log;
 
     // Current block scope, tracked from event ordering (blocks are contiguous).
     private bool _blockIsScannable;
+    private string? _blockType;
 
-    public ToolLeakDetector(ToolLeakGuardOptions opts, IReadOnlyList<Tool>? tools)
+    public ToolLeakDetector(ToolLeakGuardOptions opts, IReadOnlyList<Tool>? tools, ILogger log)
     {
         _opts = opts;
+        _log = log;
         var names = tools is null
             ? Array.Empty<string>()
             : tools.Select(t => t.Name);
@@ -41,11 +45,11 @@ internal sealed class ToolLeakDetector : IResponseDetector
         switch (evt.EventType)
         {
             case "content_block_start":
-                var type = BlockType(evt.Data);
-                _blockIsScannable = type == "text" || (type == "thinking" && _opts.ScanThinking);
+                _blockType = BlockType(evt.Data);
+                _blockIsScannable = _blockType == "text" || (_blockType == "thinking" && _opts.ScanThinking);
                 // Thinking blocks have no fence concept → always-unfenced; text
                 // blocks track fences so a teaching example inside ``` isn't a leak.
-                _automaton.Reset(trackFences: type != "thinking");
+                _automaton.Reset(trackFences: _blockType != "thinking");
                 break;
 
             case "content_block_delta":
@@ -59,6 +63,15 @@ internal sealed class ToolLeakDetector : IResponseDetector
                             if (_automaton.Feed(c))
                             {
                                 var signal = _opts.Signal;
+                                // Log at the detection point — the only place that
+                                // knows the leaked tool + block. NOT the leaked text
+                                // (that stays in the opt-in trace files only).
+                                _log.LogWarning(
+                                    "tool-leak detected: tool={Tool} block={Block} signal={Signal} delivery={Delivery} — forcing client retry",
+                                    _automaton.MatchedToolName ?? "?",
+                                    _blockType ?? "?",
+                                    ToolLeakError.ErrorType(signal),
+                                    RequiresBuffering ? "buffer" : "stream");
                                 return DetectionAction.Abort(
                                     ToolLeakError.Json(signal),
                                     ToolLeakError.HttpStatus(signal));

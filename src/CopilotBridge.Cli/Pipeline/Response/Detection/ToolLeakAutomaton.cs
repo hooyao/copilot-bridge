@@ -55,6 +55,7 @@ internal sealed class ToolLeakAutomaton
     private int _paramOpenCount;
     private int _paramCloseCount;
     private bool _tripped;          // latched once a leak is confirmed
+    private string? _matchedToolName; // the tool name that tripped the block
 
     public ToolLeakAutomaton(IEnumerable<string> toolNames)
     {
@@ -63,6 +64,12 @@ internal sealed class ToolLeakAutomaton
 
     /// <summary>True once a leak has been confirmed in this block. Latches.</summary>
     public bool Tripped => _tripped;
+
+    /// <summary>
+    /// The tool name that tripped the block (from the leaked <c>&lt;invoke name="…"&gt;</c>),
+    /// or null until a leak is confirmed. Latches with <see cref="Tripped"/>.
+    /// </summary>
+    public string? MatchedToolName => _matchedToolName;
 
     /// <summary>
     /// Reset all state for a new content block.
@@ -80,6 +87,7 @@ internal sealed class ToolLeakAutomaton
         _trackFences = trackFences;
         AbandonInvoke();
         _tripped = false;
+        _matchedToolName = null;
     }
 
     /// <summary>
@@ -162,6 +170,7 @@ internal sealed class ToolLeakAutomaton
             if (closed)
             {
                 _tripped = true;
+                _matchedToolName = name;
                 return true;
             }
 
