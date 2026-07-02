@@ -25,7 +25,8 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   against Copilot, not an Anthropic/OpenAI bill.
 - **The full current Claude model set.** opus-4.6 / opus-4.7 / **opus-4.8**,
   sonnet-4.5 / sonnet-4.6 / **sonnet-5**, haiku-4.5 — with **native 1M context**
-  on opus-4.6/4.7/4.8. Codex runs on Copilot's gpt-5.x.
+  on opus-4.6/4.7/4.8 and sonnet-4.6/sonnet-5 (all but sonnet-4.5 / haiku-4.5).
+  Codex runs on Copilot's gpt-5.x.
 - **Works with Claude Code 4.8 out of the box.** Claude Code sends beta headers
   Copilot rejects (e.g. `advisor-tool-2026-03-01`, which 400s on every model).
   The bridge strips the ones Copilot refuses so your session doesn't error.
@@ -138,10 +139,10 @@ native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
   `.mcp.json`) and disable the built-in WebSearch tool. Other MCP tools flow
   through transparently.
 - **`max` / `xhigh` reasoning effort isn't universal.** Support is per-model and
-  non-monotonic: opus-4.8 / opus-4.7 accept `low`–`max`; opus-4.6 / sonnet-4.6
-  accept `max` but reject `xhigh`; sonnet-4.5 / haiku-4.5 / opus-4.5 take no
-  effort field. The bridge strips an effort the target rejects instead of letting
-  it fail.
+  non-monotonic: opus-4.8 / opus-4.7 / sonnet-5 accept every tier
+  (`low`–`max`, including `xhigh`); opus-4.6 / sonnet-4.6 accept `max` but reject
+  `xhigh`; sonnet-4.5 / haiku-4.5 take no effort field. The bridge strips an
+  effort the target rejects instead of letting it fail.
 - **Resume drops the `[1m]` flag back to 200k.** Claude Code stores the 1M toggle
   in the model string (`opus[1m]`), which isn't persisted across `--resume`. The
   backend still serves the larger window, but Claude Code's own auto-compaction
