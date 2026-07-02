@@ -85,16 +85,27 @@ the correlation scope is opened in **each pipeline-driving endpoint**
 (`ClaudeCodeMessagesEndpoint` for `/cc` and `CodexResponsesEndpoint` for
 `/codex` — both own `RunAsync` and a relay loop over the shared pipeline):
 
-1. **Push the property** at the top of the endpoint's `try`:
-   `using var _ = Serilog.Context.LogContext.PushProperty("ReqTrace", $"req#{traceId} ")`.
+1. **Push the RAW trace id** at the top of the endpoint's `try`:
+   `using var _ = Serilog.Context.LogContext.PushProperty("ReqTrace", traceId)`.
    This covers request stages, the strategy, the response-stage wrappers, AND the
-   relay-loop enumeration where the streaming detector emits.
-2. **Flow + render.** Add `Enrich.FromLogContext()` to both Serilog loggers in
-   `SerilogBootstrapper` and prepend `{ReqTrace}` to `OutputTemplate`:
-   `"{Timestamp:HH:mm:ss.fff} [{Level:u3}] {ReqTrace}{Message:lj}{NewLine}{Exception}"`.
-   The value already carries the trailing space, so present → `req#<id> message`,
-   absent → `message` (Serilog drops the missing-property token). Non-request
-   lines (startup banner) are unaffected.
+   relay-loop enumeration where the streaming detector emits. The value is just the
+   id (data), not a pre-formatted string.
+2. **Format + flow + render.** Add `Enrich.FromLogContext()` (brings `ReqTrace`
+   into each event) AND a `ReqTraceFormatEnricher` (turns a present `ReqTrace` into
+   the display property `ReqTraceFmt = "[<id>] "`, adds nothing when absent) to both
+   Serilog loggers in `SerilogBootstrapper`, then render `{ReqTraceFmt}`:
+   `"{Timestamp:HH:mm:ss.fff} [{Level:u3}] {ReqTraceFmt}{Message:lj}{NewLine}{Exception}"`.
+   Present → `[<id>] message`; absent → `message` (no stray `[]`, because the
+   bracket wrapper lives in the enricher's value, not as template literals). The
+   console template additionally wraps `{ReqTraceFmt}` in a faint-cyan SGR pair; the
+   file template is plain text so the `.log` stays greppable.
+
+**Data vs. presentation:** the endpoints only ever push the bare id; the bracket
+wrapper (`[<id>] `) lives in one place — `ReqTraceFormatEnricher`. Changing it
+(`[]` → `<>` → `req#`) is a one-line edit there, and non-request lines never carry
+an empty shell. (An earlier iteration pushed a pre-formatted `"req#<traceId> "`
+value and rendered `{ReqTrace}` directly; that mixed data with presentation and
+was reworked into the enricher during review.)
 
 **Property name `ReqTrace`, not `TraceId`:** `RequestSummaryLogger` already emits
 a message-template property named `TraceId`; reusing that name in the scope would

@@ -13,9 +13,9 @@
 
 ## 3. Trace-id correlation
 
-- [x] 3.1 Add `string? TraceId` to `BridgeContext`; set it in `ClaudeCodeMessagesEndpoint` right after `BuildTraceId(seq, utc)`, before `runner.RunAsync`.
-- [x] 3.2 Open a `LogContext.PushProperty("ReqTrace", "req#<traceId> ")` scope in `ClaudeCodeMessagesEndpoint` (NOT `PipelineRunner` — the streaming detector fires in the endpoint's relay loop *after* `RunAsync` returns, so a runner scope would be disposed too early). The scope covers request stages, the strategy, and the relay-loop enumeration.
-- [x] 3.3 Make the scope visible in the text log: add `Enrich.FromLogContext()` to both loggers in `SerilogBootstrapper` and prepend `{ReqTrace}` to `OutputTemplate` (distinct from the summary's `{TraceId}` message property to avoid collision). Verified empirically: unit test proves the enricher flows the property; a real startup confirms non-request lines render cleanly.
+- [x] 3.1 Add `string? TraceId` to `BridgeContext`; set it in both pipeline-driving endpoints (`ClaudeCodeMessagesEndpoint` and `CodexResponsesEndpoint`) right after `BuildTraceId(seq, utc)`, before `runner.RunAsync`.
+- [x] 3.2 Open a `LogContext.PushProperty("ReqTrace", traceId)` scope (the RAW id — data, not a pre-formatted string) in each endpoint (NOT `PipelineRunner` — the streaming detector fires in the endpoint's relay loop *after* `RunAsync` returns, so a runner scope would be disposed too early). The scope covers request stages, the strategy, and the relay-loop enumeration.
+- [x] 3.3 Make the id visible in the text log: add `Enrich.FromLogContext()` + a `ReqTraceFormatEnricher` (raw `ReqTrace` → display `ReqTraceFmt = "[<id>] "`, absent when there's no id → no stray `[]`) to both loggers in `SerilogBootstrapper`, render `{ReqTraceFmt}` (distinct from the summary's `{TraceId}` message property), and split the template so the console faint-cyan-wraps the token while the file stays plain text. Verified empirically: unit test proves the enricher formats in-scope and adds nothing out-of-scope; a real startup confirms non-request lines carry no `[]` and the file log has zero ANSI.
 
 ## 4. Tests (contract-derived, mutation-checked)
 

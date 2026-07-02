@@ -38,11 +38,12 @@ internal static class SerilogBootstrapper
     private const string FileTemplate =
         "{Timestamp:HH:mm:ss.fff} [{Level:u3}] {ReqTraceFmt}{Message:lj}{NewLine}{Exception}";
 
-    // ESC[36m = cyan, ESC[0m = reset. Built from char 27 so no literal ESC lives in
-    // source. Only the trace-id token is coloured; the rest matches FileTemplate.
+    // ESC[2;36m = faint + cyan (dim so it's legible but not loud), ESC[0m = reset.
+    // Built from char 27 so no literal ESC lives in source. Only the trace-id token
+    // is coloured; the rest matches FileTemplate.
     private static readonly string ConsoleTemplate =
         "{Timestamp:HH:mm:ss.fff} [{Level:u3}] "
-        + (char)27 + "[36m{ReqTraceFmt}" + (char)27 + "[0m"
+        + (char)27 + "[2;36m{ReqTraceFmt}" + (char)27 + "[0m"
         + "{Message:lj}{NewLine}{Exception}";
 
     /// <summary>
