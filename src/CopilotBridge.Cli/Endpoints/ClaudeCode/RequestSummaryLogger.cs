@@ -19,16 +19,25 @@ internal sealed class RequestSummaryLogger
 
     public void Log(RequestSummary s)
     {
-        // One template covers both endpoints. {TraceId} sits up front so
+        // One template covers both endpoints. {ReqTrace} sits up front so
         // the operator can grep the line then immediately find the matching
         // audit-JSON files (<TraceId>-{kind}.json) in the trace directory.
+        //
+        // The hole is named {ReqTrace}, NOT {TraceId}: MEL's default
+        // ActivityTrackingOptions inject the ambient Activity.TraceId as a log
+        // scope property literally named "TraceId", which would shadow a
+        // {TraceId} template hole at Serilog render time and make req# print the
+        // framework's 32-hex trace id instead of s.TraceId. {ReqTrace} matches
+        // the property the endpoints push for the pipeline lines (same value),
+        // so there is no third id to collide with. See
+        // SummaryTraceIdCollisionTests.
         //
         // Level reflects the response status so a `grep ERR` pulls just the
         // 5xx, a `grep WRN` adds the 4xx, and tail -f stays readable for
         // 2xx traffic — the same line shape is used at every level.
         _log.Log(
             LevelForStatus(s.StatusCode),
-            "req#{TraceId} {Kind} requested={RequestedModel} resolved={ResolvedModel} profile={CanonicalProfileId} "
+            "req#{ReqTrace} {Kind} requested={RequestedModel} resolved={ResolvedModel} profile={CanonicalProfileId} "
             + "target={TargetVendor}:{TargetEndpoint} "
             + "betas_in=[{InboundBetasCsv}] betas_out=[{OutboundBetasCsv}] "
             + "effort={EffortDisplay} max_tokens={MaxTokensDisplay} usage={UsageDisplay} "

@@ -109,7 +109,7 @@ public class RequestSummaryFormatterTests
 
         var evt = rec.Events.Single();
         Assert.Equal("count_tokens", evt.Properties["Kind"]);
-        Assert.Equal("20260101-120000-0099", evt.Properties["TraceId"]);
+        Assert.Equal("20260101-120000-0099", evt.Properties["ReqTrace"]);
         Assert.Contains("in:42", Assert.IsType<string>(evt.Properties["UsageDisplay"]));
     }
 

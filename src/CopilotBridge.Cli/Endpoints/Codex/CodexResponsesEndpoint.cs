@@ -53,6 +53,15 @@ internal static class CodexResponsesEndpoint
         var sw = Stopwatch.StartNew();
         var seq = BridgeIoSeq.Next();
         var traceId = BridgeIoSeq.BuildTraceId(seq, DateTime.UtcNow);
+        // Correlate EVERY log line for this request with the trace id — the
+        // enter/exit boundary lines below, the pipeline stages/detectors, and
+        // the summary in finally: push the RAW id onto Serilog's LogContext as
+        // "ReqTrace" (ReqTraceFormatEnricher renders it as "[<id>] "). Declared
+        // at the top of the handler so the scope spans the enter log, the try,
+        // AND the finally — a using-declaration disposes at method exit, so a
+        // scope pushed inside the try would drop before finally's exit line.
+        // Mirrors /cc.
+        using var _traceScope = Serilog.Context.LogContext.PushProperty("ReqTrace", traceId);
         // Gate all trace-only buffering on this (parity with /cc).
         var tracingEnabled = tracingOptions.Value.Enabled;
 
@@ -90,12 +99,6 @@ internal static class CodexResponsesEndpoint
 
         try
         {
-            // Correlate every log line emitted while handling this request (stages,
-            // detectors) with the trace id: push the RAW id onto Serilog's LogContext
-            // as "ReqTrace" (ReqTraceFormatEnricher renders it as "[<id>] "). Mirrors
-            // the /cc endpoint so /codex pipeline logs are correlated too.
-            using var _traceScope = Serilog.Context.LogContext.PushProperty("ReqTrace", traceId);
-
             ResponsesRequest? clientBody;
             try
             {

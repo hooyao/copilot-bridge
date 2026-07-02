@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.ServerSentEvents;
 using System.Text;
 using System.Text.Json;
@@ -11,7 +12,12 @@ using CopilotBridge.Cli.Pipeline.Routing;
 using CopilotBridge.Cli.Pipeline.Strategies;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Serilog;
+using Serilog.Core;
+using Serilog.Events;
+using Serilog.Extensions.Logging;
 using Xunit;
 
 namespace CopilotBridge.UnitTests;
@@ -265,5 +271,77 @@ public class CodexEndpointTests
             }
         }
         throw new Xunit.Sdk.XunitException("no response.completed event in endpoint SSE output");
+    }
+
+    // ── boundary lines carry the trace id (scope spans the whole handler) ─────
+    // Drives the REAL HandleAsync with a REAL Serilog logger behind the
+    // endpoint-tag ILogger, so the actual `endpoint enter` / `endpoint exit`
+    // LogDebug calls are captured. The endpoint declares its ReqTrace scope at
+    // the top of the method (before enter) with a using-declaration, so it is
+    // still active in the finally that logs exit. Asserts both boundary lines
+    // carry ReqTrace with the same id. Mutation guard: move the scope back
+    // inside the try (the pre-fix shape) and enter/exit lose the property → RED.
+
+    private sealed class CollectingSink : ILogEventSink
+    {
+        public readonly ConcurrentQueue<LogEvent> Events = new();
+        public void Emit(LogEvent e) => Events.Enqueue(e);
+    }
+
+    [Fact]
+    public async Task EnterAndExitLines_CarryTheTraceId_ViaHandlerWideScope()
+    {
+        var sink = new CollectingSink();
+        var serilog = new LoggerConfiguration()
+            .MinimumLevel.Verbose()
+            .Enrich.FromLogContext()
+            .WriteTo.Sink(sink)
+            .CreateLogger();
+        using var factory = LoggerFactory.Create(b =>
+        {
+            b.AddProvider(new SerilogLoggerProvider(serilog, dispose: false));
+            b.SetMinimumLevel(LogLevel.Trace);
+        });
+        var endpointLog = factory.CreateLogger<CodexResponsesEndpointTag>();
+
+        var http = new DefaultHttpContext();
+        http.Request.Method = "POST";
+        http.Request.Path = "/codex/responses";
+        http.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(ValidRequest));
+        http.Response.Body = new MemoryStream();
+
+        await CodexResponsesEndpoint.HandleAsync(
+            http,
+            new StubRunner(ctx =>
+            {
+                ctx.Target = new RouteTarget(BackendVendor.CopilotResponses, "/responses", "gpt-5.3-codex");
+                ctx.Response.Status = StatusCodes.Status200OK;
+                ctx.Response.Mode = ResponseMode.Buffered;
+                ctx.Response.BufferedBody = Encoding.UTF8.GetBytes("""{"type":"response","status":"completed"}""");
+                ctx.Response.Headers["Content-Type"] = "application/json";
+            }),
+            DummyPipeline,
+            new ResponsesToIrInboundAdapter(NullLogger<ResponsesToIrInboundAdapter>.Instance),
+            new IrToResponsesOutboundAdapter(NullLogger<IrToResponsesOutboundAdapter>.Instance),
+            new RequestSummaryLogger(NullLogger<RequestSummaryLogger>.Instance),
+            Microsoft.Extensions.Options.Options.Create(new CopilotBridge.Cli.Hosting.Options.TracingOptions()),
+            NullLogger<MessagesRequest>.Instance,
+            endpointLog);
+
+        string? IdOf(string contains)
+        {
+            var e = sink.Events.Single(ev => ev.MessageTemplate.Text.Contains(contains, StringComparison.Ordinal));
+            return e.Properties.TryGetValue("ReqTrace", out var v) ? (((ScalarValue)v).Value as string) : null;
+        }
+
+        var enterId = IdOf("enter");
+        var exitId = IdOf("exit");
+
+        // Both boundary lines carry the id, and it is the BuildTraceId shape
+        // (yyyyMMdd-HHmmss-nnnn), not empty and not a 32-hex Activity id.
+        Assert.False(string.IsNullOrEmpty(enterId));
+        Assert.False(string.IsNullOrEmpty(exitId));
+        Assert.Equal(enterId, exitId); // one id, start to end
+        Assert.Matches(@"^\d{8}-\d{6}-\d{4}$", exitId!);
     }
 }

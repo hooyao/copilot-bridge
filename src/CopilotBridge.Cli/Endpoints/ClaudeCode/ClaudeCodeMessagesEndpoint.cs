@@ -56,6 +56,16 @@ internal static class ClaudeCodeMessagesEndpoint
         // INFO summary line together — see BridgeIoSeq.BuildTraceId.
         var traceId = BridgeIoSeq.BuildTraceId(seq, DateTime.UtcNow);
 
+        // Correlate EVERY log line for this request with the trace id — the
+        // enter/exit boundary lines below, the pipeline stages/detectors/relay
+        // loop, and the summary in finally: push the RAW id onto Serilog's
+        // LogContext as "ReqTrace" (ReqTraceFormatEnricher renders it as
+        // "[<id>] "). Declared at the top of the handler so the scope spans the
+        // enter log, the try, AND the finally — a using-declaration disposes at
+        // method exit, so a scope pushed inside the try would drop before
+        // finally's exit line. Non-request lines carry nothing (no scope).
+        using var _traceScope = Serilog.Context.LogContext.PushProperty("ReqTrace", traceId);
+
         endpointLog.LogDebug("endpoint {Path}: enter  remote={Remote}",
             httpCtx.Request.Path, httpCtx.Connection.RemoteIpAddress);
 
@@ -110,13 +120,6 @@ internal static class ClaudeCodeMessagesEndpoint
 
         try
         {
-            // Correlate every log line emitted while handling this request (stages,
-            // detectors, the tool-leak Warning) with the trace id: push the RAW id
-            // onto Serilog's LogContext as "ReqTrace". ReqTraceFormatEnricher turns
-            // it into the bracketed "[<id>] " prefix the output templates render, so
-            // non-request lines carry nothing. Disposed at the end of the request.
-            using var _traceScope = Serilog.Context.LogContext.PushProperty("ReqTrace", traceId);
-
             MessagesRequest? clientBody;
             try
             {
