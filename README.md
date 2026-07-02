@@ -35,10 +35,12 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   measured against the live API and baked into a profile. The bridge reshapes
   each request to what the target model accepts, and returns a clear error for
   an unknown model instead of silently forwarding a request that will fail.
-- **Auto-repairs tool-call leaks.** Copilot-served models occasionally emit a
-  tool call as literal `<invoke …>` text instead of a real tool call. The bridge
-  detects this and makes the client retry the turn cleanly, so it doesn't get
-  stuck (new in 0.2.2-beta).
+- **Auto-repairs tool-call and control-envelope leaks.** Copilot-served models
+  occasionally emit a tool call as literal `<invoke …>` text — or a Claude Code
+  control envelope such as `<task-notification>`, `<teammate-message>`,
+  `<channel>`, `<cross-session-message>`, or `<tick>` — instead of a real
+  structured block. The bridge detects this and makes the client retry the turn
+  cleanly, so it doesn't get stuck (new in 0.2.2-beta).
 
 ## Install & run
 
@@ -266,8 +268,10 @@ Two log channels:
   with the request's trace id in brackets (`[20260702-032206-0001]`, coloured on
   the console) — the same id that names the request's trace JSON files and its
   summary line — so you can jump from any log line to its trace. Notable
-  events name their subject: a tool-call-leak detection logs one `Warning` naming
-  the leaked tool, block type, and the retry signal (never the leaked content).
+  events name their subject: a leak detection logs one `Warning` naming the
+  leaked subject — a tool name or a control-envelope subject such as
+  `task-notification` — plus the block type and the retry signal (never the
+  leaked content).
 - **Per-request audit trace** (opt-in, off by default) — set
   `"Tracing": { "Enabled": true }` to capture four JSON files per request under
   `request-traces/` (`<utc>-<seq>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`):

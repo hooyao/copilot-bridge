@@ -7,17 +7,22 @@ using Microsoft.Extensions.Logging;
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
 /// <summary>
-/// Detects a tool-call leak in a streaming response and, on detection, returns an
+/// Detects a response leak in a streaming response and, on detection, returns an
 /// <see cref="DetectionActionKind.Abort"/> so the framework forces the client to
 /// retry the turn. Feeds each <c>text_delta</c> (and, when
 /// <see cref="ToolLeakGuardOptions.ScanThinking"/> is on, <c>thinking_delta</c>)
-/// into a per-block <see cref="ToolLeakAutomaton"/>; resets the automaton at each
-/// <c>content_block_start</c>. Per-request instance (holds the automaton state).
+/// into two per-block automata: a <see cref="ToolLeakAutomaton"/> for leaked
+/// <c>&lt;invoke&gt;</c> tool calls, and a
+/// <see cref="ControlEnvelopeLeakAutomaton"/> for leaked Claude Code control
+/// envelopes (task notifications, teammate/channel/cross-session messages, ticks).
+/// Both are reset at each <c>content_block_start</c>. Per-request instance (holds
+/// the automaton state).
 /// </summary>
 internal sealed class ToolLeakDetector : IResponseDetector
 {
     private readonly ToolLeakGuardOptions _opts;
-    private readonly ToolLeakAutomaton _automaton;
+    private readonly ToolLeakAutomaton _toolAutomaton;
+    private readonly ControlEnvelopeLeakAutomaton _controlAutomaton;
     private readonly ILogger _log;
 
     // Current block scope, tracked from event ordering (blocks are contiguous).
@@ -31,7 +36,8 @@ internal sealed class ToolLeakDetector : IResponseDetector
         var names = tools is null
             ? Array.Empty<string>()
             : tools.Select(t => t.Name);
-        _automaton = new ToolLeakAutomaton(names);
+        _toolAutomaton = new ToolLeakAutomaton(names);
+        _controlAutomaton = new ControlEnvelopeLeakAutomaton();
     }
 
     public string Name => "ToolLeak";
@@ -49,7 +55,8 @@ internal sealed class ToolLeakDetector : IResponseDetector
                 _blockIsScannable = _blockType == "text" || (_blockType == "thinking" && _opts.ScanThinking);
                 // Thinking blocks have no fence concept → always-unfenced; text
                 // blocks track fences so a teaching example inside ``` isn't a leak.
-                _automaton.Reset(trackFences: _blockType != "thinking");
+                _toolAutomaton.Reset(trackFences: _blockType != "thinking");
+                _controlAutomaton.Reset(trackFences: _blockType != "thinking");
                 break;
 
             case "content_block_delta":
@@ -60,15 +67,23 @@ internal sealed class ToolLeakDetector : IResponseDetector
                     {
                         foreach (var c in text)
                         {
-                            if (_automaton.Feed(c))
+                            // Feed both automata every character (each keeps its
+                            // own independent state); a leaked <invoke> or a leaked
+                            // control envelope both abort the turn.
+                            var toolTrip = _toolAutomaton.Feed(c);
+                            var controlTrip = _controlAutomaton.Feed(c);
+                            if (toolTrip || controlTrip)
                             {
+                                var subject = toolTrip
+                                    ? _toolAutomaton.MatchedToolName ?? "?"
+                                    : _controlAutomaton.MatchedSubject ?? "?";
                                 var signal = _opts.Signal;
                                 // Log at the detection point — the only place that
-                                // knows the leaked tool + block. NOT the leaked text
-                                // (that stays in the opt-in trace files only).
+                                // knows the leaked subject + block. NOT the leaked
+                                // text (that stays in the opt-in trace files only).
                                 _log.LogWarning(
-                                    "tool-leak detected: tool={Tool} block={Block} signal={Signal} delivery={Delivery} — forcing client retry",
-                                    _automaton.MatchedToolName ?? "?",
+                                    "response-leak detected: subject={Subject} block={Block} signal={Signal} delivery={Delivery} — forcing client retry",
+                                    subject,
                                     _blockType ?? "?",
                                     ToolLeakError.ErrorType(signal),
                                     RequiresBuffering ? "buffer" : "stream");

@@ -577,18 +577,34 @@ name in the request's `tools[]`; and not inside a markdown code fence. It does
 **not** key off the drifting prefix token (`court`/`call`), `stop_reason` (both
 `tool_use` and `end_turn` observed), or a bare unbalanced `<invoke`.
 
-The scan is a single-pass streaming automaton (`ToolLeakAutomaton`, KMP failure
-edges) with O(1) state that retains no content — a signature split across deltas,
-even character-by-character, is carried by automaton state, so an arbitrarily long
+The same detector also detects a second family of leaks: Claude Code **control /
+event envelopes** emitted as literal text — `<task-notification>` (closed, with a
+closed `<task-id>` and at least one closed `<summary>`/`<status>`/`<output-file>`
+child), `<teammate-message teammate_id="…">`, `<channel source="…">`,
+`<cross-session-message from="…">`, and `<tick>…</tick>` (non-empty). Each is
+**shape-gated** the same way: closed, required child/attribute present and
+non-empty, and not inside a code fence. `<channel>` is distinguished from the
+sibling `<channel-message>` wrapper by its exact close tag, so the latter never
+trips the guard. Both families share one config, one retry path, and one
+detection-point `Warning`.
+
+The scan is a single-pass streaming automaton with O(1) state that retains no
+content — the tool-call signature is carried by `ToolLeakAutomaton` (KMP failure
+edges) and the control envelopes by `ControlEnvelopeLeakAutomaton` (a parent that
+tracks the code fence and dispatches each character to one bounded, KMP-based
+sub-matcher per envelope). A signature split across deltas, even
+character-by-character, is carried by automaton state, so an arbitrarily long
 leaked block is handled without a window the opening tag could scroll out of.
+Runaway attribute/inner captures fail open with a bounded buffer.
 
 Two orthogonal knobs (`Pipeline:Detectors:ToolLeakGuard`): `PreserveStream` (default true —
 keep streaming, inject a mid-stream SSE `error` event; false — buffer the whole
 response and emit a real HTTP status) × `Signal` (default `OverloadedError` →
 `overloaded_error`/529, which Claude Code reliably retries and, after 3
-consecutive, falls back opus→Sonnet; or `ApiError` → `api_error`/500). Because
-retry discards the whole attempt (including already-streamed dirty text), the
-dirty bytes never commit to the transcript — this breaks the self-reinforcing
+consecutive, falls back opus→Sonnet; or `ApiError` → `api_error`/500). `ScanThinking`
+extends both families into `thinking` blocks (which have no fence concept).
+Because retry discards the whole attempt (including already-streamed dirty text),
+the dirty bytes never commit to the transcript — this breaks the self-reinforcing
 poisoning loop. See `docs/copilot-upstream-toolcall-bug-report.md` for the leak's
 empirical basis (~2.2% of responses in a poisoned session, all closed/unfenced).
 

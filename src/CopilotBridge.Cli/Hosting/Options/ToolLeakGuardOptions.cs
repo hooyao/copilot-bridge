@@ -1,8 +1,9 @@
 namespace CopilotBridge.Cli.Hosting.Options;
 
 /// <summary>
-/// The error the guard raises when it detects a tool-call leak. Selects both the
-/// Anthropic <c>error.type</c> string and (buffered delivery) the HTTP status.
+/// The error the guard raises when it detects a leak — a tool-call leak or a
+/// control-envelope leak. Selects both the Anthropic <c>error.type</c> string and
+/// (buffered delivery) the HTTP status.
 /// </summary>
 /// <remarks>
 /// <see cref="OverloadedError"/> is the default: Claude Code's retry logic
@@ -22,18 +23,28 @@ internal enum ToolLeakSignal
 /// <summary>
 /// Bound from <c>appsettings.json</c> section
 /// <c>Pipeline:Detectors:ToolLeakGuard</c>. Controls <see cref="Pipeline.Response.Detection.ToolLeakDetector"/>, which
-/// detects a Copilot-served Claude model leaking a tool call as literal
-/// <c>&lt;invoke name="X"&gt;…&lt;/invoke&gt;</c> XML inside a text/thinking
-/// block (rather than a real <c>tool_use</c> block) and forces the client to
-/// retry the turn cleanly.
+/// detects two families of leaks from a Copilot-served Claude model: a tool call
+/// leaked as literal <c>&lt;invoke name="X"&gt;…&lt;/invoke&gt;</c> XML (rather
+/// than a real <c>tool_use</c> block), and a Claude Code control/event envelope
+/// (<c>&lt;task-notification&gt;</c>, <c>&lt;teammate-message&gt;</c>,
+/// <c>&lt;channel&gt;</c>, <c>&lt;cross-session-message&gt;</c>,
+/// <c>&lt;tick&gt;</c>) leaked as literal text inside a text/thinking block. On
+/// either it forces the client to retry the turn cleanly.
 /// </summary>
 /// <remarks>
-/// Detection is structural and requires ALL of: (1) a single block with a CLOSED,
-/// balanced <c>&lt;invoke&gt;…&lt;/invoke&gt;</c> containing ≥1 closed
+/// Detection is structural and shape-gated. For a tool-call leak it requires ALL
+/// of: (1) a single block with a CLOSED, balanced
+/// <c>&lt;invoke&gt;…&lt;/invoke&gt;</c> containing ≥1 closed
 /// <c>&lt;parameter&gt;</c>; (2) the tool name is in the request's
 /// <c>tools[]</c>; (3) it is NOT inside a markdown code fence. It does NOT key off
 /// the drifting prefix token (<c>court</c>/<c>call</c>), <c>stop_reason</c>, or a
-/// bare unbalanced <c>&lt;invoke</c>.
+/// bare unbalanced <c>&lt;invoke</c>. For a control envelope it requires the
+/// envelope to be CLOSED with its required child/attribute present and non-empty
+/// (e.g. <c>&lt;task-notification&gt;</c> needs a closed <c>&lt;task-id&gt;</c>
+/// plus a <c>&lt;summary&gt;</c>/<c>&lt;status&gt;</c>/<c>&lt;output-file&gt;</c>
+/// child; <c>&lt;channel&gt;</c> needs a non-empty <c>source</c> and is
+/// distinguished from the sibling <c>&lt;channel-message&gt;</c>), and NOT inside a
+/// code fence.
 /// </remarks>
 internal sealed class ToolLeakGuardOptions
 {

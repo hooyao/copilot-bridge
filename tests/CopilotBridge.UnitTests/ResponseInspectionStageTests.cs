@@ -79,6 +79,22 @@ public class ResponseInspectionStageTests
     private const string Leak =
         "Let me read the file.\ncourt\n<invoke name=\"Read\">\n<parameter name=\"file_path\">/x</parameter>\n</invoke>";
 
+    // A leaked Claude Code control envelope (task-notification), the analogue of a
+    // leaked <invoke> — closed, shape-valid, unfenced.
+    private const string TaskNotificationLeak =
+        "A background agent completed a task:\n" +
+        "<task-notification>\n" +
+        "<task-id>abc-123</task-id>\n" +
+        "<output-file>/tmp/out.txt</output-file>\n" +
+        "<status>completed</status>\n" +
+        "<summary>Refactored the catalog.</summary>\n" +
+        "</task-notification>";
+
+    private const string TeammateMessageLeak =
+        "<teammate-message teammate_id=\"alice\" summary=\"Brief update\">\n" +
+        "please review the PR\n" +
+        "</teammate-message>";
+
     // ---- Streaming abort (default delivery) ------------------------------
 
     [Fact]
@@ -179,6 +195,110 @@ public class ResponseInspectionStageTests
         var got = await Drain(ctx.Response.EventStream!);
         Assert.False(ctx.ToolLeakDetected);
         Assert.DoesNotContain(got, e => e.EventType == "error");
+    }
+
+    // ---- Control-envelope leaks through the same guard -------------------
+
+    [Fact]
+    public async Task StreamingTaskNotificationLeak_InjectsOneErrorEvent_ThenStops()
+    {
+        // Contract: a leaked <task-notification> control envelope aborts the turn
+        // exactly like a leaked <invoke> — one SSE error event, stream ends, flag set.
+        var ctx = Ctx(LeakStream(TaskNotificationLeak));
+        await Stage(new ToolLeakGuardOptions { Enabled = true }).ApplyAsync(ctx);
+
+        var got = await Drain(ctx.Response.EventStream!);
+        Assert.Equal("error", got[^1].EventType);
+        Assert.Contains("overloaded_error", got[^1].Data);
+        Assert.DoesNotContain(got, e => e.EventType == "message_stop");
+        Assert.True(ctx.ToolLeakDetected);
+    }
+
+    [Fact]
+    public async Task StreamingTeammateMessageLeak_Aborts()
+    {
+        // Contract: a non-task control envelope (teammate-message) also aborts.
+        var ctx = Ctx(LeakStream(TeammateMessageLeak));
+        await Stage(new ToolLeakGuardOptions { Enabled = true }).ApplyAsync(ctx);
+
+        var got = await Drain(ctx.Response.EventStream!);
+        Assert.Equal("error", got[^1].EventType);
+        Assert.True(ctx.ToolLeakDetected);
+    }
+
+    [Fact]
+    public async Task BufferedDelivery_TaskNotificationLeak_EmitsRealStatus_NoLeakedContent()
+    {
+        // Contract: buffered delivery flips to a real 529 with an error body and
+        // NONE of the leaked envelope content.
+        var ctx = Ctx(LeakStream(TaskNotificationLeak));
+        await Stage(new ToolLeakGuardOptions { Enabled = true, PreserveStream = false }).ApplyAsync(ctx);
+
+        Assert.Equal(ResponseMode.Buffered, ctx.Response.Mode);
+        Assert.Equal(529, ctx.Response.Status);
+        var body = Encoding.UTF8.GetString(ctx.Response.BufferedBody!);
+        Assert.Contains("overloaded_error", body);
+        Assert.DoesNotContain("<task-notification", body);
+        Assert.DoesNotContain("Refactored the catalog", body);
+        Assert.True(ctx.ToolLeakDetected);
+    }
+
+    [Fact]
+    public async Task Disabled_Inert_ForControlEnvelopeLeak()
+    {
+        // Contract: with the guard disabled a control-envelope leak passes through
+        // untouched (no abort, no error event).
+        var ctx = Ctx(LeakStream(TaskNotificationLeak));
+        await Stage(new ToolLeakGuardOptions { Enabled = false }).ApplyAsync(ctx);
+
+        var got = await Drain(ctx.Response.EventStream!);
+        Assert.False(ctx.ToolLeakDetected);
+        Assert.DoesNotContain(got, e => e.EventType == "error");
+    }
+
+    [Fact]
+    public async Task ThinkingDisabled_ControlEnvelopeInThinking_NotDetected()
+    {
+        // Contract: ScanThinking=false → a control envelope inside a thinking block
+        // is not classified as a leak.
+        async IAsyncEnumerable<SseItem<string>> ThinkingLeak()
+        {
+            yield return new SseItem<string>("""{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}""", "content_block_start");
+            yield return new SseItem<string>(
+                $"{{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"thinking_delta\",\"thinking\":{System.Text.Json.JsonSerializer.Serialize(TaskNotificationLeak)}}}}}",
+                "content_block_delta");
+            yield return new SseItem<string>("""{"type":"content_block_stop","index":0}""", "content_block_stop");
+            await Task.CompletedTask;
+        }
+        var ctx = Ctx(ThinkingLeak());
+        await Stage(new ToolLeakGuardOptions { Enabled = true, ScanThinking = false }).ApplyAsync(ctx);
+
+        await Drain(ctx.Response.EventStream!);
+        Assert.False(ctx.ToolLeakDetected);
+    }
+
+    [Fact]
+    public async Task ControlEnvelopeLeak_LogsWarning_NamingSubjectBlockAction_NotLeakedText()
+    {
+        // Contract: on a control-envelope leak the detector emits exactly one
+        // Warning naming the leaked subject, block type, and action — and NOT the
+        // leaked envelope markup or child/body values.
+        var log = new CapturingLogger<ToolLeakDetector>();
+        var ctx = Ctx(LeakStream(TaskNotificationLeak));
+        await Stage(new ToolLeakGuardOptions { Enabled = true }, toolLeakLog: log).ApplyAsync(ctx);
+        await Drain(ctx.Response.EventStream!);
+
+        var warnings = log.Records.Where(r => r.Level == LogLevel.Warning).ToList();
+        Assert.Single(warnings);
+        var msg = warnings[0].Rendered;
+        Assert.Contains("task-notification", msg);   // subject
+        Assert.Contains("text", msg);                // block type
+        Assert.Contains("overloaded_error", msg);    // signal/action
+        Assert.Contains("stream", msg);              // delivery
+        Assert.DoesNotContain("<task-notification>", msg); // never the leaked markup
+        Assert.DoesNotContain("<task-id>", msg);
+        Assert.DoesNotContain("Refactored the catalog", msg);
+        Assert.DoesNotContain("/tmp/out.txt", msg);
     }
 
     // ---- Buffered delivery (PreserveStream=false) ------------------------
