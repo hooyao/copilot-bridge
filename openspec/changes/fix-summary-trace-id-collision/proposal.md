@@ -85,7 +85,9 @@ request/response wire bytes.
   every in-request line gets the prefix), `CodexResponsesEndpoint.cs` +
   `ClaudeCodeMessagesEndpoint.cs` + `ClaudeCodeCountTokensEndpoint.cs` (scope span
   / drop the `TraceId =` assignment); new + updated unit tests.
-- The one operator-visible change: the summary line no longer starts with `req#`;
-  its id is now the same `[<traceId>] ` prefix every other in-request line uses.
+- The one operator-visible change: the summary line no longer starts with `req#`.
+  Its id is now the same `[<traceId>] ` prefix every other in-request line uses,
+  and it carries a stable leading literal `summary` token so `grep summary` still
+  isolates the per-request roll-up line.
 - No behaviour change to detection, routing, translation, or wire bytes. AOT: no
   reflection introduced; Serilog `LogContext` is already AOT-safe.

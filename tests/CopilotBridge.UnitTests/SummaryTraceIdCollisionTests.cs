@@ -138,6 +138,6 @@ public class SummaryTraceIdCollisionTests
         var rendered = RenderProduction(sink.Events.Single());
         // Renders straight into the message with no "[<id>] " prefix (the betas
         // fields contain "[" mid-line, so assert on the START not on "[" anywhere).
-        Assert.StartsWith("messages ", rendered);
+        Assert.StartsWith("summary messages ", rendered);
     }
 }

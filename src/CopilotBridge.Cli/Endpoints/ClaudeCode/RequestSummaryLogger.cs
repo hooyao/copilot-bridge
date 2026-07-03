@@ -28,12 +28,16 @@ internal sealed class RequestSummaryLogger
         // message carries none itself (no self-rendered id to double or to
         // collide with the framework's ambient Activity "TraceId" scope).
         //
+        // The leading literal "summary" is a stable grep anchor for this line
+        // (it's the one per-request line that rolls up model/target/betas/usage);
+        // it's a fixed token, not a template hole, so nothing can shadow it.
+        //
         // Level reflects the response status so a `grep ERR` pulls just the
         // 5xx, a `grep WRN` adds the 4xx, and tail -f stays readable for
         // 2xx traffic — the same line shape is used at every level.
         _log.Log(
             LevelForStatus(s.StatusCode),
-            "{Kind} requested={RequestedModel} resolved={ResolvedModel} profile={CanonicalProfileId} "
+            "summary {Kind} requested={RequestedModel} resolved={ResolvedModel} profile={CanonicalProfileId} "
             + "target={TargetVendor}:{TargetEndpoint} "
             + "betas_in=[{InboundBetasCsv}] betas_out=[{OutboundBetasCsv}] "
             + "effort={EffortDisplay} max_tokens={MaxTokensDisplay} usage={UsageDisplay} "

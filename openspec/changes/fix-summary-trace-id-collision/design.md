@@ -70,13 +70,11 @@ render site (the enricher), uniform across enter / pipeline / summary / exit.
 Option B only relocates the collision and then needs a second special-case to
 undo the doubling it introduces.
 
-**Grep anchor.** `req#` is gone, so `grep req#` no longer isolates the summary.
-The summary is still distinguishable: it is the one INFO line per request that
-leads with the kind word (`messages` / `responses` / `count_tokens`) after the
-`[id] ` prefix and carries `status=` / `usage=` / `duration_ms=`. If a dedicated
-anchor is later wanted, add a stable literal token to the summary template (e.g.
-a leading `summary`) — but that is a separate cosmetic choice, not needed to fix
-the id.
+**Grep anchor.** `req#` is gone, so the summary carries a stable literal token
+instead: the template leads with the fixed word `summary` (after the `[id] `
+prefix), so `grep summary` isolates the per-request roll-up line. It's a fixed
+token, not a template hole, so nothing can shadow it — and it's independent of
+the id, which is what `req#` conflated.
 
 ## Decision: scope spans the whole handler, including enter/exit
 
