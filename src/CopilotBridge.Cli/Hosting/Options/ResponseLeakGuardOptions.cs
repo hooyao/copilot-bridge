@@ -67,14 +67,6 @@ internal sealed class ResponseLeakGuardOptions
     public bool ScanThinking { get; set; } = true;
 
     /// <summary>
-    /// Content-retention cap for buffering detectors only (0 = unbounded). The
-    /// response-leak detector is a single-pass automaton that retains no content, so
-    /// this does not affect it; it exists for a future JSON-repair-style detector
-    /// that must hold a block's bytes. Default 10000.
-    /// </summary>
-    public int MaxScanChars { get; set; } = 10000;
-
-    /// <summary>
     /// Per-signature on/off switches. Each leak "signature" (the leaked
     /// <c>&lt;invoke&gt;</c> tool call, or one of the Claude Code control
     /// envelopes) can be disabled independently while the rest of the guard stays
