@@ -269,10 +269,9 @@ Two log channels:
   per-startup file at `<exe-dir>/log/bridge-{YYYYMMDD-HHMMSS}.log`. One file per
   process start makes a single run trivially greppable. Levels are per-category
   in `appsettings.json`'s `Logging:LogLevel` (default `Debug` for
-  `CopilotBridge.Cli`). Log lines emitted while handling a request are prefixed
-  with the request's trace id in brackets (`[20260702-032206-0001]`, coloured on
-  the console) — the same id that names the request's trace JSON files and its
-  summary line — so you can jump from any log line to its trace. Notable
+  `CopilotBridge.Cli`). Each request's log lines carry a trace id in brackets
+  (`[20260702-032206-0001]`, the same id that names the request's trace JSON
+  files), so you can follow one request end-to-end and jump to its trace. Notable
   events name their subject: a leak detection logs one `Warning` naming the
   leaked signature and subject — a tool name or a control-envelope subject such as
   `task-notification` — plus the block type, the retry signal, and the exact

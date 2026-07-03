@@ -14,8 +14,11 @@ namespace CopilotBridge.Cli.Hosting.Logging;
 /// <remarks>
 /// This keeps the DATA (the bare trace id) separate from its PRESENTATION (the
 /// brackets + trailing space): endpoints only ever push the id; changing the
-/// wrapper (<c>[]</c> → <c>&lt;&gt;</c> → <c>req#</c>) is a one-line edit here, and
-/// non-request lines never carry an empty shell. AOT-clean: no reflection.
+/// wrapper (<c>[&lt;id&gt;] </c> → <c>&lt;id&gt; </c> → …) is a one-line edit
+/// here, and non-request lines never carry an empty shell. Every in-request
+/// line — pipeline stages, the enter/exit boundary lines, and the summary — is
+/// rendered through this one prefix; no line self-renders its own id. AOT-clean:
+/// no reflection.
 /// </remarks>
 internal sealed class ReqTraceFormatEnricher : ILogEventEnricher
 {
@@ -32,7 +35,9 @@ internal sealed class ReqTraceFormatEnricher : ILogEventEnricher
         }
 
         // Presentation lives here, in one place. Trailing space keeps the id set
-        // off from the message.
+        // off from the message. EVERY in-request line — pipeline stages, the
+        // enter/exit boundary lines, and the summary — gets the same prefix; no
+        // line self-renders its own id, so there is nothing to double.
         var formatted = propertyFactory.CreateProperty(TargetProperty, $"[{id}] ");
         logEvent.AddPropertyIfAbsent(formatted);
     }

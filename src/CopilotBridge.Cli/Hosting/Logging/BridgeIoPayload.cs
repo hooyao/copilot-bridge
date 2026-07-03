@@ -30,8 +30,8 @@ internal sealed class BridgeIoPayload
     /// <summary>
     /// Stable per-request identifier built once at the inbound endpoint as
     /// <c>{yyyyMMdd-HHmmss}-{seq:D4}</c>. All four audit artifacts of one
-    /// request carry the SAME value, and the per-request INFO summary line
-    /// embeds the same string as <c>req#{TraceId}</c>. Operators grep the
+    /// request carry the SAME value, and every in-request log line is prefixed
+    /// with the same string as <c>[&lt;TraceId&gt;] </c>. Operators grep the
     /// log for the trace id, then <c>ls *{TraceId}*</c> in the trace
     /// directory to pull the matching JSON files.
     /// </summary>
