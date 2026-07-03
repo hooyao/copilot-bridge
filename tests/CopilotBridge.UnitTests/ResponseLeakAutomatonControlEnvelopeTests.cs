@@ -398,4 +398,38 @@ public class ResponseLeakAutomatonControlEnvelopeTests
         Assert.True(Detect(s));
         Assert.Equal("channel", Subject(s));
     }
+
+    // ---- Signature id & per-signature gating -----------------------------
+
+    [Theory]
+    [MemberData(nameof(AllEnvelopes))]
+    public void MatchedSignature_NamesTheEnvelope(string envelope, string subject)
+    {
+        // Contract: for a control envelope the signature id equals its subject — the
+        // stable kebab id used both to gate the matcher and to name the disable
+        // switch.
+        var a = new ResponseLeakAutomaton();
+        foreach (var c in envelope) a.Feed(c);
+        Assert.True(a.Tripped);
+        Assert.Equal(subject, a.MatchedSignature);
+    }
+
+    [Fact]
+    public void DisabledSignature_OmitsOnlyThatMatcher_SiblingsStillTrip()
+    {
+        // Contract: removing one id from the enabled set builds every matcher EXCEPT
+        // that one — the disabled envelope can't trip, while an enabled sibling does.
+        var enabled = new HashSet<string>(LeakSignatures.All);
+        enabled.Remove(LeakSignatures.Channel);
+
+        var chan = new ResponseLeakAutomaton(enabledSignatures: enabled);
+        foreach (var c in Channel) chan.Feed(c);
+        Assert.False(chan.Tripped);
+        Assert.Null(chan.MatchedSubject);
+
+        var task = new ResponseLeakAutomaton(enabledSignatures: enabled);
+        foreach (var c in TaskNotification) task.Feed(c);
+        Assert.True(task.Tripped);
+        Assert.Equal("task-notification", task.MatchedSignature);
+    }
 }

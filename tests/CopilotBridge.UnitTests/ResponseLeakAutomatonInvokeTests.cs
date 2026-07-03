@@ -283,4 +283,40 @@ public class ResponseLeakAutomatonInvokeTests
         var s = "<invoke name=\"Read\"></parameter></invoke>";
         Assert.False(Detect(s));
     }
+
+    // ---- Signature identity & per-signature gating -----------------------
+
+    [Fact]
+    public void MatchedSignature_IsInvoke_DistinctFromSubjectToolName()
+    {
+        // Contract: the signature id (the stable config identity) is always
+        // 'invoke', even though MatchedSubject is the captured tool name. The two
+        // feed different consumers — the disable switch vs the log detail.
+        var a = new ResponseLeakAutomaton(Tools);
+        foreach (var c in MinimalLeak) a.Feed(c);
+        Assert.True(a.Tripped);
+        Assert.Equal("invoke", a.MatchedSignature);
+        Assert.Equal("Read", a.MatchedSubject);
+    }
+
+    [Fact]
+    public void DisabledInvokeSignature_InvokeLeakIgnored_EnabledEnvelopeStillTrips()
+    {
+        // Contract: with 'invoke' absent from the enabled set its matcher is never
+        // built, so a genuine invoke leak cannot trip — while a still-enabled
+        // signature (task-notification) detects normally.
+        var enabled = new HashSet<string>(LeakSignatures.All);
+        enabled.Remove(LeakSignatures.Invoke);
+
+        var invoke = new ResponseLeakAutomaton(Tools, enabled);
+        foreach (var c in MinimalLeak) invoke.Feed(c);
+        Assert.False(invoke.Tripped);
+        Assert.Null(invoke.MatchedSubject);
+        Assert.Null(invoke.MatchedSignature);
+
+        var envelope = new ResponseLeakAutomaton(Tools, enabled);
+        foreach (var c in "<task-notification>\n<task-id>x</task-id>\n<status>done</status>\n</task-notification>") envelope.Feed(c);
+        Assert.True(envelope.Tripped);
+        Assert.Equal("task-notification", envelope.MatchedSignature);
+    }
 }

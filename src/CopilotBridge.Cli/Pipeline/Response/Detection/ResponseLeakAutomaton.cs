@@ -54,24 +54,52 @@ internal sealed class ResponseLeakAutomaton
     private bool _trackFences = true; // false for thinking blocks (no fence concept)
     private bool _tripped;            // latched once a leak is confirmed
     private string? _matchedSubject;  // the subject (tool name or envelope) that tripped
+    private string? _matchedSignature; // the stable signature id that tripped (kebab; LeakSignatures)
 
-    public ResponseLeakAutomaton(IEnumerable<string>? toolNames = null)
+    /// <summary>
+    /// Build the automaton. <paramref name="toolNames"/> seeds the
+    /// <c>&lt;invoke&gt;</c> matcher's allow-list (a leak only trips on a tool the
+    /// request actually offered). <paramref name="enabledSignatures"/> gates which
+    /// signatures are watched at all: null (default) enables every signature; a set
+    /// enables only the ids it contains (see <see cref="LeakSignatures"/>). A
+    /// disabled signature's matcher is never built, so it costs nothing and can
+    /// never trip — letting a caller clear a false positive on one shape without
+    /// weakening the others.
+    /// </summary>
+    public ResponseLeakAutomaton(
+        IEnumerable<string>? toolNames = null,
+        IReadOnlySet<string>? enabledSignatures = null)
     {
-        _matchers = new ILeakMatcher[]
+        var names = toolNames ?? System.Array.Empty<string>();
+
+        // Build only the matchers whose signature is enabled (null = all). Omitting
+        // a disabled matcher — rather than building it and filtering its result —
+        // is zero-cost and, crucially, keeps a disabled signature from matching
+        // first on a character and masking an enabled one (Feed reports the FIRST
+        // matcher to match).
+        var matchers = new List<ILeakMatcher>(LeakSignatures.All.Length);
+        void AddIfEnabled(string signature, System.Func<ILeakMatcher> create)
         {
-            new InvokeMatcher(toolNames ?? System.Array.Empty<string>()),
-            new TaskNotificationMatcher(),
-            new AttributeEnvelopeMatcher(
-                openPrefix: "<teammate-message", attribute: "teammate_id",
-                closeTag: "</teammate-message>", subject: "teammate-message"),
-            new AttributeEnvelopeMatcher(
-                openPrefix: "<channel", attribute: "source",
-                closeTag: "</channel>", subject: "channel"),
-            new AttributeEnvelopeMatcher(
-                openPrefix: "<cross-session-message", attribute: "from",
-                closeTag: "</cross-session-message>", subject: "cross-session-message"),
-            new TickMatcher(),
-        };
+            if (enabledSignatures is null || enabledSignatures.Contains(signature))
+            {
+                matchers.Add(create());
+            }
+        }
+
+        AddIfEnabled(LeakSignatures.Invoke, () => new InvokeMatcher(names));
+        AddIfEnabled(LeakSignatures.TaskNotification, () => new TaskNotificationMatcher());
+        AddIfEnabled(LeakSignatures.TeammateMessage, () => new AttributeEnvelopeMatcher(
+            openPrefix: "<teammate-message", attribute: "teammate_id",
+            closeTag: "</teammate-message>", subject: LeakSignatures.TeammateMessage));
+        AddIfEnabled(LeakSignatures.Channel, () => new AttributeEnvelopeMatcher(
+            openPrefix: "<channel", attribute: "source",
+            closeTag: "</channel>", subject: LeakSignatures.Channel));
+        AddIfEnabled(LeakSignatures.CrossSessionMessage, () => new AttributeEnvelopeMatcher(
+            openPrefix: "<cross-session-message", attribute: "from",
+            closeTag: "</cross-session-message>", subject: LeakSignatures.CrossSessionMessage));
+        AddIfEnabled(LeakSignatures.Tick, () => new TickMatcher());
+
+        _matchers = matchers.ToArray();
     }
 
     /// <summary>True once a leak has been confirmed in this block. Latches.</summary>
@@ -83,6 +111,16 @@ internal sealed class ResponseLeakAutomaton
     /// null until a leak is confirmed. Latches with <see cref="Tripped"/>.
     /// </summary>
     public string? MatchedSubject => _matchedSubject;
+
+    /// <summary>
+    /// The stable signature id (kebab-case, from <see cref="LeakSignatures"/>) that
+    /// tripped the block — e.g. <c>invoke</c> or <c>task-notification</c> — or null
+    /// until a leak is confirmed. Distinct from <see cref="MatchedSubject"/>: for an
+    /// <c>&lt;invoke&gt;</c> leak the subject is the captured tool name, whereas this
+    /// is always <c>invoke</c> — the identity used to name the disable switch.
+    /// Latches with <see cref="Tripped"/>.
+    /// </summary>
+    public string? MatchedSignature => _matchedSignature;
 
     /// <summary>
     /// Reset all state for a new content block. <paramref name="trackFences"/>
@@ -101,6 +139,7 @@ internal sealed class ResponseLeakAutomaton
         _trackFences = trackFences;
         _tripped = false;
         _matchedSubject = null;
+        _matchedSignature = null;
     }
 
     /// <summary>
@@ -133,11 +172,13 @@ internal sealed class ResponseLeakAutomaton
         // Feed EVERY matcher (each keeps its own independent state); the first that
         // reports a closed, shape-valid signature on this char names the subject.
         string? subject = null;
+        string? signature = null;
         foreach (var m in _matchers)
         {
             if (m.Feed(c) && subject is null)
             {
                 subject = m.Subject;
+                signature = m.Signature;
             }
         }
 
@@ -146,6 +187,7 @@ internal sealed class ResponseLeakAutomaton
         {
             _tripped = true;
             _matchedSubject = subject;
+            _matchedSignature = signature;
             return true;
         }
 
@@ -163,6 +205,12 @@ internal sealed class ResponseLeakAutomaton
     /// </summary>
     private interface ILeakMatcher
     {
+        /// <summary>The stable signature id (kebab; see <see cref="LeakSignatures"/>)
+        /// this matcher detects. Constant per matcher, independent of the matched
+        /// value — the <c>&lt;invoke&gt;</c> matcher's signature is always
+        /// <c>invoke</c> even though its <see cref="Subject"/> is the tool name.</summary>
+        string Signature { get; }
+
         string? Subject { get; }
         void Reset();
         bool Feed(char c);
@@ -208,6 +256,8 @@ internal sealed class ResponseLeakAutomaton
         {
             _toolNames = new HashSet<string>(toolNames, System.StringComparer.Ordinal);
         }
+
+        public string Signature => LeakSignatures.Invoke;
 
         public string? Subject => _matched;
 
@@ -324,7 +374,9 @@ internal sealed class ResponseLeakAutomaton
         private bool _taskIdOpened, _hasTaskId;
         private bool _summaryOpened, _statusOpened, _outputOpened, _hasProof;
 
-        public string? Subject => "task-notification";
+        public string Signature => LeakSignatures.TaskNotification;
+
+        public string? Subject => LeakSignatures.TaskNotification;
 
         public void Reset()
         {
@@ -428,7 +480,10 @@ internal sealed class ResponseLeakAutomaton
             _attrTarget = attribute + "=\"";
             _close = new KmpMatcher(closeTag);
             Subject = subject;
+            Signature = subject;
         }
+
+        public string Signature { get; }
 
         public string? Subject { get; }
 
@@ -578,7 +633,9 @@ internal sealed class ResponseLeakAutomaton
         private bool _opened;
         private int _sinceOpen; // capped at CloseLength + 1; > CloseLength ⇒ non-empty inner
 
-        public string? Subject => "tick";
+        public string Signature => LeakSignatures.Tick;
+
+        public string? Subject => LeakSignatures.Tick;
 
         public void Reset()
         {

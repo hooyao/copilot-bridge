@@ -446,6 +446,75 @@ public class ResponseInspectionStageTests
         Assert.DoesNotContain(log.Records, r => r.Level == LogLevel.Warning);
     }
 
+    // ---- Per-signature toggles (false-positive escape hatch) -------------
+
+    [Fact]
+    public async Task PerSignatureDisabled_InvokeLeak_PassesThroughUnchanged()
+    {
+        // Contract: turning off just the 'invoke' signature lets an <invoke> sample
+        // stream through untouched — the false-positive escape hatch — while the
+        // guard as a whole stays enabled.
+        var opts = new ToolLeakGuardOptions { Enabled = true };
+        opts.Signatures.Invoke = false;
+        var ctx = Ctx(LeakStream(Leak));
+        await Stage(opts).ApplyAsync(ctx);
+
+        var got = await Drain(ctx.Response.EventStream!);
+        Assert.Equal("message_stop", got[^1].EventType);
+        Assert.False(ctx.ToolLeakDetected);
+        Assert.DoesNotContain(got, e => e.EventType == "error");
+    }
+
+    [Fact]
+    public async Task PerSignatureDisabled_Invoke_OtherSignatureStillAborts()
+    {
+        // Contract: disabling one signature is surgical — a leaked task-notification
+        // still aborts even with 'invoke' turned off.
+        var opts = new ToolLeakGuardOptions { Enabled = true };
+        opts.Signatures.Invoke = false;
+        var ctx = Ctx(LeakStream(TaskNotificationLeak));
+        await Stage(opts).ApplyAsync(ctx);
+
+        var got = await Drain(ctx.Response.EventStream!);
+        Assert.Equal("error", got[^1].EventType);
+        Assert.True(ctx.ToolLeakDetected);
+    }
+
+    [Fact]
+    public async Task LeakError_NamesSignatureAndDisableKeyAndRestart()
+    {
+        // Contract: the injected error tells the user which signature tripped, the
+        // exact switch to disable it, and that a restart is required — so a false
+        // positive is self-service to fix.
+        var ctx = Ctx(LeakStream(Leak));
+        await Stage(new ToolLeakGuardOptions { Enabled = true }).ApplyAsync(ctx);
+        var got = await Drain(ctx.Response.EventStream!);
+
+        Assert.Equal("error", got[^1].EventType);
+        var data = got[^1].Data;
+        Assert.Contains("invoke", data);                                                   // signature id
+        Assert.Contains("Pipeline:Detectors:ToolLeakGuard:Signatures:Invoke=false", data); // disable key
+        Assert.Contains("restart", data);                                                  // restart required
+    }
+
+    [Fact]
+    public async Task LeakDetection_Warning_NamesDisableKeyAndRestart()
+    {
+        // Contract: the single Warning also names the disable switch and the restart
+        // requirement, so the operator can fix a false positive from the log alone.
+        var log = new CapturingLogger<ToolLeakDetector>();
+        var ctx = Ctx(LeakStream(Leak));
+        await Stage(new ToolLeakGuardOptions { Enabled = true }, toolLeakLog: log).ApplyAsync(ctx);
+        await Drain(ctx.Response.EventStream!);
+
+        var warnings = log.Records.Where(r => r.Level == LogLevel.Warning).ToList();
+        Assert.Single(warnings);
+        var msg = warnings[0].Rendered;
+        Assert.Contains("invoke", msg);                                             // signature
+        Assert.Contains("Pipeline:Detectors:ToolLeakGuard:Signatures:Invoke", msg); // disable key
+        Assert.Contains("restart", msg);                                            // restart note
+    }
+
     private sealed class CapturingLogger<T> : ILogger<T>
     {
         public readonly List<(LogLevel Level, string Rendered)> Records = new();

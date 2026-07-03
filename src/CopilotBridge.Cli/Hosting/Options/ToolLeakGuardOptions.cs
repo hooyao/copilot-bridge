@@ -73,4 +73,58 @@ internal sealed class ToolLeakGuardOptions
     /// that must hold a block's bytes. Default 10000.
     /// </summary>
     public int MaxScanChars { get; set; } = 10000;
+
+    /// <summary>
+    /// Per-signature on/off switches. Each leak "signature" (the leaked
+    /// <c>&lt;invoke&gt;</c> tool call, or one of the Claude Code control
+    /// envelopes) can be disabled independently while the rest of the guard stays
+    /// active. All default on.
+    /// </summary>
+    /// <remarks>
+    /// <para>Purpose: clear a false positive without turning off the whole guard.
+    /// If the user is legitimately discussing this markup with the model — e.g.
+    /// asking how Anthropic tool-use or a <c>&lt;task-notification&gt;</c> works and
+    /// the model echoes a sample — the guard can misfire. The name of the tripped
+    /// signature and the exact key to disable it are surfaced in both the retry
+    /// error and the server WARNING log, so the user knows which switch to flip.</para>
+    /// <para><b>Applied at startup — a restart is required after changing any
+    /// switch.</b> Hot-reload is not wired yet; the detector is nonetheless rebuilt
+    /// per request and recomputes its enabled signatures from these options every
+    /// time, so enabling hot-reload later only means pointing the detector factory
+    /// at a live options source — no change to detection.</para>
+    /// </remarks>
+    public ToolLeakSignaturesOptions Signatures { get; set; } = new();
+}
+
+/// <summary>
+/// Per-signature toggles for the response-leak detector, bound from
+/// <c>Pipeline:Detectors:ToolLeakGuard:Signatures</c>. Each property is a single
+/// leak signature; set one to <c>false</c> to stop the guard tripping on that
+/// shape while leaving the others active. All default <c>true</c>.
+/// </summary>
+/// <remarks>
+/// Use this to clear a false positive: if the model is legitimately echoing this
+/// markup (say the user asked how Claude Code's tool-use or task-notification
+/// protocol works) and a sample gets caught, disable just that one signature. A
+/// restart is required for a change to take effect — config is read at startup.
+/// </remarks>
+internal sealed class ToolLeakSignaturesOptions
+{
+    /// <summary>Leaked <c>&lt;invoke name="X"&gt;…&lt;/invoke&gt;</c> tool call. Default true.</summary>
+    public bool Invoke { get; set; } = true;
+
+    /// <summary>Leaked <c>&lt;task-notification&gt;</c> envelope. Default true.</summary>
+    public bool TaskNotification { get; set; } = true;
+
+    /// <summary>Leaked <c>&lt;teammate-message&gt;</c> envelope. Default true.</summary>
+    public bool TeammateMessage { get; set; } = true;
+
+    /// <summary>Leaked <c>&lt;channel&gt;</c> envelope. Default true.</summary>
+    public bool Channel { get; set; } = true;
+
+    /// <summary>Leaked <c>&lt;cross-session-message&gt;</c> envelope. Default true.</summary>
+    public bool CrossSessionMessage { get; set; } = true;
+
+    /// <summary>Leaked <c>&lt;tick&gt;</c> envelope. Default true.</summary>
+    public bool Tick { get; set; } = true;
 }

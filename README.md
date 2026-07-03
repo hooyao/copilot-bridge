@@ -115,7 +115,12 @@ The file next to the executable. A few keys worth knowing:
   afterward.
 - **`Pipeline:Detectors:ToolLeakGuard`** — the tool-call-leak auto-repair
   (`Enabled`, `Signal`). On by default; leave it unless you want to tune the
-  retry signal.
+  retry signal. Individual leak signatures can be turned off under `Signatures`
+  (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`,
+  `CrossSessionMessage`, `Tick` — all on by default) to clear a false positive,
+  e.g. when you're discussing this markup with the model and a sample reply gets
+  caught. The retry error and the log both name the exact switch to flip; a
+  **restart** is required after changing it.
 - **`Routing.Locations`** — optional nginx-style rules to remap a model or tweak
   headers per request. For example, the shipped rule:
 
@@ -269,9 +274,9 @@ Two log channels:
   the console) — the same id that names the request's trace JSON files and its
   summary line — so you can jump from any log line to its trace. Notable
   events name their subject: a leak detection logs one `Warning` naming the
-  leaked subject — a tool name or a control-envelope subject such as
-  `task-notification` — plus the block type and the retry signal (never the
-  leaked content).
+  leaked signature and subject — a tool name or a control-envelope subject such as
+  `task-notification` — plus the block type, the retry signal, and the exact
+  config key to disable that signature (never the leaked content).
 - **Per-request audit trace** (opt-in, off by default) — set
   `"Tracing": { "Enabled": true }` to capture four JSON files per request under
   `request-traces/` (`<utc>-<seq>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`):

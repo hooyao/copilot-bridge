@@ -612,6 +612,21 @@ the dirty bytes never commit to the transcript — this breaks the self-reinforc
 poisoning loop. See `docs/copilot-upstream-toolcall-bug-report.md` for the leak's
 empirical basis (~2.2% of responses in a poisoned session, all closed/unfenced).
 
+Each signature can be **disabled independently** under
+`Pipeline:Detectors:ToolLeakGuard:Signatures` (`Invoke`, `TaskNotification`,
+`TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`; all default true) — a
+false-positive escape hatch. If the model is legitimately echoing this markup (say
+the user is discussing how `<invoke>` tool-use or a `<task-notification>` envelope
+works and a sample reply gets caught), turning off just that one signature omits
+only its matcher and leaves the rest of the guard active. The tripped signature and
+the exact key to flip are named in both the retry error the client receives and the
+detection-point `Warning`, so a false positive is self-service to fix. Config is
+read at **startup, so a restart is required** after changing a switch. (Hot-reload
+is not wired today, but the detector is rebuilt per request and recomputes its
+enabled signatures from options every time, so the only change needed to make a
+flipped switch take effect live would be pointing `DetectorSetFactory` at a live
+options source — no change to detection.)
+
 ### 6.2 Adding a detector
 
 Implement `IResponseDetector` and add it in `DetectorSetFactory.Build`. The

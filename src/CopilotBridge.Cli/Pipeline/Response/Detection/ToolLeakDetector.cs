@@ -34,7 +34,29 @@ internal sealed class ToolLeakDetector : IResponseDetector
         var names = tools is null
             ? Array.Empty<string>()
             : tools.Select(t => t.Name);
-        _automaton = new ResponseLeakAutomaton(names);
+        // Compute the enabled-signature gate here, per detector construction (i.e.
+        // per request), straight from the options handed in — never a static or
+        // startup cache. This is the single seam for future config hot-reload:
+        // because detectors are rebuilt per request, pointing DetectorSetFactory at
+        // a live options source (IOptionsMonitor.CurrentValue) instead of the frozen
+        // IOptions snapshot would make a flipped switch take effect on the next
+        // request with no change here. Today config is read at startup, so a restart
+        // is required — which both the retry error and the warning log state.
+        _automaton = new ResponseLeakAutomaton(names, BuildEnabledSignatures(_opts.Signatures));
+    }
+
+    /// <summary>Translate the per-signature option flags into the set of enabled
+    /// signature ids the automaton watches (an unset flag omits its matcher).</summary>
+    private static IReadOnlySet<string> BuildEnabledSignatures(ToolLeakSignaturesOptions s)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        if (s.Invoke) set.Add(LeakSignatures.Invoke);
+        if (s.TaskNotification) set.Add(LeakSignatures.TaskNotification);
+        if (s.TeammateMessage) set.Add(LeakSignatures.TeammateMessage);
+        if (s.Channel) set.Add(LeakSignatures.Channel);
+        if (s.CrossSessionMessage) set.Add(LeakSignatures.CrossSessionMessage);
+        if (s.Tick) set.Add(LeakSignatures.Tick);
+        return set;
     }
 
     public string Name => "ToolLeak";
@@ -69,18 +91,24 @@ internal sealed class ToolLeakDetector : IResponseDetector
                             if (_automaton.Feed(c))
                             {
                                 var subject = _automaton.MatchedSubject ?? "?";
+                                var signature = _automaton.MatchedSignature ?? "?";
                                 var signal = _opts.Signal;
                                 // Log at the detection point — the only place that
-                                // knows the leaked subject + block. NOT the leaked
-                                // text (that stays in the opt-in trace files only).
+                                // knows the leaked signature + subject + block. NOT
+                                // the leaked text (that stays in the opt-in trace
+                                // files only). Names the exact switch to disable a
+                                // false positive; a restart is required after a
+                                // config change (config is read at startup).
                                 _log.LogWarning(
-                                    "response-leak detected: subject={Subject} block={Block} signal={Signal} delivery={Delivery} — forcing client retry",
+                                    "response-leak detected: signature={Signature} subject={Subject} disable-key={DisableKey} block={Block} signal={Signal} delivery={Delivery} — forcing client retry (restart required after changing the switch)",
+                                    signature,
                                     subject,
+                                    ToolLeakError.ConfigPath(signature),
                                     _blockType ?? "?",
                                     ToolLeakError.ErrorType(signal),
                                     RequiresBuffering ? "buffer" : "stream");
                                 return DetectionAction.Abort(
-                                    ToolLeakError.Json(signal),
+                                    ToolLeakError.Json(signal, signature),
                                     ToolLeakError.HttpStatus(signal));
                             }
                         }
