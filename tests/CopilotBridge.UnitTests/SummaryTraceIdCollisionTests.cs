@@ -82,14 +82,18 @@ public class SummaryTraceIdCollisionTests
             b.SetMinimumLevel(LogLevel.Trace);
         });
 
+        // Listen ONLY to this test's own ActivitySource — a process-wide
+        // ShouldListenTo would make unrelated ActivitySource.StartActivity()
+        // calls in parallel tests start producing Activities, coupling them.
+        const string sourceName = "summary-collision-test";
         using var listener = new ActivityListener
         {
-            ShouldListenTo = _ => true,
+            ShouldListenTo = s => s.Name == sourceName,
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
             SampleUsingParentId = (ref ActivityCreationOptions<string> _) => ActivitySamplingResult.AllDataAndRecorded,
         };
         ActivitySource.AddActivityListener(listener);
-        using var src = new ActivitySource("summary-collision-test");
+        using var src = new ActivitySource(sourceName);
         using var activity = src.StartActivity("request");
         Assert.NotNull(activity);
         var ambientHex = activity!.TraceId.ToString();

@@ -328,14 +328,17 @@ public class CodexEndpointTests
             NullLogger<MessagesRequest>.Instance,
             endpointLog);
 
-        string? IdOf(string contains)
+        // Match the EXACT enter/exit message templates (not a loose substring),
+        // so an unrelated future log line containing "enter"/"exit" can't make
+        // Single() throw on multiple matches.
+        string? IdForTemplate(string template)
         {
-            var e = sink.Events.Single(ev => ev.MessageTemplate.Text.Contains(contains, StringComparison.Ordinal));
+            var e = sink.Events.Single(ev => ev.MessageTemplate.Text == template);
             return e.Properties.TryGetValue("ReqTrace", out var v) ? (((ScalarValue)v).Value as string) : null;
         }
 
-        var enterId = IdOf("enter");
-        var exitId = IdOf("exit");
+        var enterId = IdForTemplate("endpoint {Path}: enter remote={Remote}");
+        var exitId = IdForTemplate("endpoint exit duration_ms={Ms}");
 
         // Both boundary lines carry the id, and it is the BuildTraceId shape
         // (yyyyMMdd-HHmmss-nnnn), not empty and not a 32-hex Activity id.
