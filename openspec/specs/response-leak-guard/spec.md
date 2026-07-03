@@ -82,8 +82,10 @@ streamed character at most once.
 A signature SHALL NOT be assembled across a content-block boundary (the trailing
 bytes of one block plus the leading bytes of the next).
 
-The response-leak scan SHALL NOT be bounded by `MaxScanChars` (it retains no
-content); `MaxScanChars` applies only to detectors that buffer block content.
+The response-leak scan SHALL NOT be bounded by any scan-window or content-length
+cap: it is a single-pass character-fed automaton that retains no block content, so
+an arbitrarily long leaked block is detected without a window the opening tag could
+scroll out of.
 
 #### Scenario: Leak split across many deltas
 - **WHEN** `<invoke name="Read">…</invoke>` arrives split across multiple
@@ -168,7 +170,7 @@ and, in buffered delivery, the HTTP status: `OverloadedError` → `overloaded_er
 
 The guard SHALL be configured under `Pipeline:Detectors:ResponseLeakGuard` with keys
 `Enabled` (default true), `PreserveStream` (default true), `Signal` (default
-`OverloadedError`), `ScanThinking` (default true), `MaxScanChars` (default 10000),
+`OverloadedError`), `ScanThinking` (default true),
 and a `Signatures` sub-block of per-signature toggles (see the Per-signature
 detection toggles requirement; all default true). When `Enabled` is false the
 guard SHALL be a no-op that performs no scanning, no accumulation, and no
