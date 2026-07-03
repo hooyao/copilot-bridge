@@ -9,7 +9,7 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// These ids are the contract shared by three places, kept in sync via this one
 /// source: the automaton (which matcher to build, and what to report as
 /// <see cref="ResponseLeakAutomaton.MatchedSignature"/>); the per-signature config
-/// gate (<see cref="Hosting.Options.ToolLeakSignaturesOptions"/>, whose PascalCase
+/// gate (<see cref="Hosting.Options.ResponseLeakSignaturesOptions"/>, whose PascalCase
 /// property names map 1:1 to these ids); and the retry-error / warning-log text
 /// (which turns an id into the exact config key to disable). Distinct from a
 /// matched <i>subject</i>: for an <c>invoke</c> leak the subject is the captured

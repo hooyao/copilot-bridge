@@ -23,7 +23,7 @@ internal enum DetectionActionKind
     /// <summary>
     /// Terminate: inject the error carried by <see cref="DetectionAction.ErrorJson"/>
     /// (stream: as an SSE <c>error</c> event then end; buffer: as the body with
-    /// <see cref="DetectionAction.HttpStatus"/>). Used by the tool-leak guard.
+    /// <see cref="DetectionAction.HttpStatus"/>). Used by the response-leak guard.
     /// </summary>
     Abort,
 }
@@ -56,7 +56,7 @@ internal readonly struct DetectionAction
 /// <summary>
 /// One inspection concern behind <see cref="ResponseInspectionStage"/>. Detectors
 /// are <b>scoped</b> DI services (one instance per request scope) because a
-/// streaming detector may carry cross-delta state (e.g. the tool-leak automaton)
+/// streaming detector may carry cross-delta state (e.g. the response-leak automaton)
 /// that MUST NOT be shared across requests. They are injected as the set
 /// <c>IEnumerable&lt;IResponseDetector&gt;</c> and the stage runs them in ascending
 /// <see cref="Order"/> (assigned from registration order), so precedence does not
@@ -128,7 +128,7 @@ internal interface IResponseDetector
     /// <see cref="DetectionAction.None"/> to pass through. The event is already
     /// SSE-framed by <c>SseParser</c>, so multi-byte / multi-line data arrives
     /// whole; text that spans multiple <c>content_block_delta</c> events is the
-    /// detector's own concern to accumulate (the tool-leak automaton does this
+    /// detector's own concern to accumulate (the response-leak automaton does this
     /// character-by-character).
     /// </summary>
     DetectionAction InspectEvent(in SseItem<string> evt);

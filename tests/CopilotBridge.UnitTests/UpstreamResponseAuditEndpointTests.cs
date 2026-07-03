@@ -186,7 +186,7 @@ public class UpstreamResponseAuditEndpointTests
             originalModel: "claude-opus-4-8",
             stagesFactory: ctx =>
             {
-                // Inspection stage with model-rewrite enabled and the tool-leak
+                // Inspection stage with model-rewrite enabled and the response-leak
                 // guard off, isolating the rewrite behavior this test asserts. The
                 // detectors read the shared scoped ctx; Order values are arbitrary
                 // here (only two detectors, distinct order).
@@ -196,11 +196,11 @@ public class UpstreamResponseAuditEndpointTests
                         new DetectorOrder<ModelRewriteDetector>(0),
                         TestOptions.Snapshot(new ResponseModelRewriteOptions { Enabled = true }),
                         ctx),
-                    new ToolLeakDetector(
-                        new DetectorOrder<ToolLeakDetector>(1),
-                        TestOptions.Snapshot(new ToolLeakGuardOptions { Enabled = false }),
+                    new ResponseLeakDetector(
+                        new DetectorOrder<ResponseLeakDetector>(1),
+                        TestOptions.Snapshot(new ResponseLeakGuardOptions { Enabled = false }),
                         ctx,
-                        NullLogger<ToolLeakDetector>.Instance),
+                        NullLogger<ResponseLeakDetector>.Instance),
                 };
                 return
                 [

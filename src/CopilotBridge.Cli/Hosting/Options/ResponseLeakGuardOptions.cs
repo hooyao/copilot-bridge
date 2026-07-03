@@ -14,7 +14,7 @@ namespace CopilotBridge.Cli.Hosting.Options;
 /// <c>api_error</c>/500; Claude Code retries 5xx too, but mid-stream
 /// classification is less certain than the overloaded string match.
 /// </remarks>
-internal enum ToolLeakSignal
+internal enum ResponseLeakSignal
 {
     OverloadedError = 0,
     ApiError = 1,
@@ -22,7 +22,7 @@ internal enum ToolLeakSignal
 
 /// <summary>
 /// Bound from <c>appsettings.json</c> section
-/// <c>Pipeline:Detectors:ToolLeakGuard</c>. Controls <see cref="Pipeline.Response.Detection.ToolLeakDetector"/>, which
+/// <c>Pipeline:Detectors:ResponseLeakGuard</c>. Controls <see cref="Pipeline.Response.Detection.ResponseLeakDetector"/>, which
 /// detects two families of leaks from a Copilot-served Claude model: a tool call
 /// leaked as literal <c>&lt;invoke name="X"&gt;…&lt;/invoke&gt;</c> XML (rather
 /// than a real <c>tool_use</c> block), and a Claude Code control/event envelope
@@ -46,7 +46,7 @@ internal enum ToolLeakSignal
 /// distinguished from the sibling <c>&lt;channel-message&gt;</c>), and NOT inside a
 /// code fence.
 /// </remarks>
-internal sealed class ToolLeakGuardOptions
+internal sealed class ResponseLeakGuardOptions
 {
     /// <summary>Master switch. When false the detector is never created — no
     /// scanning, no automaton allocation. Default true.</summary>
@@ -60,15 +60,15 @@ internal sealed class ToolLeakGuardOptions
     /// </summary>
     public bool PreserveStream { get; set; } = true;
 
-    /// <summary>Which error to raise. Default <see cref="ToolLeakSignal.OverloadedError"/>.</summary>
-    public ToolLeakSignal Signal { get; set; } = ToolLeakSignal.OverloadedError;
+    /// <summary>Which error to raise. Default <see cref="ResponseLeakSignal.OverloadedError"/>.</summary>
+    public ResponseLeakSignal Signal { get; set; } = ResponseLeakSignal.OverloadedError;
 
     /// <summary>Also scan <c>thinking</c> blocks, not just <c>text</c>. Default true.</summary>
     public bool ScanThinking { get; set; } = true;
 
     /// <summary>
     /// Content-retention cap for buffering detectors only (0 = unbounded). The
-    /// tool-leak detector is a single-pass automaton that retains no content, so
+    /// response-leak detector is a single-pass automaton that retains no content, so
     /// this does not affect it; it exists for a future JSON-repair-style detector
     /// that must hold a block's bytes. Default 10000.
     /// </summary>
@@ -96,12 +96,12 @@ internal sealed class ToolLeakGuardOptions
     /// <c>true</c> would make a toggled switch take effect on the next request with
     /// no change to the detector.</para>
     /// </remarks>
-    public ToolLeakSignaturesOptions Signatures { get; set; } = new();
+    public ResponseLeakSignaturesOptions Signatures { get; set; } = new();
 }
 
 /// <summary>
 /// Per-signature toggles for the response-leak detector, bound from
-/// <c>Pipeline:Detectors:ToolLeakGuard:Signatures</c>. Each property is a single
+/// <c>Pipeline:Detectors:ResponseLeakGuard:Signatures</c>. Each property is a single
 /// leak signature; set one to <c>false</c> to stop the guard tripping on that
 /// shape while leaving the others active. All default <c>true</c>.
 /// </summary>
@@ -111,7 +111,7 @@ internal sealed class ToolLeakGuardOptions
 /// protocol works) and a sample gets caught, disable just that one signature. A
 /// restart is required for a change to take effect — config is read at startup.
 /// </remarks>
-internal sealed class ToolLeakSignaturesOptions
+internal sealed class ResponseLeakSignaturesOptions
 {
     /// <summary>Leaked <c>&lt;invoke name="X"&gt;…&lt;/invoke&gt;</c> tool call. Default true.</summary>
     public bool Invoke { get; set; } = true;

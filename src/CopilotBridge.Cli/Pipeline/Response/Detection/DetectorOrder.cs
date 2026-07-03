@@ -14,7 +14,7 @@ internal interface IDetectorOrder
 /// The registration-time precedence value for a specific detector type, injected
 /// into that detector so it can expose <see cref="IResponseDetector.Order"/>.
 /// A distinct <b>closed</b> generic per detector type
-/// (<c>DetectorOrder&lt;ToolLeakDetector&gt;</c> etc.) so each detector resolves its
+/// (<c>DetectorOrder&lt;ResponseLeakDetector&gt;</c> etc.) so each detector resolves its
 /// own value — a shared <c>DetectorOrder&lt;IResponseDetector&gt;</c> would collide
 /// and every detector would read the last-registered value.
 /// </summary>

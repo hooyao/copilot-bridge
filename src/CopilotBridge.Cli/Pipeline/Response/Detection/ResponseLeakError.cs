@@ -3,32 +3,32 @@ using CopilotBridge.Cli.Hosting.Options;
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
 /// <summary>
-/// Maps a <see cref="ToolLeakSignal"/> to the Anthropic error wire shape it emits
+/// Maps a <see cref="ResponseLeakSignal"/> to the Anthropic error wire shape it emits
 /// and the HTTP status it uses in buffered delivery. Shared by both delivery
 /// modes so streaming injection and buffered rejection agree.
 /// </summary>
-internal static class ToolLeakError
+internal static class ResponseLeakError
 {
     /// <summary>The Anthropic <c>error.type</c> string for a signal.</summary>
-    public static string ErrorType(ToolLeakSignal signal) => signal switch
+    public static string ErrorType(ResponseLeakSignal signal) => signal switch
     {
-        ToolLeakSignal.ApiError => "api_error",
+        ResponseLeakSignal.ApiError => "api_error",
         _ => "overloaded_error",
     };
 
     /// <summary>The HTTP status used in buffered delivery for a signal.</summary>
-    public static int HttpStatus(ToolLeakSignal signal) => signal switch
+    public static int HttpStatus(ResponseLeakSignal signal) => signal switch
     {
-        ToolLeakSignal.ApiError => 500,
+        ResponseLeakSignal.ApiError => 500,
         _ => 529,
     };
 
     /// <summary>The config section holding the per-signature disable switches.</summary>
-    private const string SignaturesSection = "Pipeline:Detectors:ToolLeakGuard:Signatures";
+    private const string SignaturesSection = "Pipeline:Detectors:ResponseLeakGuard:Signatures";
 
     /// <summary>
     /// The full config path whose switch disables <paramref name="signature"/>,
-    /// e.g. <c>invoke</c> → <c>Pipeline:Detectors:ToolLeakGuard:Signatures:Invoke</c>.
+    /// e.g. <c>invoke</c> → <c>Pipeline:Detectors:ResponseLeakGuard:Signatures:Invoke</c>.
     /// </summary>
     public static string ConfigPath(string signature) =>
         SignaturesSection + ":" + ConfigKey(signature);
@@ -75,7 +75,7 @@ internal static class ToolLeakError
     /// <c>{"type":"error","error":{"type":"…","message":"…"}}</c>. The message
     /// names <paramref name="signature"/> and its disable switch.
     /// </summary>
-    public static string Json(ToolLeakSignal signal, string signature) =>
+    public static string Json(ResponseLeakSignal signal, string signature) =>
         "{\"type\":\"error\",\"error\":{\"type\":\""
         + ErrorType(signal)
         + "\",\"message\":\""

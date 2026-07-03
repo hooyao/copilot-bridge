@@ -11,7 +11,7 @@ using Xunit;
 namespace CopilotBridge.UnitTests;
 
 /// <summary>
-/// Contract tests for the tool-leak guard end-to-end through
+/// Contract tests for the response-leak guard end-to-end through
 /// <see cref="ResponseInspectionStage"/>: streaming abort injects one error event
 /// and stops; clean/negative streams pass through unchanged; the disabled guard
 /// is inert; the buffered-delivery mode emits a real status; and the signal
@@ -27,9 +27,9 @@ public class ResponseInspectionStageTests
     // flag; Order values follow registration order (DONE 0 → rewrite 1 → leak 2).
     private static async Task Run(
         BridgeContext<MessagesRequest> ctx,
-        ToolLeakGuardOptions leak,
+        ResponseLeakGuardOptions leak,
         bool rewriteEnabled = false,
-        ILogger<ToolLeakDetector>? toolLeakLog = null)
+        ILogger<ResponseLeakDetector>? responseLeakLog = null)
     {
         var detectors = new IResponseDetector[]
         {
@@ -38,11 +38,11 @@ public class ResponseInspectionStageTests
                 new DetectorOrder<ModelRewriteDetector>(1),
                 TestOptions.Snapshot(new ResponseModelRewriteOptions { Enabled = rewriteEnabled }),
                 ctx),
-            new ToolLeakDetector(
-                new DetectorOrder<ToolLeakDetector>(2),
+            new ResponseLeakDetector(
+                new DetectorOrder<ResponseLeakDetector>(2),
                 TestOptions.Snapshot(leak),
                 ctx,
-                toolLeakLog ?? NullLogger<ToolLeakDetector>.Instance),
+                responseLeakLog ?? NullLogger<ResponseLeakDetector>.Instance),
         };
         var stage = new ResponseInspectionStage(detectors, ctx, NullLogger<ResponseInspectionStage>.Instance);
         await stage.ApplyAsync();
@@ -116,7 +116,7 @@ public class ResponseInspectionStageTests
         // Contract: on a detected leak, exactly one SSE error event is emitted and
         // no further upstream events flow; the flag is set.
         var ctx = Ctx(LeakStream(Leak));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true });
 
         var got = await Drain(ctx.Response.EventStream!);
 
@@ -124,7 +124,7 @@ public class ResponseInspectionStageTests
         Assert.Equal("error", got[^1].EventType);
         Assert.Contains("overloaded_error", got[^1].Data);
         Assert.DoesNotContain(got, e => e.EventType == "message_stop"); // stream ended early
-        Assert.True(ctx.ToolLeakDetected);
+        Assert.True(ctx.ResponseLeakDetected);
     }
 
     [Fact]
@@ -133,11 +133,11 @@ public class ResponseInspectionStageTests
         // A benign text block (no closed invoke) → every event relayed verbatim.
         var clean = "I'll read the file now, then edit it.";
         var ctx = Ctx(LeakStream(clean));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true });
 
         var got = await Drain(ctx.Response.EventStream!);
         Assert.Equal("message_stop", got[^1].EventType);
-        Assert.False(ctx.ToolLeakDetected);
+        Assert.False(ctx.ResponseLeakDetected);
         Assert.DoesNotContain(got, e => e.EventType == "error");
     }
 
@@ -146,10 +146,10 @@ public class ResponseInspectionStageTests
     {
         var fenced = "Here's how:\n```\n<invoke name=\"Read\"><parameter name=\"p\">v</parameter></invoke>\n```";
         var ctx = Ctx(LeakStream(fenced));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true });
 
         var got = await Drain(ctx.Response.EventStream!);
-        Assert.False(ctx.ToolLeakDetected);
+        Assert.False(ctx.ResponseLeakDetected);
         Assert.Equal("message_stop", got[^1].EventType);
     }
 
@@ -167,10 +167,10 @@ public class ResponseInspectionStageTests
             await Task.CompletedTask;
         }
         var ctx = Ctx(ThinkingLeak());
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true, ScanThinking = false });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true, ScanThinking = false });
 
         await Drain(ctx.Response.EventStream!);
-        Assert.False(ctx.ToolLeakDetected);
+        Assert.False(ctx.ResponseLeakDetected);
     }
 
     [Fact]
@@ -188,10 +188,10 @@ public class ResponseInspectionStageTests
             await Task.CompletedTask;
         }
         var ctx = Ctx(ThinkingFenced());
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true, ScanThinking = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true, ScanThinking = true });
 
         var got = await Drain(ctx.Response.EventStream!);
-        Assert.True(ctx.ToolLeakDetected);
+        Assert.True(ctx.ResponseLeakDetected);
         Assert.Equal("error", got[^1].EventType);
     }
 
@@ -202,11 +202,11 @@ public class ResponseInspectionStageTests
         // not even wrap the stream (same reference passes through).
         var src = LeakStream(Leak);
         var ctx = Ctx(src);
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = false });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = false });
         // DoneFilter + (disabled) rewrite still produce a set, so the stream is
         // wrapped — but no leak abort occurs. Assert the leak is NOT acted on.
         var got = await Drain(ctx.Response.EventStream!);
-        Assert.False(ctx.ToolLeakDetected);
+        Assert.False(ctx.ResponseLeakDetected);
         Assert.DoesNotContain(got, e => e.EventType == "error");
     }
 
@@ -225,7 +225,7 @@ public class ResponseInspectionStageTests
         }
         var ctx = Ctx(Start());
         ctx.OriginalRequestedModel = "claude-opus-4-7"; // client asked -4-7; body resolved to -4-8
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = false }, rewriteEnabled: true);
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = false }, rewriteEnabled: true);
 
         var got = await Drain(ctx.Response.EventStream!);
         Assert.Contains(got, e => e.EventType == "message_start" && e.Data.Contains("claude-opus-4-7"));
@@ -244,7 +244,7 @@ public class ResponseInspectionStageTests
         }
         var ctx = Ctx(Start());
         ctx.OriginalRequestedModel = "claude-opus-4-7";
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = false }, rewriteEnabled: false);
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = false }, rewriteEnabled: false);
 
         var got = await Drain(ctx.Response.EventStream!);
         Assert.Contains(got, e => e.EventType == "message_start" && e.Data.Contains("claude-opus-4-8"));
@@ -259,13 +259,13 @@ public class ResponseInspectionStageTests
         // Contract: a leaked <task-notification> control envelope aborts the turn
         // exactly like a leaked <invoke> — one SSE error event, stream ends, flag set.
         var ctx = Ctx(LeakStream(TaskNotificationLeak));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true });
 
         var got = await Drain(ctx.Response.EventStream!);
         Assert.Equal("error", got[^1].EventType);
         Assert.Contains("overloaded_error", got[^1].Data);
         Assert.DoesNotContain(got, e => e.EventType == "message_stop");
-        Assert.True(ctx.ToolLeakDetected);
+        Assert.True(ctx.ResponseLeakDetected);
     }
 
     [Fact]
@@ -273,11 +273,11 @@ public class ResponseInspectionStageTests
     {
         // Contract: a non-task control envelope (teammate-message) also aborts.
         var ctx = Ctx(LeakStream(TeammateMessageLeak));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true });
 
         var got = await Drain(ctx.Response.EventStream!);
         Assert.Equal("error", got[^1].EventType);
-        Assert.True(ctx.ToolLeakDetected);
+        Assert.True(ctx.ResponseLeakDetected);
     }
 
     [Fact]
@@ -286,7 +286,7 @@ public class ResponseInspectionStageTests
         // Contract: buffered delivery flips to a real 529 with an error body and
         // NONE of the leaked envelope content.
         var ctx = Ctx(LeakStream(TaskNotificationLeak));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true, PreserveStream = false });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true, PreserveStream = false });
 
         Assert.Equal(ResponseMode.Buffered, ctx.Response.Mode);
         Assert.Equal(529, ctx.Response.Status);
@@ -294,7 +294,7 @@ public class ResponseInspectionStageTests
         Assert.Contains("overloaded_error", body);
         Assert.DoesNotContain("<task-notification", body);
         Assert.DoesNotContain("Refactored the catalog", body);
-        Assert.True(ctx.ToolLeakDetected);
+        Assert.True(ctx.ResponseLeakDetected);
     }
 
     [Fact]
@@ -303,10 +303,10 @@ public class ResponseInspectionStageTests
         // Contract: with the guard disabled a control-envelope leak passes through
         // untouched (no abort, no error event).
         var ctx = Ctx(LeakStream(TaskNotificationLeak));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = false });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = false });
 
         var got = await Drain(ctx.Response.EventStream!);
-        Assert.False(ctx.ToolLeakDetected);
+        Assert.False(ctx.ResponseLeakDetected);
         Assert.DoesNotContain(got, e => e.EventType == "error");
     }
 
@@ -325,10 +325,10 @@ public class ResponseInspectionStageTests
             await Task.CompletedTask;
         }
         var ctx = Ctx(ThinkingLeak());
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true, ScanThinking = false });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true, ScanThinking = false });
 
         await Drain(ctx.Response.EventStream!);
-        Assert.False(ctx.ToolLeakDetected);
+        Assert.False(ctx.ResponseLeakDetected);
     }
 
     [Fact]
@@ -337,9 +337,9 @@ public class ResponseInspectionStageTests
         // Contract: on a control-envelope leak the detector emits exactly one
         // Warning naming the leaked subject, block type, and action — and NOT the
         // leaked envelope markup or child/body values.
-        var log = new CapturingLogger<ToolLeakDetector>();
+        var log = new CapturingLogger<ResponseLeakDetector>();
         var ctx = Ctx(LeakStream(TaskNotificationLeak));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true }, toolLeakLog: log);
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true }, responseLeakLog: log);
         await Drain(ctx.Response.EventStream!);
 
         var warnings = log.Records.Where(r => r.Level == LogLevel.Warning).ToList();
@@ -361,7 +361,7 @@ public class ResponseInspectionStageTests
     public async Task BufferedDelivery_Leak_EmitsRealStatus_NoLeakedContent()
     {
         var ctx = Ctx(LeakStream(Leak));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true, PreserveStream = false });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true, PreserveStream = false });
 
         // Flipped to buffered with a real 529 and an error body; no leaked XML.
         Assert.Equal(ResponseMode.Buffered, ctx.Response.Mode);
@@ -369,20 +369,20 @@ public class ResponseInspectionStageTests
         var body = Encoding.UTF8.GetString(ctx.Response.BufferedBody!);
         Assert.Contains("overloaded_error", body);
         Assert.DoesNotContain("<invoke", body);
-        Assert.True(ctx.ToolLeakDetected);
+        Assert.True(ctx.ResponseLeakDetected);
     }
 
     [Fact]
     public async Task BufferedDelivery_Clean_ReplaysStream()
     {
         var ctx = Ctx(LeakStream("nothing to see"));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true, PreserveStream = false });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true, PreserveStream = false });
 
         // Clean → still streaming, replayed intact.
         Assert.Equal(ResponseMode.Streaming, ctx.Response.Mode);
         var got = await Drain(ctx.Response.EventStream!);
         Assert.Equal("message_stop", got[^1].EventType);
-        Assert.False(ctx.ToolLeakDetected);
+        Assert.False(ctx.ResponseLeakDetected);
     }
 
     // ---- Signal mapping --------------------------------------------------
@@ -391,7 +391,7 @@ public class ResponseInspectionStageTests
     public async Task ApiErrorSignal_Streaming_EmitsApiError()
     {
         var ctx = Ctx(LeakStream(Leak));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true, Signal = ToolLeakSignal.ApiError });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true, Signal = ResponseLeakSignal.ApiError });
         var got = await Drain(ctx.Response.EventStream!);
         Assert.Contains("api_error", got[^1].Data);
     }
@@ -400,7 +400,7 @@ public class ResponseInspectionStageTests
     public async Task ApiErrorSignal_Buffered_Emits500()
     {
         var ctx = Ctx(LeakStream(Leak));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true, PreserveStream = false, Signal = ToolLeakSignal.ApiError });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true, PreserveStream = false, Signal = ResponseLeakSignal.ApiError });
         Assert.Equal(500, ctx.Response.Status);
         Assert.Contains("api_error", Encoding.UTF8.GetString(ctx.Response.BufferedBody!));
     }
@@ -417,7 +417,7 @@ public class ResponseInspectionStageTests
             await Task.CompletedTask;
         }
         var ctx = Ctx(WithDone());
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true });
 
         var got = await Drain(ctx.Response.EventStream!);
         Assert.DoesNotContain(got, e => e.Data == "[DONE]");
@@ -480,9 +480,9 @@ public class ResponseInspectionStageTests
     {
         // Contract: on detection the detector emits exactly one Warning naming the
         // leaked tool, block type, and action — and NOT the leaked <invoke> text.
-        var log = new CapturingLogger<ToolLeakDetector>();
+        var log = new CapturingLogger<ResponseLeakDetector>();
         var ctx = Ctx(LeakStream(Leak));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true }, toolLeakLog: log);
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true }, responseLeakLog: log);
         await Drain(ctx.Response.EventStream!);
 
         var warnings = log.Records.Where(r => r.Level == LogLevel.Warning).ToList();
@@ -499,9 +499,9 @@ public class ResponseInspectionStageTests
     [Fact]
     public async Task CleanStream_LogsNoWarning()
     {
-        var log = new CapturingLogger<ToolLeakDetector>();
+        var log = new CapturingLogger<ResponseLeakDetector>();
         var ctx = Ctx(LeakStream("nothing to see here"));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true }, toolLeakLog: log);
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true }, responseLeakLog: log);
         await Drain(ctx.Response.EventStream!);
 
         Assert.DoesNotContain(log.Records, r => r.Level == LogLevel.Warning);
@@ -515,14 +515,14 @@ public class ResponseInspectionStageTests
         // Contract: turning off just the 'invoke' signature lets an <invoke> sample
         // stream through untouched — the false-positive escape hatch — while the
         // guard as a whole stays enabled.
-        var opts = new ToolLeakGuardOptions { Enabled = true };
+        var opts = new ResponseLeakGuardOptions { Enabled = true };
         opts.Signatures.Invoke = false;
         var ctx = Ctx(LeakStream(Leak));
         await Run(ctx, opts);
 
         var got = await Drain(ctx.Response.EventStream!);
         Assert.Equal("message_stop", got[^1].EventType);
-        Assert.False(ctx.ToolLeakDetected);
+        Assert.False(ctx.ResponseLeakDetected);
         Assert.DoesNotContain(got, e => e.EventType == "error");
     }
 
@@ -531,14 +531,14 @@ public class ResponseInspectionStageTests
     {
         // Contract: disabling one signature is surgical — a leaked task-notification
         // still aborts even with 'invoke' turned off.
-        var opts = new ToolLeakGuardOptions { Enabled = true };
+        var opts = new ResponseLeakGuardOptions { Enabled = true };
         opts.Signatures.Invoke = false;
         var ctx = Ctx(LeakStream(TaskNotificationLeak));
         await Run(ctx, opts);
 
         var got = await Drain(ctx.Response.EventStream!);
         Assert.Equal("error", got[^1].EventType);
-        Assert.True(ctx.ToolLeakDetected);
+        Assert.True(ctx.ResponseLeakDetected);
     }
 
     [Fact]
@@ -548,13 +548,13 @@ public class ResponseInspectionStageTests
         // exact switch to disable it, and that a restart is required — so a false
         // positive is self-service to fix.
         var ctx = Ctx(LeakStream(Leak));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true });
         var got = await Drain(ctx.Response.EventStream!);
 
         Assert.Equal("error", got[^1].EventType);
         var data = got[^1].Data;
         Assert.Contains("invoke", data);                                                   // signature id
-        Assert.Contains("Pipeline:Detectors:ToolLeakGuard:Signatures:Invoke=false", data); // disable key
+        Assert.Contains("Pipeline:Detectors:ResponseLeakGuard:Signatures:Invoke=false", data); // disable key
         Assert.Contains("restart", data);                                                  // restart required
     }
 
@@ -563,16 +563,16 @@ public class ResponseInspectionStageTests
     {
         // Contract: the single Warning also names the disable switch and the restart
         // requirement, so the operator can fix a false positive from the log alone.
-        var log = new CapturingLogger<ToolLeakDetector>();
+        var log = new CapturingLogger<ResponseLeakDetector>();
         var ctx = Ctx(LeakStream(Leak));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true }, toolLeakLog: log);
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true }, responseLeakLog: log);
         await Drain(ctx.Response.EventStream!);
 
         var warnings = log.Records.Where(r => r.Level == LogLevel.Warning).ToList();
         Assert.Single(warnings);
         var msg = warnings[0].Rendered;
         Assert.Contains("invoke", msg);                                             // signature
-        Assert.Contains("Pipeline:Detectors:ToolLeakGuard:Signatures:Invoke", msg); // disable key
+        Assert.Contains("Pipeline:Detectors:ResponseLeakGuard:Signatures:Invoke", msg); // disable key
         Assert.Contains("restart", msg);                                            // restart note
     }
 
@@ -601,13 +601,13 @@ public class ResponseInspectionStageTests
         // detector inherited the base InspectBuffered no-op.)
         var ctx = Ctx(stream: null, mode: ResponseMode.Buffered,
             buffered: BufferedBody(("text", Leak)));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true });
 
         Assert.Equal(529, ctx.Response.Status);
         var body = Encoding.UTF8.GetString(ctx.Response.BufferedBody!);
         Assert.Contains("overloaded_error", body);
         Assert.DoesNotContain("<invoke", body);
-        Assert.True(ctx.ToolLeakDetected);
+        Assert.True(ctx.ResponseLeakDetected);
     }
 
     [Fact]
@@ -616,11 +616,11 @@ public class ResponseInspectionStageTests
         // Contract: a leaked control envelope in a buffered body aborts too.
         var ctx = Ctx(stream: null, mode: ResponseMode.Buffered,
             buffered: BufferedBody(("text", TaskNotificationLeak)));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true });
 
         Assert.Equal(529, ctx.Response.Status);
         Assert.Contains("overloaded_error", Encoding.UTF8.GetString(ctx.Response.BufferedBody!));
-        Assert.True(ctx.ToolLeakDetected);
+        Assert.True(ctx.ResponseLeakDetected);
     }
 
     [Fact]
@@ -630,9 +630,9 @@ public class ResponseInspectionStageTests
         // unchanged, flag clear.
         var original = BufferedBody(("text", "I'll read the file, then edit it."));
         var ctx = Ctx(stream: null, mode: ResponseMode.Buffered, buffered: original);
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true });
 
-        Assert.False(ctx.ToolLeakDetected);
+        Assert.False(ctx.ResponseLeakDetected);
         Assert.Equal(original, ctx.Response.BufferedBody); // unchanged
     }
 
@@ -644,9 +644,9 @@ public class ResponseInspectionStageTests
         var fenced = "Here's how:\n```\n<invoke name=\"Read\"><parameter name=\"p\">v</parameter></invoke>\n```";
         var ctx = Ctx(stream: null, mode: ResponseMode.Buffered,
             buffered: BufferedBody(("text", fenced)));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true });
 
-        Assert.False(ctx.ToolLeakDetected);
+        Assert.False(ctx.ResponseLeakDetected);
     }
 
     [Fact]
@@ -656,13 +656,13 @@ public class ResponseInspectionStageTests
         // — matching the streaming block-type gate.
         var off = Ctx(stream: null, mode: ResponseMode.Buffered,
             buffered: BufferedBody(("thinking", Leak)));
-        await Run(off, new ToolLeakGuardOptions { Enabled = true, ScanThinking = false });
-        Assert.False(off.ToolLeakDetected);
+        await Run(off, new ResponseLeakGuardOptions { Enabled = true, ScanThinking = false });
+        Assert.False(off.ResponseLeakDetected);
 
         var on = Ctx(stream: null, mode: ResponseMode.Buffered,
             buffered: BufferedBody(("thinking", Leak)));
-        await Run(on, new ToolLeakGuardOptions { Enabled = true, ScanThinking = true });
-        Assert.True(on.ToolLeakDetected);
+        await Run(on, new ResponseLeakGuardOptions { Enabled = true, ScanThinking = true });
+        Assert.True(on.ResponseLeakDetected);
     }
 
     [Fact]
@@ -672,9 +672,9 @@ public class ResponseInspectionStageTests
         // scan hiccup can't turn a real response into a client error.
         var ctx = Ctx(stream: null, mode: ResponseMode.Buffered,
             buffered: Encoding.UTF8.GetBytes("not json <invoke name=\"Read\"></invoke>"));
-        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true });
 
-        Assert.False(ctx.ToolLeakDetected);
+        Assert.False(ctx.ResponseLeakDetected);
     }
 
     private sealed class CapturingLogger<T> : ILogger<T>

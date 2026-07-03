@@ -138,13 +138,13 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
             switch (action.Kind)
             {
                 case DetectionActionKind.Abort:
-                    _log.LogDebug("stage {Name}: buffered abort (tool leak); status={Status}", Name, action.HttpStatus);
+                    _log.LogDebug("stage {Name}: buffered abort (response leak); status={Status}", Name, action.HttpStatus);
                     ctx.Response.Mode = ResponseMode.Buffered;
                     ctx.Response.Status = action.HttpStatus;
                     ctx.Response.BufferedBody = Encoding.UTF8.GetBytes(action.ErrorJson!);
                     ctx.Response.Headers["Content-Type"] = "application/json";
                     ctx.Response.EventStream = null;
-                    ctx.ToolLeakDetected = true;
+                    ctx.ResponseLeakDetected = true;
                     return; // terminal — discard the rest of the buffered events
 
                 case DetectionActionKind.DropEvent:
@@ -189,7 +189,7 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
                     ctx.Response.Status = action.HttpStatus;
                     ctx.Response.BufferedBody = Encoding.UTF8.GetBytes(action.ErrorJson!);
                     ctx.Response.Headers["Content-Type"] = "application/json";
-                    ctx.ToolLeakDetected = true;
+                    ctx.ResponseLeakDetected = true;
                     return; // terminal — no later detector runs
                 case DetectionActionKind.RewriteEvent:
                     // Buffered rewrite carries replacement bytes as the event data.
@@ -243,7 +243,7 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
                     // Inject the error event, then end the stream — the remaining
                     // upstream events are abandoned. Claude Code discards the whole
                     // attempt on this error and retries from clean history.
-                    ctx.ToolLeakDetected = true;
+                    ctx.ResponseLeakDetected = true;
                     yield return new SseItem<string>(action.ErrorJson!, "error");
                     yield break;
             }

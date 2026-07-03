@@ -96,14 +96,14 @@ internal sealed class BridgeContext<TBody> where TBody : class
     public string? OriginalRequestedModel { get; set; }
 
     /// <summary>
-    /// Set true by the tool-leak guard (<c>ResponseInspectionStage</c> /
-    /// <c>ToolLeakDetector</c>) when it detects a leaked tool call and forces a
-    /// retry. The endpoint copies it into the per-request summary
-    /// (<c>toolLeakDetected</c>) so the real-world leak rate is measurable.
-    /// For streaming this is set mid-relay (the endpoint reads it after the
-    /// stream drains); for buffered it is set during the stage.
+    /// Set true by the response-leak guard (<c>ResponseInspectionStage</c> /
+    /// <c>ResponseLeakDetector</c>) when it detects a leak — a leaked tool call or a
+    /// leaked control envelope — and forces a retry. The endpoint copies it into the
+    /// per-request summary (<c>responseLeakDetected</c>) so the real-world leak rate
+    /// is measurable. For streaming this is set mid-relay (the endpoint reads it after
+    /// the stream drains); for buffered it is set during the stage.
     /// </summary>
-    public bool ToolLeakDetected { get; set; }
+    public bool ResponseLeakDetected { get; set; }
 
     /// <summary>
     /// Per-request trace id (<c>BridgeIoSeq.BuildTraceId</c>) — the same id that

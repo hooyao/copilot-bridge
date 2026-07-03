@@ -8,7 +8,7 @@ namespace CopilotBridge.UnitTests;
 /// <summary>
 /// Guards the single-source wiring for leak signatures: every id in
 /// <see cref="LeakSignatures.All"/> must have a config flag (via
-/// <see cref="ToolLeakSignaturesOptions.IsEnabled"/>) AND a matcher built by
+/// <see cref="ResponseLeakSignaturesOptions.IsEnabled"/>) AND a matcher built by
 /// <see cref="ResponseLeakAutomaton"/>. These catch the "add a signature, forget one
 /// of the parallel lists" drift that previously failed silently (a new id with no
 /// IsEnabled case or no matcher would be unwatched with no compile error).
@@ -20,7 +20,7 @@ public class LeakSignatureWiringTests
     {
         // Contract: IsEnabled resolves every LeakSignatures.All id — a new id without
         // a case throws here, rather than silently defaulting a signature off.
-        var opts = new ToolLeakSignaturesOptions();
+        var opts = new ResponseLeakSignaturesOptions();
         foreach (var id in LeakSignatures.All)
         {
             var ex = Record.Exception(() => opts.IsEnabled(id));
@@ -32,7 +32,7 @@ public class LeakSignatureWiringTests
     public void UnknownSignatureId_Throws()
     {
         // Contract: a typo / unknown id fails loudly, not silently.
-        var opts = new ToolLeakSignaturesOptions();
+        var opts = new ResponseLeakSignaturesOptions();
         Assert.ThrowsAny<System.ArgumentException>(() => opts.IsEnabled("not-a-signature"));
     }
 
@@ -57,7 +57,7 @@ public class LeakSignatureWiringTests
     {
         // Contract: each flag is surgical — turning Tick off removes only the tick
         // matcher; every other signature's matcher is still built.
-        var opts = new ToolLeakSignaturesOptions { Tick = false };
+        var opts = new ResponseLeakSignaturesOptions { Tick = false };
         var enabled = LeakSignatures.All.Where(opts.IsEnabled).ToHashSet();
 
         var automaton = new ResponseLeakAutomaton(new[] { "Read" }, enabled);
@@ -73,7 +73,7 @@ public class LeakSignatureWiringTests
     {
         // Contract: the default (an absent Signatures config block) enables all six —
         // backward-compatible with pre-toggle behavior.
-        var opts = new ToolLeakSignaturesOptions();
+        var opts = new ResponseLeakSignaturesOptions();
         foreach (var id in LeakSignatures.All)
         {
             Assert.True(opts.IsEnabled(id), $"{id} should default enabled");

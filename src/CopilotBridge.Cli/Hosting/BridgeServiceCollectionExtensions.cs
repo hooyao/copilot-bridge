@@ -81,7 +81,7 @@ internal static class BridgeServiceCollectionExtensions
         services.Configure<OutboundBetaPolicyOptions>(config.GetSection("Pipeline:OutboundBeta"));
         services.Configure<ResponseModelRewriteOptions>(config.GetSection("Pipeline:Detectors:ModelRewrite"));
         services.Configure<UpstreamRetryOptions>(config.GetSection("Pipeline:UpstreamRetry"));
-        services.Configure<ToolLeakGuardOptions>(config.GetSection("Pipeline:Detectors:ToolLeakGuard"));
+        services.Configure<ResponseLeakGuardOptions>(config.GetSection("Pipeline:Detectors:ResponseLeakGuard"));
 
         // Kestrel listens on the (post-PostConfigure) port + uses our generous
         // keep-alive limits. Configured via IConfigureOptions so it can pull
@@ -165,17 +165,17 @@ internal static class BridgeServiceCollectionExtensions
         // detectors over the response. The former standalone DoneFilterStage /
         // ResponseModelRewriteStage are now detectors. Each detector is a SCOPED
         // service (one instance per request scope) so cross-delta streaming state
-        // (e.g. the tool-leak automaton) never crosses requests; it self-gates on
+        // (e.g. the response-leak automaton) never crosses requests; it self-gates on
         // its config (IResponseDetector.Enabled, backed by IOptionsSnapshot) and
         // reads its per-request data in Begin(). RegisterResponseDetector takes an
-        // EXPLICIT Order (DONE-filter 0 → model-rewrite 1 → tool-leak 2); the stage
+        // EXPLICIT Order (DONE-filter 0 → model-rewrite 1 → response-leak 2); the stage
         // runs them by that Order, so precedence does NOT depend on IEnumerable<T>
         // resolution order. Adding a detector = one RegisterResponseDetector<...>
         // line here with the next Order; a duplicate type or duplicate Order throws
         // at registration rather than silently making precedence ambiguous.
         services.RegisterResponseDetector<DoneFilterDetector>(0);
         services.RegisterResponseDetector<ModelRewriteDetector>(1);
-        services.RegisterResponseDetector<ToolLeakDetector>(2);
+        services.RegisterResponseDetector<ResponseLeakDetector>(2);
         services.AddScoped<ResponseInspectionStage>();
         services.AddScoped<CopilotMessagesPassthroughStrategy>();
 
@@ -315,7 +315,7 @@ internal static class BridgeServiceCollectionExtensions
             [
                 // One stage runs the whole detector framework in a single stream
                 // wrap: DONE-filter (drop [DONE]) → model-rewrite (restore the
-                // client model id) → tool-leak guard (abort+retry on leaked XML).
+                // client model id) → response-leak guard (abort+retry on leaked XML).
                 // Order inside the set is the detectors' explicit Order (assigned by
                 // RegisterResponseDetector), applied by the stage.
                 sp.GetRequiredService<ResponseInspectionStage>(),

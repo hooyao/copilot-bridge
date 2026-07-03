@@ -11,7 +11,7 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// Detects a response leak in a streaming response and, on detection, returns an
 /// <see cref="DetectionActionKind.Abort"/> so the framework forces the client to
 /// retry the turn. Feeds each <c>text_delta</c> (and, when
-/// <see cref="ToolLeakGuardOptions.ScanThinking"/> is on, <c>thinking_delta</c>)
+/// <see cref="ResponseLeakGuardOptions.ScanThinking"/> is on, <c>thinking_delta</c>)
 /// into a single per-block <see cref="ResponseLeakAutomaton"/> that detects both
 /// leaked <c>&lt;invoke&gt;</c> tool calls and leaked Claude Code control envelopes
 /// (task notifications, teammate/channel/cross-session messages, ticks). The
@@ -23,9 +23,9 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// enabled-signature gate — is (re)built in <see cref="Begin"/>, once per request,
 /// so streaming state never crosses requests.
 /// </remarks>
-internal sealed class ToolLeakDetector : AbstractOrderAwareDetector<ToolLeakDetector>
+internal sealed class ResponseLeakDetector : AbstractOrderAwareDetector<ResponseLeakDetector>
 {
-    private readonly ToolLeakGuardOptions _opts;
+    private readonly ResponseLeakGuardOptions _opts;
     private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly ILogger _log;
 
@@ -44,11 +44,11 @@ internal sealed class ToolLeakDetector : AbstractOrderAwareDetector<ToolLeakDete
     // would make a toggled switch take effect on the next request with zero change
     // to this detector or the stage. Today a restart is required — which both the
     // retry error and the warning log state.
-    public ToolLeakDetector(
-        DetectorOrder<ToolLeakDetector> order,
-        IOptionsSnapshot<ToolLeakGuardOptions> opts,
+    public ResponseLeakDetector(
+        DetectorOrder<ResponseLeakDetector> order,
+        IOptionsSnapshot<ResponseLeakGuardOptions> opts,
         BridgeContext<MessagesRequest> ctx,
-        ILogger<ToolLeakDetector> log) : base(order)
+        ILogger<ResponseLeakDetector> log) : base(order)
     {
         _opts = opts.Value;
         _ctx = ctx;
@@ -58,10 +58,10 @@ internal sealed class ToolLeakDetector : AbstractOrderAwareDetector<ToolLeakDete
     /// <summary>Translate the per-signature option flags into the set of enabled
     /// signature ids the automaton watches. Derived from the single source
     /// <see cref="LeakSignatures.All"/> filtered through
-    /// <see cref="ToolLeakSignaturesOptions.IsEnabled"/>, so a new signature is wired
+    /// <see cref="ResponseLeakSignaturesOptions.IsEnabled"/>, so a new signature is wired
     /// by adding it to <see cref="LeakSignatures"/> + one <c>IsEnabled</c> case — not
     /// by extending a parallel hand-maintained list here.</summary>
-    private static IReadOnlySet<string> BuildEnabledSignatures(ToolLeakSignaturesOptions s)
+    private static IReadOnlySet<string> BuildEnabledSignatures(ResponseLeakSignaturesOptions s)
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
         foreach (var id in LeakSignatures.All)
@@ -71,7 +71,7 @@ internal sealed class ToolLeakDetector : AbstractOrderAwareDetector<ToolLeakDete
         return set;
     }
 
-    public override string Name => "ToolLeak";
+    public override string Name => "ResponseLeak";
 
     public override bool Enabled => _opts.Enabled;
 
@@ -117,13 +117,13 @@ internal sealed class ToolLeakDetector : AbstractOrderAwareDetector<ToolLeakDete
             "response-leak detected: signature={Signature} subject={Subject} disable-key={DisableKey} block={Block} signal={Signal} delivery={Delivery} — forcing client retry (restart required after changing the switch)",
             signature,
             subject,
-            ToolLeakError.ConfigPath(signature),
+            ResponseLeakError.ConfigPath(signature),
             blockType ?? "?",
-            ToolLeakError.ErrorType(signal),
+            ResponseLeakError.ErrorType(signal),
             delivery);
         return DetectionAction.Abort(
-            ToolLeakError.Json(signal, signature),
-            ToolLeakError.HttpStatus(signal));
+            ResponseLeakError.Json(signal, signature),
+            ResponseLeakError.HttpStatus(signal));
     }
 
     public override DetectionAction InspectEvent(in SseItem<string> evt)
@@ -170,7 +170,7 @@ internal sealed class ToolLeakDetector : AbstractOrderAwareDetector<ToolLeakDete
     /// <summary>
     /// Buffered (non-streaming) counterpart of <see cref="InspectEvent"/>: scan a
     /// whole Anthropic Messages response body once. Feeds each <c>text</c> block
-    /// (and each <c>thinking</c> block when <see cref="ToolLeakGuardOptions.ScanThinking"/>
+    /// (and each <c>thinking</c> block when <see cref="ResponseLeakGuardOptions.ScanThinking"/>
     /// is on) through a fresh per-block automaton, mirroring the streaming semantics
     /// (fences tracked for text, not for thinking). Aborts on the first leak with the
     /// same error + warning as the streaming path. Fails open (returns None) on a

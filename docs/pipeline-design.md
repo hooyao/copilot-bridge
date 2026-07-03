@@ -599,7 +599,7 @@ ResponseInspectionStage   injected with IEnumerable<IResponseDetector> (each a
     ├─ DoneFilterDetector      DropEvent on `event:message data:[DONE]`
     ├─ ModelRewriteDetector    RewriteEvent on the first `message_start`
     │                          (and the buffered body's top-level `model`)
-    └─ ToolLeakDetector        Abort on a leaked tool call (see §6.1)
+    └─ ResponseLeakDetector        Abort on a leaked tool call (see §6.1)
     │
     ▼
 endpoint writes ctx.Response.EventStream (streaming) or BufferedBody (buffered)
@@ -614,7 +614,7 @@ chain lazily. For non-streaming responses `EventStream` is null and detectors ru
 via `InspectBuffered` over `BufferedBody`.
 
 Detectors are **scoped DI services** (one instance per request scope) because a
-streaming detector may carry cross-delta state (the tool-leak automaton) that must
+streaming detector may carry cross-delta state (the response-leak automaton) that must
 not be shared across requests. They are injected as the whole set
 `IEnumerable<IResponseDetector>`, and the stage runs them in ascending
 `IResponseDetector.Order` — an explicit value assigned from registration order (see
@@ -627,9 +627,9 @@ timing (scope start, body empty) is decoupled from request-data availability
 (response phase, body populated). A disabled detector is filtered out before
 `Begin`: it is never initialized and never scans.
 
-### 6.1 Tool-leak guard
+### 6.1 Response-leak guard
 
-`ToolLeakDetector` detects a Copilot-served Claude model leaking a tool call as
+`ResponseLeakDetector` detects a Copilot-served Claude model leaking a tool call as
 literal `<invoke name="X">…<parameter…>…</parameter>…</invoke>` XML inside a
 `text`/`thinking` block (instead of a real `tool_use` block) and forces Claude
 Code to retry the turn cleanly. Detection is **structural** and requires all of:
@@ -662,7 +662,7 @@ even character-by-character, is carried by automaton state, so an arbitrarily lo
 leaked block is handled without a window the opening tag could scroll out of.
 Runaway name/attribute/inner captures fail open with a bounded buffer.
 
-Two orthogonal knobs (`Pipeline:Detectors:ToolLeakGuard`): `PreserveStream` (default true —
+Two orthogonal knobs (`Pipeline:Detectors:ResponseLeakGuard`): `PreserveStream` (default true —
 keep streaming, inject a mid-stream SSE `error` event; false — buffer the whole
 response and emit a real HTTP status) × `Signal` (default `OverloadedError` →
 `overloaded_error`/529, which Claude Code reliably retries and, after 3
@@ -674,7 +674,7 @@ poisoning loop. See `docs/copilot-upstream-toolcall-bug-report.md` for the leak'
 empirical basis (~2.2% of responses in a poisoned session, all closed/unfenced).
 
 Each signature can be **disabled independently** under
-`Pipeline:Detectors:ToolLeakGuard:Signatures` (`Invoke`, `TaskNotification`,
+`Pipeline:Detectors:ResponseLeakGuard:Signatures` (`Invoke`, `TaskNotification`,
 `TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`; all default true) — a
 false-positive escape hatch. If the model is legitimately echoing this markup (say
 the user is discussing how `<invoke>` tool-use or a `<task-notification>` envelope

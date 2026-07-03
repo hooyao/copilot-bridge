@@ -268,7 +268,7 @@ internal sealed class ResponseLeakAutomaton
     /// <c>&lt;parameter&gt;</c>, where <c>X</c> is a tool present in the request's
     /// <c>tools[]</c>. Detection does NOT depend on any prefix token, the message
     /// <c>stop_reason</c>, or a bare unbalanced <c>&lt;invoke</c>. Moved verbatim
-    /// from the former standalone tool-leak automaton; fence gating and the tripped
+    /// from the former standalone response-leak automaton; fence gating and the tripped
     /// latch now live in the parent.
     /// </summary>
     private sealed class InvokeMatcher : ILeakMatcher

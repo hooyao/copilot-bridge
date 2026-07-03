@@ -51,11 +51,11 @@ public class DetectorCompositionTests
 
         var detectors = scope.ServiceProvider.GetServices<IResponseDetector>().ToArray();
 
-        // Registration order = precedence order: DONE-filter → model-rewrite → tool-leak.
+        // Registration order = precedence order: DONE-filter → model-rewrite → response-leak.
         Assert.Equal(3, detectors.Length);
         Assert.Equal("DoneFilter", detectors[0].Name);
         Assert.Equal("ModelRewrite", detectors[1].Name);
-        Assert.Equal("ToolLeak", detectors[2].Name);
+        Assert.Equal("ResponseLeak", detectors[2].Name);
     }
 
     [Fact]
@@ -71,7 +71,7 @@ public class DetectorCompositionTests
         // the container's enumeration order.
         Assert.Equal(0, detectors.Single(d => d.Name == "DoneFilter").Order);
         Assert.Equal(1, detectors.Single(d => d.Name == "ModelRewrite").Order);
-        Assert.Equal(2, detectors.Single(d => d.Name == "ToolLeak").Order);
+        Assert.Equal(2, detectors.Single(d => d.Name == "ResponseLeak").Order);
     }
 
     [Fact]
@@ -183,11 +183,11 @@ public class DetectorCompositionTests
     public async Task CrossRequestState_DoesNotLeak_BetweenScopes()
     {
         // Observable-behaviour contract (not instance identity): a detector that
-        // carries per-request streaming state (the tool-leak automaton) must not let
+        // carries per-request streaming state (the response-leak automaton) must not let
         // one request's state affect another's OUTPUT. Request 1 streams a real
-        // <invoke> leak → the guard aborts and marks ToolLeakDetected. Request 2, on
+        // <invoke> leak → the guard aborts and marks ResponseLeakDetected. Request 2, on
         // a fresh scope, streams a CLEAN response → it must pass through untouched
-        // with ToolLeakDetected false. If the detector were shared (singleton), the
+        // with ResponseLeakDetected false. If the detector were shared (singleton), the
         // first request's tripped automaton / block state could bleed into the
         // second; scoping is what guarantees it can't.
         using var sp = BuildProvider();
@@ -201,7 +201,7 @@ public class DetectorCompositionTests
             var stage = scope.ServiceProvider.GetRequiredService<ResponseInspectionStage>();
             await stage.ApplyAsync();
             await Drain(ctx.Response.EventStream!);   // consume to run detection
-            firstDetected = ctx.ToolLeakDetected;
+            firstDetected = ctx.ResponseLeakDetected;
         }
 
         // Request 2: a clean response on a fresh scope → no residue from request 1.
@@ -214,7 +214,7 @@ public class DetectorCompositionTests
             var stage = scope.ServiceProvider.GetRequiredService<ResponseInspectionStage>();
             await stage.ApplyAsync();
             secondEvents = await Drain(ctx.Response.EventStream!);
-            secondDetected = ctx.ToolLeakDetected;
+            secondDetected = ctx.ResponseLeakDetected;
         }
 
         Assert.True(firstDetected, "request 1 must trip the guard (test precondition)");
@@ -329,7 +329,7 @@ public class DetectorCompositionTests
         var services = new ServiceCollection();
         services.RegisterResponseDetector<DoneFilterDetector>(0);
         services.RegisterResponseDetector<ModelRewriteDetector>(1);
-        services.RegisterResponseDetector<ToolLeakDetector>(2);
+        services.RegisterResponseDetector<ResponseLeakDetector>(2);
 
         var orders = services
             .Where(d => d.ServiceType == typeof(IResponseDetector))

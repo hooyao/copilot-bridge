@@ -113,8 +113,9 @@ The file next to the executable. A few keys worth knowing:
   on to dump every request/response as JSON under `request-traces/` when
   debugging — but note the files contain your full prompts, so turn it back off
   afterward.
-- **`Pipeline:Detectors:ToolLeakGuard`** — the tool-call-leak auto-repair
-  (`Enabled`, `Signal`). On by default; leave it unless you want to tune the
+- **`Pipeline:Detectors:ResponseLeakGuard`** — the response-leak auto-repair
+  (catches a leaked tool call or a leaked Claude Code control envelope;
+  `Enabled`, `Signal`). On by default; leave it unless you want to tune the
   retry signal. Individual leak signatures can be turned off under `Signatures`
   (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`,
   `CrossSessionMessage`, `Tick` — all on by default) to clear a false positive,
@@ -195,7 +196,7 @@ ModelRouter → AssistantThinkingFilter → SystemSanitize → MessagesSanitize
   [`docs/pipeline-design.md §7`](docs/pipeline-design.md).
 - **`ResponseInspection`** runs an ordered set of response detectors in a single
   pass over the SSE stream: the `[DONE]` filter, the model-id rewrite (restores
-  the client-requested id for downstream accounting), and the tool-leak guard.
+  the client-requested id for downstream accounting), and the response-leak guard.
   New detectors register into the same stage. See
   [`docs/pipeline-design.md §6`](docs/pipeline-design.md).
 
