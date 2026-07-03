@@ -174,13 +174,14 @@ public class UpstreamResponseAuditEndpointTests
             """{"model":"claude-opus-4.8","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"x"}]}""";
         // Inspection stage with model-rewrite enabled and the tool-leak guard off,
         // isolating the rewrite behavior this test asserts.
-        var factory = new DetectorSetFactory(
-            Options.Create(new ResponseModelRewriteOptions { Enabled = true }),
-            Options.Create(new ToolLeakGuardOptions { Enabled = false }),
-            NullLogger<ToolLeakDetector>.Instance);
+        var detectors = new IResponseDetector[]
+        {
+            new ModelRewriteDetector(TestOptions.Snapshot(new ResponseModelRewriteOptions { Enabled = true })),
+            new ToolLeakDetector(TestOptions.Snapshot(new ToolLeakGuardOptions { Enabled = false }), NullLogger<ToolLeakDetector>.Instance),
+        };
         var stages = new IResponseStage<MessagesRequest>[]
         {
-            new ResponseInspectionStage(factory, NullLogger<ResponseInspectionStage>.Instance),
+            new ResponseInspectionStage(detectors, NullLogger<ResponseInspectionStage>.Instance),
         };
 
         var body = await RunAndGetUpstreamRespBody(

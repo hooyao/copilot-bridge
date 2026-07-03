@@ -150,13 +150,22 @@ internal static class BridgeServiceCollectionExtensions
         services.AddSingleton<MessagesSanitizeStage>();
         services.AddSingleton<ToolsSanitizeStage>();
         services.AddSingleton<HeadersOutboundStage>();
-        // Response detection framework: one stage runs an ordered, per-request set
-        // of detectors (DONE-filter, model-rewrite, tool-leak guard). The former
-        // standalone DoneFilterStage / ResponseModelRewriteStage are now detectors
-        // built by DetectorSetFactory (singleton; produces fresh per-request
-        // detectors so streaming state never crosses requests).
-        services.AddSingleton<IDetectorSetFactory, DetectorSetFactory>();
-        services.AddSingleton<ResponseInspectionStage>();
+        // Response detection framework: one stage runs an ordered set of scoped
+        // detectors over the response. The former standalone DoneFilterStage /
+        // ResponseModelRewriteStage are now detectors. Each detector is a SCOPED
+        // service (one instance per request scope) so cross-delta streaming state
+        // (e.g. the tool-leak automaton) never crosses requests; it self-gates on
+        // its config (IResponseDetector.Enabled, backed by IOptionsSnapshot) and
+        // reads its per-request data in Begin(ctx). REGISTRATION ORDER BELOW IS
+        // PRECEDENCE ORDER — MS.DI preserves it when resolving
+        // IEnumerable<IResponseDetector> into the stage: DONE-filter first (drop
+        // [DONE]), then model-rewrite (restore the client model id), then the
+        // tool-leak guard (abort+retry on leaked XML). Adding a detector = one
+        // AddScoped<IResponseDetector, ...> line here, in the right position.
+        services.AddScoped<IResponseDetector, DoneFilterDetector>();
+        services.AddScoped<IResponseDetector, ModelRewriteDetector>();
+        services.AddScoped<IResponseDetector, ToolLeakDetector>();
+        services.AddScoped<ResponseInspectionStage>();
         services.AddSingleton<CopilotMessagesPassthroughStrategy>();
 
         // --- Codex / Responses (change 3) ---------------------------------
@@ -169,7 +178,11 @@ internal static class BridgeServiceCollectionExtensions
         services.AddSingleton<IrToResponsesOutboundAdapter>();
         services.AddSingleton<CopilotResponsesStrategy>();
 
-        services.AddSingleton(BuildAnthropicPipeline);
+        // The Anthropic-IR pipeline carries a scoped stage (ResponseInspectionStage),
+        // so it is composed per request scope. Request stages + strategies are
+        // singletons and resolve fine from the scoped provider; the runner takes
+        // the pipeline by method-arg (no capture), so it stays a singleton.
+        services.AddScoped(BuildAnthropicPipeline);
 
         // --- New per-request summary logger -------------------------------
         services.AddSingleton<RequestSummaryLogger>();
@@ -239,7 +252,8 @@ internal static class BridgeServiceCollectionExtensions
                 // One stage runs the whole detector framework in a single stream
                 // wrap: DONE-filter (drop [DONE]) → model-rewrite (restore the
                 // client model id) → tool-leak guard (abort+retry on leaked XML).
-                // Order inside the set is fixed by DetectorSetFactory.
+                // Order inside the set is fixed by the AddScoped<IResponseDetector>
+                // registration order in AddBridgeServer.
                 sp.GetRequiredService<ResponseInspectionStage>(),
             ],
             Strategies = new StrategyRegistry<MessagesRequest>(

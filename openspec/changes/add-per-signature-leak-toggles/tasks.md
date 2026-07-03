@@ -58,4 +58,4 @@
 
 - [x] 6.1 `dotnet test tests/CopilotBridge.UnitTests` green; CLI build clean (0
   warnings).
-- [ ] 6.2 Solution-wide `dotnet test --filter "Category!=Integration"` green.
+- [x] 6.2 Solution-wide `dotnet test --filter "Category!=Integration"` green.

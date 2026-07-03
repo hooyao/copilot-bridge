@@ -1,11 +1,10 @@
 ## Context
 
-The guard is a per-request `ToolLeakDetector` that owns one
-`ResponseLeakAutomaton`. The automaton dispatches each streamed character to a set
-of KMP-based `ILeakMatcher`s (one `<invoke>` matcher + five control-envelope
-matchers) and reports the FIRST matcher to close a shape-valid signature, naming
-the leaked subject. Options come from `IOptions<ToolLeakGuardOptions>.Value`, which
-`DetectorSetFactory` (a singleton) captures once at startup.
+The guard is a scoped `ToolLeakDetector` that owns one `ResponseLeakAutomaton`. The
+automaton dispatches each streamed character to a set of KMP-based `ILeakMatcher`s
+(one `<invoke>` matcher + five control-envelope matchers) and reports the FIRST
+matcher to close a shape-valid signature, naming the leaked subject. Options come
+from `IOptionsSnapshot<ToolLeakGuardOptions>.Value`, read once per request scope.
 
 We need three things: (1) per-signature enable switches; (2) an informative error
 + log that let a user clear a false positive themselves; (3) a design that keeps
@@ -18,8 +17,8 @@ today's restart-required semantics but makes future hot-reload a one-seam change
 - Goal: the retry error AND the `Warning` name the tripped signature, the exact
   disable key, and the restart requirement.
 - Goal: enabled-set is derived per request so hot-reload is later a one-line seam.
-- Non-Goal: implementing hot-reload now (switches remain captured at startup;
-  restart required). `DetectorSetFactory` stays on `IOptions<T>.Value`.
+- Non-Goal: implementing hot-reload now (switches remain effectively fixed until
+  restart because the JSON provider uses `reloadOnChange: false`).
 
 ## Decisions
 
@@ -44,12 +43,15 @@ left in the list could match first and mask an enabled sibling. Omitting it is t
 clean gate.
 
 ### Per-request enabled set (hot-reload seam)
-`ToolLeakDetector` computes `BuildEnabledSignatures(_opts.Signatures)` in its
-constructor — per request, no static cache. Restart is required today only because
-`DetectorSetFactory` captures `IOptions<T>.Value` once. The future hot-reload change
-is entirely within the factory: read from `IOptionsMonitor<T>.CurrentValue` inside
-`Build()`. No change to the detector or automaton. This seam is documented in code
-comments; the restart wording is kept per the explicit product requirement.
+`ToolLeakDetector` computes `BuildEnabledSignatures(_opts.Signatures)` in
+`Begin(ctx)` — once per request scope, no static cache — from an
+`IOptionsSnapshot<ToolLeakGuardOptions>` that re-binds per scope. Restart is
+required today only because the JSON configuration provider is registered with
+`reloadOnChange: false` (the project's edit+restart convention). The future
+hot-reload change is a single line in `BridgeConfigurationExtensions` — flip that
+flag to `true` — with no change to the detector, the stage, or the automaton. This
+seam is documented in code comments; the restart wording is kept per the explicit
+product requirement.
 
 ### Signature vs subject
 `MatchedSubject` remains the log detail (e.g. the leaked tool name `Read`);

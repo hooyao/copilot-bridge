@@ -195,9 +195,8 @@ public class UpstreamResponseCaptureContractTests
         // buffered path: run ModelRewriteDetector and write its replacement bytes
         // back to BufferedBody.
         var rewrite = new ModelRewriteDetector(
-            enabled: true,
-            originalModel: ctx.OriginalRequestedModel,
-            resolvedModel: ctx.Request.Body.Model);
+            TestOptions.Snapshot(new ResponseModelRewriteOptions { Enabled = true }));
+        rewrite.Begin(ctx);
         var action = rewrite.InspectBuffered(ctx.Response.BufferedBody!);
         if (action.Kind == DetectionActionKind.RewriteEvent)
         {

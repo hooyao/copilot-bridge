@@ -533,16 +533,18 @@ wire-shape fact. See §7.
 ## 6. Response pipeline
 
 As-built, the response side is a single stage — `ResponseInspectionStage` — that
-runs an ordered, **per-request** set of `IResponseDetector`s in one stream wrap
+runs an ordered set of **scoped** `IResponseDetector`s in one stream wrap
 (one SSE parse, fanned out), replacing the earlier one-stage-per-concern layout:
 
 ```
 ctx.Response.EventStream  (raw events from upstream, or post-translation)
     │
     ▼
-ResponseInspectionStage   builds detectors via DetectorSetFactory (fresh per
-    │                     request — streaming state never crosses requests),
-    │                     then renders each event through them in order:
+ResponseInspectionStage   injected with IEnumerable<IResponseDetector> (each a
+    │                     scoped service — one instance per request scope, so
+    │                     streaming state never crosses requests). Per request it
+    │                     keeps the config-enabled detectors, calls Begin(ctx) on
+    │                     each, then renders every event through them in order:
     │
     ├─ DoneFilterDetector      DropEvent on `event:message data:[DONE]`
     ├─ ModelRewriteDetector    RewriteEvent on the first `message_start`
@@ -561,10 +563,16 @@ async-iterator combinator, so consumption (the endpoint's writer) still drives t
 chain lazily. For non-streaming responses `EventStream` is null and detectors run
 via `InspectBuffered` over `BufferedBody`.
 
-Detectors are per-request because a streaming detector may carry cross-delta state
-(the tool-leak automaton) that must not be shared across requests. `DetectorSetFactory`
-is the singleton; it produces fresh detector instances each call and omits any
-detector its config disables.
+Detectors are **scoped DI services** (one instance per request scope) because a
+streaming detector may carry cross-delta state (the tool-leak automaton) that must
+not be shared across requests. They are injected as the whole set
+`IEnumerable<IResponseDetector>`; **registration order is precedence order** (see
+§6.2). Each detector self-gates on its own config via `Enabled` (backed by an
+`IOptionsSnapshot<T>`), and reads its per-request data (declared tools, model ids)
+in `Begin(ctx)` — the stage calls `Begin` once, after config-gating and before any
+inspection, so DI-construction timing (scope start, body empty) is decoupled from
+request-data availability (response phase, body populated). A disabled detector is
+filtered out before `Begin`: it is never initialized and never scans.
 
 ### 6.1 Tool-leak guard
 
@@ -622,18 +630,22 @@ only its matcher and leaves the rest of the guard active. The tripped signature 
 the exact key to flip are named in both the retry error the client receives and the
 detection-point `Warning`, so a false positive is self-service to fix. Config is
 read at **startup, so a restart is required** after changing a switch. (Hot-reload
-is not wired today, but the detector is rebuilt per request and recomputes its
-enabled signatures from options every time, so the only change needed to make a
-flipped switch take effect live would be pointing `DetectorSetFactory` at a live
-options source — no change to detection.)
+is not wired today: each detector already reads an `IOptionsSnapshot<T>` afresh per
+request scope, so the only change needed to make a flipped switch take effect live
+is registering the JSON file with `reloadOnChange: true` in
+`BridgeConfigurationExtensions` — no change to any detector or the stage.)
 
 ### 6.2 Adding a detector
 
-Implement `IResponseDetector` and add it in `DetectorSetFactory.Build`. The
-`RewriteBlock`-style whole-block transform (e.g. a JSON-repair detector for
-malformed JSON inside real `tool_use` blocks) is the framework's designed
-extension point; it is not implemented in this change. The standard async-iterator
-combinator still applies:
+Implement `IResponseDetector` and register it with one line in
+`BridgeServiceCollectionExtensions` — `services.AddScoped<IResponseDetector,
+YourDetector>()` — in the right position, since **registration order is precedence
+order** (MS.DI preserves it when resolving `IEnumerable<IResponseDetector>`). Inject
+config as `IOptionsSnapshot<T>` and expose it through `Enabled`; read request data
+and reset streaming state in `Begin(ctx)`. The `RewriteBlock`-style whole-block
+transform (e.g. a JSON-repair detector for malformed JSON inside real `tool_use`
+blocks) is the framework's designed extension point; it is not implemented in this
+change. The standard async-iterator combinator still applies:
 
 ```csharp
 public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)

@@ -6,7 +6,6 @@ using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Response.Detection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace CopilotBridge.UnitTests;
@@ -28,11 +27,15 @@ public class ResponseInspectionStageTests
         bool rewriteEnabled = false,
         ILogger<ToolLeakDetector>? toolLeakLog = null)
     {
-        var factory = new DetectorSetFactory(
-            Options.Create(new ResponseModelRewriteOptions { Enabled = rewriteEnabled }),
-            Options.Create(leak),
-            toolLeakLog ?? NullLogger<ToolLeakDetector>.Instance);
-        return new ResponseInspectionStage(factory, NullLogger<ResponseInspectionStage>.Instance);
+        // Register all three detectors (as production DI does); each self-gates on
+        // its Enabled flag, so the stage filters the disabled ones per request.
+        var detectors = new IResponseDetector[]
+        {
+            new DoneFilterDetector(),
+            new ModelRewriteDetector(TestOptions.Snapshot(new ResponseModelRewriteOptions { Enabled = rewriteEnabled })),
+            new ToolLeakDetector(TestOptions.Snapshot(leak), toolLeakLog ?? NullLogger<ToolLeakDetector>.Instance),
+        };
+        return new ResponseInspectionStage(detectors, NullLogger<ResponseInspectionStage>.Instance);
     }
 
     private static BridgeContext<MessagesRequest> Ctx(
@@ -195,6 +198,47 @@ public class ResponseInspectionStageTests
         var got = await Drain(ctx.Response.EventStream!);
         Assert.False(ctx.ToolLeakDetected);
         Assert.DoesNotContain(got, e => e.EventType == "error");
+    }
+
+    // ---- Model-rewrite config gate at the stage level -------------------
+
+    [Fact]
+    public async Task ModelRewriteEnabled_RewritesMessageStartModel_ThroughStage()
+    {
+        // Contract: when the rewrite detector is enabled AND the router changed the
+        // model (original != resolved), the stage runs it and the client sees the
+        // ORIGINAL requested model on message_start.
+        async IAsyncEnumerable<SseItem<string>> Start()
+        {
+            yield return new SseItem<string>("""{"type":"message_start","message":{"model":"claude-opus-4-8"}}""", "message_start");
+            await Task.CompletedTask;
+        }
+        var ctx = Ctx(Start());
+        ctx.OriginalRequestedModel = "claude-opus-4-7"; // client asked -4-7; body resolved to -4-8
+        await Stage(new ToolLeakGuardOptions { Enabled = false }, rewriteEnabled: true).ApplyAsync(ctx);
+
+        var got = await Drain(ctx.Response.EventStream!);
+        Assert.Contains(got, e => e.EventType == "message_start" && e.Data.Contains("claude-opus-4-7"));
+    }
+
+    [Fact]
+    public async Task ModelRewriteDisabled_LeavesMessageStartModel_ThroughStage()
+    {
+        // Contract: the config gate lives at the stage. A disabled rewrite detector
+        // is filtered out (never Begin, never inspect), so the resolved model is
+        // left untouched even though original != resolved would otherwise rewrite.
+        async IAsyncEnumerable<SseItem<string>> Start()
+        {
+            yield return new SseItem<string>("""{"type":"message_start","message":{"model":"claude-opus-4-8"}}""", "message_start");
+            await Task.CompletedTask;
+        }
+        var ctx = Ctx(Start());
+        ctx.OriginalRequestedModel = "claude-opus-4-7";
+        await Stage(new ToolLeakGuardOptions { Enabled = false }, rewriteEnabled: false).ApplyAsync(ctx);
+
+        var got = await Drain(ctx.Response.EventStream!);
+        Assert.Contains(got, e => e.EventType == "message_start" && e.Data.Contains("claude-opus-4-8"));
+        Assert.DoesNotContain(got, e => e.Data.Contains("claude-opus-4-7"));
     }
 
     // ---- Control-envelope leaks through the same guard -------------------
@@ -380,8 +424,9 @@ public class ResponseInspectionStageTests
         // would drop it — the output must be A's rewrite, not a drop.
         var a = new StubDetector("A", _ => DetectionAction.Rewrite(new SseItem<string>("REWRITTEN", "message")));
         var b = new StubDetector("B", _ => DetectionAction.Drop());
-        var factory = new StubFactory(a, b);
-        var stage = new ResponseInspectionStage(factory, NullLogger<ResponseInspectionStage>.Instance);
+        var stage = new ResponseInspectionStage(
+            new IResponseDetector[] { a, b },
+            NullLogger<ResponseInspectionStage>.Instance);
 
         async IAsyncEnumerable<SseItem<string>> One()
         {
@@ -397,18 +442,13 @@ public class ResponseInspectionStageTests
         Assert.Empty(ctx.DroppedEvents);
     }
 
-    private sealed class StubFactory : IDetectorSetFactory
-    {
-        private readonly IResponseDetector[] _detectors;
-        public StubFactory(params IResponseDetector[] detectors) => _detectors = detectors;
-        public IReadOnlyList<IResponseDetector> Build(BridgeContext<MessagesRequest> ctx) => _detectors;
-    }
-
     private sealed class StubDetector : IResponseDetector
     {
         private readonly Func<SseItem<string>, DetectionAction> _on;
         public StubDetector(string name, Func<SseItem<string>, DetectionAction> on) { Name = name; _on = on; }
         public string Name { get; }
+        public bool Enabled => true;
+        public void Begin(BridgeContext<MessagesRequest> ctx) { }
         public DetectionAction InspectEvent(in SseItem<string> evt) => _on(evt);
     }
 

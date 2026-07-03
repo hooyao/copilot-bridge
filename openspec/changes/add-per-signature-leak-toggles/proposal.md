@@ -20,11 +20,11 @@ whole guard off (losing protection for the other five signatures).
 - Make the false positive self-service: the retry error surfaced to the client and
   the detection-point `Warning` both name the tripped signature AND the exact
   config key to disable it, and note that a **restart is required** after flipping
-  the switch (config is captured at startup).
-- Design for future hot-reload without implementing it now: the detector is built
-  per request and recomputes its enabled-signature set from the passed-in options
-  each time (no process-wide cache), so making a flipped switch take effect live is
-  a one-seam change (source options from a reloading provider) with no change to
+  the switch (config does not reload at runtime).
+- Design for future hot-reload without implementing it now: the detector reads an
+  `IOptionsSnapshot` and recomputes its enabled-signature set per request scope (no
+  process-wide cache), so making a flipped switch take effect live is a one-seam
+  change (register the config file with `reloadOnChange: true`) with no change to
   detection logic. Restart remains required today.
 
 ## Capabilities

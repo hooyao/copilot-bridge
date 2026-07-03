@@ -3,6 +3,7 @@ using System.Text.Json;
 using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
@@ -14,35 +15,38 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// into a single per-block <see cref="ResponseLeakAutomaton"/> that detects both
 /// leaked <c>&lt;invoke&gt;</c> tool calls and leaked Claude Code control envelopes
 /// (task notifications, teammate/channel/cross-session messages, ticks). The
-/// automaton is reset at each <c>content_block_start</c>. Per-request instance
-/// (holds the automaton state).
+/// automaton is reset at each <c>content_block_start</c>.
 /// </summary>
+/// <remarks>
+/// Scoped DI service. Construction is pure DI (an <c>IOptionsSnapshot</c> + a
+/// logger); the automaton — which depends on the request's declared tools and the
+/// enabled-signature gate — is (re)built in <see cref="Begin"/>, once per request,
+/// so streaming state never crosses requests.
+/// </remarks>
 internal sealed class ToolLeakDetector : IResponseDetector
 {
     private readonly ToolLeakGuardOptions _opts;
-    private readonly ResponseLeakAutomaton _automaton;
     private readonly ILogger _log;
+
+    private ResponseLeakAutomaton? _automaton;
 
     // Current block scope, tracked from event ordering (blocks are contiguous).
     private bool _blockIsScannable;
     private string? _blockType;
 
-    public ToolLeakDetector(ToolLeakGuardOptions opts, IReadOnlyList<Tool>? tools, ILogger log)
+    // Config seam for future hot-reload. IOptionsSnapshot<T> is a scoped service:
+    // its .Value re-binds per request scope, so the detector already reads the
+    // options afresh on every request rather than a startup-frozen snapshot. The
+    // one remaining reason a config edit still needs a restart is that the JSON
+    // provider is registered with reloadOnChange:false (the project's edit+restart
+    // convention). Flipping that single flag to true in BridgeConfigurationExtensions
+    // would make a toggled switch take effect on the next request with zero change
+    // to this detector or the stage. Today a restart is required — which both the
+    // retry error and the warning log state.
+    public ToolLeakDetector(IOptionsSnapshot<ToolLeakGuardOptions> opts, ILogger<ToolLeakDetector> log)
     {
-        _opts = opts;
+        _opts = opts.Value;
         _log = log;
-        var names = tools is null
-            ? Array.Empty<string>()
-            : tools.Select(t => t.Name);
-        // Compute the enabled-signature gate here, per detector construction (i.e.
-        // per request), straight from the options handed in — never a static or
-        // startup cache. This is the single seam for future config hot-reload:
-        // because detectors are rebuilt per request, pointing DetectorSetFactory at
-        // a live options source (IOptionsMonitor.CurrentValue) instead of the frozen
-        // IOptions snapshot would make a flipped switch take effect on the next
-        // request with no change here. Today config is read at startup, so a restart
-        // is required — which both the retry error and the warning log state.
-        _automaton = new ResponseLeakAutomaton(names, BuildEnabledSignatures(_opts.Signatures));
     }
 
     /// <summary>Translate the per-signature option flags into the set of enabled
@@ -61,12 +65,29 @@ internal sealed class ToolLeakDetector : IResponseDetector
 
     public string Name => "ToolLeak";
 
+    public bool Enabled => _opts.Enabled;
+
     /// <summary>Buffer the whole response when the guard is configured to emit a
     /// real HTTP status instead of a mid-stream SSE error.</summary>
     public bool RequiresBuffering => !_opts.PreserveStream;
 
+    public void Begin(BridgeContext<MessagesRequest> ctx)
+    {
+        var tools = ctx.Request.Body.Tools;
+        var names = tools is null
+            ? Array.Empty<string>()
+            : tools.Select(t => t.Name);
+        // Build the automaton from this request's declared tools + the enabled
+        // signature gate (computed from the current options snapshot). Reset the
+        // per-block streaming state so nothing carries over from a prior request.
+        _automaton = new ResponseLeakAutomaton(names, BuildEnabledSignatures(_opts.Signatures));
+        _blockIsScannable = false;
+        _blockType = null;
+    }
+
     public DetectionAction InspectEvent(in SseItem<string> evt)
     {
+        var automaton = _automaton!;
         switch (evt.EventType)
         {
             case "content_block_start":
@@ -74,7 +95,7 @@ internal sealed class ToolLeakDetector : IResponseDetector
                 _blockIsScannable = _blockType == "text" || (_blockType == "thinking" && _opts.ScanThinking);
                 // Thinking blocks have no fence concept → always-unfenced; text
                 // blocks track fences so a teaching example inside ``` isn't a leak.
-                _automaton.Reset(trackFences: _blockType != "thinking");
+                automaton.Reset(trackFences: _blockType != "thinking");
                 break;
 
             case "content_block_delta":
@@ -88,10 +109,10 @@ internal sealed class ToolLeakDetector : IResponseDetector
                             // Feed the automaton every character (it keeps its own
                             // O(1) state); a leaked <invoke> or a leaked control
                             // envelope both abort the turn.
-                            if (_automaton.Feed(c))
+                            if (automaton.Feed(c))
                             {
-                                var subject = _automaton.MatchedSubject ?? "?";
-                                var signature = _automaton.MatchedSignature ?? "?";
+                                var subject = automaton.MatchedSubject ?? "?";
+                                var signature = automaton.MatchedSignature ?? "?";
                                 var signal = _opts.Signal;
                                 // Log at the detection point — the only place that
                                 // knows the leaked signature + subject + block. NOT

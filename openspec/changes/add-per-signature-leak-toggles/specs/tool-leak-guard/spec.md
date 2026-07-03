@@ -13,13 +13,13 @@ echoes the markup (for example a user discussing how `<invoke>` tool-use or a
 `<task-notification>` envelope works, whose faithful sample reply would otherwise
 be caught).
 
-The per-signature switches SHALL be read when the detector is constructed. Because
-the switches are captured at startup, a change to a switch SHALL require a restart
-of the bridge to take effect. The detector SHALL compute its enabled-signature set
-per request from the current options and SHALL NOT retain a process-wide cache of
-that set, so that the only change needed to make a flipped switch take effect
-without a restart is sourcing the options from a live (reloading) provider — with
-no change to detection logic.
+The per-signature switches SHALL be read per request when the detector initializes
+for that request. Because the switches do not reload at runtime, a change to a
+switch SHALL require a restart of the bridge to take effect. The detector SHALL
+compute its enabled-signature set per request from the current options and SHALL
+NOT retain a process-wide cache of that set, so that the only change needed to make
+a flipped switch take effect without a restart is sourcing the options from a live
+(reloading) provider — with no change to detection logic.
 
 When a leak is detected, the retry error surfaced to the client SHALL name the
 tripped signature and the exact `Pipeline:Detectors:ToolLeakGuard:Signatures` key

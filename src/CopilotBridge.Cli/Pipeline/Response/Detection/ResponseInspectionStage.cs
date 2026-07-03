@@ -1,10 +1,8 @@
 using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using System.Text;
-using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
@@ -16,8 +14,12 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// the response stream is wrapped once, not once per concern.
 /// </summary>
 /// <remarks>
-/// Detectors are built per request via <see cref="DetectorSetFactory"/> so
-/// streaming state (e.g. the tool-leak automaton) never leaks across requests.
+/// Scoped DI service. Detectors are injected as the whole set
+/// <c>IEnumerable&lt;IResponseDetector&gt;</c> (each a scoped service, so streaming
+/// state never leaks across requests); DI registration order is precedence order.
+/// For each request the stage selects the config-enabled detectors
+/// (<see cref="IResponseDetector.Enabled"/>) and initializes each from the
+/// populated context (<see cref="IResponseDetector.Begin"/>) before any inspection.
 /// The action semantics on the streaming path (design.md D7):
 /// <list type="bullet">
 /// <item>None → yield the event unchanged;</item>
@@ -25,17 +27,17 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// <item>RewriteEvent → yield the replacement event;</item>
 /// <item>Abort → yield one synthetic <c>error</c> event, then end the stream.</item>
 /// </list>
-/// The first non-None action for an event wins (detector order = former stage
+/// The first non-None action for an event wins (detector order = registration
 /// order); Abort short-circuits the remaining detectors.
 /// </remarks>
 internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
 {
-    private readonly IDetectorSetFactory _factory;
+    private readonly IReadOnlyList<IResponseDetector> _detectors;
     private readonly ILogger<ResponseInspectionStage> _log;
 
-    public ResponseInspectionStage(IDetectorSetFactory factory, ILogger<ResponseInspectionStage> log)
+    public ResponseInspectionStage(IEnumerable<IResponseDetector> detectors, ILogger<ResponseInspectionStage> log)
     {
-        _factory = factory;
+        _detectors = detectors as IReadOnlyList<IResponseDetector> ?? detectors.ToArray();
         _log = log;
     }
 
@@ -43,11 +45,25 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
 
     public async Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
     {
-        var detectors = _factory.Build(ctx);
-        if (detectors.Count == 0)
+        // Select the config-enabled detectors and initialize each from the (now
+        // fully-populated) context, preserving registration order = precedence.
+        // A disabled detector is never begun and never inspects — no scanning, no
+        // allocation. The always-on DONE filter keeps the active set non-empty.
+        List<IResponseDetector>? active = null;
+        foreach (var d in _detectors)
+        {
+            if (!d.Enabled)
+            {
+                continue;
+            }
+            d.Begin(ctx);
+            (active ??= new List<IResponseDetector>(_detectors.Count)).Add(d);
+        }
+        if (active is null)
         {
             return; // defensive: the always-on DONE filter keeps this non-empty
         }
+        var detectors = active;
 
         if (ctx.Response.Mode == ResponseMode.Streaming && ctx.Response.EventStream is not null)
         {

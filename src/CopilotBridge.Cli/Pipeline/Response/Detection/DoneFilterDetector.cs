@@ -1,4 +1,5 @@
 using System.Net.ServerSentEvents;
+using CopilotBridge.Cli.Models.Anthropic.Request;
 
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
@@ -12,11 +13,20 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// <c>[DONE]</c> is one SSE event's complete data, never split across events
 /// (SSE frames on the blank line), so this is a stateless whole-event string
 /// compare. The framework records the drop in
-/// <see cref="BridgeContext{TBody}.DroppedEvents"/> for the audit.
+/// <see cref="BridgeContext{TBody}.DroppedEvents"/> for the audit. Always on and
+/// stateless: no config gate (forwarding <c>[DONE]</c> crashes the SDK) and
+/// nothing to (re)initialize per request.
 /// </remarks>
 internal sealed class DoneFilterDetector : IResponseDetector
 {
     public string Name => "DoneFilter";
+
+    /// <summary>Always on — not user-configurable. Forwarding the <c>[DONE]</c>
+    /// terminator crashes the Anthropic SDK, so this detector must always run.</summary>
+    public bool Enabled => true;
+
+    /// <summary>Stateless — nothing to initialize per request.</summary>
+    public void Begin(BridgeContext<MessagesRequest> ctx) { }
 
     public DetectionAction InspectEvent(in SseItem<string> evt)
     {

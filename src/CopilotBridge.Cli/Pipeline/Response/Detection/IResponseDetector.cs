@@ -1,4 +1,5 @@
 using System.Net.ServerSentEvents;
+using CopilotBridge.Cli.Models.Anthropic.Request;
 
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
@@ -54,21 +55,51 @@ internal readonly struct DetectionAction
 
 /// <summary>
 /// One inspection concern behind <see cref="ResponseInspectionStage"/>. Detectors
-/// are instantiated <b>per request</b> (never singletons) because a streaming
-/// detector may carry cross-delta state (e.g. the tool-leak automaton) that MUST
-/// NOT be shared across requests.
+/// are <b>scoped</b> DI services (one instance per request scope) because a
+/// streaming detector may carry cross-delta state (e.g. the tool-leak automaton)
+/// that MUST NOT be shared across requests. They are injected as the set
+/// <c>IEnumerable&lt;IResponseDetector&gt;</c>; DI registration order is
+/// precedence order.
 /// </summary>
 /// <remarks>
+/// <para>
+/// Construction is pure DI (options snapshots + loggers) and happens at the start
+/// of a request scope, before the request body is populated. Per-request data
+/// (declared tools, model ids) and streaming-state reset therefore live in
+/// <see cref="Begin"/>, which the stage calls exactly once — after the context is
+/// fully populated and only for detectors whose <see cref="Enabled"/> gate is on —
+/// before any <see cref="InspectEvent"/> / <see cref="InspectBuffered"/> call.
+/// </para>
+/// <para>
 /// Anthropic streams content blocks contiguously (<c>content_block_start</c> →
 /// deltas → <c>content_block_stop</c>, no interleaving), so a detector tracks its
 /// own current-block state from event ordering; the framework does not maintain a
 /// block map. A detector exposes a streaming entry (<see cref="InspectEvent"/>)
 /// and an optional buffered entry (<see cref="InspectBuffered"/>); the stage
 /// calls the one matching the response mode.
+/// </para>
 /// </remarks>
 internal interface IResponseDetector
 {
     string Name { get; }
+
+    /// <summary>
+    /// Config gate. When false the stage neither <see cref="Begin"/>s nor runs
+    /// this detector for the request — no scanning, no allocation. Backed by an
+    /// <c>IOptionsSnapshot&lt;T&gt;</c> so it re-binds per request scope (a future
+    /// <c>reloadOnChange:true</c> flip makes it live without touching detectors).
+    /// The [DONE] filter is always on.
+    /// </summary>
+    bool Enabled { get; }
+
+    /// <summary>
+    /// Per-request (re)initialization from the fully-populated context. Called
+    /// once by the stage — after config gating, before any inspection — so the
+    /// detector can read its request data (declared tools, model ids) and reset
+    /// any streaming state. Decouples DI-construction timing (scope start, body
+    /// empty) from request-data availability (response phase, body populated).
+    /// </summary>
+    void Begin(BridgeContext<MessagesRequest> ctx);
 
     /// <summary>
     /// When true, this detector requires the whole streaming response to be

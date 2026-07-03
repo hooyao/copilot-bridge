@@ -2,6 +2,9 @@ using System.Net.ServerSentEvents;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CopilotBridge.Cli.Hosting.Options;
+using CopilotBridge.Cli.Models.Anthropic.Request;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
@@ -15,29 +18,40 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// <c>model</c> (via <see cref="InspectBuffered"/>).
 /// </summary>
 /// <remarks>
-/// Per-request instance carrying the original/resolved model ids and a
-/// once-flag. Inert (returns None) when disabled, when the original is null
-/// (router never ran), or when original == resolved (no rewrite happened). Errors
-/// (non-JSON, missing model field) pass through untouched — never block a real
-/// response on a rewrite failure.
+/// Scoped DI service. The config gate (<see cref="Enabled"/>) reads an
+/// <c>IOptionsSnapshot</c>; the request-derived original/resolved model ids and
+/// the once-flag are (re)computed in <see cref="Begin"/>. Even when enabled it
+/// self-inerts (returns None) when the original is null (router never ran) or when
+/// original == resolved (no rewrite happened). Errors (non-JSON, missing model
+/// field) pass through untouched — never block a real response on a rewrite failure.
 /// </remarks>
 internal sealed class ModelRewriteDetector : IResponseDetector
 {
-    private readonly string? _original;
-    private readonly string _resolved;
-    private readonly bool _active;
+    private readonly ResponseModelRewriteOptions _opts;
+    private string? _original;
+    private string _resolved = "";
+    private bool _active;
     private bool _rewroteStart;
 
-    public ModelRewriteDetector(bool enabled, string? originalModel, string resolvedModel)
+    public ModelRewriteDetector(IOptionsSnapshot<ResponseModelRewriteOptions> opts)
     {
-        _original = originalModel;
-        _resolved = resolvedModel;
-        _active = enabled
-            && !string.IsNullOrEmpty(originalModel)
-            && !string.Equals(originalModel, resolvedModel, StringComparison.Ordinal);
+        _opts = opts.Value;
     }
 
     public string Name => "ModelRewrite";
+
+    public bool Enabled => _opts.Enabled;
+
+    public void Begin(BridgeContext<MessagesRequest> ctx)
+    {
+        _original = ctx.OriginalRequestedModel;
+        _resolved = ctx.Request.Body.Model;
+        // Request-applicability (distinct from the config gate): only rewrite when
+        // the router actually changed the model id for this request.
+        _active = !string.IsNullOrEmpty(_original)
+            && !string.Equals(_original, _resolved, StringComparison.Ordinal);
+        _rewroteStart = false;
+    }
 
     public DetectionAction InspectEvent(in SseItem<string> evt)
     {
