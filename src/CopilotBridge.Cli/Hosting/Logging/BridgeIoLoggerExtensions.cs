@@ -21,9 +21,10 @@ internal static class BridgeIoSeq
 
     /// <summary>
     /// Build the per-request trace id used to (1) name the four audit JSON
-    /// files for this request and (2) prefix the INFO summary line as
-    /// <c>req#&lt;traceId&gt;</c>. Same string at all five sites so operators
-    /// can grep one and find the rest.
+    /// files for this request and (2) prefix every in-request log line — the
+    /// enter/exit boundary, the pipeline stages, and the INFO summary — as
+    /// <c>[&lt;traceId&gt;] </c> via <c>ReqTraceFormatEnricher</c>. Same string at
+    /// all sites so operators can grep one and find the rest.
     /// </summary>
     public static string BuildTraceId(int seq, DateTime utcStart) =>
         $"{utcStart:yyyyMMdd-HHmmss}-{seq:D4}";

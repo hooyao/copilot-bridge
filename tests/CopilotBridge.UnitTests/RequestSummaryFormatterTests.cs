@@ -27,7 +27,6 @@ public class RequestSummaryFormatterTests
         rsl.Log(new RequestSummary
         {
             Kind = "messages",
-            TraceId = "20260101-120000-0042",
             RequestedModel = "claude-opus-4.8",
             ResolvedModel = "claude-opus-4.7-1m-internal",
             CanonicalProfileId = "claude-opus-4.7-1m-internal",
@@ -78,7 +77,6 @@ public class RequestSummaryFormatterTests
         rsl.Log(new RequestSummary
         {
             Kind = "messages",
-            TraceId = "t",
             InboundEffort = "high",
             OutboundEffort = "high",
         });
@@ -89,7 +87,7 @@ public class RequestSummaryFormatterTests
     public void EffortDisplay_BothNull_RendersNonePlaceholder()
     {
         var (rsl, rec) = BuildLogger();
-        rsl.Log(new RequestSummary { Kind = "messages", TraceId = "t" });
+        rsl.Log(new RequestSummary { Kind = "messages" });
         Assert.Equal("(none)", rec.Events.Single().Properties["EffortDisplay"]);
     }
 
@@ -100,7 +98,6 @@ public class RequestSummaryFormatterTests
         rsl.Log(new RequestSummary
         {
             Kind = "count_tokens",
-            TraceId = "20260101-120000-0099",
             RequestedModel = "claude-opus-4.8",
             ResolvedModel = "claude-opus-4.8",
             Usage = new UsageSnapshot { InputTokens = 42 },
@@ -109,7 +106,6 @@ public class RequestSummaryFormatterTests
 
         var evt = rec.Events.Single();
         Assert.Equal("count_tokens", evt.Properties["Kind"]);
-        Assert.Equal("20260101-120000-0099", evt.Properties["TraceId"]);
         Assert.Contains("in:42", Assert.IsType<string>(evt.Properties["UsageDisplay"]));
     }
 
@@ -125,7 +121,7 @@ public class RequestSummaryFormatterTests
     public void SuccessOrRedirectStatus_LogsAtInformation(int status)
     {
         var (rsl, rec) = BuildLogger();
-        rsl.Log(new RequestSummary { Kind = "messages", TraceId = "t", StatusCode = status });
+        rsl.Log(new RequestSummary { Kind = "messages", StatusCode = status });
         Assert.Equal(LogLevel.Information, rec.Events.Single().Level);
     }
 
@@ -137,7 +133,7 @@ public class RequestSummaryFormatterTests
     public void ClientErrorStatus_LogsAtWarning(int status)
     {
         var (rsl, rec) = BuildLogger();
-        rsl.Log(new RequestSummary { Kind = "messages", TraceId = "t", StatusCode = status });
+        rsl.Log(new RequestSummary { Kind = "messages", StatusCode = status });
         Assert.Equal(LogLevel.Warning, rec.Events.Single().Level);
     }
 
@@ -149,7 +145,7 @@ public class RequestSummaryFormatterTests
     public void ServerErrorOrUnknownStatus_LogsAtError(int status)
     {
         var (rsl, rec) = BuildLogger();
-        rsl.Log(new RequestSummary { Kind = "messages", TraceId = "t", StatusCode = status });
+        rsl.Log(new RequestSummary { Kind = "messages", StatusCode = status });
         Assert.Equal(LogLevel.Error, rec.Events.Single().Level);
     }
 }
