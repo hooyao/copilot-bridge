@@ -58,17 +58,19 @@ internal readonly struct DetectionAction
 /// are <b>scoped</b> DI services (one instance per request scope) because a
 /// streaming detector may carry cross-delta state (e.g. the tool-leak automaton)
 /// that MUST NOT be shared across requests. They are injected as the set
-/// <c>IEnumerable&lt;IResponseDetector&gt;</c>; DI registration order is
-/// precedence order.
+/// <c>IEnumerable&lt;IResponseDetector&gt;</c> and the stage runs them in ascending
+/// <see cref="Order"/> (assigned from registration order), so precedence does not
+/// depend on the container's enumeration order.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Construction is pure DI (options snapshots + loggers) and happens at the start
-/// of a request scope, before the request body is populated. Per-request data
-/// (declared tools, model ids) and streaming-state reset therefore live in
-/// <see cref="Begin"/>, which the stage calls exactly once — after the context is
-/// fully populated and only for detectors whose <see cref="Enabled"/> gate is on —
-/// before any <see cref="InspectEvent"/> / <see cref="InspectBuffered"/> call.
+/// Construction is pure DI (a <see cref="DetectorOrder{TDetector}"/> + options
+/// snapshots + loggers) and happens at the start of a request scope, before the
+/// request body is populated. Per-request data (declared tools, model ids) and
+/// streaming-state reset therefore live in <see cref="Begin"/>, which the stage
+/// calls exactly once — after the context is fully populated and only for detectors
+/// whose <see cref="Enabled"/> gate is on — before any <see cref="InspectEvent"/> /
+/// <see cref="InspectBuffered"/> call.
 /// </para>
 /// <para>
 /// Anthropic streams content blocks contiguously (<c>content_block_start</c> →
@@ -84,6 +86,16 @@ internal interface IResponseDetector
     string Name { get; }
 
     /// <summary>
+    /// Precedence within the detector set: the stage runs detectors in ascending
+    /// <see cref="Order"/>, and the first non-passthrough action (by this order)
+    /// wins. Assigned from registration order by
+    /// <c>BridgeServiceCollectionExtensions.RegisterResponseDetector</c> (via an
+    /// injected <see cref="DetectorOrder{TDetector}"/>), so execution order does not
+    /// depend on the container's <c>IEnumerable&lt;T&gt;</c> resolution order.
+    /// </summary>
+    int Order { get; }
+
+    /// <summary>
     /// Config gate. When false the stage neither <see cref="Begin"/>s nor runs
     /// this detector for the request — no scanning, no allocation. Backed by an
     /// <c>IOptionsSnapshot&lt;T&gt;</c> so it re-binds per request scope (a future
@@ -95,11 +107,12 @@ internal interface IResponseDetector
     /// <summary>
     /// Per-request (re)initialization from the fully-populated context. Called
     /// once by the stage — after config gating, before any inspection — so the
-    /// detector can read its request data (declared tools, model ids) and reset
-    /// any streaming state. Decouples DI-construction timing (scope start, body
-    /// empty) from request-data availability (response phase, body populated).
+    /// detector can read its request data (declared tools, model ids) from the
+    /// injected <c>BridgeContext</c> and reset any streaming state. Decouples
+    /// DI-construction timing (scope start, body empty) from request-data
+    /// availability (response phase, body populated).
     /// </summary>
-    void Begin(BridgeContext<MessagesRequest> ctx);
+    void Begin();
 
     /// <summary>
     /// When true, this detector requires the whole streaming response to be

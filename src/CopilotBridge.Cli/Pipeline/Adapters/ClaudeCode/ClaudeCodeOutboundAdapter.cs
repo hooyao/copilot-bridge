@@ -23,7 +23,6 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
 
     public IAsyncEnumerable<SseItem<string>> AdaptStreamAsync(
         IAsyncEnumerable<SseItem<string>> irStream,
-        BridgeContext<MessagesRequest> ctx,
         CancellationToken ct)
     {
         _log.LogDebug("adapter {Name}: identity-stream", Name);
@@ -32,7 +31,6 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
 
     public ValueTask<byte[]> AdaptBufferedAsync(
         byte[] irBody,
-        BridgeContext<MessagesRequest> ctx,
         CancellationToken ct)
     {
         _log.LogDebug("adapter {Name}: identity-buffered  bytes={Bytes}", Name, irBody.Length);

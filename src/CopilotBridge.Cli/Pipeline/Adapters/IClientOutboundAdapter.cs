@@ -9,6 +9,10 @@ namespace CopilotBridge.Cli.Pipeline.Adapters;
 /// into a complete tool-call argument string before emitting the corresponding
 /// OpenAI chunk.
 /// </summary>
+/// <remarks>
+/// The per-request context is constructor-injected (the adapter is a scoped
+/// service), so the adapt methods take only the payload + cancellation token.
+/// </remarks>
 internal interface IClientOutboundAdapter<TIR> where TIR : class
 {
     string Name { get; }
@@ -20,7 +24,6 @@ internal interface IClientOutboundAdapter<TIR> where TIR : class
     /// </summary>
     IAsyncEnumerable<SseItem<string>> AdaptStreamAsync(
         IAsyncEnumerable<SseItem<string>> irStream,
-        BridgeContext<TIR> ctx,
         CancellationToken ct);
 
     /// <summary>
@@ -29,6 +32,5 @@ internal interface IClientOutboundAdapter<TIR> where TIR : class
     /// </summary>
     ValueTask<byte[]> AdaptBufferedAsync(
         byte[] irBody,
-        BridgeContext<TIR> ctx,
         CancellationToken ct);
 }

@@ -26,17 +26,20 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
 {
     private readonly ICopilotClient _copilot;
     private readonly CodexModelProfileCatalog _profiles;
+    private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly bool _tracingEnabled;
     private readonly ILogger<CopilotResponsesStrategy> _log;
 
     public CopilotResponsesStrategy(
         ICopilotClient copilot,
         CodexModelProfileCatalog profiles,
+        BridgeContext<MessagesRequest> ctx,
         IOptions<TracingOptions> tracing,
         ILogger<CopilotResponsesStrategy> log)
     {
         _copilot = copilot;
         _profiles = profiles;
+        _ctx = ctx;
         _tracingEnabled = tracing.Value.Enabled;
         _log = log;
     }
@@ -47,8 +50,9 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         target.Vendor == BackendVendor.CopilotResponses
         && target.Endpoint == "/responses";
 
-    public async Task ForwardAsync(BridgeContext<MessagesRequest> ctx)
+    public async Task ForwardAsync()
     {
+        var ctx = _ctx;
         // ── T2: IR MessagesRequest → Responses wire bytes ──
         var (body, vision) = ResponsesRequestBuilder.Build(ctx.Request.Body, _profiles);
 

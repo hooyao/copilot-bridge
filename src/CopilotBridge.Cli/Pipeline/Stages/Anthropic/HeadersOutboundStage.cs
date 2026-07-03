@@ -29,17 +29,22 @@ namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 /// </remarks>
 internal sealed class HeadersOutboundStage : IRequestStage<MessagesRequest>
 {
+    private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly ILogger<HeadersOutboundStage> _log;
 
-    public HeadersOutboundStage(ILogger<HeadersOutboundStage> log)
+    public HeadersOutboundStage(
+        BridgeContext<MessagesRequest> ctx,
+        ILogger<HeadersOutboundStage> log)
     {
+        _ctx = ctx;
         _log = log;
     }
 
     public string Name => "HeadersOutbound";
 
-    public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
+    public Task ApplyAsync()
     {
+        var ctx = _ctx;
         ctx.Request.Headers.Clear();
 
         var betas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

@@ -26,11 +26,15 @@ public class ResponseModelRewriteStageTests
     private static ModelRewriteDetector NewDetector(
         string? original, string resolved, bool enabled = true)
     {
+        var ctx = BuildCtx(original, resolved);
         var d = new ModelRewriteDetector(
-            TestOptions.Snapshot(new ResponseModelRewriteOptions { Enabled = enabled }));
-        // The stage calls Begin(ctx) once per request before any inspection; do the
-        // same here so the detector reads its original/resolved model ids.
-        d.Begin(BuildCtx(original, resolved));
+            new DetectorOrder<ModelRewriteDetector>(0),
+            TestOptions.Snapshot(new ResponseModelRewriteOptions { Enabled = enabled }),
+            ctx);
+        // The stage calls Begin() once per request before any inspection; do the
+        // same here so the detector reads its original/resolved model ids from the
+        // injected context.
+        d.Begin();
         return d;
     }
 

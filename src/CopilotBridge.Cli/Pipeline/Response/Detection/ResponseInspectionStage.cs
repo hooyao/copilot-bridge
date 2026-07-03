@@ -33,22 +33,31 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
 {
     private readonly IReadOnlyList<IResponseDetector> _detectors;
+    private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly ILogger<ResponseInspectionStage> _log;
 
-    public ResponseInspectionStage(IEnumerable<IResponseDetector> detectors, ILogger<ResponseInspectionStage> log)
+    public ResponseInspectionStage(
+        IEnumerable<IResponseDetector> detectors,
+        BridgeContext<MessagesRequest> ctx,
+        ILogger<ResponseInspectionStage> log)
     {
-        _detectors = detectors as IReadOnlyList<IResponseDetector> ?? detectors.ToArray();
+        // Order by the explicit registration-assigned Order, not the container's
+        // enumeration order — precedence is guaranteed regardless of how
+        // IEnumerable<IResponseDetector> happens to resolve.
+        _detectors = detectors.OrderBy(d => d.Order).ToArray();
+        _ctx = ctx;
         _log = log;
     }
 
     public string Name => "ResponseInspection";
 
-    public async Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
+    public async Task ApplyAsync()
     {
+        var ctx = _ctx;
         // Select the config-enabled detectors and initialize each from the (now
-        // fully-populated) context, preserving registration order = precedence.
-        // A disabled detector is never begun and never inspects — no scanning, no
-        // allocation. The always-on DONE filter keeps the active set non-empty.
+        // fully-populated) context, preserving Order = precedence. A disabled
+        // detector is never begun and never inspects — no scanning, no allocation.
+        // The always-on DONE filter keeps the active set non-empty.
         List<IResponseDetector>? active = null;
         foreach (var d in _detectors)
         {
@@ -56,7 +65,7 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
             {
                 continue;
             }
-            d.Begin(ctx);
+            d.Begin();
             (active ??= new List<IResponseDetector>(_detectors.Count)).Add(d);
         }
         if (active is null)

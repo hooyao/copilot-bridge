@@ -22,15 +22,18 @@ namespace CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<MessagesRequest>
 {
     private readonly ICopilotClient _copilot;
+    private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly bool _tracingEnabled;
     private readonly ILogger<CopilotMessagesPassthroughStrategy> _log;
 
     public CopilotMessagesPassthroughStrategy(
         ICopilotClient copilot,
+        BridgeContext<MessagesRequest> ctx,
         IOptions<TracingOptions> tracing,
         ILogger<CopilotMessagesPassthroughStrategy> log)
     {
         _copilot = copilot;
+        _ctx = ctx;
         _tracingEnabled = tracing.Value.Enabled;
         _log = log;
     }
@@ -41,8 +44,9 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
         target.Vendor == BackendVendor.CopilotAnthropic
         && target.Endpoint == "/v1/messages";
 
-    public async Task ForwardAsync(BridgeContext<MessagesRequest> ctx)
+    public async Task ForwardAsync()
     {
+        var ctx = _ctx;
         var body = JsonSerializer.SerializeToUtf8Bytes(ctx.Request.Body, JsonContext.Default.MessagesRequest);
 
         // HeadersOutboundStage emits these into ctx.Request.Headers; we read

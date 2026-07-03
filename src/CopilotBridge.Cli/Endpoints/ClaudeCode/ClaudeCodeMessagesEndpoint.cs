@@ -36,6 +36,7 @@ internal static class ClaudeCodeMessagesEndpoint
 
     public static async Task HandleAsync(
         HttpContext httpCtx,
+        BridgeContext<MessagesRequest> bridgeCtx,
         IPipelineRunner<MessagesRequest> runner,
         Pipeline<MessagesRequest> pipeline,
         ClaudeCodeInboundAdapter inboundAdapter,
@@ -173,23 +174,23 @@ internal static class ClaudeCodeMessagesEndpoint
 
             var irBody = await inboundAdapter.AdaptAsync(clientBody, inboundHeaders, ct);
 
-            var bridgeCtx = new BridgeContext<MessagesRequest>
+            // Populate the injected scoped context (created empty by DI; the same
+            // instance the pipeline components resolved). The pipeline reads it in
+            // RunAsync, strictly after this fill.
+            bridgeCtx.Request = new BridgeRequest<MessagesRequest>
             {
-                Request = new BridgeRequest<MessagesRequest>
-                {
-                    Method = httpCtx.Request.Method,
-                    Path = httpCtx.Request.Path.Value ?? "",
-                    RawBody = inboundBytesView,
-                    Body = irBody,
-                    Headers = new Dictionary<string, string>(inboundHeaders, StringComparer.OrdinalIgnoreCase),
-                },
-                Response = new BridgeResponse(),
-                Ct = ct,
-                InboundBetas = inboundBetaSet,
-                TraceId = traceId,
+                Method = httpCtx.Request.Method,
+                Path = httpCtx.Request.Path.Value ?? "",
+                RawBody = inboundBytesView,
+                Body = irBody,
+                Headers = new Dictionary<string, string>(inboundHeaders, StringComparer.OrdinalIgnoreCase),
             };
+            bridgeCtx.Response = new BridgeResponse();
+            bridgeCtx.Ct = ct;
+            bridgeCtx.InboundBetas = inboundBetaSet;
+            bridgeCtx.TraceId = traceId;
 
-            await runner.RunAsync(pipeline, bridgeCtx);
+            await runner.RunAsync(pipeline);
 
             // Post-pipeline summary fields.
             summary.ResolvedModel = bridgeCtx.Request.Body.Model;
@@ -239,7 +240,7 @@ internal static class ClaudeCodeMessagesEndpoint
                 // tracing is on — off-trace this stays null and we never grow a
                 // list (the SSE body can be large; this is the hot path).
                 capturedEvents = tracingEnabled ? new List<CapturedSseEvent>() : null;
-                var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, bridgeCtx, ct);
+                var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, ct);
                 await foreach (var evt in clientStream.WithCancellation(ct))
                 {
                     capturedEvents?.Add(new CapturedSseEvent(evt.EventType, evt.Data, Filtered: false));
@@ -259,7 +260,7 @@ internal static class ClaudeCodeMessagesEndpoint
             }
             else if (bridgeCtx.Response.BufferedBody is not null)
             {
-                var outBody = await outboundAdapter.AdaptBufferedAsync(bridgeCtx.Response.BufferedBody, bridgeCtx, ct);
+                var outBody = await outboundAdapter.AdaptBufferedAsync(bridgeCtx.Response.BufferedBody, ct);
                 responseBody = outBody;
                 responseBodyLen = outBody.Length;
                 responseBodyPooled = false;

@@ -23,9 +23,10 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// enabled-signature gate — is (re)built in <see cref="Begin"/>, once per request,
 /// so streaming state never crosses requests.
 /// </remarks>
-internal sealed class ToolLeakDetector : IResponseDetector
+internal sealed class ToolLeakDetector : AbstractOrderAwareDetector<ToolLeakDetector>
 {
     private readonly ToolLeakGuardOptions _opts;
+    private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly ILogger _log;
 
     private ResponseLeakAutomaton? _automaton;
@@ -43,9 +44,14 @@ internal sealed class ToolLeakDetector : IResponseDetector
     // would make a toggled switch take effect on the next request with zero change
     // to this detector or the stage. Today a restart is required — which both the
     // retry error and the warning log state.
-    public ToolLeakDetector(IOptionsSnapshot<ToolLeakGuardOptions> opts, ILogger<ToolLeakDetector> log)
+    public ToolLeakDetector(
+        DetectorOrder<ToolLeakDetector> order,
+        IOptionsSnapshot<ToolLeakGuardOptions> opts,
+        BridgeContext<MessagesRequest> ctx,
+        ILogger<ToolLeakDetector> log) : base(order)
     {
         _opts = opts.Value;
+        _ctx = ctx;
         _log = log;
     }
 
@@ -63,17 +69,17 @@ internal sealed class ToolLeakDetector : IResponseDetector
         return set;
     }
 
-    public string Name => "ToolLeak";
+    public override string Name => "ToolLeak";
 
-    public bool Enabled => _opts.Enabled;
+    public override bool Enabled => _opts.Enabled;
 
     /// <summary>Buffer the whole response when the guard is configured to emit a
     /// real HTTP status instead of a mid-stream SSE error.</summary>
-    public bool RequiresBuffering => !_opts.PreserveStream;
+    public override bool RequiresBuffering => !_opts.PreserveStream;
 
-    public void Begin(BridgeContext<MessagesRequest> ctx)
+    public override void Begin()
     {
-        var tools = ctx.Request.Body.Tools;
+        var tools = _ctx.Request.Body.Tools;
         var names = tools is null
             ? Array.Empty<string>()
             : tools.Select(t => t.Name);
@@ -85,7 +91,7 @@ internal sealed class ToolLeakDetector : IResponseDetector
         _blockType = null;
     }
 
-    public DetectionAction InspectEvent(in SseItem<string> evt)
+    public override DetectionAction InspectEvent(in SseItem<string> evt)
     {
         var automaton = _automaton!;
         switch (evt.EventType)

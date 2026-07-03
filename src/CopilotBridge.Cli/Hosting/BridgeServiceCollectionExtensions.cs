@@ -137,51 +137,63 @@ internal static class BridgeServiceCollectionExtensions
         // --- Pipeline ------------------------------------------------------
         services.AddSingleton<ModelProfileCatalog>();
         services.AddSingleton<IModelRegistry, CopilotModelRegistry>();
-        services.AddSingleton<ClaudeCodeInboundAdapter>();
-        services.AddSingleton<ClaudeCodeOutboundAdapter>();
-        services.AddSingleton<IPipelineRunner<MessagesRequest>, PipelineRunner<MessagesRequest>>();
 
-        // Each pipeline stage / strategy registers itself as a singleton so
-        // the DI container — not the assembly point — instantiates it and
-        // wires its ILogger<T>. BuildAnthropicPipeline only orders them.
-        services.AddSingleton<ModelRouterStage>();
-        services.AddSingleton<AssistantThinkingFilterStage>();
-        services.AddSingleton<SystemSanitizeStage>();
-        services.AddSingleton<MessagesSanitizeStage>();
-        services.AddSingleton<ToolsSanitizeStage>();
-        services.AddSingleton<HeadersOutboundStage>();
+        // The per-request context is a SCOPED service: the container creates one
+        // empty shell per request scope, the endpoint populates it, and every
+        // pipeline component below injects that same instance. This is what makes
+        // per-request isolation structural — a singleton that injected it would be
+        // a captive dependency, caught by ValidateOnBuild.
+        services.AddScoped<BridgeContext<MessagesRequest>>();
+
+        // The whole per-request assembly tree is SCOPED (created per request scope,
+        // disposed at request end): adapters, stages, strategies, the runner, and
+        // the pipeline. The container — not the assembly point — instantiates each
+        // and wires its ILogger<T> + the injected context. BuildAnthropicPipeline
+        // only orders them. Process-level shared infrastructure (HttpClient, auth,
+        // catalogs, registry, sink, options) stays singleton above/below.
+        services.AddScoped<ClaudeCodeInboundAdapter>();
+        services.AddScoped<ClaudeCodeOutboundAdapter>();
+        services.AddScoped<IPipelineRunner<MessagesRequest>, PipelineRunner<MessagesRequest>>();
+
+        services.AddScoped<ModelRouterStage>();
+        services.AddScoped<AssistantThinkingFilterStage>();
+        services.AddScoped<SystemSanitizeStage>();
+        services.AddScoped<MessagesSanitizeStage>();
+        services.AddScoped<ToolsSanitizeStage>();
+        services.AddScoped<HeadersOutboundStage>();
         // Response detection framework: one stage runs an ordered set of scoped
         // detectors over the response. The former standalone DoneFilterStage /
         // ResponseModelRewriteStage are now detectors. Each detector is a SCOPED
         // service (one instance per request scope) so cross-delta streaming state
         // (e.g. the tool-leak automaton) never crosses requests; it self-gates on
         // its config (IResponseDetector.Enabled, backed by IOptionsSnapshot) and
-        // reads its per-request data in Begin(ctx). REGISTRATION ORDER BELOW IS
-        // PRECEDENCE ORDER — MS.DI preserves it when resolving
-        // IEnumerable<IResponseDetector> into the stage: DONE-filter first (drop
-        // [DONE]), then model-rewrite (restore the client model id), then the
-        // tool-leak guard (abort+retry on leaked XML). Adding a detector = one
-        // AddScoped<IResponseDetector, ...> line here, in the right position.
-        services.AddScoped<IResponseDetector, DoneFilterDetector>();
-        services.AddScoped<IResponseDetector, ModelRewriteDetector>();
-        services.AddScoped<IResponseDetector, ToolLeakDetector>();
+        // reads its per-request data in Begin(). RegisterResponseDetector assigns
+        // each an explicit Order from the registration sequence below (DONE-filter
+        // 0 → model-rewrite 1 → tool-leak 2); the stage runs them by that Order, so
+        // precedence does NOT depend on IEnumerable<T> resolution order. Adding a
+        // detector = one RegisterResponseDetector<...> line here, in the right spot.
+        services.RegisterResponseDetector<DoneFilterDetector>();
+        services.RegisterResponseDetector<ModelRewriteDetector>();
+        services.RegisterResponseDetector<ToolLeakDetector>();
         services.AddScoped<ResponseInspectionStage>();
-        services.AddSingleton<CopilotMessagesPassthroughStrategy>();
+        services.AddScoped<CopilotMessagesPassthroughStrategy>();
 
         // --- Codex / Responses (change 3) ---------------------------------
         // The Codex client edge (T1/T4 real translators) + the Responses backend
         // strategy (T2/T3) + the per-model effort profile catalog. All register
         // into the SAME shared Pipeline<MessagesRequest> below; the strategy
         // registry picks by target.Vendor (CopilotAnthropic vs CopilotResponses).
+        // The catalog is process-level (singleton); the adapters + strategy are
+        // per-request (scoped), same as the Anthropic tier above.
         services.AddSingleton<CodexModelProfileCatalog>();
-        services.AddSingleton<ResponsesToIrInboundAdapter>();
-        services.AddSingleton<IrToResponsesOutboundAdapter>();
-        services.AddSingleton<CopilotResponsesStrategy>();
+        services.AddScoped<ResponsesToIrInboundAdapter>();
+        services.AddScoped<IrToResponsesOutboundAdapter>();
+        services.AddScoped<CopilotResponsesStrategy>();
 
-        // The Anthropic-IR pipeline carries a scoped stage (ResponseInspectionStage),
-        // so it is composed per request scope. Request stages + strategies are
-        // singletons and resolve fine from the scoped provider; the runner takes
-        // the pipeline by method-arg (no capture), so it stays a singleton.
+        // The Anthropic-IR pipeline is composed per request scope: its stages,
+        // strategies, and the injected context are all scoped. BuildAnthropicPipeline
+        // receives the request-scope IServiceProvider, so its GetRequiredService
+        // calls resolve the scoped components.
         services.AddScoped(BuildAnthropicPipeline);
 
         // --- New per-request summary logger -------------------------------
@@ -198,12 +210,41 @@ internal static class BridgeServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Compose the Anthropic-IR pipeline by ordering DI-resolved stages and
-    /// strategies. Stages themselves are singletons registered in
-    /// <see cref="AddBridgeServer"/>; this method only decides the order.
+    /// Register a response detector as a scoped service AND its registration-order
+    /// <see cref="DetectorOrder{TDetector}"/> (a singleton constant), so the
+    /// detector can expose <see cref="IResponseDetector.Order"/> and the inspection
+    /// stage can run detectors in a guaranteed order independent of the container's
+    /// <c>IEnumerable&lt;T&gt;</c> resolution order. The order value is the count of
+    /// <see cref="IResponseDetector"/> registrations already present — i.e. the
+    /// zero-based position in the call sequence — read off the service collection
+    /// itself (no static counter, so it is isolated per collection and does not
+    /// accumulate across repeated <see cref="AddBridgeServer"/> calls in tests).
     /// </summary>
-    private static Pipeline<MessagesRequest> BuildAnthropicPipeline(IServiceProvider sp) =>
-        new()
+    private static IServiceCollection RegisterResponseDetector<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicConstructors)] TDetector>(this IServiceCollection services)
+        where TDetector : class, IResponseDetector
+    {
+        var order = 0;
+        foreach (var d in services)
+        {
+            if (d.ServiceType == typeof(IResponseDetector)) order++;
+        }
+        services.AddScoped<IResponseDetector, TDetector>();
+        services.AddSingleton(new DetectorOrder<TDetector>(order));
+        return services;
+    }
+
+    /// <summary>
+    /// Compose the Anthropic-IR pipeline by ordering DI-resolved stages and
+    /// strategies. Stages are scoped services registered in
+    /// <see cref="AddBridgeServer"/>; <paramref name="sp"/> is the request-scope
+    /// provider, so this resolves the per-request instances. This method only
+    /// decides the order.
+    /// </summary>
+    private static Pipeline<MessagesRequest> BuildAnthropicPipeline(IServiceProvider sp)
+    {
+        // The scoped context shared by the gate decorator and the inner stages.
+        var ctx = sp.GetRequiredService<BridgeContext<MessagesRequest>>();
+        return new()
         {
             Name = "Anthropic-IR",
             RequestStages =
@@ -236,24 +277,24 @@ internal static class BridgeServiceCollectionExtensions
                 //  `cache_control.scope`, so the field is silently dropped at
                 //  deserialize time. If the DTO ever grows a Scope property,
                 //  add the stage to actively clear it.
-                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<AssistantThinkingFilterStage>()),
-                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<SystemSanitizeStage>()),
-                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<MessagesSanitizeStage>()),
-                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<ToolsSanitizeStage>()),
+                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<AssistantThinkingFilterStage>(), ctx),
+                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<SystemSanitizeStage>(), ctx),
+                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<MessagesSanitizeStage>(), ctx),
+                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<ToolsSanitizeStage>(), ctx),
 
                 // 6. Always last for the Anthropic backend — generates outbound
                 //    headers from the FINAL body shape. Harmless to skip for Codex
                 //    (the Responses strategy ignores ctx.Request.Headers and builds
                 //    its own via CopilotHeaderFactory), but gated for consistency.
-                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<HeadersOutboundStage>()),
+                CopilotAnthropicOnlyStage.Wrap(sp.GetRequiredService<HeadersOutboundStage>(), ctx),
             ],
             ResponseStages =
             [
                 // One stage runs the whole detector framework in a single stream
                 // wrap: DONE-filter (drop [DONE]) → model-rewrite (restore the
                 // client model id) → tool-leak guard (abort+retry on leaked XML).
-                // Order inside the set is fixed by the AddScoped<IResponseDetector>
-                // registration order in AddBridgeServer.
+                // Order inside the set is the detectors' explicit Order (assigned by
+                // RegisterResponseDetector), applied by the stage.
                 sp.GetRequiredService<ResponseInspectionStage>(),
             ],
             Strategies = new StrategyRegistry<MessagesRequest>(
@@ -264,6 +305,7 @@ internal static class BridgeServiceCollectionExtensions
                 sp.GetRequiredService<CopilotResponsesStrategy>(),
             ]),
         };
+    }
 }
 
 /// <summary>
@@ -298,16 +340,22 @@ internal sealed class ProfileAdjusterLog { }
 internal sealed class CopilotAnthropicOnlyStage : IRequestStage<MessagesRequest>
 {
     private readonly IRequestStage<MessagesRequest> _inner;
+    private readonly BridgeContext<MessagesRequest> _ctx;
 
-    private CopilotAnthropicOnlyStage(IRequestStage<MessagesRequest> inner) => _inner = inner;
+    private CopilotAnthropicOnlyStage(IRequestStage<MessagesRequest> inner, BridgeContext<MessagesRequest> ctx)
+    {
+        _inner = inner;
+        _ctx = ctx;
+    }
 
-    public static CopilotAnthropicOnlyStage Wrap(IRequestStage<MessagesRequest> inner) => new(inner);
+    public static CopilotAnthropicOnlyStage Wrap(IRequestStage<MessagesRequest> inner, BridgeContext<MessagesRequest> ctx) =>
+        new(inner, ctx);
 
     public string Name => _inner.Name;
 
-    public Task ApplyAsync(BridgeContext<MessagesRequest> ctx) =>
-        ctx.Target?.Vendor == BackendVendor.CopilotAnthropic
-            ? _inner.ApplyAsync(ctx)
+    public Task ApplyAsync() =>
+        _ctx.Target?.Vendor == BackendVendor.CopilotAnthropic
+            ? _inner.ApplyAsync()
             : Task.CompletedTask;
 }
 
