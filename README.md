@@ -262,19 +262,11 @@ Two log channels:
   per-startup file at `<exe-dir>/log/bridge-{YYYYMMDD-HHMMSS}.log`. One file per
   process start makes a single run trivially greppable. Levels are per-category
   in `appsettings.json`'s `Logging:LogLevel` (default `Debug` for
-  `CopilotBridge.Cli`). Every log line for a request — the `endpoint … enter`
-  and `endpoint … exit` boundary lines, each pipeline stage, and the summary
-  line — is prefixed with the request's trace id in brackets
-  (`[20260702-032206-0001]`, coloured on the console), the same id that names the
-  request's trace JSON files, so you can pair a request's start and end and jump
-  from any line to its trace even when concurrent requests interleave. The id is
-  rendered in exactly one place — a log-context enricher — so it is uniform across
-  all in-request lines and no line self-renders it. (That single render site also
-  makes the id impossible to shadow: the summary message carries no `{TraceId}`
-  hole for the framework's default `Activity.TraceId` scope to override, which is
-  what used to make the summary print a 32-hex framework id.) Notable events name
-  their subject: a tool-call-leak detection logs one `Warning` naming the leaked
-  tool, block type, and the retry signal (never the leaked content).
+  `CopilotBridge.Cli`). Each request's log lines carry a trace id in brackets
+  (`[20260702-032206-0001]`, the same id that names the request's trace JSON
+  files), so you can follow one request end-to-end and jump to its trace. Notable
+  events name their subject: a tool-call-leak detection logs one `Warning` naming
+  the leaked tool, block type, and the retry signal (never the leaked content).
 - **Per-request audit trace** (opt-in, off by default) — set
   `"Tracing": { "Enabled": true }` to capture four JSON files per request under
   `request-traces/` (`<utc>-<seq>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`):
