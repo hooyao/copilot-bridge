@@ -589,13 +589,17 @@ trips the guard. Both families share one config, one retry path, and one
 detection-point `Warning`.
 
 The scan is a single-pass streaming automaton with O(1) state that retains no
-content — the tool-call signature is carried by `ToolLeakAutomaton` (KMP failure
-edges) and the control envelopes by `ControlEnvelopeLeakAutomaton` (a parent that
-tracks the code fence and dispatches each character to one bounded, KMP-based
-sub-matcher per envelope). A signature split across deltas, even
-character-by-character, is carried by automaton state, so an arbitrarily long
+content: one `ResponseLeakAutomaton` owns the shared concerns exactly once — code-fence
+tracking, the tripped latch, and the matched subject — and dispatches each character
+to a list of bounded, KMP-based matchers: one for the tool-call signature
+(`<invoke name="X">…</invoke>`, matched via KMP failure edges with name capture and
+`<parameter>` balance counting) and one per control envelope (each proving its
+required child/attribute). Every matcher keeps its own independent state; the first
+to report a closed, shape-valid signature on a character names the leaked subject,
+and a trip is gated on being outside a code fence. A signature split across deltas,
+even character-by-character, is carried by automaton state, so an arbitrarily long
 leaked block is handled without a window the opening tag could scroll out of.
-Runaway attribute/inner captures fail open with a bounded buffer.
+Runaway name/attribute/inner captures fail open with a bounded buffer.
 
 Two orthogonal knobs (`Pipeline:Detectors:ToolLeakGuard`): `PreserveStream` (default true —
 keep streaming, inject a mid-stream SSE `error` event; false — buffer the whole

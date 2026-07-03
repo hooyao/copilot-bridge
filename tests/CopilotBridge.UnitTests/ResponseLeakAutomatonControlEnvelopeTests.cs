@@ -6,7 +6,7 @@ using Xunit;
 namespace CopilotBridge.UnitTests;
 
 /// <summary>
-/// Exhaustive contract tests for <see cref="ControlEnvelopeLeakAutomaton"/> — the
+/// Exhaustive contract tests for <see cref="ResponseLeakAutomaton"/> — the
 /// second high-risk detection automaton. Asserts the shape-based, closed-envelope
 /// leak contract for each of Claude Code's control envelopes (task-notification,
 /// teammate-message, channel, cross-session-message, tick), split-boundary
@@ -15,12 +15,12 @@ namespace CopilotBridge.UnitTests;
 /// contract it guards. Tests derive from the required behaviour (the envelope
 /// shapes Claude Code renders), NOT from the implementation.
 /// </summary>
-public class ControlEnvelopeLeakAutomatonTests
+public class ResponseLeakAutomatonControlEnvelopeTests
 {
     /// <summary>Feed a whole string into a fresh automaton; return whether it tripped.</summary>
     private static bool Detect(string text)
     {
-        var a = new ControlEnvelopeLeakAutomaton();
+        var a = new ResponseLeakAutomaton();
         foreach (var c in text)
         {
             if (a.Feed(c)) return true;
@@ -30,7 +30,7 @@ public class ControlEnvelopeLeakAutomatonTests
 
     private static string? Subject(string text)
     {
-        var a = new ControlEnvelopeLeakAutomaton();
+        var a = new ResponseLeakAutomaton();
         foreach (var c in text) a.Feed(c);
         return a.MatchedSubject;
     }
@@ -125,7 +125,7 @@ public class ControlEnvelopeLeakAutomatonTests
         // envelope split at each possible index into two "deltas".
         for (var i = 0; i <= envelope.Length; i++)
         {
-            var a = new ControlEnvelopeLeakAutomaton();
+            var a = new ResponseLeakAutomaton();
             var tripped = false;
             foreach (var c in envelope[..i]) tripped |= a.Feed(c);
             foreach (var c in envelope[i..]) tripped |= a.Feed(c);
@@ -138,7 +138,7 @@ public class ControlEnvelopeLeakAutomatonTests
     public void CharByChar_SameResult(string envelope, string subject)
     {
         // Contract: feeding one character per delta detects identically.
-        var a = new ControlEnvelopeLeakAutomaton();
+        var a = new ResponseLeakAutomaton();
         var tripped = envelope.Aggregate(false, (acc, c) => acc || a.Feed(c));
         Assert.True(tripped, $"missed {subject} char-by-char");
     }
@@ -147,7 +147,7 @@ public class ControlEnvelopeLeakAutomatonTests
     public void SplitInsideAttributeValue_StillDetected()
     {
         // teammate_id value "alice" arriving as "al" | "ice".
-        var a = new ControlEnvelopeLeakAutomaton();
+        var a = new ResponseLeakAutomaton();
         var parts = new[]
         {
             "<teammate-message teammate_id=\"al",
@@ -220,7 +220,7 @@ public class ControlEnvelopeLeakAutomatonTests
     {
         // Contract: thinking blocks have no fence concept — with trackFences:false a
         // ```-wrapped envelope is still a leak (fences are treated as plain text).
-        var a = new ControlEnvelopeLeakAutomaton();
+        var a = new ResponseLeakAutomaton();
         a.Reset(trackFences: false);
         var s = "```\n" + envelope + "\n```";
         var tripped = false;
@@ -235,7 +235,7 @@ public class ControlEnvelopeLeakAutomatonTests
     {
         // Contract: state fully resets on a new block; a signature never assembles
         // across a block boundary (open in block A, close in block B).
-        var a = new ControlEnvelopeLeakAutomaton();
+        var a = new ResponseLeakAutomaton();
         foreach (var c in "<task-notification><task-id>x</task-id><summary>s</summary>") a.Feed(c);
         a.Reset(); // new content_block_start
         var tripped = false;
@@ -320,6 +320,40 @@ public class ControlEnvelopeLeakAutomatonTests
         // </channel>) never trips on it.
         var s = "<channel-message source=\"server\">payload</channel-message>";
         Assert.False(Detect(s));
+    }
+
+    [Fact]
+    public void ChannelMessageWrapper_ThenStrayChannelClose_DoesNotTrip()
+    {
+        // Contract (regression): a <channel-message …> sibling must NOT leave the
+        // <channel> matcher in an "opened" state — otherwise a later bare </channel>
+        // appearing anywhere in the block would falsely close it. The tag-name
+        // boundary (whitespace must follow <channel>) rejects the longer
+        // <channel-message> name outright, so nothing is ever opened.
+        var s = "<channel-message source=\"server\">payload</channel-message>"
+              + "\nlater the prose mentions a bare </channel> on its own line";
+        Assert.False(Detect(s));
+    }
+
+    [Fact]
+    public void Channel_LookalikeAttribute_DoesNotTrip()
+    {
+        // Contract (regression): an attribute whose name merely ENDS with the
+        // required name (data-source vs source) must NOT satisfy the required
+        // attribute. Anchoring the attribute match to a whitespace boundary stops
+        // the "source=\"" substring of "data-source=\"" from proving the shape.
+        var s = "<channel data-source=\"server\">body</channel>";
+        Assert.False(Detect(s));
+    }
+
+    [Fact]
+    public void Channel_SourceNotFirstAttribute_IsLeak()
+    {
+        // Contract: the required attribute need not be first — a genuine source="…"
+        // at a later whitespace boundary still proves the shape and trips.
+        var s = "<channel user=\"bob\" source=\"server\">body</channel>";
+        Assert.True(Detect(s));
+        Assert.Equal("channel", Subject(s));
     }
 
     // ---- Bounded fail-open -----------------------------------------------

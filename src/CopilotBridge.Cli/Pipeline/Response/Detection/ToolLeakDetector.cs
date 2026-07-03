@@ -11,18 +11,16 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// <see cref="DetectionActionKind.Abort"/> so the framework forces the client to
 /// retry the turn. Feeds each <c>text_delta</c> (and, when
 /// <see cref="ToolLeakGuardOptions.ScanThinking"/> is on, <c>thinking_delta</c>)
-/// into two per-block automata: a <see cref="ToolLeakAutomaton"/> for leaked
-/// <c>&lt;invoke&gt;</c> tool calls, and a
-/// <see cref="ControlEnvelopeLeakAutomaton"/> for leaked Claude Code control
-/// envelopes (task notifications, teammate/channel/cross-session messages, ticks).
-/// Both are reset at each <c>content_block_start</c>. Per-request instance (holds
-/// the automaton state).
+/// into a single per-block <see cref="ResponseLeakAutomaton"/> that detects both
+/// leaked <c>&lt;invoke&gt;</c> tool calls and leaked Claude Code control envelopes
+/// (task notifications, teammate/channel/cross-session messages, ticks). The
+/// automaton is reset at each <c>content_block_start</c>. Per-request instance
+/// (holds the automaton state).
 /// </summary>
 internal sealed class ToolLeakDetector : IResponseDetector
 {
     private readonly ToolLeakGuardOptions _opts;
-    private readonly ToolLeakAutomaton _toolAutomaton;
-    private readonly ControlEnvelopeLeakAutomaton _controlAutomaton;
+    private readonly ResponseLeakAutomaton _automaton;
     private readonly ILogger _log;
 
     // Current block scope, tracked from event ordering (blocks are contiguous).
@@ -36,8 +34,7 @@ internal sealed class ToolLeakDetector : IResponseDetector
         var names = tools is null
             ? Array.Empty<string>()
             : tools.Select(t => t.Name);
-        _toolAutomaton = new ToolLeakAutomaton(names);
-        _controlAutomaton = new ControlEnvelopeLeakAutomaton();
+        _automaton = new ResponseLeakAutomaton(names);
     }
 
     public string Name => "ToolLeak";
@@ -55,8 +52,7 @@ internal sealed class ToolLeakDetector : IResponseDetector
                 _blockIsScannable = _blockType == "text" || (_blockType == "thinking" && _opts.ScanThinking);
                 // Thinking blocks have no fence concept → always-unfenced; text
                 // blocks track fences so a teaching example inside ``` isn't a leak.
-                _toolAutomaton.Reset(trackFences: _blockType != "thinking");
-                _controlAutomaton.Reset(trackFences: _blockType != "thinking");
+                _automaton.Reset(trackFences: _blockType != "thinking");
                 break;
 
             case "content_block_delta":
@@ -67,16 +63,12 @@ internal sealed class ToolLeakDetector : IResponseDetector
                     {
                         foreach (var c in text)
                         {
-                            // Feed both automata every character (each keeps its
-                            // own independent state); a leaked <invoke> or a leaked
-                            // control envelope both abort the turn.
-                            var toolTrip = _toolAutomaton.Feed(c);
-                            var controlTrip = _controlAutomaton.Feed(c);
-                            if (toolTrip || controlTrip)
+                            // Feed the automaton every character (it keeps its own
+                            // O(1) state); a leaked <invoke> or a leaked control
+                            // envelope both abort the turn.
+                            if (_automaton.Feed(c))
                             {
-                                var subject = toolTrip
-                                    ? _toolAutomaton.MatchedToolName ?? "?"
-                                    : _controlAutomaton.MatchedSubject ?? "?";
+                                var subject = _automaton.MatchedSubject ?? "?";
                                 var signal = _opts.Signal;
                                 // Log at the detection point — the only place that
                                 // knows the leaked subject + block. NOT the leaked

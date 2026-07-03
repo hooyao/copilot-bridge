@@ -6,20 +6,20 @@ using Xunit;
 namespace CopilotBridge.UnitTests;
 
 /// <summary>
-/// Exhaustive contract tests for <see cref="ToolLeakAutomaton"/> — the highest-risk
-/// component. Asserts the structural leak contract (closed + balanced +
-/// in-tools + unfenced), split-boundary invariance, KMP failure-edge restarts,
-/// negatives, per-block reset, and name-bound fail-open. Each test states the
-/// contract it guards.
+/// Exhaustive contract tests for the <c>&lt;invoke&gt;</c> tool-call facet of
+/// <see cref="ResponseLeakAutomaton"/> — the highest-risk component. Asserts the
+/// structural leak contract (closed + balanced + in-tools + unfenced),
+/// split-boundary invariance, KMP failure-edge restarts, negatives, per-block
+/// reset, and name-bound fail-open. Each test states the contract it guards.
 /// </summary>
-public class ToolLeakAutomatonTests
+public class ResponseLeakAutomatonInvokeTests
 {
     private static readonly string[] Tools = { "Read", "Edit", "Bash", "Grep" };
 
     /// <summary>Feed a whole string into a fresh automaton; return whether it tripped.</summary>
     private static bool Detect(string text, IEnumerable<string>? tools = null)
     {
-        var a = new ToolLeakAutomaton(tools ?? Tools);
+        var a = new ResponseLeakAutomaton(tools ?? Tools);
         foreach (var c in text)
         {
             if (a.Feed(c)) return true;
@@ -28,20 +28,20 @@ public class ToolLeakAutomatonTests
     }
 
     [Fact]
-    public void MatchedToolName_ExposedOnLeak_NullOtherwise()
+    public void MatchedSubject_ExposedOnLeak_NullOtherwise()
     {
         // Contract: on a genuine leak the automaton names the matched tool; on a
         // clean/non-leak block it stays null. Feeds the tool name the detector
         // needs to log.
-        var leaked = new ToolLeakAutomaton(Tools);
+        var leaked = new ResponseLeakAutomaton(Tools);
         foreach (var c in MinimalLeak) leaked.Feed(c);
         Assert.True(leaked.Tripped);
-        Assert.Equal("Read", leaked.MatchedToolName);
+        Assert.Equal("Read", leaked.MatchedSubject);
 
-        var clean = new ToolLeakAutomaton(Tools);
+        var clean = new ResponseLeakAutomaton(Tools);
         foreach (var c in "just prose, no tool call here") clean.Feed(c);
         Assert.False(clean.Tripped);
-        Assert.Null(clean.MatchedToolName);
+        Assert.Null(clean.MatchedSubject);
     }
 
     // A minimal genuine leak: closed, balanced, one parameter, real tool, unfenced.
@@ -101,7 +101,7 @@ public class ToolLeakAutomatonTests
     public void CharByChar_SameResult()
     {
         // Contract: feeding one character per delta detects identically.
-        var a = new ToolLeakAutomaton(Tools);
+        var a = new ResponseLeakAutomaton(Tools);
         var tripped = TraceLeak.Aggregate(false, (acc, c) => acc || a.Feed(c));
         Assert.True(tripped);
     }
@@ -113,7 +113,7 @@ public class ToolLeakAutomatonTests
         // same leak split at each possible index into two "deltas".
         for (var i = 0; i <= MinimalLeak.Length; i++)
         {
-            var a = new ToolLeakAutomaton(Tools);
+            var a = new ResponseLeakAutomaton(Tools);
             var first = MinimalLeak[..i];
             var second = MinimalLeak[i..];
             var tripped = false;
@@ -127,7 +127,7 @@ public class ToolLeakAutomatonTests
     public void SplitInsideToolName_StillDetected()
     {
         // "Read" arriving as "Re" | "ad".
-        var a = new ToolLeakAutomaton(Tools);
+        var a = new ResponseLeakAutomaton(Tools);
         var parts = new[]
         {
             "<invoke name=\"Re",
@@ -228,7 +228,7 @@ public class ToolLeakAutomatonTests
     {
         // Contract: thinking blocks have no fence concept — with trackFences:false
         // a ```-wrapped invoke is still a leak (fences are treated as plain text).
-        var a = new ToolLeakAutomaton(Tools);
+        var a = new ResponseLeakAutomaton(Tools);
         a.Reset(trackFences: false);
         var s = "```\n" + MinimalLeak + "\n```";
         var tripped = false;
@@ -243,7 +243,7 @@ public class ToolLeakAutomatonTests
     {
         // Contract: state fully resets on a new block; a signature never assembles
         // across a block boundary (open in block A, close in block B).
-        var a = new ToolLeakAutomaton(Tools);
+        var a = new ResponseLeakAutomaton(Tools);
         foreach (var c in "<invoke name=\"Read\"><parameter name=\"p\">v</parameter>") a.Feed(c);
         a.Reset(); // new content_block_start
         var tripped = false;
