@@ -43,6 +43,14 @@ summary sits inside the request scope (nothing to double).
   never the 32-char hex Activity id — the summary message has no `{TraceId}` hole
   for the ambient scope to shadow
 
+#### Scenario: Every summary-emitting endpoint carries the id, including count_tokens
+
+- **WHEN** a request to an endpoint that emits a summary but runs no pipeline and
+  no enter/exit lines (`/cc/v1/messages/count_tokens`) completes
+- **THEN** its summary line still carries `T` via the `[T] ` prefix — the endpoint
+  establishes the `ReqTrace` scope for its handler so the summary is prefixed like
+  every other in-request line, not left id-less
+
 ## ADDED Requirements
 
 ### Requirement: Endpoint boundary lines carry the request trace id

@@ -36,6 +36,15 @@ internal static class ClaudeCodeCountTokensEndpoint
         var seq = BridgeIoSeq.Next();
         var traceId = BridgeIoSeq.BuildTraceId(seq, DateTime.UtcNow);
 
+        // Correlate this request's log lines — the summary in particular — with
+        // the trace id: push the RAW id onto Serilog's LogContext as "ReqTrace"
+        // for the whole handler, so ReqTraceFormatEnricher prefixes them with
+        // "[<id>] ". The summary carries no id itself, so without this scope it
+        // would render with no trace id at all. Matches the messages/codex
+        // endpoints (this one has no pipeline stages or enter/exit lines, but its
+        // summary still needs the id).
+        using var _traceScope = Serilog.Context.LogContext.PushProperty("ReqTrace", traceId);
+
         var inboundHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var header in httpCtx.Request.Headers)
         {

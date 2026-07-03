@@ -144,4 +144,78 @@ public class SummaryTraceIdCollisionTests
         // fields contain "[" mid-line, so assert on the START not on "[" anywhere).
         Assert.StartsWith("summary messages ", rendered);
     }
+
+    /// <summary>Minimal <see cref="ICopilotClient"/> returning a fixed
+    /// count_tokens response; the other methods are unused here.</summary>
+    private sealed class CountTokensStubClient : CopilotBridge.Cli.Copilot.ICopilotClient
+    {
+        public ValueTask<System.Net.Http.HttpResponseMessage> PostCountTokensAsync(
+            ReadOnlyMemory<byte> body, System.Threading.CancellationToken ct = default)
+        {
+            var resp = new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new System.Net.Http.ByteArrayContent(
+                    System.Text.Encoding.UTF8.GetBytes("""{"input_tokens":42}""")),
+            };
+            resp.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+            return new(resp);
+        }
+
+        public ValueTask<System.Net.Http.HttpResponseMessage> PostMessagesAsync(
+            ReadOnlyMemory<byte> body, bool vision = false,
+            IReadOnlyList<string>? anthropicBeta = null,
+            IReadOnlyDictionary<string, string?>? copilotHeaderOverrides = null,
+            System.Threading.CancellationToken ct = default) => throw new NotSupportedException();
+        public ValueTask<System.Net.Http.HttpResponseMessage> PostResponsesAsync(
+            ReadOnlyMemory<byte> body, bool vision = false,
+            System.Threading.CancellationToken ct = default) => throw new NotSupportedException();
+        public ValueTask<CopilotBridge.Cli.Models.Copilot.CopilotModelsResponse> GetModelsAsync(
+            System.Threading.CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
+    /// <summary>
+    /// Regression (PR #20 review): <c>count_tokens</c> pushes NO pipeline and has
+    /// no enter/exit lines, but it still emits a summary — and that summary, like
+    /// every in-request line, must carry the trace id via the enricher prefix.
+    /// The endpoint must therefore push the <c>ReqTrace</c> scope for its handler;
+    /// without it the summary renders with NO id at all. Drives the REAL
+    /// <see cref="ClaudeCodeCountTokensEndpoint.HandleAsync"/> through a real
+    /// Serilog logger and asserts the summary line is prefixed with the id.
+    /// Mutation guard: drop the endpoint's ReqTrace push → no prefix → RED.
+    /// </summary>
+    [Fact]
+    public async System.Threading.Tasks.Task CountTokensSummary_CarriesTheTraceId_ViaHandlerScope()
+    {
+        var sink = new CollectingSink();
+        var serilog = new LoggerConfiguration()
+            .MinimumLevel.Verbose()
+            .Enrich.FromLogContext()
+            .Enrich.With(new ReqTraceFormatEnricher())
+            .WriteTo.Sink(sink)
+            .CreateLogger();
+        using var factory = LoggerFactory.Create(b =>
+        {
+            b.AddProvider(new SerilogLoggerProvider(serilog, dispose: false));
+            b.SetMinimumLevel(LogLevel.Trace);
+        });
+
+        var http = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+        http.Request.Method = "POST";
+        http.Request.Path = "/cc/v1/messages/count_tokens";
+        http.Request.Body = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(
+            """{"model":"claude-opus-4-8","messages":[{"role":"user","content":"hi"}]}"""));
+        http.Response.Body = new MemoryStream();
+
+        await ClaudeCodeCountTokensEndpoint.HandleAsync(
+            http,
+            new CountTokensStubClient(),
+            new RequestSummaryLogger(factory.CreateLogger<RequestSummaryLogger>()),
+            factory.CreateLogger<CountTokensTag>());
+
+        // Find the summary event (its template leads with the literal "summary")
+        // and render it as production does; it must carry the [<id>] prefix.
+        var summaryEvt = sink.Events.Single(e => e.MessageTemplate.Text.StartsWith("summary ", StringComparison.Ordinal));
+        var rendered = RenderProduction(summaryEvt);
+        Assert.Matches(@"^\[\d{8}-\d{6}-\d{4}\] summary count_tokens ", rendered);
+    }
 }

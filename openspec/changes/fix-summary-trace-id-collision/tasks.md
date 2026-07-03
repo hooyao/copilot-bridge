@@ -34,8 +34,12 @@
   precedes the `endpoint … enter` log and encloses the `try`/`finally`, so both
   boundary lines and the summary are inside the scope.
 - [x] 3.2 Same move in `ClaudeCodeMessagesEndpoint.cs`.
-- [x] 3.3 Verify `ClaudeCodeCountTokensEndpoint.cs`: it emits no enter/exit lines
-  and no pipeline stages, so no scope move is needed; its summary is fixed by §2.
+- [x] 3.3 `ClaudeCodeCountTokensEndpoint.cs`: it emits no enter/exit lines and no
+  pipeline stages, BUT it still logs a summary — which now carries its id only via
+  the `ReqTrace` prefix. So push the `ReqTrace` scope for this handler too (it had
+  none). Regression test drives the real `HandleAsync` and asserts the summary
+  carries the `[id]` prefix; mutation-check (drop the push → no id → RED). [PR #20
+  review caught this — the earlier "no scope needed" call was wrong.]
 - [x] 3.4 Drive the REAL `HandleAsync` (Codex) with a real Serilog logger behind
   the endpoint-tag `ILogger` and assert the actual `endpoint enter`/`exit` records
   carry the `ReqTrace` id (BuildTraceId shape). Mutation-check: move the scope
