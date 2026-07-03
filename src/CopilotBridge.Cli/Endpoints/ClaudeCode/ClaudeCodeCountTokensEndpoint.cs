@@ -64,7 +64,7 @@ internal static class ClaudeCodeCountTokensEndpoint
         // The count_tokens endpoint never goes through the pipeline, so the
         // summary line is much shorter — it just identifies the request, the
         // model the client asked for, and the resulting input_tokens count.
-        var summary = new RequestSummary { Kind = "count_tokens", TraceId = traceId };
+        var summary = new RequestSummary { Kind = "count_tokens" };
         // Inbound beta tokens — same parser as the messages endpoint uses.
         var betaSet = ClaudeCodeInboundAdapter.ParseInboundBetas(inboundHeaders);
         if (betaSet.Count > 0)

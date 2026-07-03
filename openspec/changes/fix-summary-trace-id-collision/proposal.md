@@ -50,20 +50,27 @@ completes).
 
 ## What Changes
 
-- **Break the collision.** Rename the summary template's trace-id hole from
-  `{TraceId}` to a name that cannot be shadowed by the framework Activity scope
-  (e.g. `{ReqTrace}`), so `req#` renders `s.TraceId` (`BuildTraceId`) again. The
-  wire/log *value* returns to the intended `yyyyMMdd-HHmmss-seq`; the summary
-  line's textual shape (`req#<id> …`) is unchanged.
+- **Eliminate the collision by removing the id from the summary message.** The
+  summary template no longer self-renders the id (`req#{TraceId} …` → drop it and
+  the `s.TraceId` argument). The id now reaches the summary the same way it
+  reaches the pipeline and enter/exit lines: the `[<traceId>] ` prefix the
+  `ReqTraceFormatEnricher` builds from the `ReqTrace` log-context property. With
+  no id hole in the message there is nothing for the framework's ambient
+  `Activity.TraceId` scope to shadow — the collision is structurally impossible,
+  not merely renamed around. `RequestSummary.TraceId` becomes dead state and is
+  removed.
 - **Trace the endpoint boundary.** Move the `ReqTrace` scope so it wraps the
-  whole handler body — pushed before the `endpoint … enter` line and still
-  active when the `finally` emits `endpoint … exit` — so both boundary lines and
-  the summary line all carry the same id. Applies to both endpoints.
-- **Guard the contract with a from-contract test.** Assert the rendered summary
-  line's `req#` id equals the `BuildTraceId`-shaped value and is NOT a 32-hex
-  Activity id, under a logger configured with the framework's default
-  `ActivityTrackingOptions` (reproducing the real collision). Mutation-check:
-  revert the hole name → test goes red.
+  whole handler body — pushed before the `endpoint … enter` line and still active
+  when the `finally` emits `endpoint … exit` — so the boundary lines, pipeline
+  lines, and summary all carry the same id via the one shared prefix. Applies to
+  both endpoints.
+- **Guard the contract with from-contract tests.** Under a logger configured with
+  the framework's default `ActivityTrackingOptions` (the real host condition) and
+  an active `ReqTrace` scope, assert the rendered summary line carries the
+  `BuildTraceId`-shaped id exactly once (via the `[id] ` prefix), never a 32-hex
+  Activity id, and contains no `req#` self-label. Drive the real endpoint
+  `HandleAsync` to assert the actual enter/exit lines carry the id
+  (mutation-check: narrow the scope back inside `try` → RED).
 
 Out of scope: changing `ActivityTrackingOptions` globally (a broader,
 behaviour-wide switch), the trace-file naming, the audit JSON, or any
@@ -71,11 +78,14 @@ request/response wire bytes.
 
 ## Impact
 
-- Affected specs: `observability` (tightens/repairs the existing "Existing trace
-  artifacts are preserved" requirement, which is currently violated).
-- Affected code: `RequestSummaryLogger.cs` (hole rename),
-  `CodexResponsesEndpoint.cs` + `ClaudeCodeMessagesEndpoint.cs` (scope span over
-  enter/exit); a new unit test. `ClaudeCodeCountTokensEndpoint.cs` shares the
-  summary path and is verified too.
-- No behaviour change to detection, routing, translation, or wire bytes. AOT:
-  no reflection introduced; Serilog `LogContext` is already AOT-safe.
+- Affected specs: `observability` (repairs the existing "Existing trace artifacts
+  are preserved" requirement, which is currently violated).
+- Affected code: `RequestSummaryLogger.cs` (drop the id hole), `RequestSummary.cs`
+  (remove the dead `TraceId` field), `ReqTraceFormatEnricher.cs` (no special-case;
+  every in-request line gets the prefix), `CodexResponsesEndpoint.cs` +
+  `ClaudeCodeMessagesEndpoint.cs` + `ClaudeCodeCountTokensEndpoint.cs` (scope span
+  / drop the `TraceId =` assignment); new + updated unit tests.
+- The one operator-visible change: the summary line no longer starts with `req#`;
+  its id is now the same `[<traceId>] ` prefix every other in-request line uses.
+- No behaviour change to detection, routing, translation, or wire bytes. AOT: no
+  reflection introduced; Serilog `LogContext` is already AOT-safe.

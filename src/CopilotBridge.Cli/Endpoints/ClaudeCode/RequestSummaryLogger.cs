@@ -19,30 +19,25 @@ internal sealed class RequestSummaryLogger
 
     public void Log(RequestSummary s)
     {
-        // One template covers both endpoints. {ReqTrace} sits up front so
-        // the operator can grep the line then immediately find the matching
-        // audit-JSON files (<TraceId>-{kind}.json) in the trace directory.
-        //
-        // The hole is named {ReqTrace}, NOT {TraceId}: MEL's default
-        // ActivityTrackingOptions inject the ambient Activity.TraceId as a log
-        // scope property literally named "TraceId", which would shadow a
-        // {TraceId} template hole at Serilog render time and make req# print the
-        // framework's 32-hex trace id instead of s.TraceId. {ReqTrace} matches
-        // the property the endpoints push for the pipeline lines (same value),
-        // so there is no third id to collide with. See
-        // SummaryTraceIdCollisionTests.
+        // The per-request trace id is NOT rendered here: the endpoint pushes it
+        // onto the log context as "ReqTrace" for the whole handler, and
+        // ReqTraceFormatEnricher prefixes EVERY in-request line — this summary
+        // included — with "[<id>] ". So the operator greps that id (shared with
+        // the enter/exit and pipeline lines) and finds the matching audit-JSON
+        // files (<id>-{kind}.json). One id, rendered in one place; the summary
+        // message carries none itself (no self-rendered id to double or to
+        // collide with the framework's ambient Activity "TraceId" scope).
         //
         // Level reflects the response status so a `grep ERR` pulls just the
         // 5xx, a `grep WRN` adds the 4xx, and tail -f stays readable for
         // 2xx traffic — the same line shape is used at every level.
         _log.Log(
             LevelForStatus(s.StatusCode),
-            "req#{ReqTrace} {Kind} requested={RequestedModel} resolved={ResolvedModel} profile={CanonicalProfileId} "
+            "{Kind} requested={RequestedModel} resolved={ResolvedModel} profile={CanonicalProfileId} "
             + "target={TargetVendor}:{TargetEndpoint} "
             + "betas_in=[{InboundBetasCsv}] betas_out=[{OutboundBetasCsv}] "
             + "effort={EffortDisplay} max_tokens={MaxTokensDisplay} usage={UsageDisplay} "
             + "status={StatusCode} streaming={Streaming} tool_leak={ToolLeakDetected} duration_ms={DurationMs} error={ErrorDisplay}",
-            s.TraceId,
             s.Kind,
             s.RequestedModel ?? "?",
             s.ResolvedModel ?? "?",

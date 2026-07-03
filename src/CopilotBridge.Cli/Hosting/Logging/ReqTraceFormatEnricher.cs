@@ -14,12 +14,11 @@ namespace CopilotBridge.Cli.Hosting.Logging;
 /// <remarks>
 /// This keeps the DATA (the bare trace id) separate from its PRESENTATION (the
 /// brackets + trailing space): endpoints only ever push the id; changing the
-/// wrapper (<c>[]</c> → <c>&lt;&gt;</c> → <c>req#</c>) is a one-line edit here, and
-/// non-request lines never carry an empty shell. The per-request summary line is
-/// the one exception: it self-renders the id as <c>req#&lt;id&gt;</c> in its own
-/// message and is logged inside the request scope, so this enricher skips the
-/// bracket prefix for it (message leads with <c>req#</c>) to avoid printing the id
-/// twice. AOT-clean: no reflection.
+/// wrapper (<c>[&lt;id&gt;] </c> → <c>&lt;id&gt; </c> → …) is a one-line edit
+/// here, and non-request lines never carry an empty shell. Every in-request
+/// line — pipeline stages, the enter/exit boundary lines, and the summary — is
+/// rendered through this one prefix; no line self-renders its own id. AOT-clean:
+/// no reflection.
 /// </remarks>
 internal sealed class ReqTraceFormatEnricher : ILogEventEnricher
 {
@@ -35,20 +34,10 @@ internal sealed class ReqTraceFormatEnricher : ILogEventEnricher
             return; // no id → no ReqTraceFmt → {ReqTraceFmt} renders empty
         }
 
-        // The per-request summary line self-renders the id via "req#{ReqTrace} …"
-        // in its own message. It is logged INSIDE the request's ReqTrace scope
-        // (so the enter/exit boundary lines are correlated), so without this guard
-        // it would ALSO get the "[<id>] " prefix and print the id twice
-        // ("[T] req#T …"). A line whose message already leads with "req#" owns its
-        // id; adding the bracket is redundant, so skip it. Every other in-request
-        // line (which does NOT self-render the id) still gets the prefix.
-        if (logEvent.MessageTemplate.Text.StartsWith("req#", StringComparison.Ordinal))
-        {
-            return;
-        }
-
         // Presentation lives here, in one place. Trailing space keeps the id set
-        // off from the message.
+        // off from the message. EVERY in-request line — pipeline stages, the
+        // enter/exit boundary lines, and the summary — gets the same prefix; no
+        // line self-renders its own id, so there is nothing to double.
         var formatted = propertyFactory.CreateProperty(TargetProperty, $"[{id}] ");
         logEvent.AddPropertyIfAbsent(formatted);
     }

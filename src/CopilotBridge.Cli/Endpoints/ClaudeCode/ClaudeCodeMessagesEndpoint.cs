@@ -113,7 +113,7 @@ internal static class ClaudeCodeMessagesEndpoint
 
         // Per-request summary, populated as the pipeline progresses. Always
         // emitted in finally regardless of error path.
-        var summary = new RequestSummary { Kind = "messages", TraceId = traceId };
+        var summary = new RequestSummary { Kind = "messages" };
         var usageSnapshot = summary.Usage;
         var inboundBetaSet = ClaudeCodeInboundAdapter.ParseInboundBetas(inboundHeaders);
         summary.InboundBetas = inboundBetaSet.ToArray();

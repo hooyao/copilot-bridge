@@ -4,38 +4,44 @@
 
 ### Requirement: Existing trace artifacts are preserved
 
-The request-summary line SHALL begin with `req#<traceId>` where `<traceId>` is
-the request's `BuildTraceId` value (`{yyyyMMdd-HHmmss}-{seq:D4}`) — the SAME id
-that names the per-request trace JSON files
-(`<traceId>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`) and
-prefixes the pipeline log lines. The rendered `req#` id SHALL NOT be shadowed by
-any framework-injected log-scope property (notably the ambient
-`Activity.TraceId`), so it is never a 32-character hex Activity id. The summary
-line self-labels its id via `req#<traceId>` and SHALL NOT additionally carry the
-`[<traceId>] ` bracket prefix the other in-request lines use, so its id appears
-exactly once.
+The request-summary line SHALL carry the request's trace id (the `BuildTraceId`
+value `{yyyyMMdd-HHmmss}-{seq:D4}`) — the SAME id that names the per-request
+trace JSON files
+(`<traceId>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`) and that
+prefixes the pipeline and enter/exit lines — rendered EXACTLY ONCE and by the
+SAME mechanism as every other in-request line: the `[<traceId>] ` prefix produced
+from the `ReqTrace` log-context property. The summary message itself SHALL NOT
+self-render the id (no `req#<traceId>` hole in the template). The rendered id
+SHALL never be a 32-character hex Activity id.
+
+Rationale: rendering the id only through the shared prefix, and never as a hole
+in the summary message, structurally rules out both historical failure modes — a
+`{TraceId}` message hole shadowed by the framework's ambient `Activity.TraceId`
+scope (nothing to shadow), and a self-rendered id doubled by the prefix once the
+summary sits inside the request scope (nothing to double).
 
 #### Scenario: Summary line and trace files share one id
 
 - **WHEN** a request with trace id `T` (shape `yyyyMMdd-HHmmss-nnnn`) completes
-- **THEN** the summary line begins with `req#T`, the four trace files are named
-  `T-*.json`, and every pipeline log line for that request carries `T` — all
-  three surfaces showing the identical `T`
+- **THEN** the summary line carries `T` via its `[T] ` prefix, the four trace
+  files are named `T-*.json`, and every pipeline log line for that request
+  carries `T` — all surfaces showing the identical `T`
 
-#### Scenario: Framework Activity id does not shadow the summary id
+#### Scenario: Summary id is rendered exactly once, not doubled
+
+- **WHEN** the summary line is emitted inside the request's `ReqTrace` scope (the
+  same scope that correlates the enter/exit and pipeline lines)
+- **THEN** its trace id appears exactly once — as the `[T] ` prefix — and the
+  summary message contains no additional `req#T` self-label
+
+#### Scenario: Framework Activity id cannot reach the summary id
 
 - **WHEN** the host runs with the framework-default activity tracking that
   injects an ambient log-scope property named `TraceId` (the current
   `Activity.TraceId`) into in-request log records
-- **THEN** the summary line's `req#` id still renders the request's
-  `BuildTraceId` value, NOT the ambient Activity hex id
-
-#### Scenario: Summary id is not doubled by the request scope
-
-- **WHEN** the summary line is emitted inside the request's `ReqTrace` scope (the
-  same scope that correlates the enter/exit boundary lines)
-- **THEN** its trace id appears exactly once — self-rendered as `req#T`, with no
-  redundant `[T] ` bracket prefix
+- **THEN** the summary line's id is still `T` (from the `ReqTrace` prefix) and
+  never the 32-char hex Activity id — the summary message has no `{TraceId}` hole
+  for the ambient scope to shadow
 
 ## ADDED Requirements
 
