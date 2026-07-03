@@ -20,17 +20,22 @@ internal sealed class MessagesSanitizeStage : IRequestStage<MessagesRequest>
     private const string ToolLoadedMarker = "Tool loaded.";
     private const string ContinuePrompt = "Please continue.";
 
+    private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly ILogger<MessagesSanitizeStage> _log;
 
-    public MessagesSanitizeStage(ILogger<MessagesSanitizeStage> log)
+    public MessagesSanitizeStage(
+        BridgeContext<MessagesRequest> ctx,
+        ILogger<MessagesSanitizeStage> log)
     {
+        _ctx = ctx;
         _log = log;
     }
 
     public string Name => "MessagesSanitize";
 
-    public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
+    public Task ApplyAsync()
     {
+        var ctx = _ctx;
         var droppedToolLoaded = 0;
         var newMessages = new List<MessageParam>(ctx.Request.Body.Messages.Count);
         foreach (var msg in ctx.Request.Body.Messages)

@@ -17,17 +17,22 @@ internal sealed class SystemSanitizeStage : IRequestStage<MessagesRequest>
 {
     private const string Marker = "# currentDate\n";
 
+    private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly ILogger<SystemSanitizeStage> _log;
 
-    public SystemSanitizeStage(ILogger<SystemSanitizeStage> log)
+    public SystemSanitizeStage(
+        BridgeContext<MessagesRequest> ctx,
+        ILogger<SystemSanitizeStage> log)
     {
+        _ctx = ctx;
         _log = log;
     }
 
     public string Name => "SystemSanitize";
 
-    public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
+    public Task ApplyAsync()
     {
+        var ctx = _ctx;
         var stripped = 0;
 
         IReadOnlyList<TextBlockParam>? newSystem = ctx.Request.Body.System;

@@ -40,6 +40,7 @@ internal static class CodexResponsesEndpoint
 
     public static async Task HandleAsync(
         HttpContext httpCtx,
+        BridgeContext<MessagesRequest> bridgeCtx,
         IPipelineRunner<MessagesRequest> runner,
         Pipeline<MessagesRequest> pipeline,
         ResponsesToIrInboundAdapter inboundAdapter,
@@ -128,22 +129,22 @@ internal static class CodexResponsesEndpoint
             // T1: Responses → IR (Anthropic shape).
             var irBody = await inboundAdapter.AdaptAsync(clientBody, inboundHeaders, ct);
 
-            var bridgeCtx = new BridgeContext<MessagesRequest>
+            // Populate the injected scoped context (created empty by DI; the same
+            // instance the pipeline components resolved). The pipeline reads it in
+            // RunAsync, strictly after this fill.
+            bridgeCtx.Request = new BridgeRequest<MessagesRequest>
             {
-                Request = new BridgeRequest<MessagesRequest>
-                {
-                    Method = httpCtx.Request.Method,
-                    Path = httpCtx.Request.Path.Value ?? "",
-                    RawBody = inboundBytesView,
-                    Body = irBody,
-                    Headers = new Dictionary<string, string>(inboundHeaders, StringComparer.OrdinalIgnoreCase),
-                },
-                Response = new BridgeResponse(),
-                Ct = ct,
-                TraceId = traceId,
+                Method = httpCtx.Request.Method,
+                Path = httpCtx.Request.Path.Value ?? "",
+                RawBody = inboundBytesView,
+                Body = irBody,
+                Headers = new Dictionary<string, string>(inboundHeaders, StringComparer.OrdinalIgnoreCase),
             };
+            bridgeCtx.Response = new BridgeResponse();
+            bridgeCtx.Ct = ct;
+            bridgeCtx.TraceId = traceId;
 
-            await runner.RunAsync(pipeline, bridgeCtx);
+            await runner.RunAsync(pipeline);
 
             summary.ResolvedModel = bridgeCtx.Request.Body.Model;
             summary.OutboundEffort = bridgeCtx.Request.Body.OutputConfig?.Effort;
@@ -185,7 +186,7 @@ internal static class CodexResponsesEndpoint
                 // Only buffer per-event copies for the audit when tracing is on.
                 capturedEvents = tracingEnabled ? new List<CapturedSseEvent>() : null;
                 // T4: IR (Anthropic) stream → Responses SSE back to Codex.
-                var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, bridgeCtx, ct);
+                var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, ct);
                 await foreach (var evt in clientStream.WithCancellation(ct))
                 {
                     capturedEvents?.Add(new CapturedSseEvent(evt.EventType, evt.Data, Filtered: false));
@@ -204,7 +205,7 @@ internal static class CodexResponsesEndpoint
             }
             else if (bridgeCtx.Response.BufferedBody is not null)
             {
-                var outBody = await outboundAdapter.AdaptBufferedAsync(bridgeCtx.Response.BufferedBody, bridgeCtx, ct);
+                var outBody = await outboundAdapter.AdaptBufferedAsync(bridgeCtx.Response.BufferedBody, ct);
                 responseBody = outBody;
                 responseBodyLen = outBody.Length;
                 if (responseHeaders.TryGetValue("Content-Type", out var ctype))

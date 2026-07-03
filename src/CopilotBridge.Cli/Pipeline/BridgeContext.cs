@@ -9,11 +9,26 @@ namespace CopilotBridge.Cli.Pipeline;
 /// resolved by the model router stage early in the request pipeline; the
 /// strategy registry consults it.
 /// </summary>
+/// <remarks>
+/// This is a <b>scoped DI service</b> (one per request scope). The container
+/// constructs an empty shell; the pipeline-driving endpoint then populates
+/// <see cref="Request"/>, <see cref="Response"/>, <see cref="Ct"/>,
+/// <see cref="InboundBetas"/>, and <see cref="TraceId"/> before running the
+/// pipeline. Consequently the <b>constructors of injected components (stages,
+/// strategies, adapters, detectors) MUST NOT read <see cref="Request"/></b> — it
+/// is unpopulated at construction time. Request data is read only during
+/// <c>ApplyAsync</c>/<c>ForwardAsync</c>/<c>Begin</c>, which the runner invokes
+/// strictly after the endpoint has filled the shell.
+/// </remarks>
 internal sealed class BridgeContext<TBody> where TBody : class
 {
-    public required BridgeRequest<TBody> Request { get; init; }
-    public required BridgeResponse Response { get; init; }
-    public required CancellationToken Ct { get; init; }
+    // Settable (not required-init) because the DI shell is filled by the endpoint
+    // after construction — see the class remarks. Non-null defaults (= null!) mark
+    // "populated before first read"; a constructor that reads Request before the
+    // endpoint fills it is a bug the remarks call out.
+    public BridgeRequest<TBody> Request { get; set; } = null!;
+    public BridgeResponse Response { get; set; } = null!;
+    public CancellationToken Ct { get; set; }
 
     /// <summary>
     /// Resolved upstream destination. Set by the model-router stage; until
@@ -37,7 +52,7 @@ internal sealed class BridgeContext<TBody> where TBody : class
     /// tokens verbatim (pass-through-by-default policy — see
     /// <c>docs/pipeline-design.md §7.5</c>).
     /// </summary>
-    public IReadOnlySet<string> InboundBetas { get; init; } =
+    public IReadOnlySet<string> InboundBetas { get; set; } =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -81,14 +96,14 @@ internal sealed class BridgeContext<TBody> where TBody : class
     public string? OriginalRequestedModel { get; set; }
 
     /// <summary>
-    /// Set true by the tool-leak guard (<c>ResponseInspectionStage</c> /
-    /// <c>ToolLeakDetector</c>) when it detects a leaked tool call and forces a
-    /// retry. The endpoint copies it into the per-request summary
-    /// (<c>toolLeakDetected</c>) so the real-world leak rate is measurable.
-    /// For streaming this is set mid-relay (the endpoint reads it after the
-    /// stream drains); for buffered it is set during the stage.
+    /// Set true by the response-leak guard (<c>ResponseInspectionStage</c> /
+    /// <c>ResponseLeakDetector</c>) when it detects a leak — a leaked tool call or a
+    /// leaked control envelope — and forces a retry. The endpoint copies it into the
+    /// per-request summary (<c>responseLeakDetected</c>) so the real-world leak rate
+    /// is measurable. For streaming this is set mid-relay (the endpoint reads it after
+    /// the stream drains); for buffered it is set during the stage.
     /// </summary>
-    public bool ToolLeakDetected { get; set; }
+    public bool ResponseLeakDetected { get; set; }
 
     /// <summary>
     /// Per-request trace id (<c>BridgeIoSeq.BuildTraceId</c>) — the same id that

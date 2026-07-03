@@ -158,12 +158,15 @@ public class CodexRoutingAndCatalogTests
     [Fact]
     public void H1_SharedRegistry_RoutesByVendor_CcUnaffected()
     {
+        var sharedCtx = new BridgeContext<MessagesRequest>();
         var anthropic = new CopilotBridge.Cli.Pipeline.Strategies.Anthropic.CopilotMessagesPassthroughStrategy(
             copilot: null!,
+            ctx: sharedCtx,
             tracing: Microsoft.Extensions.Options.Options.Create(new CopilotBridge.Cli.Hosting.Options.TracingOptions()),
             log: NullLogger<CopilotBridge.Cli.Pipeline.Strategies.Anthropic.CopilotMessagesPassthroughStrategy>.Instance);
         var codex = new CopilotBridge.Cli.Pipeline.Strategies.Codex.CopilotResponsesStrategy(
             copilot: null!, profiles: new CodexModelProfileCatalog(),
+            ctx: sharedCtx,
             tracing: Microsoft.Extensions.Options.Options.Create(new CopilotBridge.Cli.Hosting.Options.TracingOptions()),
             log: NullLogger<CopilotBridge.Cli.Pipeline.Strategies.Codex.CopilotResponsesStrategy>.Instance);
 

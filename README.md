@@ -35,10 +35,12 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   measured against the live API and baked into a profile. The bridge reshapes
   each request to what the target model accepts, and returns a clear error for
   an unknown model instead of silently forwarding a request that will fail.
-- **Auto-repairs tool-call leaks.** Copilot-served models occasionally emit a
-  tool call as literal `<invoke …>` text instead of a real tool call. The bridge
-  detects this and makes the client retry the turn cleanly, so it doesn't get
-  stuck (new in 0.2.2-beta).
+- **Auto-repairs tool-call and control-envelope leaks.** Copilot-served models
+  occasionally emit a tool call as literal `<invoke …>` text — or a Claude Code
+  control envelope such as `<task-notification>`, `<teammate-message>`,
+  `<channel>`, `<cross-session-message>`, or `<tick>` — instead of a real
+  structured block. The bridge detects this and makes the client retry the turn
+  cleanly, so it doesn't get stuck (new in 0.2.2-beta).
 
 ## Install & run
 
@@ -111,9 +113,15 @@ The file next to the executable. A few keys worth knowing:
   on to dump every request/response as JSON under `request-traces/` when
   debugging — but note the files contain your full prompts, so turn it back off
   afterward.
-- **`Pipeline:Detectors:ToolLeakGuard`** — the tool-call-leak auto-repair
-  (`Enabled`, `Signal`). On by default; leave it unless you want to tune the
-  retry signal.
+- **`Pipeline:Detectors:ResponseLeakGuard`** — the response-leak auto-repair
+  (catches a leaked tool call or a leaked Claude Code control envelope;
+  `Enabled`, `Signal`). On by default; leave it unless you want to tune the
+  retry signal. Individual leak signatures can be turned off under `Signatures`
+  (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`,
+  `CrossSessionMessage`, `Tick` — all on by default) to clear a false positive,
+  e.g. when you're discussing this markup with the model and a sample reply gets
+  caught. The retry error and the log both name the exact switch to flip; a
+  **restart** is required after changing it.
 - **`Routing.Locations`** — optional nginx-style rules to remap a model or tweak
   headers per request. For example, the shipped rule:
 
@@ -188,7 +196,7 @@ ModelRouter → AssistantThinkingFilter → SystemSanitize → MessagesSanitize
   [`docs/pipeline-design.md §7`](docs/pipeline-design.md).
 - **`ResponseInspection`** runs an ordered set of response detectors in a single
   pass over the SSE stream: the `[DONE]` filter, the model-id rewrite (restores
-  the client-requested id for downstream accounting), and the tool-leak guard.
+  the client-requested id for downstream accounting), and the response-leak guard.
   New detectors register into the same stage. See
   [`docs/pipeline-design.md §6`](docs/pipeline-design.md).
 
@@ -265,8 +273,10 @@ Two log channels:
   `CopilotBridge.Cli`). Each request's log lines carry a trace id in brackets
   (`[20260702-032206-0001]`, the same id that names the request's trace JSON
   files), so you can follow one request end-to-end and jump to its trace. Notable
-  events name their subject: a tool-call-leak detection logs one `Warning` naming
-  the leaked tool, block type, and the retry signal (never the leaked content).
+  events name their subject: a leak detection logs one `Warning` naming the
+  leaked signature and subject — a tool name or a control-envelope subject such as
+  `task-notification` — plus the block type, the retry signal, and the exact
+  config key to disable that signature (never the leaked content).
 - **Per-request audit trace** (opt-in, off by default) — set
   `"Tracing": { "Enabled": true }` to capture four JSON files per request under
   `request-traces/` (`<utc>-<seq>-{inbound-req|inbound-resp|upstream-req|upstream-resp}.json`):

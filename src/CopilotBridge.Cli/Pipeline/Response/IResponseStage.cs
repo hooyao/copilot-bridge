@@ -10,11 +10,12 @@ namespace CopilotBridge.Cli.Pipeline.Response;
 /// <remarks>
 /// <typeparamref name="TBody"/> is the IR-shape request body, kept in scope
 /// for symmetry and so a response stage can consult what was originally
-/// requested. Most stages ignore it.
+/// requested. The concrete context is constructor-injected per request scope,
+/// not passed as a method argument.
 /// </remarks>
 internal interface IResponseStage<TBody> where TBody : class
 {
     string Name { get; }
 
-    Task ApplyAsync(BridgeContext<TBody> ctx);
+    Task ApplyAsync();
 }

@@ -6,20 +6,20 @@ using Xunit;
 namespace CopilotBridge.UnitTests;
 
 /// <summary>
-/// Exhaustive contract tests for <see cref="ToolLeakAutomaton"/> — the highest-risk
-/// component. Asserts the structural leak contract (closed + balanced +
-/// in-tools + unfenced), split-boundary invariance, KMP failure-edge restarts,
-/// negatives, per-block reset, and name-bound fail-open. Each test states the
-/// contract it guards.
+/// Exhaustive contract tests for the <c>&lt;invoke&gt;</c> tool-call facet of
+/// <see cref="ResponseLeakAutomaton"/> — the highest-risk component. Asserts the
+/// structural leak contract (closed + balanced + in-tools + unfenced),
+/// split-boundary invariance, KMP failure-edge restarts, negatives, per-block
+/// reset, and name-bound fail-open. Each test states the contract it guards.
 /// </summary>
-public class ToolLeakAutomatonTests
+public class ResponseLeakAutomatonInvokeTests
 {
     private static readonly string[] Tools = { "Read", "Edit", "Bash", "Grep" };
 
     /// <summary>Feed a whole string into a fresh automaton; return whether it tripped.</summary>
     private static bool Detect(string text, IEnumerable<string>? tools = null)
     {
-        var a = new ToolLeakAutomaton(tools ?? Tools);
+        var a = new ResponseLeakAutomaton(tools ?? Tools);
         foreach (var c in text)
         {
             if (a.Feed(c)) return true;
@@ -28,20 +28,20 @@ public class ToolLeakAutomatonTests
     }
 
     [Fact]
-    public void MatchedToolName_ExposedOnLeak_NullOtherwise()
+    public void MatchedSubject_ExposedOnLeak_NullOtherwise()
     {
         // Contract: on a genuine leak the automaton names the matched tool; on a
         // clean/non-leak block it stays null. Feeds the tool name the detector
         // needs to log.
-        var leaked = new ToolLeakAutomaton(Tools);
+        var leaked = new ResponseLeakAutomaton(Tools);
         foreach (var c in MinimalLeak) leaked.Feed(c);
         Assert.True(leaked.Tripped);
-        Assert.Equal("Read", leaked.MatchedToolName);
+        Assert.Equal("Read", leaked.MatchedSubject);
 
-        var clean = new ToolLeakAutomaton(Tools);
+        var clean = new ResponseLeakAutomaton(Tools);
         foreach (var c in "just prose, no tool call here") clean.Feed(c);
         Assert.False(clean.Tripped);
-        Assert.Null(clean.MatchedToolName);
+        Assert.Null(clean.MatchedSubject);
     }
 
     // A minimal genuine leak: closed, balanced, one parameter, real tool, unfenced.
@@ -95,13 +95,52 @@ public class ToolLeakAutomatonTests
         Assert.True(Detect(s));
     }
 
+    // ---- Nested / opaque parameter values (#4) ---------------------------
+
+    [Fact]
+    public void RealInvoke_WithInvokeShapedTextInParameterValue_IsLeak()
+    {
+        // Contract (#4): a parameter VALUE is opaque text — a genuine outer call
+        // whose parameter quotes invoke-shaped markup must still balance and trip.
+        // The inner "<invoke name=\"x\">" is data, not a second call, so it must not
+        // reset the outer call's name/param counters and cause a missed leak.
+        var s = "<invoke name=\"Bash\">"
+              + "<parameter name=\"command\">echo '<invoke name=\"x\">'</parameter>"
+              + "</invoke>";
+        Assert.True(Detect(s));
+    }
+
+    [Fact]
+    public void RealInvoke_WithFullInnerInvokeInParameterValue_IsLeak()
+    {
+        // Contract (#4): even a fully-closed inner <invoke …></invoke> quoted inside
+        // the parameter value is opaque — its </invoke> must not close the outer
+        // call early, so the real outer call still trips.
+        var s = "<invoke name=\"Bash\">"
+              + "<parameter name=\"command\"><invoke name=\"y\"><parameter name=\"z\">1</parameter></invoke></parameter>"
+              + "</invoke>";
+        Assert.True(Detect(s));
+    }
+
+    [Fact]
+    public void InvokeShapedTextInParameter_UnknownOuterTool_NotLeak()
+    {
+        // Counter-case: the opaque-parameter handling must not invent a leak — if the
+        // OUTER tool isn't in tools[], quoting an in-tools name inside the value is
+        // still not a leak (the value is opaque; only the outer call's name counts).
+        var s = "<invoke name=\"NotATool\">"
+              + "<parameter name=\"command\"><invoke name=\"Read\"></parameter>"
+              + "</invoke>";
+        Assert.False(Detect(s));
+    }
+
     // ---- Split-boundary invariance (the core streaming property) ---------
 
     [Fact]
     public void CharByChar_SameResult()
     {
         // Contract: feeding one character per delta detects identically.
-        var a = new ToolLeakAutomaton(Tools);
+        var a = new ResponseLeakAutomaton(Tools);
         var tripped = TraceLeak.Aggregate(false, (acc, c) => acc || a.Feed(c));
         Assert.True(tripped);
     }
@@ -113,7 +152,7 @@ public class ToolLeakAutomatonTests
         // same leak split at each possible index into two "deltas".
         for (var i = 0; i <= MinimalLeak.Length; i++)
         {
-            var a = new ToolLeakAutomaton(Tools);
+            var a = new ResponseLeakAutomaton(Tools);
             var first = MinimalLeak[..i];
             var second = MinimalLeak[i..];
             var tripped = false;
@@ -127,7 +166,7 @@ public class ToolLeakAutomatonTests
     public void SplitInsideToolName_StillDetected()
     {
         // "Read" arriving as "Re" | "ad".
-        var a = new ToolLeakAutomaton(Tools);
+        var a = new ResponseLeakAutomaton(Tools);
         var parts = new[]
         {
             "<invoke name=\"Re",
@@ -224,11 +263,44 @@ public class ToolLeakAutomatonTests
     }
 
     [Fact]
+    public void ThreeBacktickExampleNestedInFourBacktickFence_NotLeak()
+    {
+        // Contract (#3): a ``` example nested inside a ```` fence must stay fenced —
+        // the shorter inner run must NOT close the longer outer fence and expose the
+        // invoke. Common markdown for "show a fenced block": wrap it in a longer
+        // fence. Regression guard for the old toggle-every-3 model.
+        var s = "````md\n```\n" + MinimalLeak + "\n```\n````";
+        Assert.False(Detect(s));
+    }
+
+    [Fact]
+    public void InlineCodeSpan_AroundInvoke_NotLeak()
+    {
+        // Contract (#2): markup inside a single-backtick inline code span is a quoted
+        // example, not a leak — e.g. the model answering "a tool call looks like
+        // `<invoke name=…>…</invoke>`". A single backtick opens a span; the closing
+        // backtick ends it before any newline, so the whole span is fenced.
+        var s = "A tool call looks like `" + MinimalLeak.Replace("\n", " ") + "`.";
+        Assert.False(Detect(s));
+    }
+
+    [Fact]
+    public void StrayInlineBacktick_ThenNewline_DoesNotSuppressLaterLeak()
+    {
+        // Safety valve for #2: an UNCLOSED inline span (a stray single backtick) must
+        // not swallow the rest of the block — a newline abandons the span so a real
+        // bare leak on a later line is still caught. Guards against the fix turning a
+        // false positive into a worse false negative.
+        var s = "here is a stray ` backtick\n" + MinimalLeak;
+        Assert.True(Detect(s));
+    }
+
+    [Fact]
     public void FencesNotTracked_FencedInvokeStillDetected()
     {
         // Contract: thinking blocks have no fence concept — with trackFences:false
         // a ```-wrapped invoke is still a leak (fences are treated as plain text).
-        var a = new ToolLeakAutomaton(Tools);
+        var a = new ResponseLeakAutomaton(Tools);
         a.Reset(trackFences: false);
         var s = "```\n" + MinimalLeak + "\n```";
         var tripped = false;
@@ -243,7 +315,7 @@ public class ToolLeakAutomatonTests
     {
         // Contract: state fully resets on a new block; a signature never assembles
         // across a block boundary (open in block A, close in block B).
-        var a = new ToolLeakAutomaton(Tools);
+        var a = new ResponseLeakAutomaton(Tools);
         foreach (var c in "<invoke name=\"Read\"><parameter name=\"p\">v</parameter>") a.Feed(c);
         a.Reset(); // new content_block_start
         var tripped = false;
@@ -282,5 +354,41 @@ public class ToolLeakAutomatonTests
         // must not satisfy paramOpen==paramClose>=1 by miscounting.
         var s = "<invoke name=\"Read\"></parameter></invoke>";
         Assert.False(Detect(s));
+    }
+
+    // ---- Signature identity & per-signature gating -----------------------
+
+    [Fact]
+    public void MatchedSignature_IsInvoke_DistinctFromSubjectToolName()
+    {
+        // Contract: the signature id (the stable config identity) is always
+        // 'invoke', even though MatchedSubject is the captured tool name. The two
+        // feed different consumers — the disable switch vs the log detail.
+        var a = new ResponseLeakAutomaton(Tools);
+        foreach (var c in MinimalLeak) a.Feed(c);
+        Assert.True(a.Tripped);
+        Assert.Equal("invoke", a.MatchedSignature);
+        Assert.Equal("Read", a.MatchedSubject);
+    }
+
+    [Fact]
+    public void DisabledInvokeSignature_InvokeLeakIgnored_EnabledEnvelopeStillTrips()
+    {
+        // Contract: with 'invoke' absent from the enabled set its matcher is never
+        // built, so a genuine invoke leak cannot trip — while a still-enabled
+        // signature (task-notification) detects normally.
+        var enabled = new HashSet<string>(LeakSignatures.All);
+        enabled.Remove(LeakSignatures.Invoke);
+
+        var invoke = new ResponseLeakAutomaton(Tools, enabled);
+        foreach (var c in MinimalLeak) invoke.Feed(c);
+        Assert.False(invoke.Tripped);
+        Assert.Null(invoke.MatchedSubject);
+        Assert.Null(invoke.MatchedSignature);
+
+        var envelope = new ResponseLeakAutomaton(Tools, enabled);
+        foreach (var c in "<task-notification>\n<task-id>x</task-id>\n<status>done</status>\n</task-notification>") envelope.Feed(c);
+        Assert.True(envelope.Tripped);
+        Assert.Equal("task-notification", envelope.MatchedSignature);
     }
 }

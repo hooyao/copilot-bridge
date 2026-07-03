@@ -1,6 +1,9 @@
 using System.Net.ServerSentEvents;
 using System.Text;
 using System.Text.Json.Nodes;
+using CopilotBridge.Cli.Hosting.Options;
+using CopilotBridge.Cli.Models.Anthropic.Request;
+using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Response.Detection;
 using Xunit;
 
@@ -12,14 +15,44 @@ namespace CopilotBridge.UnitTests;
 /// Same observable contract: buffered bodies get the top-level model flipped back
 /// to the original requested id; the first (only the first) streaming
 /// message_start event's message.model is rewritten; every other shape passes
-/// through untouched; and the disabled / original==resolved / original-null cases
-/// are no-ops. Assertions mirror the pre-migration tests byte-for-byte.
+/// through untouched; and the original==resolved / original-null cases are no-ops.
+/// The config gate (<see cref="ModelRewriteDetector.Enabled"/>) is enforced by
+/// <see cref="ResponseInspectionStage"/>, not inside the detector's inspect
+/// methods — so the disabled-detector "no rewrite" behavior is a stage-level test
+/// (see <c>ResponseInspectionStageTests</c>); here we only assert the gate value.
 /// </summary>
 public class ResponseModelRewriteStageTests
 {
     private static ModelRewriteDetector NewDetector(
-        string? original, string resolved, bool enabled = true) =>
-        new(enabled, original, resolved);
+        string? original, string resolved, bool enabled = true)
+    {
+        var ctx = BuildCtx(original, resolved);
+        var d = new ModelRewriteDetector(
+            new DetectorOrder<ModelRewriteDetector>(0),
+            TestOptions.Snapshot(new ResponseModelRewriteOptions { Enabled = enabled }),
+            ctx);
+        // The stage calls Begin() once per request before any inspection; do the
+        // same here so the detector reads its original/resolved model ids from the
+        // injected context.
+        d.Begin();
+        return d;
+    }
+
+    private static BridgeContext<MessagesRequest> BuildCtx(string? original, string resolved)
+    {
+        var body = new MessagesRequest
+        {
+            Model = resolved,
+            Messages = Array.Empty<MessageParam>(),
+        };
+        return new BridgeContext<MessagesRequest>
+        {
+            Request = new BridgeRequest<MessagesRequest> { Method = "POST", Path = "/cc/v1/messages", Body = body },
+            Response = new BridgeResponse { Mode = ResponseMode.Streaming },
+            Ct = default,
+            OriginalRequestedModel = original,
+        };
+    }
 
     // ---- Buffered path ---------------------------------------------------
 
@@ -97,23 +130,23 @@ public class ResponseModelRewriteStageTests
     }
 
     [Fact]
-    public void Enabled_False_BufferedBody_NoOp()
+    public void Enabled_False_ReportsDisabled_ConfigGate()
     {
+        // Config gate: a disabled detector reports Enabled=false, which is how the
+        // stage decides to skip it entirely (never Begin, never inspect). The
+        // "disabled ⇒ no rewrite reaches the client" behavior is verified at the
+        // stage level (ResponseInspectionStageTests.ModelRewriteDisabled_*).
         var d = NewDetector("claude-opus-4-8", "claude-opus-4-7", enabled: false);
-        var action = d.InspectBuffered(Encoding.UTF8.GetBytes("""{"model":"claude-opus-4-7"}"""));
-        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(d.Enabled);
     }
 
     // ---- Streaming path --------------------------------------------------
 
     [Fact]
-    public void Enabled_False_Streaming_NoRewrite()
+    public void Enabled_True_ReportsEnabled_ConfigGate()
     {
-        var d = NewDetector("claude-opus-4-8", "claude-opus-4-7", enabled: false);
-        var evt = new SseItem<string>(
-            """{"type":"message_start","message":{"model":"claude-opus-4-7"}}""",
-            "message_start");
-        Assert.Equal(DetectionActionKind.None, d.InspectEvent(evt).Kind);
+        var d = NewDetector("claude-opus-4-8", "claude-opus-4-7", enabled: true);
+        Assert.True(d.Enabled);
     }
 
     [Fact]

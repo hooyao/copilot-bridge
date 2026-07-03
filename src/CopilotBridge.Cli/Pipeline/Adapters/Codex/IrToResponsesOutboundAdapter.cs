@@ -19,10 +19,14 @@ namespace CopilotBridge.Cli.Pipeline.Adapters.Codex;
 /// </summary>
 internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<MessagesRequest>
 {
+    private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly ILogger<IrToResponsesOutboundAdapter> _log;
 
-    public IrToResponsesOutboundAdapter(ILogger<IrToResponsesOutboundAdapter> log)
+    public IrToResponsesOutboundAdapter(
+        BridgeContext<MessagesRequest> ctx,
+        ILogger<IrToResponsesOutboundAdapter> log)
     {
+        _ctx = ctx;
         _log = log;
     }
 
@@ -30,11 +34,10 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
 
     public async IAsyncEnumerable<SseItem<string>> AdaptStreamAsync(
         IAsyncEnumerable<SseItem<string>> irStream,
-        BridgeContext<MessagesRequest> ctx,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
         _log.LogDebug("adapter {Name}: streaming IR→Responses", Name);
-        var sm = new AnthropicToResponsesStream(ctx.Request.Body.Model, _log);
+        var sm = new AnthropicToResponsesStream(_ctx.Request.Body.Model, _log);
 
         // C2 — Codex's parser REQUIRES a terminal (response.completed/failed). The
         // happy-path Flush below only runs if the await-foreach completes; if the
@@ -74,7 +77,6 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
 
     public ValueTask<byte[]> AdaptBufferedAsync(
         byte[] irBody,
-        BridgeContext<MessagesRequest> ctx,
         CancellationToken ct)
     {
         // Non-streaming path. On the Codex→/responses cell the strategy buffers

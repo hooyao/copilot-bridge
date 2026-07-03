@@ -21,12 +21,13 @@ namespace CopilotBridge.UnitTests;
 /// </summary>
 public class ModelRouterStageFuzzyTests
 {
-    private static ModelRouterStage Stage() => new(
+    private static ModelRouterStage Stage(BridgeContext<MessagesRequest> ctx) => new(
         new CopilotModelRegistry(),
         new ModelProfileCatalog(),
         new CodexModelProfileCatalog(),
         Options.Create(new RoutesConfig()),
         Options.Create(new OutboundBetaPolicyOptions()),
+        ctx,
         NullLogger<ModelRouterStage>.Instance,
         NullLogger<ModelRouteResolverLog>.Instance,
         NullLogger<ProfileAdjusterLog>.Instance);
@@ -41,7 +42,7 @@ public class ModelRouterStageFuzzyTests
         // has the model — only our probed profile is missing).
         var ctx = TestCtx.Build("claude-sonnet-6");
 
-        await Stage().ApplyAsync(ctx);
+        await Stage(ctx).ApplyAsync();
 
         Assert.Equal("claude-sonnet-6", ctx.Request.Body.Model);   // real id preserved
         Assert.NotNull(ctx.Target);
@@ -61,7 +62,7 @@ public class ModelRouterStageFuzzyTests
         // per-profile coercion itself is covered by ProfileAdjusterTests.)
         var ctx = TestCtx.Build("claude-opus-4.9", effort: "xhigh");
 
-        await Stage().ApplyAsync(ctx);
+        await Stage(ctx).ApplyAsync();
 
         Assert.Equal("claude-opus-4.9", ctx.Request.Body.Model);
         Assert.Equal(BackendVendor.CopilotAnthropic, ctx.Target!.Vendor);
@@ -78,7 +79,7 @@ public class ModelRouterStageFuzzyTests
         // RouteToVariant today, so this guards the safety net, not current data.)
         var ctx = TestCtx.Build("claude-opus-4.9", effort: "high");
 
-        await Stage().ApplyAsync(ctx);
+        await Stage(ctx).ApplyAsync();
 
         Assert.Equal("claude-opus-4.9", ctx.Request.Body.Model);
         Assert.DoesNotContain("-high", ctx.Request.Body.Model);
@@ -103,7 +104,7 @@ public class ModelRouterStageFuzzyTests
         // enough to borrow safely, so the actionable 400 is preserved.
         var ctx = TestCtx.Build("claude-zzz-totally-made-up-9999-xyz");
 
-        var ex = await Assert.ThrowsAsync<UnknownModelException>(() => Stage().ApplyAsync(ctx));
+        var ex = await Assert.ThrowsAsync<UnknownModelException>(() => Stage(ctx).ApplyAsync());
         Assert.Contains("No profile for model", ex.Message);
     }
 
@@ -119,7 +120,7 @@ public class ModelRouterStageFuzzyTests
         // claude id must now be surfaced, with its (sub-floor) similarity.
         var ctx = TestCtx.Build("claude-zzz-totally-made-up-9999-xyz");
 
-        var ex = await Assert.ThrowsAsync<UnknownModelException>(() => Stage().ApplyAsync(ctx));
+        var ex = await Assert.ThrowsAsync<UnknownModelException>(() => Stage(ctx).ApplyAsync());
 
         Assert.NotNull(ex.BestCandidate);
         Assert.StartsWith("claude-", ex.BestCandidate!);
@@ -139,6 +140,6 @@ public class ModelRouterStageFuzzyTests
         // — either way it must not silently forward.
         var ctx = TestCtx.Build("mistral-large-2");
 
-        await Assert.ThrowsAnyAsync<Exception>(() => Stage().ApplyAsync(ctx));
+        await Assert.ThrowsAnyAsync<Exception>(() => Stage(ctx).ApplyAsync());
     }
 }

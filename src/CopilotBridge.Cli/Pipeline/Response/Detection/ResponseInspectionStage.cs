@@ -1,10 +1,8 @@
 using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using System.Text;
-using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
@@ -16,8 +14,12 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// the response stream is wrapped once, not once per concern.
 /// </summary>
 /// <remarks>
-/// Detectors are built per request via <see cref="DetectorSetFactory"/> so
-/// streaming state (e.g. the tool-leak automaton) never leaks across requests.
+/// Scoped DI service. Detectors are injected as the whole set
+/// <c>IEnumerable&lt;IResponseDetector&gt;</c> (each a scoped service, so streaming
+/// state never leaks across requests); DI registration order is precedence order.
+/// For each request the stage selects the config-enabled detectors
+/// (<see cref="IResponseDetector.Enabled"/>) and initializes each from the
+/// populated context (<see cref="IResponseDetector.Begin"/>) before any inspection.
 /// The action semantics on the streaming path (design.md D7):
 /// <list type="bullet">
 /// <item>None → yield the event unchanged;</item>
@@ -25,29 +27,52 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// <item>RewriteEvent → yield the replacement event;</item>
 /// <item>Abort → yield one synthetic <c>error</c> event, then end the stream.</item>
 /// </list>
-/// The first non-None action for an event wins (detector order = former stage
+/// The first non-None action for an event wins (detector order = registration
 /// order); Abort short-circuits the remaining detectors.
 /// </remarks>
 internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
 {
-    private readonly IDetectorSetFactory _factory;
+    private readonly IReadOnlyList<IResponseDetector> _detectors;
+    private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly ILogger<ResponseInspectionStage> _log;
 
-    public ResponseInspectionStage(IDetectorSetFactory factory, ILogger<ResponseInspectionStage> log)
+    public ResponseInspectionStage(
+        IEnumerable<IResponseDetector> detectors,
+        BridgeContext<MessagesRequest> ctx,
+        ILogger<ResponseInspectionStage> log)
     {
-        _factory = factory;
+        // Order by the explicit registration-assigned Order, not the container's
+        // enumeration order — precedence is guaranteed regardless of how
+        // IEnumerable<IResponseDetector> happens to resolve.
+        _detectors = detectors.OrderBy(d => d.Order).ToArray();
+        _ctx = ctx;
         _log = log;
     }
 
     public string Name => "ResponseInspection";
 
-    public async Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
+    public async Task ApplyAsync()
     {
-        var detectors = _factory.Build(ctx);
-        if (detectors.Count == 0)
+        var ctx = _ctx;
+        // Select the config-enabled detectors and initialize each from the (now
+        // fully-populated) context, preserving Order = precedence. A disabled
+        // detector is never begun and never inspects — no scanning, no allocation.
+        // The always-on DONE filter keeps the active set non-empty.
+        List<IResponseDetector>? active = null;
+        foreach (var d in _detectors)
+        {
+            if (!d.Enabled)
+            {
+                continue;
+            }
+            d.Begin();
+            (active ??= new List<IResponseDetector>(_detectors.Count)).Add(d);
+        }
+        if (active is null)
         {
             return; // defensive: the always-on DONE filter keeps this non-empty
         }
+        var detectors = active;
 
         if (ctx.Response.Mode == ResponseMode.Streaming && ctx.Response.EventStream is not null)
         {
@@ -113,13 +138,13 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
             switch (action.Kind)
             {
                 case DetectionActionKind.Abort:
-                    _log.LogDebug("stage {Name}: buffered abort (tool leak); status={Status}", Name, action.HttpStatus);
+                    _log.LogDebug("stage {Name}: buffered abort (response leak); status={Status}", Name, action.HttpStatus);
                     ctx.Response.Mode = ResponseMode.Buffered;
                     ctx.Response.Status = action.HttpStatus;
                     ctx.Response.BufferedBody = Encoding.UTF8.GetBytes(action.ErrorJson!);
                     ctx.Response.Headers["Content-Type"] = "application/json";
                     ctx.Response.EventStream = null;
-                    ctx.ToolLeakDetected = true;
+                    ctx.ResponseLeakDetected = true;
                     return; // terminal — discard the rest of the buffered events
 
                 case DetectionActionKind.DropEvent:
@@ -164,7 +189,7 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
                     ctx.Response.Status = action.HttpStatus;
                     ctx.Response.BufferedBody = Encoding.UTF8.GetBytes(action.ErrorJson!);
                     ctx.Response.Headers["Content-Type"] = "application/json";
-                    ctx.ToolLeakDetected = true;
+                    ctx.ResponseLeakDetected = true;
                     return; // terminal — no later detector runs
                 case DetectionActionKind.RewriteEvent:
                     // Buffered rewrite carries replacement bytes as the event data.
@@ -218,7 +243,7 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
                     // Inject the error event, then end the stream — the remaining
                     // upstream events are abandoned. Claude Code discards the whole
                     // attempt on this error and retries from clean history.
-                    ctx.ToolLeakDetected = true;
+                    ctx.ResponseLeakDetected = true;
                     yield return new SseItem<string>(action.ErrorJson!, "error");
                     yield break;
             }

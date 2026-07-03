@@ -34,10 +34,14 @@ namespace CopilotBridge.UnitTests;
 public class CodexEndpointTests
 {
     // ── stub runner: each test supplies what the "pipeline" does ─────────────
-    private sealed class StubRunner(Action<BridgeContext<MessagesRequest>> behavior)
+    // The runner now reads the injected scoped context; the test hands the SAME
+    // BridgeContext instance to both HandleAsync and the runner (mirroring how DI
+    // resolves one scoped instance for the whole request), so the behavior sees
+    // exactly what the endpoint populated.
+    private sealed class StubRunner(BridgeContext<MessagesRequest> ctx, Action<BridgeContext<MessagesRequest>> behavior)
         : IPipelineRunner<MessagesRequest>
     {
-        public Task RunAsync(Pipeline<MessagesRequest> pipeline, BridgeContext<MessagesRequest> ctx)
+        public Task RunAsync(Pipeline<MessagesRequest> pipeline)
         {
             behavior(ctx);
             return Task.CompletedTask;
@@ -63,12 +67,15 @@ public class CodexEndpointTests
         var respStream = new MemoryStream();
         http.Response.Body = respStream;
 
+        var bridgeCtx = new BridgeContext<MessagesRequest>();
+
         await CodexResponsesEndpoint.HandleAsync(
             http,
-            new StubRunner(pipelineBehavior),
+            bridgeCtx,
+            new StubRunner(bridgeCtx, pipelineBehavior),
             DummyPipeline,
             new ResponsesToIrInboundAdapter(NullLogger<ResponsesToIrInboundAdapter>.Instance),
-            new IrToResponsesOutboundAdapter(NullLogger<IrToResponsesOutboundAdapter>.Instance),
+            new IrToResponsesOutboundAdapter(bridgeCtx, NullLogger<IrToResponsesOutboundAdapter>.Instance),
             new RequestSummaryLogger(NullLogger<RequestSummaryLogger>.Instance),
             Microsoft.Extensions.Options.Options.Create(new CopilotBridge.Cli.Hosting.Options.TracingOptions()),
             NullLogger<MessagesRequest>.Instance,
@@ -310,9 +317,12 @@ public class CodexEndpointTests
         http.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(ValidRequest));
         http.Response.Body = new MemoryStream();
 
+        var bridgeCtx = new BridgeContext<MessagesRequest>();
+
         await CodexResponsesEndpoint.HandleAsync(
             http,
-            new StubRunner(ctx =>
+            bridgeCtx,
+            new StubRunner(bridgeCtx, ctx =>
             {
                 ctx.Target = new RouteTarget(BackendVendor.CopilotResponses, "/responses", "gpt-5.3-codex");
                 ctx.Response.Status = StatusCodes.Status200OK;
@@ -322,7 +332,7 @@ public class CodexEndpointTests
             }),
             DummyPipeline,
             new ResponsesToIrInboundAdapter(NullLogger<ResponsesToIrInboundAdapter>.Instance),
-            new IrToResponsesOutboundAdapter(NullLogger<IrToResponsesOutboundAdapter>.Instance),
+            new IrToResponsesOutboundAdapter(bridgeCtx, NullLogger<IrToResponsesOutboundAdapter>.Instance),
             new RequestSummaryLogger(NullLogger<RequestSummaryLogger>.Instance),
             Microsoft.Extensions.Options.Options.Create(new CopilotBridge.Cli.Hosting.Options.TracingOptions()),
             NullLogger<MessagesRequest>.Instance,

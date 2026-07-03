@@ -107,8 +107,8 @@ public class UpstreamResponseCaptureContractTests
         return Encoding.UTF8.GetBytes(sb.ToString());
     }
 
-    private static CopilotMessagesPassthroughStrategy CcStrategy(ICopilotClient client, bool tracing) =>
-        new(client, Options.Create(new TracingOptions { Enabled = tracing }),
+    private static CopilotMessagesPassthroughStrategy CcStrategy(ICopilotClient client, bool tracing, BridgeContext<MessagesRequest> ctx) =>
+        new(client, ctx, Options.Create(new TracingOptions { Enabled = tracing }),
             NullLogger<CopilotMessagesPassthroughStrategy>.Instance);
 
     // ── Case A: tracing ON, streaming → capture == Copilot's raw wire bytes ───
@@ -122,10 +122,10 @@ public class UpstreamResponseCaptureContractTests
     public async Task TracingOn_Streaming_CaptureEqualsRawCopilotBytes()
     {
         var raw = SampleSse();
-        var strategy = CcStrategy(new StubClient(StreamingResponse(raw)), tracing: true);
         var ctx = Ctx("claude-opus-4-8", stream: true);
+        var strategy = CcStrategy(new StubClient(StreamingResponse(raw)), tracing: true, ctx: ctx);
 
-        await strategy.ForwardAsync(ctx);
+        await strategy.ForwardAsync();
         // The capture is filled only as the stream is consumed — drain it the way
         // the endpoint relay loop would.
         await DrainAsync(ctx.Response.EventStream!);
@@ -148,10 +148,10 @@ public class UpstreamResponseCaptureContractTests
         // Baseline: the events as parsed straight from Copilot's bytes.
         var expected = await DrainAsync(SseParser.Create(new MemoryStream(raw)).EnumerateAsync());
 
-        var strategy = CcStrategy(new StubClient(StreamingResponse(raw)), tracing: false);
         var ctx = Ctx("claude-opus-4-8", stream: true);
+        var strategy = CcStrategy(new StubClient(StreamingResponse(raw)), tracing: false, ctx: ctx);
 
-        await strategy.ForwardAsync(ctx);
+        await strategy.ForwardAsync();
         var got = await DrainAsync(ctx.Response.EventStream!);
 
         Assert.Null(ctx.Response.RawUpstreamResponseCapture);
@@ -177,7 +177,6 @@ public class UpstreamResponseCaptureContractTests
     {
         // Copilot answered as its back-end variant; the client asked for opus-4-8.
         var copilotBody = Encoding.UTF8.GetBytes("""{"model":"claude-opus-4.7-1m-internal","type":"message"}""");
-        var strategy = CcStrategy(new StubClient(BufferedResponse(copilotBody)), tracing: true);
 
         // Realistic routing state: the router already rewrote Body.Model to the
         // resolved back-end variant and recorded the original the client asked for.
@@ -186,7 +185,9 @@ public class UpstreamResponseCaptureContractTests
         var ctx = Ctx("claude-opus-4.7-1m-internal", stream: false);
         ctx.OriginalRequestedModel = "claude-opus-4-8";
 
-        await strategy.ForwardAsync(ctx);
+        var strategy = CcStrategy(new StubClient(BufferedResponse(copilotBody)), tracing: true, ctx: ctx);
+
+        await strategy.ForwardAsync();
 
         // Snapshot the raw capture BEFORE the rewrite stage runs (as the endpoint does).
         var rawCapture = ctx.Response.RawUpstreamResponseBody;
@@ -195,9 +196,10 @@ public class UpstreamResponseCaptureContractTests
         // buffered path: run ModelRewriteDetector and write its replacement bytes
         // back to BufferedBody.
         var rewrite = new ModelRewriteDetector(
-            enabled: true,
-            originalModel: ctx.OriginalRequestedModel,
-            resolvedModel: ctx.Request.Body.Model);
+            new DetectorOrder<ModelRewriteDetector>(0),
+            TestOptions.Snapshot(new ResponseModelRewriteOptions { Enabled = true }),
+            ctx);
+        rewrite.Begin();
         var action = rewrite.InspectBuffered(ctx.Response.BufferedBody!);
         if (action.Kind == DetectionActionKind.RewriteEvent)
         {
@@ -227,15 +229,15 @@ public class UpstreamResponseCaptureContractTests
             "event: response.created\ndata: {\"type\":\"response.created\"}\n\n"
             + "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n");
 
+        var ctx = Ctx("gpt-5.3-codex", stream: true);
         var strategy = new CopilotResponsesStrategy(
             new StubClient(StreamingResponse(raw)),
             new CodexModelProfileCatalog(),
+            ctx,
             Options.Create(new TracingOptions { Enabled = true }),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
-        var ctx = Ctx("gpt-5.3-codex", stream: true);
-
-        await strategy.ForwardAsync(ctx);
+        await strategy.ForwardAsync();
         await DrainAsync(ctx.Response.EventStream!);
 
         Assert.NotNull(ctx.Response.RawUpstreamResponseCapture);
@@ -252,15 +254,15 @@ public class UpstreamResponseCaptureContractTests
         var raw = Encoding.UTF8.GetBytes(
             "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n");
 
+        var ctx = Ctx("gpt-5.3-codex", stream: true);
         var strategy = new CopilotResponsesStrategy(
             new StubClient(StreamingResponse(raw)),
             new CodexModelProfileCatalog(),
+            ctx,
             Options.Create(new TracingOptions { Enabled = false }),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
-        var ctx = Ctx("gpt-5.3-codex", stream: true);
-
-        await strategy.ForwardAsync(ctx);
+        await strategy.ForwardAsync();
         await DrainAsync(ctx.Response.EventStream!);
 
         Assert.Null(ctx.Response.RawUpstreamResponseCapture);
@@ -277,15 +279,15 @@ public class UpstreamResponseCaptureContractTests
     public async Task Codex_TracingOn_Buffered_StashesRawBody()
     {
         var copilotBody = Encoding.UTF8.GetBytes("""{"id":"resp_1","object":"response"}""");
+        var ctx = Ctx("gpt-5.3-codex", stream: false);
         var strategy = new CopilotResponsesStrategy(
             new StubClient(BufferedResponse(copilotBody)),
             new CodexModelProfileCatalog(),
+            ctx,
             Options.Create(new TracingOptions { Enabled = true }),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
-        var ctx = Ctx("gpt-5.3-codex", stream: false);
-
-        await strategy.ForwardAsync(ctx);
+        await strategy.ForwardAsync();
 
         Assert.NotNull(ctx.Response.RawUpstreamResponseBody);
         Assert.Equal(copilotBody, ctx.Response.RawUpstreamResponseBody);
@@ -306,9 +308,9 @@ public class UpstreamResponseCaptureContractTests
         var raw = SampleSse();
         var baseline = await DrainAsync(SseParser.Create(new MemoryStream(raw)).EnumerateAsync());
 
-        var strategy = CcStrategy(new StubClient(StreamingResponse(raw)), tracing: true);
         var ctx = Ctx("claude-opus-4-8", stream: true);
-        await strategy.ForwardAsync(ctx);
+        var strategy = CcStrategy(new StubClient(StreamingResponse(raw)), tracing: true, ctx: ctx);
+        await strategy.ForwardAsync();
         var got = await DrainAsync(ctx.Response.EventStream!);
 
         Assert.Equal(baseline.Count, got.Count);
@@ -367,10 +369,10 @@ public class UpstreamResponseCaptureContractTests
         // A complete first event, then the stream dies before any terminator.
         var prefix = Encoding.UTF8.GetBytes(
             "event: message_start\ndata: {\"type\":\"message_start\"}\n\n");
-        var strategy = CcStrategy(new StubClient(FaultingStreamingResponse(prefix)), tracing: true);
         var ctx = Ctx("claude-opus-4-8", stream: true);
+        var strategy = CcStrategy(new StubClient(FaultingStreamingResponse(prefix)), tracing: true, ctx: ctx);
 
-        await strategy.ForwardAsync(ctx);
+        await strategy.ForwardAsync();
 
         await Assert.ThrowsAnyAsync<IOException>(async () =>
             await DrainAsync(ctx.Response.EventStream!));
@@ -394,14 +396,15 @@ public class UpstreamResponseCaptureContractTests
     {
         var prefix = Encoding.UTF8.GetBytes(
             "event: response.created\ndata: {\"type\":\"response.created\"}\n\n");
+        var ctx = Ctx("gpt-5.3-codex", stream: true);
         var strategy = new CopilotResponsesStrategy(
             new StubClient(FaultingStreamingResponse(prefix)),
             new CodexModelProfileCatalog(),
+            ctx,
             Options.Create(new TracingOptions { Enabled = true }),
             NullLogger<CopilotResponsesStrategy>.Instance);
-        var ctx = Ctx("gpt-5.3-codex", stream: true);
 
-        await strategy.ForwardAsync(ctx);
+        await strategy.ForwardAsync();
         // Codex swallows the fault internally and flushes a terminal — no throw.
         await DrainAsync(ctx.Response.EventStream!);
 

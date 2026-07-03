@@ -35,11 +35,12 @@ internal sealed class RequestSummary
     public long DurationMs { get; set; }
 
     /// <summary>
-    /// True when the tool-leak guard detected a leaked tool call and forced a
-    /// client retry this turn. Lets the operator measure the real-world leak rate
-    /// by grepping the summary line. Default false.
+    /// True when the response-leak guard detected a leak — a leaked tool call or a
+    /// leaked control envelope — and forced a client retry this turn. Lets the
+    /// operator measure the real-world leak rate by grepping the summary line
+    /// (<c>response_leak=</c>). Default false.
     /// </summary>
-    public bool ToolLeakDetected { get; set; }
+    public bool ResponseLeakDetected { get; set; }
 
     /// <summary>
     /// When the pipeline / endpoint throws, the exception's type + message
