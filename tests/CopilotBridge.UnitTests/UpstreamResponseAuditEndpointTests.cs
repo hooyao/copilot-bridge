@@ -57,17 +57,20 @@ public class UpstreamResponseAuditEndpointTests
 
     // Minimal runner mirroring production: resolve target, run the real strategy,
     // then apply response stages — enough to exercise the endpoint's relay/finally.
+    // Reads the injected scoped context (the same instance the endpoint populated
+    // and the strategy/stages were constructed with).
     private sealed class Runner(
+        BridgeContext<MessagesRequest> ctx,
         IUpstreamStrategy<MessagesRequest> strategy,
         IReadOnlyList<IResponseStage<MessagesRequest>> stages,
         string? originalModel) : IPipelineRunner<MessagesRequest>
     {
-        public async Task RunAsync(Pipeline<MessagesRequest> pipeline, BridgeContext<MessagesRequest> ctx)
+        public async Task RunAsync(Pipeline<MessagesRequest> pipeline)
         {
             ctx.OriginalRequestedModel = originalModel ?? ctx.Request.Body.Model;
             ctx.Target = new RouteTarget(BackendVendor.CopilotAnthropic, "/v1/messages", ctx.Request.Body.Model);
-            await strategy.ForwardAsync(ctx);
-            foreach (var s in stages) await s.ApplyAsync(ctx);
+            await strategy.ForwardAsync();
+            foreach (var s in stages) await s.ApplyAsync();
         }
     }
 
@@ -100,14 +103,19 @@ public class UpstreamResponseAuditEndpointTests
         HttpResponseMessage copilotResp,
         bool tracingEnabled,
         string? originalModel = null,
-        IReadOnlyList<IResponseStage<MessagesRequest>>? stages = null)
+        Func<BridgeContext<MessagesRequest>, IReadOnlyList<IResponseStage<MessagesRequest>>>? stagesFactory = null)
     {
-        stages ??= [];
         var recorder = new RecordingLoggerProvider();
         using var loggerFactory = LoggerFactory.Create(b => b.AddProvider(recorder));
         var tracing = Options.Create(new TracingOptions { Enabled = tracingEnabled });
+
+        // One shared scoped context, mirroring DI: the endpoint populates it, and
+        // the strategy / stages / runner all read the same instance.
+        var bridgeCtx = new BridgeContext<MessagesRequest>();
+        var stages = stagesFactory?.Invoke(bridgeCtx) ?? [];
+
         var strategy = new CopilotMessagesPassthroughStrategy(
-            new StubClient(copilotResp), tracing,
+            new StubClient(copilotResp), bridgeCtx, tracing,
             NullLogger<CopilotMessagesPassthroughStrategy>.Instance);
 
         var http = new DefaultHttpContext();
@@ -118,7 +126,8 @@ public class UpstreamResponseAuditEndpointTests
 
         await ClaudeCodeMessagesEndpoint.HandleAsync(
             http,
-            new Runner(strategy, stages, originalModel),
+            bridgeCtx,
+            new Runner(bridgeCtx, strategy, stages, originalModel),
             new Pipeline<MessagesRequest>
             {
                 Name = "test",
@@ -172,21 +181,32 @@ public class UpstreamResponseAuditEndpointTests
         var copilotBody = Encoding.UTF8.GetBytes("""{"model":"claude-opus-4.8","type":"message"}""");
         var requestJson =
             """{"model":"claude-opus-4.8","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"x"}]}""";
-        // Inspection stage with model-rewrite enabled and the tool-leak guard off,
-        // isolating the rewrite behavior this test asserts.
-        var detectors = new IResponseDetector[]
-        {
-            new ModelRewriteDetector(TestOptions.Snapshot(new ResponseModelRewriteOptions { Enabled = true })),
-            new ToolLeakDetector(TestOptions.Snapshot(new ToolLeakGuardOptions { Enabled = false }), NullLogger<ToolLeakDetector>.Instance),
-        };
-        var stages = new IResponseStage<MessagesRequest>[]
-        {
-            new ResponseInspectionStage(detectors, NullLogger<ResponseInspectionStage>.Instance),
-        };
-
         var body = await RunAndGetUpstreamRespBody(
             requestJson, BufferedResponse(copilotBody), tracingEnabled: true,
-            originalModel: "claude-opus-4-8", stages: stages);
+            originalModel: "claude-opus-4-8",
+            stagesFactory: ctx =>
+            {
+                // Inspection stage with model-rewrite enabled and the tool-leak
+                // guard off, isolating the rewrite behavior this test asserts. The
+                // detectors read the shared scoped ctx; Order values are arbitrary
+                // here (only two detectors, distinct order).
+                var detectors = new IResponseDetector[]
+                {
+                    new ModelRewriteDetector(
+                        new DetectorOrder<ModelRewriteDetector>(0),
+                        TestOptions.Snapshot(new ResponseModelRewriteOptions { Enabled = true }),
+                        ctx),
+                    new ToolLeakDetector(
+                        new DetectorOrder<ToolLeakDetector>(1),
+                        TestOptions.Snapshot(new ToolLeakGuardOptions { Enabled = false }),
+                        ctx,
+                        NullLogger<ToolLeakDetector>.Instance),
+                };
+                return
+                [
+                    new ResponseInspectionStage(detectors, ctx, NullLogger<ResponseInspectionStage>.Instance),
+                ];
+            });
 
         Assert.NotNull(body);
         // The audit holds Copilot's original bytes, NOT the rewritten model.

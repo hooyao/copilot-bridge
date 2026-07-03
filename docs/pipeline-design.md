@@ -297,6 +297,18 @@ internal sealed class BridgeResponse
 internal enum ResponseMode { Streaming, Buffered }
 ```
 
+**Lifetime — `BridgeContext` is a scoped DI service.** It is registered
+`AddScoped<BridgeContext<MessagesRequest>>()`: the container creates one empty shell
+per ASP.NET Core request scope, the pipeline-driving endpoint populates it
+(`Request`/`Response`/`Ct`/`TraceId`/`InboundBetas`), and every pipeline component
+(stages, strategies, adapters, the runner, and the detectors) **constructor-injects
+that same instance** rather than receiving it as a method argument. Consequently
+`Request`/`Response`/`Ct` are settable (not `required init`) so the endpoint can fill
+the DI-created shell, and **a component's constructor MUST NOT read `ctx.Request`** —
+it is unpopulated at construction; request data is read only in
+`ApplyAsync`/`ForwardAsync`/`Begin`, which the runner invokes strictly after the fill.
+See §4.8 for the per-request scope boundary as a whole.
+
 ### 4.2 RouteTarget
 
 ```csharp
@@ -314,15 +326,19 @@ internal enum BackendVendor { CopilotAnthropic, CopilotOpenAi, CopilotResponses 
 internal interface IRequestStage<TBody> where TBody : class
 {
     string Name { get; }
-    Task ApplyAsync(BridgeContext<TBody> ctx);
+    Task ApplyAsync();
 }
 
 internal interface IResponseStage<TBody> where TBody : class
 {
     string Name { get; }
-    Task ApplyAsync(BridgeContext<TBody> ctx);
+    Task ApplyAsync();
 }
 ```
+
+Stages inject the scoped `BridgeContext<TBody>` (see §4.1) and read/mutate it in
+`ApplyAsync` — `ctx` is no longer a method parameter. `TBody` now only groups
+same-shape stages into a `Pipeline<TBody>`.
 
 Most response stages are shape-agnostic in practice (they wrap event streams
 or mutate response headers). The `TBody` parameter is there for symmetry and
@@ -347,9 +363,10 @@ internal interface IUpstreamStrategy<TBody> where TBody : class
     /// body to the backend's native shape (e.g. Anthropic → OpenAI) and wrap
     /// the response stream with a reverse translator. After this returns,
     /// ctx.Response.EventStream / BufferedBody / Headers / Status are populated
-    /// in the SAME shape the inbound client expects.
+    /// in the SAME shape the inbound client expects. Reads the injected
+    /// BridgeContext (see §4.1); no ctx parameter.
     /// </summary>
-    Task ForwardAsync(BridgeContext<TBody> ctx);
+    Task ForwardAsync();
 }
 ```
 
@@ -379,11 +396,12 @@ the entire request → forward → response flow.
 ```csharp
 internal interface IPipelineRunner<TBody> where TBody : class
 {
-    Task RunAsync(Pipeline<TBody> pipeline, BridgeContext<TBody> ctx);
+    Task RunAsync(Pipeline<TBody> pipeline);
 }
 ```
 
-Implementation contract:
+The runner injects the scoped `BridgeContext<TBody>` (it no longer takes it as an
+argument). Implementation contract:
 
 ```
 RunAsync:
@@ -391,7 +409,7 @@ RunAsync:
         Log.Debug("req-stage start {Stage}"); apply; Log.Debug("req-stage end {Stage}")
     strategy = pipeline.Strategies.Resolve(ctx.Target)
     Log.Debug("strategy resolved {Name} target={Target}")
-    strategy.ForwardAsync(ctx)
+    strategy.ForwardAsync()
     Log.Debug("strategy returned status={Status} mode={Mode}")
     foreach stage in pipeline.ResponseStages:
         Log.Debug("resp-stage start {Stage}"); apply; Log.Debug("resp-stage end {Stage}")
@@ -466,6 +484,38 @@ handler picks the right pair based on its URL prefix:
 Strategy-side translators (IR ↔ backend shape) are an internal concern of the
 strategy and do not implement these interfaces — they live as private fields
 inside, e.g., `CopilotChatCompletionsStrategy<TIR>`.
+
+### 4.8 Per-request scope boundary (DI lifetimes)
+
+Each forwarded request runs on its own ASP.NET Core request scope, and the whole
+pipeline object tree is scoped to it — created at request start, disposed at request
+end, fully isolated from concurrent requests. This is a structural guarantee, not a
+convention: the boundary is drawn by DI lifetime.
+
+**Scoped (one per request):** `BridgeContext<MessagesRequest>` (§4.1), the six
+request stages, both upstream strategies, the four client adapters,
+`IPipelineRunner<MessagesRequest>`, `ResponseInspectionStage`, and the three
+`IResponseDetector`s (plus the `Pipeline<MessagesRequest>` object itself, composed
+per scope by `BuildAnthropicPipeline`). Because these inject the scoped
+`BridgeContext`, they *cannot* be singletons — a singleton capturing a scoped service
+is a captive dependency.
+
+**Singleton (process-level shared resources):** `HttpClient` and `ICopilotClient` (a
+per-request `HttpClient` is the classic socket-exhaustion anti-pattern),
+`AuthService`/`IAuthService` (owns the token-refresh timer and in-memory token
+cache), the immutable catalog/registry lookup tables (`ModelProfileCatalog`,
+`CodexModelProfileCatalog`, `IModelRegistry`), `CopilotHeaderFactory`,
+`BridgeIoSink`, `RequestSummaryLogger`, all options, and the hosted services.
+
+**Guardrail.** The host container is built with
+`ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true }`
+(`ServeCommand`). `ValidateOnBuild` walks the whole graph at startup and throws on
+any captive dependency; `ValidateScopes` rejects resolving a scoped service from the
+root provider. So a future regression that makes a pipeline component a singleton
+fails fast at startup and in `DetectorCompositionTests`, rather than silently leaking
+one request's state into another. The static routing helpers (`ModelRouteResolver`,
+`ProfileAdjuster`, `MatchExpression`) are not DI services; the injecting stage passes
+its context to them as an argument — the only place `ctx` still flows as a parameter.
 
 ## 5. Request pipeline (current: `Pipeline<MessagesRequest>`)
 
@@ -566,13 +616,16 @@ via `InspectBuffered` over `BufferedBody`.
 Detectors are **scoped DI services** (one instance per request scope) because a
 streaming detector may carry cross-delta state (the tool-leak automaton) that must
 not be shared across requests. They are injected as the whole set
-`IEnumerable<IResponseDetector>`; **registration order is precedence order** (see
-§6.2). Each detector self-gates on its own config via `Enabled` (backed by an
+`IEnumerable<IResponseDetector>`, and the stage runs them in ascending
+`IResponseDetector.Order` — an explicit value assigned from registration order (see
+§6.2), so **precedence does not depend on the container's enumeration order**. Each
+detector self-gates on its own config via `Enabled` (backed by an
 `IOptionsSnapshot<T>`), and reads its per-request data (declared tools, model ids)
-in `Begin(ctx)` — the stage calls `Begin` once, after config-gating and before any
-inspection, so DI-construction timing (scope start, body empty) is decoupled from
-request-data availability (response phase, body populated). A disabled detector is
-filtered out before `Begin`: it is never initialized and never scans.
+from the injected `BridgeContext` in a parameterless `Begin()` — the stage calls
+`Begin` once, after config-gating and before any inspection, so DI-construction
+timing (scope start, body empty) is decoupled from request-data availability
+(response phase, body populated). A disabled detector is filtered out before
+`Begin`: it is never initialized and never scans.
 
 ### 6.1 Tool-leak guard
 
@@ -637,24 +690,28 @@ is registering the JSON file with `reloadOnChange: true` in
 
 ### 6.2 Adding a detector
 
-Implement `IResponseDetector` and register it with one line in
-`BridgeServiceCollectionExtensions` — `services.AddScoped<IResponseDetector,
-YourDetector>()` — in the right position, since **registration order is precedence
-order** (MS.DI preserves it when resolving `IEnumerable<IResponseDetector>`). Inject
-config as `IOptionsSnapshot<T>` and expose it through `Enabled`; read request data
-and reset streaming state in `Begin(ctx)`. The `RewriteBlock`-style whole-block
-transform (e.g. a JSON-repair detector for malformed JSON inside real `tool_use`
-blocks) is the framework's designed extension point; it is not implemented in this
-change. The standard async-iterator combinator still applies:
+Derive from `AbstractOrderAwareDetector<TSelf>` (CRTP — it carries the `Order`
+property and the default members, so you implement only `Name`, `Enabled`, and
+`InspectEvent`), and register it with one line in `BridgeServiceCollectionExtensions`
+— `services.RegisterResponseDetector<YourDetector>()` — in the right position.
+`RegisterResponseDetector` registers the detector as a scoped `IResponseDetector`
+AND a singleton `DetectorOrder<YourDetector>` whose value is the current count of
+detector registrations, i.e. the zero-based position in the call sequence. So the
+call order in that block is the **single source of truth for precedence**,
+materialized as an explicit unique `Order` the stage sorts by — no reliance on
+`IEnumerable<T>` resolution order. The detector's constructor injects
+`DetectorOrder<YourDetector>` (forwarded to `base(order)`), the scoped
+`BridgeContext<MessagesRequest>`, and its `IOptionsSnapshot<T>` config (exposed
+through `Enabled`); read request data and reset streaming state in the parameterless
+`Begin()`. The `RewriteBlock`-style whole-block transform (e.g. a JSON-repair
+detector for malformed JSON inside real `tool_use` blocks) is the framework's
+designed extension point; it is not implemented in this change. The standard
+async-iterator combinator still applies (the stage owns it; a detector only returns
+a `DetectionAction`).
+
+For reference, the stage's stream-wrap uses the standard async-iterator combinator:
 
 ```csharp
-public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
-{
-    var source = ctx.Response.EventStream!;
-    ctx.Response.EventStream = TransformEvents(source, ctx.Ct);
-    return Task.CompletedTask;
-}
-
 private static async IAsyncEnumerable<SseItem<string>> TransformEvents(
     IAsyncEnumerable<SseItem<string>> source,
     [EnumeratorCancellation] CancellationToken ct)

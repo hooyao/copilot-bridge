@@ -4,53 +4,55 @@ namespace CopilotBridge.Cli.Pipeline;
 
 /// <summary>
 /// Drives a <see cref="Pipeline{TBody}"/>: runs request stages, resolves and
-/// invokes the strategy, runs response stages. Endpoints construct a
-/// <see cref="BridgeContext{TBody}"/> and hand it to a runner.
+/// invokes the strategy, runs response stages. Endpoints populate the injected
+/// <see cref="BridgeContext{TBody}"/> and hand the pipeline to a runner.
 /// </summary>
 internal interface IPipelineRunner<TBody> where TBody : class
 {
-    Task RunAsync(Pipeline<TBody> pipeline, BridgeContext<TBody> ctx);
+    Task RunAsync(Pipeline<TBody> pipeline);
 }
 
 internal sealed class PipelineRunner<TBody> : IPipelineRunner<TBody> where TBody : class
 {
+    private readonly BridgeContext<TBody> _ctx;
     private readonly ILogger<PipelineRunner<TBody>> _log;
 
-    public PipelineRunner(ILogger<PipelineRunner<TBody>> log)
+    public PipelineRunner(BridgeContext<TBody> ctx, ILogger<PipelineRunner<TBody>> log)
     {
+        _ctx = ctx;
         _log = log;
     }
 
-    public async Task RunAsync(Pipeline<TBody> pipeline, BridgeContext<TBody> ctx)
+    public async Task RunAsync(Pipeline<TBody> pipeline)
     {
         _log.LogDebug("pipeline {PipelineName} start  path={Path}  body-bytes={BodyBytes}",
-            pipeline.Name, ctx.Request.Path, ctx.Request.RawBody.Length);
+            pipeline.Name, _ctx.Request.Path, _ctx.Request.RawBody.Length);
 
         foreach (var stage in pipeline.RequestStages)
         {
             _log.LogDebug("req-stage start  {StageName}", stage.Name);
-            await stage.ApplyAsync(ctx);
+            await stage.ApplyAsync();
             _log.LogDebug("req-stage end    {StageName}", stage.Name);
         }
 
-        if (ctx.Target is null)
+        if (_ctx.Target is null)
         {
             throw new InvalidOperationException(
                 "Pipeline finished request stages without resolving ctx.Target — "
                 + "ensure ModelRouterStage (or equivalent) runs in the request stage list.");
         }
 
-        var strategy = pipeline.Strategies.Resolve(ctx.Target);
+        var strategy = pipeline.Strategies.Resolve(_ctx.Target);
         _log.LogDebug("strategy resolved  {StrategyName}  target={Vendor}:{Endpoint}  model={ModelId}",
-            strategy.Name, ctx.Target.Vendor, ctx.Target.Endpoint, ctx.Target.ModelId);
-        await strategy.ForwardAsync(ctx);
+            strategy.Name, _ctx.Target.Vendor, _ctx.Target.Endpoint, _ctx.Target.ModelId);
+        await strategy.ForwardAsync();
         _log.LogDebug("strategy returned  status={Status}  mode={Mode}",
-            ctx.Response.Status, ctx.Response.Mode);
+            _ctx.Response.Status, _ctx.Response.Mode);
 
         foreach (var stage in pipeline.ResponseStages)
         {
             _log.LogDebug("resp-stage start {StageName}", stage.Name);
-            await stage.ApplyAsync(ctx);
+            await stage.ApplyAsync();
             _log.LogDebug("resp-stage end   {StageName}", stage.Name);
         }
 

@@ -36,6 +36,17 @@ internal static class ServeCommand
 
         var builder = WebApplication.CreateSlimBuilder();
 
+        // Validate the DI graph at build time and enforce scope rules always (not
+        // only in Development): a captive dependency — a singleton that injects the
+        // now-scoped BridgeContext or any scoped pipeline component — fails the host
+        // build instead of silently capturing one request's instance for the process
+        // lifetime. This is the guardrail behind the per-request-scoped pipeline.
+        builder.Host.UseDefaultServiceProvider(options =>
+        {
+            options.ValidateScopes = true;
+            options.ValidateOnBuild = true;
+        });
+
         builder.AddBridgeConfiguration();
         builder.Logging.AddBridgeLogging();
         builder.Services.AddBridgeServer(builder.Configuration, cliPort, PrintDeviceCode);

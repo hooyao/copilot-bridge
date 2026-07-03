@@ -13,17 +13,22 @@ namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 /// </summary>
 internal sealed class AssistantThinkingFilterStage : IRequestStage<MessagesRequest>
 {
+    private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly ILogger<AssistantThinkingFilterStage> _log;
 
-    public AssistantThinkingFilterStage(ILogger<AssistantThinkingFilterStage> log)
+    public AssistantThinkingFilterStage(
+        BridgeContext<MessagesRequest> ctx,
+        ILogger<AssistantThinkingFilterStage> log)
     {
+        _ctx = ctx;
         _log = log;
     }
 
     public string Name => "AssistantThinkingFilter";
 
-    public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
+    public Task ApplyAsync()
     {
+        var ctx = _ctx;
         var dropped = 0;
         var anyChanged = false;
         var newMessages = new List<MessageParam>(ctx.Request.Body.Messages.Count);

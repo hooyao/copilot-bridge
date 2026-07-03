@@ -16,17 +16,22 @@ namespace CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 /// </summary>
 internal sealed class ToolsSanitizeStage : IRequestStage<MessagesRequest>
 {
+    private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly ILogger<ToolsSanitizeStage> _log;
 
-    public ToolsSanitizeStage(ILogger<ToolsSanitizeStage> log)
+    public ToolsSanitizeStage(
+        BridgeContext<MessagesRequest> ctx,
+        ILogger<ToolsSanitizeStage> log)
     {
+        _ctx = ctx;
         _log = log;
     }
 
     public string Name => "ToolsSanitize";
 
-    public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
+    public Task ApplyAsync()
     {
+        var ctx = _ctx;
         if (ctx.Request.Body.Tools is null || ctx.Request.Body.Tools.Count == 0)
         {
             return Task.CompletedTask;

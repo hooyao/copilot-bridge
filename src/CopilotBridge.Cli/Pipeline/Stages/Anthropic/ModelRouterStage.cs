@@ -20,6 +20,7 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
     private readonly Routing.CodexModelProfileCatalog _codexProfiles;
     private readonly Routing.RoutesConfig _routes;
     private readonly OutboundBetaPolicyOptions _betaPolicy;
+    private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly ILogger<ModelRouterStage> _log;
     private readonly ILogger<ModelRouteResolverLog> _resolverLog;
     private readonly ILogger<ProfileAdjusterLog> _adjusterLog;
@@ -30,6 +31,7 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
         Routing.CodexModelProfileCatalog codexProfiles,
         IOptions<Routing.RoutesConfig> routesOptions,
         IOptions<OutboundBetaPolicyOptions> betaPolicyOptions,
+        BridgeContext<MessagesRequest> ctx,
         ILogger<ModelRouterStage> log,
         ILogger<ModelRouteResolverLog> resolverLog,
         ILogger<ProfileAdjusterLog> adjusterLog)
@@ -39,6 +41,7 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
         _codexProfiles = codexProfiles;
         _routes = routesOptions.Value;
         _betaPolicy = betaPolicyOptions.Value;
+        _ctx = ctx;
         _log = log;
         _resolverLog = resolverLog;
         _adjusterLog = adjusterLog;
@@ -46,8 +49,9 @@ internal sealed class ModelRouterStage : IRequestStage<MessagesRequest>
 
     public string Name => "ModelRouter";
 
-    public Task ApplyAsync(BridgeContext<MessagesRequest> ctx)
+    public Task ApplyAsync()
     {
+        var ctx = _ctx;
         var requested = ctx.Request.Body.Model;
         // Stash the original, pre-normalize id so the response pipeline can
         // restore it on the way back out (see ResponseModelRewriteStage).
