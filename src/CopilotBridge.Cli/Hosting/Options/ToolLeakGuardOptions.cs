@@ -88,10 +88,13 @@ internal sealed class ToolLeakGuardOptions
     /// signature and the exact key to disable it are surfaced in both the retry
     /// error and the server WARNING log, so the user knows which switch to flip.</para>
     /// <para><b>Applied at startup — a restart is required after changing any
-    /// switch.</b> Hot-reload is not wired yet; the detector is nonetheless rebuilt
-    /// per request and recomputes its enabled signatures from these options every
-    /// time, so enabling hot-reload later only means pointing the detector factory
-    /// at a live options source — no change to detection.</para>
+    /// switch.</b> The detector is a scoped DI service that reads these options via
+    /// <c>IOptionsSnapshot</c> (re-bound per request) and recomputes its enabled
+    /// signatures on every request, so the only reason a config edit needs a restart
+    /// is that <c>appsettings.json</c> is registered with <c>reloadOnChange:false</c>
+    /// in <c>BridgeConfigurationExtensions</c>. Flipping that single flag to
+    /// <c>true</c> would make a toggled switch take effect on the next request with
+    /// no change to the detector.</para>
     /// </remarks>
     public ToolLeakSignaturesOptions Signatures { get; set; } = new();
 }
@@ -127,4 +130,26 @@ internal sealed class ToolLeakSignaturesOptions
 
     /// <summary>Leaked <c>&lt;tick&gt;</c> envelope. Default true.</summary>
     public bool Tick { get; set; } = true;
+
+    /// <summary>
+    /// Whether the given signature id (kebab-case, from
+    /// <see cref="Pipeline.Response.Detection.LeakSignatures"/>) is enabled. The
+    /// single id→flag mapping: callers derive the enabled set by filtering
+    /// <see cref="Pipeline.Response.Detection.LeakSignatures.All"/> through this,
+    /// so a new signature is wired by adding one <c>case</c> here (a
+    /// <see cref="LeakSignatures"/> id with no case throws, caught by a test) rather
+    /// than by editing a separate hand-maintained list. Throws on an unknown id so a
+    /// typo fails loudly instead of silently disabling a signature.
+    /// </summary>
+    public bool IsEnabled(string signatureId) => signatureId switch
+    {
+        Pipeline.Response.Detection.LeakSignatures.Invoke => Invoke,
+        Pipeline.Response.Detection.LeakSignatures.TaskNotification => TaskNotification,
+        Pipeline.Response.Detection.LeakSignatures.TeammateMessage => TeammateMessage,
+        Pipeline.Response.Detection.LeakSignatures.Channel => Channel,
+        Pipeline.Response.Detection.LeakSignatures.CrossSessionMessage => CrossSessionMessage,
+        Pipeline.Response.Detection.LeakSignatures.Tick => Tick,
+        _ => throw new System.ArgumentOutOfRangeException(
+            nameof(signatureId), signatureId, "Unknown leak signature id."),
+    };
 }

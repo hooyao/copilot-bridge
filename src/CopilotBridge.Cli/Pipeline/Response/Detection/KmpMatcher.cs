@@ -14,6 +14,17 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// </remarks>
 internal sealed class KmpMatcher
 {
+    // The failure function is a pure function of the pattern and is never mutated
+    // after construction (Feed only READS _fail). A response-leak scan rebuilds the
+    // whole automaton per request — ~25-30 KmpMatcher instances over FIXED literal
+    // patterns ("</invoke>", "<task-notification>", …) — so memoizing the table by
+    // pattern lets every instance of a given pattern share one immutable int[],
+    // turning per-request BuildFailure recomputation + allocation into a dictionary
+    // lookup. Keyed Ordinal (patterns are ASCII protocol tokens). Thread-safe:
+    // concurrent request scopes construct matchers in parallel.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int[]> FailureCache =
+        new(System.StringComparer.Ordinal);
+
     private readonly string _pat;
     private readonly int[] _fail;
     private int _state;
@@ -21,8 +32,12 @@ internal sealed class KmpMatcher
     public KmpMatcher(string pattern)
     {
         _pat = pattern;
-        _fail = BuildFailure(pattern);
+        _fail = FailureCache.GetOrAdd(pattern, BuildFailure);
     }
+
+    /// <summary>The shared, immutable failure table for this matcher's pattern.
+    /// Exposed for tests to assert the per-pattern sharing invariant.</summary>
+    internal int[] FailureTable => _fail;
 
     public void Reset() => _state = 0;
 

@@ -49,7 +49,8 @@ internal sealed class ResponseLeakAutomaton
 {
     private readonly ILeakMatcher[] _matchers;
 
-    private int _backtickRun;         // consecutive backticks; a run of >=3 toggles the fence
+    private int _backtickRun;         // consecutive backticks; length decided at run end
+    private int _fenceOpenLen;        // backtick length that opened the current code region
     private bool _inFence;
     private bool _trackFences = true; // false for thinking blocks (no fence concept)
     private bool _tripped;            // latched once a leak is confirmed
@@ -102,6 +103,14 @@ internal sealed class ResponseLeakAutomaton
         _matchers = matchers.ToArray();
     }
 
+    /// <summary>The signature ids this automaton actually built a matcher for.
+    /// Exposed for a test that guards against drift between
+    /// <see cref="LeakSignatures.All"/> and the matcher factory list above — a new
+    /// id added to <see cref="LeakSignatures"/> without a matcher would otherwise be
+    /// silently unwatched.</summary>
+    internal IReadOnlyList<string> BuiltSignatures =>
+        System.Array.ConvertAll(_matchers, m => m.Signature);
+
     /// <summary>True once a leak has been confirmed in this block. Latches.</summary>
     public bool Tripped => _tripped;
 
@@ -135,11 +144,36 @@ internal sealed class ResponseLeakAutomaton
             m.Reset();
         }
         _backtickRun = 0;
+        _fenceOpenLen = 0;
         _inFence = false;
         _trackFences = trackFences;
         _tripped = false;
         _matchedSubject = null;
         _matchedSignature = null;
+    }
+
+    /// <summary>
+    /// Decide what a just-ended backtick run does to the code region. A run OPENS a
+    /// region (recording its length) when none is open; when a region is open it
+    /// CLOSES only if this run is at least as long as the opener — so a shorter
+    /// nested run (``` inside ````) cannot prematurely close the outer fence. A
+    /// run of 1–2 backticks opens a markdown inline span (abandoned on the next
+    /// newline; see <see cref="Feed"/>), a run of 3+ opens a block fence that
+    /// persists across newlines.
+    /// </summary>
+    private void FinalizeBacktickRun()
+    {
+        if (!_inFence)
+        {
+            _inFence = true;
+            _fenceOpenLen = _backtickRun;
+        }
+        else if (_backtickRun >= _fenceOpenLen)
+        {
+            _inFence = false;
+            _fenceOpenLen = 0;
+        }
+        _backtickRun = 0;
     }
 
     /// <summary>
@@ -150,22 +184,34 @@ internal sealed class ResponseLeakAutomaton
     {
         if (_tripped) return true;
 
-        // Fence toggling: a run of >=3 backticks flips in/out of a code fence.
-        // Toggling at exactly the 3rd backtick makes a longer run (4+, or the
-        // closing ``` of the same line) toggle only once, not once-per-3. A genuine
-        // leak is bare (never fenced), so a signature closed while _inFence is
-        // ignored. Skipped when fences aren't tracked (thinking blocks) → _inFence
-        // stays false = always unfenced.
+        // Code-region tracking, run-length aware so a fenced teaching example is
+        // never read as a leak. A backtick run is evaluated when it ENDS (the first
+        // non-backtick char): it OPENS a region (remembering its length) when none
+        // is open, and CLOSES the region only when this run is at least as long as
+        // the one that opened it — so a ``` example nested inside a ```` fence does
+        // not prematurely close it. A run of 1–2 backticks is a markdown inline
+        // span; a newline abandons an unclosed inline span so a stray short backtick
+        // cannot suppress the rest of the block (a block fence, length >=3, persists
+        // across newlines). Skipped when fences aren't tracked (thinking blocks) →
+        // _inFence stays false = always unfenced. Backticks are still fed to the
+        // matchers below, harmlessly — no signature pattern contains a backtick.
         if (_trackFences)
         {
             if (c == '`')
             {
                 _backtickRun++;
-                if (_backtickRun == 3) _inFence = !_inFence;
             }
             else
             {
-                _backtickRun = 0;
+                if (_backtickRun > 0)
+                {
+                    FinalizeBacktickRun();
+                }
+                if (c == '\n' && _inFence && _fenceOpenLen < 3)
+                {
+                    _inFence = false;
+                    _fenceOpenLen = 0;
+                }
             }
         }
 
@@ -290,8 +336,18 @@ internal sealed class ResponseLeakAutomaton
                 }
             }
 
+            // A <parameter> value is OPAQUE: while inside an unclosed
+            // <parameter>…</parameter> the invoke-shaped markup a value may quote is
+            // data, not a real call, so <invoke>/</invoke> effects are ignored there
+            // (only </parameter> counts). This lets a genuine outer call whose
+            // parameter text contains "<invoke name=…>" still balance and trip, while
+            // a second <invoke …> OUTSIDE any parameter stays prose/quotation that
+            // re-opens a fresh scope (unchanged behavior).
+            var insideParameter = _paramOpenCount > _paramCloseCount;
+
             // <invoke name=" — begin a new call scope and start capturing the name.
-            if (_invokeOpen.Feed(c))
+            // Ignored inside a parameter value (opaque, see above).
+            if (_invokeOpen.Feed(c) && !insideParameter)
             {
                 _invokeOpen_ = true;
                 _capturingName = true;
@@ -306,12 +362,15 @@ internal sealed class ResponseLeakAutomaton
                 return false; // nothing else matters until an invoke is open
             }
 
-            // <parameter … and </parameter> counting.
+            // <parameter … and </parameter> counting. </parameter> must still count
+            // while inside the value (it is what ENDS the opaque region).
             if (_paramOpen.Feed(c)) _paramOpenCount++;
             if (_paramClose.Feed(c)) _paramCloseCount++;
 
-            // </invoke> — evaluate the close condition.
-            if (_invokeClose.Feed(c))
+            // </invoke> — evaluate the close condition. Ignored inside a parameter
+            // value (opaque): a </invoke> quoted in parameter text belongs to the
+            // data, not the outer call, so it must not prematurely close/abandon it.
+            if (_invokeClose.Feed(c) && !insideParameter)
             {
                 var name = _pendingName;
                 var closed =

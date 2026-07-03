@@ -292,4 +292,48 @@ public class DetectorCompositionTests
         Assert.Throws<InvalidOperationException>(
             () => sp.GetRequiredService<Pipeline<MessagesRequest>>());
     }
+
+    [Fact]
+    public void RegisterResponseDetector_RejectsDuplicateType()
+    {
+        // Contract: a detector type registered twice is a wiring mistake and must
+        // fail LOUDLY at registration — never silently produce two entries whose
+        // relative precedence is left to container enumeration order.
+        var services = new ServiceCollection();
+        services.RegisterResponseDetector<DoneFilterDetector>(0);
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => services.RegisterResponseDetector<DoneFilterDetector>(1));
+        Assert.Contains("already registered", ex.Message);
+    }
+
+    [Fact]
+    public void RegisterResponseDetector_RejectsDuplicateOrder()
+    {
+        // Contract: two distinct detectors claiming the same Order is the exact
+        // ambiguity explicit ordering exists to remove (OrderBy would break the tie
+        // by enumeration order). It must throw, not resolve nondeterministically.
+        var services = new ServiceCollection();
+        services.RegisterResponseDetector<DoneFilterDetector>(0);
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => services.RegisterResponseDetector<ModelRewriteDetector>(0));
+        Assert.Contains("already claimed", ex.Message);
+    }
+
+    [Fact]
+    public void RegisterResponseDetector_AllowsDistinctTypesAndOrders()
+    {
+        // Counter-case: the guard must NOT reject a correct registration — distinct
+        // types at distinct orders is the normal path and must pass.
+        var services = new ServiceCollection();
+        services.RegisterResponseDetector<DoneFilterDetector>(0);
+        services.RegisterResponseDetector<ModelRewriteDetector>(1);
+        services.RegisterResponseDetector<ToolLeakDetector>(2);
+
+        var orders = services
+            .Where(d => d.ServiceType == typeof(IResponseDetector))
+            .Count();
+        Assert.Equal(3, orders);
+    }
 }

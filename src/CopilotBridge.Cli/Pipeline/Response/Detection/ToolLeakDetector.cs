@@ -56,16 +56,18 @@ internal sealed class ToolLeakDetector : AbstractOrderAwareDetector<ToolLeakDete
     }
 
     /// <summary>Translate the per-signature option flags into the set of enabled
-    /// signature ids the automaton watches (an unset flag omits its matcher).</summary>
+    /// signature ids the automaton watches. Derived from the single source
+    /// <see cref="LeakSignatures.All"/> filtered through
+    /// <see cref="ToolLeakSignaturesOptions.IsEnabled"/>, so a new signature is wired
+    /// by adding it to <see cref="LeakSignatures"/> + one <c>IsEnabled</c> case — not
+    /// by extending a parallel hand-maintained list here.</summary>
     private static IReadOnlySet<string> BuildEnabledSignatures(ToolLeakSignaturesOptions s)
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
-        if (s.Invoke) set.Add(LeakSignatures.Invoke);
-        if (s.TaskNotification) set.Add(LeakSignatures.TaskNotification);
-        if (s.TeammateMessage) set.Add(LeakSignatures.TeammateMessage);
-        if (s.Channel) set.Add(LeakSignatures.Channel);
-        if (s.CrossSessionMessage) set.Add(LeakSignatures.CrossSessionMessage);
-        if (s.Tick) set.Add(LeakSignatures.Tick);
+        foreach (var id in LeakSignatures.All)
+        {
+            if (s.IsEnabled(id)) set.Add(id);
+        }
         return set;
     }
 
@@ -79,16 +81,49 @@ internal sealed class ToolLeakDetector : AbstractOrderAwareDetector<ToolLeakDete
 
     public override void Begin()
     {
+        // Build the automaton from this request's declared tools + the enabled
+        // signature gate (computed from the current options snapshot). Reset the
+        // per-block streaming state so nothing carries over from a prior request.
+        _automaton = BuildAutomaton();
+        _blockIsScannable = false;
+        _blockType = null;
+    }
+
+    /// <summary>Build a fresh automaton for this request from its declared tools and
+    /// the enabled-signature gate. Shared by the streaming (<see cref="Begin"/>) and
+    /// buffered (<see cref="InspectBuffered"/>) paths so the two never drift.</summary>
+    private ResponseLeakAutomaton BuildAutomaton()
+    {
         var tools = _ctx.Request.Body.Tools;
         var names = tools is null
             ? Array.Empty<string>()
             : tools.Select(t => t.Name);
-        // Build the automaton from this request's declared tools + the enabled
-        // signature gate (computed from the current options snapshot). Reset the
-        // per-block streaming state so nothing carries over from a prior request.
-        _automaton = new ResponseLeakAutomaton(names, BuildEnabledSignatures(_opts.Signatures));
-        _blockIsScannable = false;
-        _blockType = null;
+        return new ResponseLeakAutomaton(names, BuildEnabledSignatures(_opts.Signatures));
+    }
+
+    /// <summary>Log the detection and build the abort action. Single source for both
+    /// the streaming and buffered paths so the warning text and error stay identical;
+    /// <paramref name="delivery"/> distinguishes <c>stream</c> vs <c>buffer</c>.</summary>
+    private DetectionAction Trip(ResponseLeakAutomaton automaton, string? blockType, string delivery)
+    {
+        var subject = automaton.MatchedSubject ?? "?";
+        var signature = automaton.MatchedSignature ?? "?";
+        var signal = _opts.Signal;
+        // Log at the detection point — the only place that knows the leaked
+        // signature + subject + block. NOT the leaked text (that stays in the
+        // opt-in trace files only). Names the exact switch to disable a false
+        // positive; a restart is required after a config change (read at startup).
+        _log.LogWarning(
+            "response-leak detected: signature={Signature} subject={Subject} disable-key={DisableKey} block={Block} signal={Signal} delivery={Delivery} — forcing client retry (restart required after changing the switch)",
+            signature,
+            subject,
+            ToolLeakError.ConfigPath(signature),
+            blockType ?? "?",
+            ToolLeakError.ErrorType(signal),
+            delivery);
+        return DetectionAction.Abort(
+            ToolLeakError.Json(signal, signature),
+            ToolLeakError.HttpStatus(signal));
     }
 
     public override DetectionAction InspectEvent(in SseItem<string> evt)
@@ -117,26 +152,7 @@ internal sealed class ToolLeakDetector : AbstractOrderAwareDetector<ToolLeakDete
                             // envelope both abort the turn.
                             if (automaton.Feed(c))
                             {
-                                var subject = automaton.MatchedSubject ?? "?";
-                                var signature = automaton.MatchedSignature ?? "?";
-                                var signal = _opts.Signal;
-                                // Log at the detection point — the only place that
-                                // knows the leaked signature + subject + block. NOT
-                                // the leaked text (that stays in the opt-in trace
-                                // files only). Names the exact switch to disable a
-                                // false positive; a restart is required after a
-                                // config change (config is read at startup).
-                                _log.LogWarning(
-                                    "response-leak detected: signature={Signature} subject={Subject} disable-key={DisableKey} block={Block} signal={Signal} delivery={Delivery} — forcing client retry (restart required after changing the switch)",
-                                    signature,
-                                    subject,
-                                    ToolLeakError.ConfigPath(signature),
-                                    _blockType ?? "?",
-                                    ToolLeakError.ErrorType(signal),
-                                    RequiresBuffering ? "buffer" : "stream");
-                                return DetectionAction.Abort(
-                                    ToolLeakError.Json(signal, signature),
-                                    ToolLeakError.HttpStatus(signal));
+                                return Trip(automaton, _blockType, RequiresBuffering ? "buffer" : "stream");
                             }
                         }
                     }
@@ -146,6 +162,74 @@ internal sealed class ToolLeakDetector : AbstractOrderAwareDetector<ToolLeakDete
             case "content_block_stop":
                 _blockIsScannable = false;
                 break;
+        }
+
+        return DetectionAction.None;
+    }
+
+    /// <summary>
+    /// Buffered (non-streaming) counterpart of <see cref="InspectEvent"/>: scan a
+    /// whole Anthropic Messages response body once. Feeds each <c>text</c> block
+    /// (and each <c>thinking</c> block when <see cref="ToolLeakGuardOptions.ScanThinking"/>
+    /// is on) through a fresh per-block automaton, mirroring the streaming semantics
+    /// (fences tracked for text, not for thinking). Aborts on the first leak with the
+    /// same error + warning as the streaming path. Fails open (returns None) on a
+    /// body that isn't parseable Anthropic JSON — a scan must never turn a real
+    /// response into an error on a parse hiccup.
+    /// </summary>
+    public override DetectionAction InspectBuffered(byte[] body)
+    {
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(body);
+        }
+        catch (JsonException)
+        {
+            return DetectionAction.None; // unparseable → fail open, deliver as-is
+        }
+
+        using (doc)
+        {
+            if (!doc.RootElement.TryGetProperty("content", out var content)
+                || content.ValueKind != JsonValueKind.Array)
+            {
+                return DetectionAction.None;
+            }
+
+            // One automaton, reset per block — same instance discipline as streaming.
+            var automaton = BuildAutomaton();
+            foreach (var block in content.EnumerateArray())
+            {
+                if (block.ValueKind != JsonValueKind.Object
+                    || !block.TryGetProperty("type", out var typeEl))
+                {
+                    continue;
+                }
+                var blockType = typeEl.GetString();
+                var field = blockType switch
+                {
+                    "text" => "text",
+                    "thinking" when _opts.ScanThinking => "thinking",
+                    _ => null,
+                };
+                if (field is null || !block.TryGetProperty(field, out var textEl)
+                    || textEl.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                // Thinking blocks have no fence concept → always-unfenced; text
+                // blocks track fences so a teaching example inside ``` isn't a leak.
+                automaton.Reset(trackFences: blockType != "thinking");
+                foreach (var c in textEl.GetString()!)
+                {
+                    if (automaton.Feed(c))
+                    {
+                        return Trip(automaton, blockType, "buffer");
+                    }
+                }
+            }
         }
 
         return DetectionAction.None;

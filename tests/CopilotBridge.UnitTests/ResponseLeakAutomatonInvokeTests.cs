@@ -95,6 +95,45 @@ public class ResponseLeakAutomatonInvokeTests
         Assert.True(Detect(s));
     }
 
+    // ---- Nested / opaque parameter values (#4) ---------------------------
+
+    [Fact]
+    public void RealInvoke_WithInvokeShapedTextInParameterValue_IsLeak()
+    {
+        // Contract (#4): a parameter VALUE is opaque text — a genuine outer call
+        // whose parameter quotes invoke-shaped markup must still balance and trip.
+        // The inner "<invoke name=\"x\">" is data, not a second call, so it must not
+        // reset the outer call's name/param counters and cause a missed leak.
+        var s = "<invoke name=\"Bash\">"
+              + "<parameter name=\"command\">echo '<invoke name=\"x\">'</parameter>"
+              + "</invoke>";
+        Assert.True(Detect(s));
+    }
+
+    [Fact]
+    public void RealInvoke_WithFullInnerInvokeInParameterValue_IsLeak()
+    {
+        // Contract (#4): even a fully-closed inner <invoke …></invoke> quoted inside
+        // the parameter value is opaque — its </invoke> must not close the outer
+        // call early, so the real outer call still trips.
+        var s = "<invoke name=\"Bash\">"
+              + "<parameter name=\"command\"><invoke name=\"y\"><parameter name=\"z\">1</parameter></invoke></parameter>"
+              + "</invoke>";
+        Assert.True(Detect(s));
+    }
+
+    [Fact]
+    public void InvokeShapedTextInParameter_UnknownOuterTool_NotLeak()
+    {
+        // Counter-case: the opaque-parameter handling must not invent a leak — if the
+        // OUTER tool isn't in tools[], quoting an in-tools name inside the value is
+        // still not a leak (the value is opaque; only the outer call's name counts).
+        var s = "<invoke name=\"NotATool\">"
+              + "<parameter name=\"command\"><invoke name=\"Read\"></parameter>"
+              + "</invoke>";
+        Assert.False(Detect(s));
+    }
+
     // ---- Split-boundary invariance (the core streaming property) ---------
 
     [Fact]
@@ -221,6 +260,39 @@ public class ResponseLeakAutomatonInvokeTests
         // back to unfenced, which would wrongly expose the invoke).
         var s = fence + "\n" + MinimalLeak + "\n" + fence;
         Assert.False(Detect(s));
+    }
+
+    [Fact]
+    public void ThreeBacktickExampleNestedInFourBacktickFence_NotLeak()
+    {
+        // Contract (#3): a ``` example nested inside a ```` fence must stay fenced —
+        // the shorter inner run must NOT close the longer outer fence and expose the
+        // invoke. Common markdown for "show a fenced block": wrap it in a longer
+        // fence. Regression guard for the old toggle-every-3 model.
+        var s = "````md\n```\n" + MinimalLeak + "\n```\n````";
+        Assert.False(Detect(s));
+    }
+
+    [Fact]
+    public void InlineCodeSpan_AroundInvoke_NotLeak()
+    {
+        // Contract (#2): markup inside a single-backtick inline code span is a quoted
+        // example, not a leak — e.g. the model answering "a tool call looks like
+        // `<invoke name=…>…</invoke>`". A single backtick opens a span; the closing
+        // backtick ends it before any newline, so the whole span is fenced.
+        var s = "A tool call looks like `" + MinimalLeak.Replace("\n", " ") + "`.";
+        Assert.False(Detect(s));
+    }
+
+    [Fact]
+    public void StrayInlineBacktick_ThenNewline_DoesNotSuppressLaterLeak()
+    {
+        // Safety valve for #2: an UNCLOSED inline span (a stray single backtick) must
+        // not swallow the rest of the block — a newline abandons the span so a real
+        // bare leak on a later line is still caught. Guards against the fix turning a
+        // false positive into a worse false negative.
+        var s = "here is a stray ` backtick\n" + MinimalLeak;
+        Assert.True(Detect(s));
     }
 
     [Fact]

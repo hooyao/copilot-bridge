@@ -167,14 +167,15 @@ internal static class BridgeServiceCollectionExtensions
         // service (one instance per request scope) so cross-delta streaming state
         // (e.g. the tool-leak automaton) never crosses requests; it self-gates on
         // its config (IResponseDetector.Enabled, backed by IOptionsSnapshot) and
-        // reads its per-request data in Begin(). RegisterResponseDetector assigns
-        // each an explicit Order from the registration sequence below (DONE-filter
-        // 0 → model-rewrite 1 → tool-leak 2); the stage runs them by that Order, so
-        // precedence does NOT depend on IEnumerable<T> resolution order. Adding a
-        // detector = one RegisterResponseDetector<...> line here, in the right spot.
-        services.RegisterResponseDetector<DoneFilterDetector>();
-        services.RegisterResponseDetector<ModelRewriteDetector>();
-        services.RegisterResponseDetector<ToolLeakDetector>();
+        // reads its per-request data in Begin(). RegisterResponseDetector takes an
+        // EXPLICIT Order (DONE-filter 0 → model-rewrite 1 → tool-leak 2); the stage
+        // runs them by that Order, so precedence does NOT depend on IEnumerable<T>
+        // resolution order. Adding a detector = one RegisterResponseDetector<...>
+        // line here with the next Order; a duplicate type or duplicate Order throws
+        // at registration rather than silently making precedence ambiguous.
+        services.RegisterResponseDetector<DoneFilterDetector>(0);
+        services.RegisterResponseDetector<ModelRewriteDetector>(1);
+        services.RegisterResponseDetector<ToolLeakDetector>(2);
         services.AddScoped<ResponseInspectionStage>();
         services.AddScoped<CopilotMessagesPassthroughStrategy>();
 
@@ -210,23 +211,45 @@ internal static class BridgeServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Register a response detector as a scoped service AND its registration-order
-    /// <see cref="DetectorOrder{TDetector}"/> (a singleton constant), so the
-    /// detector can expose <see cref="IResponseDetector.Order"/> and the inspection
-    /// stage can run detectors in a guaranteed order independent of the container's
-    /// <c>IEnumerable&lt;T&gt;</c> resolution order. The order value is the count of
-    /// <see cref="IResponseDetector"/> registrations already present — i.e. the
-    /// zero-based position in the call sequence — read off the service collection
-    /// itself (no static counter, so it is isolated per collection and does not
-    /// accumulate across repeated <see cref="AddBridgeServer"/> calls in tests).
+    /// Register a response detector as a scoped service AND its precedence
+    /// <see cref="DetectorOrder{TDetector}"/> (a singleton constant), so the detector
+    /// can expose <see cref="IResponseDetector.Order"/> and the inspection stage can
+    /// run detectors in a guaranteed order independent of the container's
+    /// <c>IEnumerable&lt;T&gt;</c> resolution order. <paramref name="order"/> is the
+    /// EXPLICIT precedence (lower runs first). Passing it literally — rather than
+    /// deriving it from the count of prior registrations — means precedence is a
+    /// visible constant at the call site and does not silently shift if an unrelated
+    /// <see cref="IResponseDetector"/> registration is inserted between two detectors.
     /// </summary>
-    private static IServiceCollection RegisterResponseDetector<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicConstructors)] TDetector>(this IServiceCollection services)
+    /// <remarks>
+    /// Guards a miswiring loudly instead of producing nondeterministic precedence:
+    /// registering the same detector type twice, or two detectors at the same
+    /// <paramref name="order"/>, throws <see cref="System.InvalidOperationException"/>
+    /// at registration. Without the guard a duplicate order lets the stage's
+    /// <c>OrderBy(d =&gt; d.Order)</c> break the tie by container enumeration order —
+    /// the exact ambiguity the explicit order exists to remove.
+    /// </remarks>
+    internal static IServiceCollection RegisterResponseDetector<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicConstructors)] TDetector>(this IServiceCollection services, int order)
         where TDetector : class, IResponseDetector
     {
-        var order = 0;
         foreach (var d in services)
         {
-            if (d.ServiceType == typeof(IResponseDetector)) order++;
+            // Duplicate detector type: the same concrete detector registered twice.
+            if (d.ServiceType == typeof(IResponseDetector)
+                && d.ImplementationType == typeof(TDetector))
+            {
+                throw new System.InvalidOperationException(
+                    $"Response detector {typeof(TDetector).Name} is already registered; register each detector exactly once.");
+            }
+            // Duplicate order: another detector already claims this precedence.
+            if (d.ServiceType is { IsGenericType: true } t
+                && t.GetGenericTypeDefinition() == typeof(DetectorOrder<>)
+                && d.ImplementationInstance is IDetectorOrder existing
+                && existing.Value == order)
+            {
+                throw new System.InvalidOperationException(
+                    $"Response detector order {order} is already claimed by {t.GetGenericArguments()[0].Name}; each detector needs a distinct order.");
+            }
         }
         services.AddScoped<IResponseDetector, TDetector>();
         services.AddSingleton(new DetectorOrder<TDetector>(order));

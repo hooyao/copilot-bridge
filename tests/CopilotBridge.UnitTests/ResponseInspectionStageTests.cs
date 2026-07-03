@@ -576,6 +576,107 @@ public class ResponseInspectionStageTests
         Assert.Contains("restart", msg);                                            // restart note
     }
 
+    // ---- Genuinely non-streaming (ResponseMode.Buffered) responses -------
+    // Distinct from the PreserveStream=false tests above (which are STREAMING then
+    // buffered): here the upstream response is non-SSE from the start, so the stage
+    // takes the ApplyBuffered → InspectBuffered path. Before the InspectBuffered
+    // override this path did NOTHING — a leak in a buffered body reached the client.
+
+    // Build an Anthropic Messages response body with the given content blocks.
+    private static byte[] BufferedBody(params (string type, string text)[] blocks)
+    {
+        var items = blocks.Select(b =>
+            $"{{\"type\":{System.Text.Json.JsonSerializer.Serialize(b.type)},{System.Text.Json.JsonSerializer.Serialize(b.type)}:{System.Text.Json.JsonSerializer.Serialize(b.text)}}}");
+        var json = "{\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-4-8\",\"content\":["
+                 + string.Join(",", items) + "]}";
+        return Encoding.UTF8.GetBytes(json);
+    }
+
+    [Fact]
+    public async Task BufferedResponse_InvokeLeakInTextBlock_Aborts()
+    {
+        // Contract: a genuinely non-streaming response whose text block carries a
+        // closed in-tools <invoke> leak is aborted with a real 529 + error body and
+        // NONE of the leaked markup. (Regression: this path was unguarded — the
+        // detector inherited the base InspectBuffered no-op.)
+        var ctx = Ctx(stream: null, mode: ResponseMode.Buffered,
+            buffered: BufferedBody(("text", Leak)));
+        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+
+        Assert.Equal(529, ctx.Response.Status);
+        var body = Encoding.UTF8.GetString(ctx.Response.BufferedBody!);
+        Assert.Contains("overloaded_error", body);
+        Assert.DoesNotContain("<invoke", body);
+        Assert.True(ctx.ToolLeakDetected);
+    }
+
+    [Fact]
+    public async Task BufferedResponse_ControlEnvelopeLeak_Aborts()
+    {
+        // Contract: a leaked control envelope in a buffered body aborts too.
+        var ctx = Ctx(stream: null, mode: ResponseMode.Buffered,
+            buffered: BufferedBody(("text", TaskNotificationLeak)));
+        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+
+        Assert.Equal(529, ctx.Response.Status);
+        Assert.Contains("overloaded_error", Encoding.UTF8.GetString(ctx.Response.BufferedBody!));
+        Assert.True(ctx.ToolLeakDetected);
+    }
+
+    [Fact]
+    public async Task BufferedResponse_Clean_PassesThroughUntouched()
+    {
+        // Contract: a clean buffered body is delivered verbatim — no abort, body
+        // unchanged, flag clear.
+        var original = BufferedBody(("text", "I'll read the file, then edit it."));
+        var ctx = Ctx(stream: null, mode: ResponseMode.Buffered, buffered: original);
+        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+
+        Assert.False(ctx.ToolLeakDetected);
+        Assert.Equal(original, ctx.Response.BufferedBody); // unchanged
+    }
+
+    [Fact]
+    public async Task BufferedResponse_FencedInvoke_NotDetected()
+    {
+        // Contract: an <invoke> inside a code fence in a buffered text block is a
+        // teaching example, not a leak — same fence semantics as streaming.
+        var fenced = "Here's how:\n```\n<invoke name=\"Read\"><parameter name=\"p\">v</parameter></invoke>\n```";
+        var ctx = Ctx(stream: null, mode: ResponseMode.Buffered,
+            buffered: BufferedBody(("text", fenced)));
+        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+
+        Assert.False(ctx.ToolLeakDetected);
+    }
+
+    [Fact]
+    public async Task BufferedResponse_ThinkingLeak_DetectedOnlyWhenScanThinkingOn()
+    {
+        // Contract: a leak in a buffered THINKING block aborts iff ScanThinking is on
+        // — matching the streaming block-type gate.
+        var off = Ctx(stream: null, mode: ResponseMode.Buffered,
+            buffered: BufferedBody(("thinking", Leak)));
+        await Run(off, new ToolLeakGuardOptions { Enabled = true, ScanThinking = false });
+        Assert.False(off.ToolLeakDetected);
+
+        var on = Ctx(stream: null, mode: ResponseMode.Buffered,
+            buffered: BufferedBody(("thinking", Leak)));
+        await Run(on, new ToolLeakGuardOptions { Enabled = true, ScanThinking = true });
+        Assert.True(on.ToolLeakDetected);
+    }
+
+    [Fact]
+    public async Task BufferedResponse_Unparseable_FailsOpen()
+    {
+        // Contract: a body that isn't parseable Anthropic JSON must NOT abort — a
+        // scan hiccup can't turn a real response into a client error.
+        var ctx = Ctx(stream: null, mode: ResponseMode.Buffered,
+            buffered: Encoding.UTF8.GetBytes("not json <invoke name=\"Read\"></invoke>"));
+        await Run(ctx, new ToolLeakGuardOptions { Enabled = true });
+
+        Assert.False(ctx.ToolLeakDetected);
+    }
+
     private sealed class CapturingLogger<T> : ILogger<T>
     {
         public readonly List<(LogLevel Level, string Rendered)> Records = new();
