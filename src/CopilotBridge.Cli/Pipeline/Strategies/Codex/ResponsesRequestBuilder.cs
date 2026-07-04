@@ -183,6 +183,21 @@ internal static class ResponsesRequestBuilder
                     w.WriteString("encrypted_content", rt.Data);
                     w.WriteEndObject();
                     break;
+                case ThinkingBlockParam:
+                    // DROP — plain (unencrypted) Anthropic thinking has no Responses
+                    // equivalent, and gpt-5.5 HARD-REJECTS it: a message content part
+                    // {type:"thinking"} → 400 "Invalid value: 'thinking'. Supported
+                    // values are: input_text, input_image, output_text, refusal,
+                    // input_file, computer_screenshot, summary_text,
+                    // tether_browsing_display" (live-probed 2026-07-04). It is
+                    // model-internal scratch Anthropic itself never replays as visible
+                    // content, so dropping is both mandatory and harmless (the
+                    // assistant's sibling text block still carries the turn's output —
+                    // conversation stays coherent, live-probed). Handled EXPLICITLY (not
+                    // via the default catch-all) so the drop is intentional and a future
+                    // ThinkingBlockParam case in FlushMessage can't silently forward it
+                    // and reintroduce the 400.
+                    break;
                 default:
                     textImageParts.Add(block);
                     break;
