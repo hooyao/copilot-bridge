@@ -207,7 +207,17 @@ internal static class ClaudeCodeMessagesEndpoint
             summary.OutboundBetas = ParseOutboundBetas(bridgeCtx.Request.Headers);
 
             upstreamUrl = bridgeCtx.Target?.Endpoint;
-            var upBody = JsonSerializer.SerializeToUtf8Bytes(bridgeCtx.Request.Body, JsonContext.Default.MessagesRequest);
+            // Audit the bytes actually POSTed upstream. On the Anthropic passthrough
+            // path (claude-* → /v1/messages) the body IS the IR, so UpstreamWireBody
+            // is null and we serialize the IR — byte-identical to before. But when
+            // Claude Code is routed to a gpt-* model, the Responses strategy (T2)
+            // built a Responses-shaped body ({input[], function_call, tools with
+            // parameters}) and stashed it on Response.UpstreamWireBody (Contract A);
+            // serializing the IR here would record a misleading Anthropic-shaped
+            // upstream-req that was never sent. Prefer the real wire body when set,
+            // mirroring CodexResponsesEndpoint.
+            var upBody = bridgeCtx.Response.UpstreamWireBody
+                ?? JsonSerializer.SerializeToUtf8Bytes(bridgeCtx.Request.Body, JsonContext.Default.MessagesRequest);
             upstreamBody = upBody;
             upstreamBodyLen = upBody.Length;
             upstreamBodyPooled = false;
