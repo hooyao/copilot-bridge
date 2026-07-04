@@ -131,9 +131,6 @@ internal sealed class BridgeRequest<TBody> where TBody : class
     public required string Method { get; init; }
     public required string Path { get; init; }
 
-    /// <summary>Original inbound bytes. Read-only; preserved for the audit log.</summary>
-    public ReadOnlyMemory<byte> RawBody { get; init; }
-
     /// <summary>Typed body — IR shape inside the pipeline; stages mutate via <c>with</c>-expressions or in place.</summary>
     public required TBody Body { get; set; }
 
@@ -169,9 +166,15 @@ internal sealed class BridgeResponse
     public byte[]? BufferedBody { get; set; }
 
     /// <summary>
-    /// The exact bytes a translating strategy POSTed upstream (Codex /responses
-    /// T2 body). Null on passthrough paths (/cc), where the IR body IS the wire
-    /// body. Lets the endpoint audit the real wire bytes, not the IR.
+    /// The exact bytes a strategy POSTed upstream, captured for the
+    /// <c>upstream-req</c> audit: the passthrough Anthropic body on a <c>/cc</c>
+    /// (CopilotAnthropic) route, or the Codex T2 Responses body on a
+    /// <c>/responses</c> (CopilotResponses) route — the same array handed to the
+    /// Copilot client, never a re-serialized IR. Both strategies stash it ONLY when
+    /// tracing is on, so this is non-null iff tracing is enabled and a strategy ran;
+    /// it means exactly "captured upstream wire bytes", nothing more. It is NOT a
+    /// routing signal — which backend ran is read from <see cref="BridgeContext{T}.Target"/>'s
+    /// <c>Vendor</c>, not inferred from this field being null.
     /// </summary>
     public byte[]? UpstreamWireBody { get; set; }
 

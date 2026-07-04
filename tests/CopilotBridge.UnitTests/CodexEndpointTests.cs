@@ -77,8 +77,7 @@ public class CodexEndpointTests
             new ResponsesToIrInboundAdapter(NullLogger<ResponsesToIrInboundAdapter>.Instance),
             new IrToResponsesOutboundAdapter(bridgeCtx, NullLogger<IrToResponsesOutboundAdapter>.Instance),
             new RequestSummaryLogger(NullLogger<RequestSummaryLogger>.Instance),
-            Microsoft.Extensions.Options.Options.Create(new CopilotBridge.Cli.Hosting.Options.TracingOptions()),
-            NullLogger<MessagesRequest>.Instance,
+            TestAudit.Create(false),
             NullLogger<CodexResponsesEndpointTag>.Instance);
 
         return (http.Response.StatusCode, Encoding.UTF8.GetString(respStream.ToArray()));
@@ -334,8 +333,7 @@ public class CodexEndpointTests
             new ResponsesToIrInboundAdapter(NullLogger<ResponsesToIrInboundAdapter>.Instance),
             new IrToResponsesOutboundAdapter(bridgeCtx, NullLogger<IrToResponsesOutboundAdapter>.Instance),
             new RequestSummaryLogger(NullLogger<RequestSummaryLogger>.Instance),
-            Microsoft.Extensions.Options.Options.Create(new CopilotBridge.Cli.Hosting.Options.TracingOptions()),
-            NullLogger<MessagesRequest>.Instance,
+            TestAudit.Create(false),
             endpointLog);
 
         // Match the EXACT enter/exit message templates (not a loose substring),

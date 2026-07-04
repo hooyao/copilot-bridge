@@ -210,7 +210,7 @@ public class SummaryTraceIdCollisionTests
             http,
             new CountTokensStubClient(),
             new RequestSummaryLogger(factory.CreateLogger<RequestSummaryLogger>()),
-            factory.CreateLogger<CountTokensTag>());
+            TestAudit.Create(false));
 
         // Find the summary event (its template leads with the literal "summary")
         // and render it as production does; it must carry the [<id>] prefix.

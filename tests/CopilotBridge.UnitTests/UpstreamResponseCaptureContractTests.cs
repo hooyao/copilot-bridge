@@ -108,7 +108,7 @@ public class UpstreamResponseCaptureContractTests
     }
 
     private static CopilotMessagesPassthroughStrategy CcStrategy(ICopilotClient client, bool tracing, BridgeContext<MessagesRequest> ctx) =>
-        new(client, ctx, Options.Create(new TracingOptions { Enabled = tracing }),
+        new(client, ctx, TestAudit.Create(tracing),
             NullLogger<CopilotMessagesPassthroughStrategy>.Instance);
 
     // ── Case A: tracing ON, streaming → capture == Copilot's raw wire bytes ───
@@ -234,7 +234,7 @@ public class UpstreamResponseCaptureContractTests
             new StubClient(StreamingResponse(raw)),
             new CodexModelProfileCatalog(),
             ctx,
-            Options.Create(new TracingOptions { Enabled = true }),
+            TestAudit.Create(true),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
         await strategy.ForwardAsync();
@@ -259,7 +259,7 @@ public class UpstreamResponseCaptureContractTests
             new StubClient(StreamingResponse(raw)),
             new CodexModelProfileCatalog(),
             ctx,
-            Options.Create(new TracingOptions { Enabled = false }),
+            TestAudit.Create(false),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
         await strategy.ForwardAsync();
@@ -284,7 +284,7 @@ public class UpstreamResponseCaptureContractTests
             new StubClient(BufferedResponse(copilotBody)),
             new CodexModelProfileCatalog(),
             ctx,
-            Options.Create(new TracingOptions { Enabled = true }),
+            TestAudit.Create(true),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
         await strategy.ForwardAsync();
@@ -401,7 +401,7 @@ public class UpstreamResponseCaptureContractTests
             new StubClient(FaultingStreamingResponse(prefix)),
             new CodexModelProfileCatalog(),
             ctx,
-            Options.Create(new TracingOptions { Enabled = true }),
+            TestAudit.Create(true),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
         await strategy.ForwardAsync();

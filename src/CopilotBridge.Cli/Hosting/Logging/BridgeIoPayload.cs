@@ -1,5 +1,3 @@
-using System.Buffers;
-
 namespace CopilotBridge.Cli.Hosting.Logging;
 
 /// <summary>
@@ -10,16 +8,16 @@ namespace CopilotBridge.Cli.Hosting.Logging;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Buffer ownership.</b> <see cref="Body"/> is either rented from
-/// <see cref="ArrayPool{T}.Shared"/> (when <see cref="BodyPooled"/> is true)
-/// or directly owned by the payload. Either way, the sink worker is the
-/// last consumer and returns rented buffers via <see cref="Release"/> after
-/// it has finished serializing. Callers must not touch the array after
-/// handing the payload to the logger.
+/// <b>Buffer ownership.</b> <see cref="Body"/> is a plain array owned by the
+/// payload; the sink worker is the last consumer and the array is reclaimed by GC
+/// after serialization. Callers must not touch the array after handing the payload
+/// to the logger. (The audit-only inbound copy is made by <c>RequestAudit</c>; the
+/// endpoint's pooled read buffer is a separate, endpoint-owned buffer that is
+/// returned to the pool within the endpoint's synchronous section and never handed
+/// here.)
 /// </para>
 /// <para>
-/// <see cref="BodyLength"/> is the meaningful prefix of <see cref="Body"/>;
-/// pooled arrays are typically larger than the rented size.
+/// <see cref="BodyLength"/> is the meaningful prefix of <see cref="Body"/>.
 /// </para>
 /// </remarks>
 internal sealed class BridgeIoPayload
@@ -67,9 +65,6 @@ internal sealed class BridgeIoPayload
 
     public required int BodyLength { get; init; }
 
-    /// <summary>True if <see cref="Body"/> came from <see cref="ArrayPool{T}"/> and must be returned.</summary>
-    public required bool BodyPooled { get; init; }
-
     /// <summary>SSE events captured on the inbound-resp side; null for other kinds or when not streaming.</summary>
     public IReadOnlyList<CapturedSseEvent>? Events { get; init; }
 
@@ -78,18 +73,6 @@ internal sealed class BridgeIoPayload
 
     /// <summary>Wall-clock duration in milliseconds for the end-to-end inbound request (inbound-resp only).</summary>
     public long? DurationMs { get; init; }
-
-    /// <summary>
-    /// Return the pooled body buffer (if any) to the shared pool. Safe to
-    /// call multiple times — second and subsequent calls are no-ops.
-    /// </summary>
-    public void Release()
-    {
-        if (BodyPooled && Body.Length > 0)
-        {
-            ArrayPool<byte>.Shared.Return(Body, clearArray: false);
-        }
-    }
 }
 
 /// <summary>One SSE event captured on the response side, with a flag for whether the bridge dropped it.</summary>

@@ -3,11 +3,11 @@ using System.Diagnostics;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Hosting.Logging;
 using CopilotBridge.Cli.Models;
+using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 
@@ -29,7 +29,7 @@ internal static class ClaudeCodeCountTokensEndpoint
         HttpContext httpCtx,
         ICopilotClient copilot,
         RequestSummaryLogger summaryLogger,
-        ILogger<CountTokensTag> ioLogger)
+        RequestAudit audit)
     {
         var ct = httpCtx.RequestAborted;
         var sw = Stopwatch.StartNew();
@@ -52,17 +52,18 @@ internal static class ClaudeCodeCountTokensEndpoint
         }
 
         var (inboundBuf, inboundLen) = await ReadBodyPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false);
+        // Materialized once: the summary model probe below and the forwarded
+        // count_tokens body both need these bytes regardless of tracing, so this
+        // copy is not audit-only (unlike the messages endpoint).
         var inboundAuditBody = new ReadOnlyMemory<byte>(inboundBuf, 0, inboundLen).ToArray();
 
-        ioLogger.LogInboundRequest(
+        audit.RecordInbound(
             seq,
             traceId,
             httpCtx.Request.Method,
             httpCtx.Request.Path.Value ?? "",
             inboundHeaders,
-            inboundAuditBody,
-            inboundAuditBody.Length,
-            bodyPooled: false);
+            inboundAuditBody);
 
         var responseStatus = StatusCodes.Status500InternalServerError;
         var responseHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -94,15 +95,14 @@ internal static class ClaudeCodeCountTokensEndpoint
                 inboundBuf.AsMemory(0, inboundLen).ToArray(), ct);
 
             var upstreamHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            ioLogger.LogUpstreamRequest(
+            audit.RecordUpstreamRequest(
                 seq,
                 traceId,
                 "POST",
                 "https://api.githubcopilot.com/v1/messages/count_tokens",
                 upstreamHeaders,
                 inboundAuditBody,
-                inboundAuditBody.Length,
-                bodyPooled: false);
+                inboundAuditBody.Length);
 
             var upstreamRespHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var h in upstream.Headers)
@@ -121,14 +121,13 @@ internal static class ClaudeCodeCountTokensEndpoint
             // Pull input_tokens out for the summary line.
             UsageProbe.TryReadCountTokens(bytes, summary.Usage);
 
-            ioLogger.LogUpstreamResponse(
+            audit.RecordUpstreamResponse(
                 seq,
                 traceId,
                 responseStatus,
                 upstreamRespHeaders,
                 bytes,
-                bytes.Length,
-                bodyPooled: false);
+                bytes.Length);
             upstreamLogged = true;
 
             httpCtx.Response.StatusCode = responseStatus;
@@ -159,25 +158,23 @@ internal static class ClaudeCodeCountTokensEndpoint
 
             if (!upstreamLogged)
             {
-                ioLogger.LogUpstreamResponse(
+                audit.RecordUpstreamResponse(
                     seq,
                     traceId,
                     0,
                     new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     [],
                     0,
-                    bodyPooled: false,
                     error: error);
             }
 
-            ioLogger.LogInboundResponse(
+            audit.RecordInboundResponse(
                 seq,
                 traceId,
                 responseStatus,
                 responseHeaders,
                 responseBody,
                 responseBody.Length,
-                bodyPooled: false,
                 error: error,
                 durationMs: sw.ElapsedMilliseconds);
 
@@ -235,6 +232,3 @@ internal static class ClaudeCodeCountTokensEndpoint
         return (buf, written);
     }
 }
-
-/// <summary>Marker type used to give count_tokens its own <c>ILogger</c> category.</summary>
-internal sealed class CountTokensTag { }
