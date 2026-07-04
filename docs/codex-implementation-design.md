@@ -85,13 +85,16 @@ Four cells, who does what:
 | Claude Code → `/v1/messages` (exists) | identity | identity passthrough | identity | shipped (M1) |
 | **Codex → `/responses`** (Codex's default) | **T1** | **T2/T3** | **T4** | ✅ **BUILD + VERIFY** |
 | Codex → `/v1/messages` (Codex uses Opus) | T1 | identity passthrough | T4 | architecture-ready, **NOT built/tested this change** |
-| Claude Code → `/responses` (CC uses GPT-5) | identity | T2/T3 | identity | ✅ **built + live-verified** (T2 emits tools from typed `ir.Tools`; `CcOnGpt5HeadlessTests`) |
+| Claude Code → `/responses` (CC uses GPT-5) | identity | T2/T3 | identity | architecture-ready in this change; **built + live-verified by a LATER change** (CC→gpt-5.5 tool translation — `CcOnGpt5HeadlessTests`, `docs/cc-to-gpt5-translation-verification.md`) |
 
 **Scope decision (Q-B):** this change implements and verifies **only the Codex →
 `/responses` cell** — Codex with its own gpt-5.x models. It builds the full T1–T4
 translator set and routes by model in the shared IR pipeline, so the other two
 cells (**Codex→Opus**, **CC→GPT5**) become a later "wire-up + test" step, **not a
-rework**. We do not wire, test, or claim those cells now.
+rework**. We do not wire, test, or claim those cells now. *(Update: the **CC→GPT5**
+cell was subsequently completed by the CC→gpt-5.5 tool-translation change — see the
+`This change?` note on that row and `docs/cc-to-gpt5-translation-verification.md`;
+that is a different change from the Codex one this document describes.)*
 
 **Consequence to be honest about (drives Q-A verification):** because routing
 happens *on the IR* (the router must see a backend-agnostic body to choose a

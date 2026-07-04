@@ -70,15 +70,26 @@ public class TraceReplayResponsesTests
 
         var wire = Emit(ir);
 
-        var tools = wire["tools"]?.AsArray();
-        Assert.True(tools is not null,
-            $"[{name}] Claude Code sent {inboundToolCount} tools but the Responses body has no 'tools' key — "
-            + "gpt-5.5 will be unable to call any tool (the reported failure).");
+        // The expected surviving-tool count must mirror EVERY drop WriteIrTools
+        // applies, not just server tools: it also drops the IDE-only
+        // mcp__ide__executeCode (defer_loading != true), matching ToolsSanitizeStage.
+        // A real capture (BRIDGE_TRACE_DIR) that carries that tool would otherwise
+        // make `expected` over-count and fail even though T2 is correct.
+        var expected = ir.Tools!.Count(t => !IsDroppedTool(t));
 
-        // Count is preserved: server tools (web_search_*) are the only legitimate
-        // drop, and the fixtures/corpus CC bodies use custom tools. Compute the
-        // expected surviving count from the contract, not the emitted array.
-        var expected = ir.Tools!.Count(t => !IsServerTool(t));
+        var tools = wire["tools"]?.AsArray();
+        if (expected == 0)
+        {
+            // All tools were dropped → no tools key at all (WriteIrTools emits none),
+            // which is the correct "no tools" signal, not a bug.
+            Assert.True(tools is null,
+                $"[{name}] all {inboundToolCount} tools are droppable, but a 'tools' array was still emitted.");
+            return;
+        }
+
+        Assert.True(tools is not null,
+            $"[{name}] Claude Code sent {inboundToolCount} tools ({expected} non-droppable) but the Responses "
+            + "body has no 'tools' key — gpt-5.5 will be unable to call any tool (the reported failure).");
         Assert.Equal(expected, tools!.Count);
     }
 
@@ -260,6 +271,88 @@ public class TraceReplayResponsesTests
         Assert.Equal("required", wire["tool_choice"]!.GetValue<string>());
     }
 
+    [Fact]
+    public void ToolChoice_ForcedSurvivingTool_EmitsFunctionChoice()
+    {
+        // Forced tool that SURVIVES the drop filter → {type:function,name}.
+        var ir = new MessagesRequest
+        {
+            Model = TargetModel,
+            MaxTokens = 0,
+            Messages = [new MessageParam { Role = Role.User, Content = [new TextBlockParam { Text = "hi" }] }],
+            Tools = [new Tool { Name = "Bash", InputSchema = new InputSchema() }],
+            ToolChoice = new ToolChoiceTool { Name = "Bash" },
+        };
+        var wire = Emit(ir);
+        var tc = wire["tool_choice"]!.AsObject();
+        Assert.Equal("function", tc["type"]!.GetValue<string>());
+        Assert.Equal("Bash", tc["name"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void ToolChoice_ForcedDroppedTool_DowngradesToAuto()
+    {
+        // Forced tool that gets DROPPED (IDE-only) must NOT be named in tool_choice —
+        // that would reference a tool absent from tools[] (Responses 400). It is
+        // downgraded to "auto" so the request still succeeds. Include a surviving
+        // sibling so tools[] is non-empty (isolates the forced-name-dropped case
+        // from the no-tools-at-all case).
+        var ir = new MessagesRequest
+        {
+            Model = TargetModel,
+            MaxTokens = 0,
+            Messages = [new MessageParam { Role = Role.User, Content = [new TextBlockParam { Text = "hi" }] }],
+            Tools =
+            [
+                new Tool { Name = "Bash", InputSchema = new InputSchema() },
+                new Tool { Name = "mcp__ide__executeCode", InputSchema = new InputSchema() },
+            ],
+            ToolChoice = new ToolChoiceTool { Name = "mcp__ide__executeCode" },
+        };
+        var wire = Emit(ir);
+        // Bash survived; the IDE tool was dropped, so it must not be forced.
+        var names = wire["tools"]!.AsArray().Select(t => t!["name"]!.GetValue<string>()).ToList();
+        Assert.Contains("Bash", names);
+        Assert.DoesNotContain("mcp__ide__executeCode", names);
+        Assert.Equal("auto", wire["tool_choice"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void ThinkingOnlyAssistantTurn_VanishesCleanly_NoEmptyMessageItem()
+    {
+        // A structural edge the drop-thinking contract creates: if an assistant
+        // turn's ONLY block is plain thinking (all dropped), the whole message must
+        // vanish from input[] — NOT become an empty message item (Responses rejects
+        // a message with empty content[]). Adjacent user turns are legal on gpt-5.5
+        // (live-probed: consecutive user messages accepted), so a vanished turn is
+        // harmless. Real Claude Code never sends a thinking-only turn (always
+        // thinking+text+tool_use — corpus-verified), but the builder must handle it.
+        var ir = new MessagesRequest
+        {
+            Model = TargetModel,
+            MaxTokens = 0,
+            Messages =
+            [
+                new MessageParam { Role = Role.User, Content = [new TextBlockParam { Text = "hi" }] },
+                new MessageParam { Role = Role.Assistant, Content = [new ThinkingBlockParam { Thinking = "internal", Signature = "sig" }] },
+                new MessageParam { Role = Role.User, Content = [new TextBlockParam { Text = "continue" }] },
+            ],
+        };
+        var wire = Emit(ir);
+        var input = wire["input"]!.AsArray();
+        // No empty message items, and no assistant item survived (its only block was dropped).
+        foreach (var it in input)
+        {
+            var o = it!.AsObject();
+            if (o["type"]!.GetValue<string>() == "message")
+            {
+                Assert.NotEqual(0, o["content"]!.AsArray().Count);
+                Assert.Equal("user", o["role"]!.GetValue<string>());
+            }
+        }
+        Assert.Equal(2, input.Count); // the two user turns; the thinking-only assistant turn vanished
+    }
+
     // ── helpers ──
 
     private static JsonObject Emit(MessagesRequest ir) =>
@@ -277,7 +370,13 @@ public class TraceReplayResponsesTests
         return req with { Model = TargetModel };
     }
 
-    private static bool IsServerTool(Tool t) =>
-        t.Type is { Length: > 0 } typ
-        && typ.StartsWith("web_search_", StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// A tool T2 (<see cref="ResponsesRequestBuilder"/> → <c>WriteIrTools</c>) drops,
+    /// so it never reaches the wire — MUST mirror the builder's contract exactly:
+    /// server tools (<c>web_search_*</c>) and the IDE-only <c>mcp__ide__executeCode</c>
+    /// unless the client defer-loaded it (matching <c>ToolsSanitizeStage</c>).
+    /// </summary>
+    private static bool IsDroppedTool(Tool t) =>
+        (t.Type is { Length: > 0 } typ && typ.StartsWith("web_search_", StringComparison.OrdinalIgnoreCase))
+        || (t.Name == "mcp__ide__executeCode" && t.DeferLoading != true);
 }

@@ -117,15 +117,18 @@ internal static class ResponsesRequestBuilder
             // (the reported "complex tasks fail on gpt-5.5"). Emit them from the
             // IR, but only when the bag didn't already supply them: a real Codex
             // request's bag still wins, keeping that path byte-identical.
-            var irToolsEmitted = 0;
+            var irToolSurvivors = new HashSet<string>(StringComparer.Ordinal);
             if (!bagHasTools)
-                irToolsEmitted = WriteIrTools(w, ir.Tools);
+                irToolSurvivors = WriteIrTools(w, ir.Tools);
             // Only emit tool_choice when tools are actually on the wire — a
             // tool_choice of "required" or {function,name} with no tools array is a
             // Responses 400. Tools are present iff the bag supplied them
-            // (bagHasTools) or WriteIrTools emitted at least one.
-            if (!bagHasToolChoice && (bagHasTools || irToolsEmitted > 0))
-                WriteIrToolChoice(w, ir.ToolChoice);
+            // (bagHasTools) or WriteIrTools emitted at least one. For a forced tool
+            // ({type:"tool",name:X}), also require X to have SURVIVED the drop
+            // filter — otherwise tool_choice would name a tool absent from tools[]
+            // (also a 400); WriteIrToolChoice downgrades that to "auto".
+            if (!bagHasToolChoice && (bagHasTools || irToolSurvivors.Count > 0))
+                WriteIrToolChoice(w, ir.ToolChoice, bagHasTools ? null : irToolSurvivors);
 
             w.WriteEndObject();
         }
@@ -252,8 +255,9 @@ internal static class ResponsesRequestBuilder
     /// "strict":false }</c>. Called only on the Claude Code path — a Codex request
     /// carries its tools in the openai bag and re-emits them via
     /// <see cref="WriteToolsWithDrops"/>, so this is skipped there. Returns the
-    /// number of tools actually written (0 when nothing survived filtering), so the
-    /// caller can decide whether a <c>tool_choice</c> is meaningful.
+    /// SET OF SURVIVING TOOL NAMES (empty when nothing survived filtering), so the
+    /// caller can decide whether a <c>tool_choice</c> is meaningful AND whether a
+    /// forced <c>tool_choice</c> names a tool that actually made it to the wire.
     /// </summary>
     /// <remarks>
     /// Every Claude Code tool is a custom function tool (no <c>type</c> field,
@@ -277,9 +281,10 @@ internal static class ResponsesRequestBuilder
     /// rejects an empty tools array on some models, and an absent key is the correct
     /// "no tools" signal).
     /// </remarks>
-    private static int WriteIrTools(Utf8JsonWriter w, IReadOnlyList<Tool>? tools)
+    private static HashSet<string> WriteIrTools(Utf8JsonWriter w, IReadOnlyList<Tool>? tools)
     {
-        if (tools is not { Count: > 0 }) return 0;
+        var survivors = new HashSet<string>(StringComparer.Ordinal);
+        if (tools is not { Count: > 0 }) return survivors;
 
         // Materialize the kept set first so we don't open a "tools":[] array for a
         // request whose only tools are dropped (server / IDE-only).
@@ -295,7 +300,7 @@ internal static class ResponsesRequestBuilder
                 continue;
             kept.Add(t);
         }
-        if (kept.Count == 0) return 0;
+        if (kept.Count == 0) return survivors;
 
         w.WritePropertyName("tools");
         w.WriteStartArray();
@@ -313,9 +318,10 @@ internal static class ResponsesRequestBuilder
             // stricter schema than the tool author intended.
             w.WriteBoolean("strict", false);
             w.WriteEndObject();
+            survivors.Add(t.Name);
         }
         w.WriteEndArray();
-        return kept.Count;
+        return survivors;
     }
 
     /// <summary>
@@ -360,7 +366,16 @@ internal static class ResponsesRequestBuilder
     /// Called only on the Claude Code path (Codex re-emits its own from the bag).
     /// Null → omit (Responses defaults to auto).
     /// </summary>
-    private static void WriteIrToolChoice(Utf8JsonWriter w, ToolChoice? choice)
+    /// <param name="survivingToolNames">
+    /// The names of tools that actually reached the wire (from <see cref="WriteIrTools"/>).
+    /// Used ONLY for a forced <c>{type:"tool",name:X}</c> choice: if X was dropped
+    /// (server / IDE-only) it is absent from <c>tools[]</c>, and naming it in
+    /// <c>tool_choice</c> is a Responses 400 — so the choice is downgraded to
+    /// <c>"auto"</c> (the model still runs, just not forced onto a tool that isn't
+    /// there). Null means "don't validate" (the bag supplied the tools, so this
+    /// builder didn't filter them and can't know the survivor set).
+    /// </param>
+    private static void WriteIrToolChoice(Utf8JsonWriter w, ToolChoice? choice, HashSet<string>? survivingToolNames)
     {
         switch (choice)
         {
@@ -377,6 +392,14 @@ internal static class ResponsesRequestBuilder
                 w.WriteString("tool_choice", "none");
                 break;
             case ToolChoiceTool tool:
+                // Forced tool: only legal if the tool survived to tools[]. If it was
+                // dropped, forcing it 400s — fall back to "auto" so the request still
+                // succeeds (the dropped tool is unusable anyway).
+                if (survivingToolNames is not null && !survivingToolNames.Contains(tool.Name))
+                {
+                    w.WriteString("tool_choice", "auto");
+                    break;
+                }
                 w.WritePropertyName("tool_choice");
                 w.WriteStartObject();
                 w.WriteString("type", "function");
