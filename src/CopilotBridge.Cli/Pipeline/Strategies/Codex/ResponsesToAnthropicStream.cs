@@ -36,6 +36,13 @@ internal sealed class ResponsesToAnthropicStream
     private readonly string _model;
     private readonly ILogger? _log;
     private bool _messageStarted;
+    // Latched true once a terminal (message_delta + message_stop) has been emitted,
+    // so a following FlushTerminal() is a genuine no-op. Without it, the normal
+    // path — response.completed → Flush() emits the terminal and resets
+    // _messageStarted=false, then the strategy's unconditional post-loop
+    // FlushTerminal() sees !_messageStarted and synthesizes a SECOND, dangling
+    // message_start — corrupting every streamed response the client parses.
+    private bool _terminated;
     private int _blockIndex = -1;
     private bool _blockOpen;
     private string _stopReason = "end_turn";
@@ -163,6 +170,10 @@ internal sealed class ResponsesToAnthropicStream
             yield return Sse("message_stop", "{\"type\":\"message_stop\"}");
             _stopReason = null!;
             _messageStarted = false;
+            // A well-formed terminal has now been emitted; a later FlushTerminal
+            // (the strategy calls it unconditionally after the loop) must NOT
+            // synthesize a second message_start.
+            _terminated = true;
         }
     }
 
@@ -175,6 +186,11 @@ internal sealed class ResponsesToAnthropicStream
     /// </summary>
     public IEnumerable<SseItem<string>> FlushTerminal(bool failed)
     {
+        // Idempotent: if the stream already produced its terminal (the normal
+        // response.completed path), do nothing. Otherwise a redundant call would
+        // emit a dangling second message_start (empty content, no message_stop),
+        // which corrupts the client's parse of an otherwise-complete response.
+        if (_terminated) yield break;
         if (failed) _stopReason = ErrorStopReason;
         if (!_messageStarted)
         {

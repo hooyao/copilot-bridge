@@ -105,6 +105,7 @@ public class CcOnGpt5HeadlessTests : IClassFixture<BridgeFixture>
         var sawToolsReachWire = false;
         var badUpstream = new List<string>();
         var droppedTools = new List<string>();
+        var badStream = new List<string>();
         for (var i = 0; i < entries.Count; i++)
         {
             var e = entries[i];
@@ -129,7 +130,23 @@ public class CcOnGpt5HeadlessTests : IClassFixture<BridgeFixture>
                 if (upstreamTools > 0) sawToolsReachWire = true;
                 else droppedTools.Add($"[{i}] inbound had {inboundTools} tools but /responses body had 0");
             }
+
+            // Stream integrity: the client-facing (T3-translated) SSE for each
+            // streamed response must carry EXACTLY ONE message_start. A second,
+            // dangling message_start (the FlushTerminal double-terminal bug)
+            // corrupts Claude Code's parse — the "replies look weird" symptom.
+            if (e.InboundStatus is >= 200 and < 300)
+            {
+                var starts = CountClientEvents(e.Events, "message_start");
+                var stops = CountClientEvents(e.Events, "message_stop");
+                if (starts > 1 || stops > 1)
+                    badStream.Add($"[{i}] client SSE had message_start={starts} message_stop={stops} (expected 1/1)");
+            }
         }
+
+        // 0. Client-facing stream must be well-formed (one message_start/stop each).
+        Assert.True(badStream.Count == 0,
+            "Client-facing SSE was malformed (double terminal):\n" + string.Join("\n", badStream));
 
         // 1. Every upstream call that ran must be a success (no 400s from a
         //    malformed Responses body).
@@ -182,6 +199,27 @@ public class CcOnGpt5HeadlessTests : IClassFixture<BridgeFixture>
     /// <summary>Tool count on the INBOUND (Anthropic-shape) request body.</summary>
     private static int CountInboundTools(JsonNode? inboundBody) =>
         inboundBody is JsonObject obj && obj["tools"] is JsonArray tools ? tools.Count : 0;
+
+    /// <summary>
+    /// Count client-facing SSE events of a given Anthropic event type in the
+    /// captured inbound-resp events (the T3-translated stream Claude Code parses).
+    /// The audit sink serializes each event as { "event": "&lt;type&gt;", "data": ... };
+    /// fall back to the data payload's "type" when the event label is absent.
+    /// </summary>
+    private static int CountClientEvents(JsonArray? events, string eventType)
+    {
+        if (events is null) return 0;
+        var n = 0;
+        foreach (var ev in events)
+        {
+            if (ev is not JsonObject eo) continue;
+            var label = eo["event"]?.GetValue<string>();
+            if (label is null && eo["data"] is JsonObject data)
+                label = data["type"]?.GetValue<string>();
+            if (label == eventType) n++;
+        }
+        return n;
+    }
 
     private static string Trunc(string s, int n) => s.Length <= n ? s : s[..n] + "…";
 }
