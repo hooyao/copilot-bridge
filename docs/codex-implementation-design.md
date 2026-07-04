@@ -85,7 +85,7 @@ Four cells, who does what:
 | Claude Code → `/v1/messages` (exists) | identity | identity passthrough | identity | shipped (M1) |
 | **Codex → `/responses`** (Codex's default) | **T1** | **T2/T3** | **T4** | ✅ **BUILD + VERIFY** |
 | Codex → `/v1/messages` (Codex uses Opus) | T1 | identity passthrough | T4 | architecture-ready, **NOT built/tested this change** |
-| Claude Code → `/responses` (CC uses GPT-5) | identity | T2/T3 | identity | architecture-ready, **NOT built/tested this change** |
+| Claude Code → `/responses` (CC uses GPT-5) | identity | T2/T3 | identity | ✅ **built + live-verified** (T2 emits tools from typed `ir.Tools`; `CcOnGpt5HeadlessTests`) |
 
 **Scope decision (Q-B):** this change implements and verifies **only the Codex →
 `/responses` cell** — Codex with its own gpt-5.x models. It builds the full T1–T4
@@ -135,9 +135,9 @@ Responses-specific specifics the research nailed down):
 | Messages | `messages[].role/content[]` | `input[]` items | role map; `developer`→`system`/first-user |
 | Text content | `{type:text}` | `{type:input_text\|output_text}` | direct |
 | Image | `{type:image,source:{base64\|url}}` | `{type:input_image,image_url:"data:…"}` | base64 → data URL |
-| Tool def | `tools:[{name,input_schema}]` | `tools:[{type:function,name,parameters}]` | unwrap/rewrap; pass `custom`/`web_search` through |
+| Tool def | `tools:[{name,input_schema}]` | `tools:[{type:function,name,parameters}]` | unwrap/rewrap; `input_schema`→`parameters`. **Source depends on client:** a Codex request carries tools in the `openai` bag (re-emitted verbatim + drops); a **Claude Code** request carries them as typed `ir.Tools` (no bag) → T2 emits `{type:function,name,description,parameters,strict:false}` from each, skipping `web_search_*` server tools. Bag wins when present, so the Codex path is byte-identical. |
 | Tool call | content `{type:tool_use,id,name,input}` | `{type:function_call,call_id,name,arguments}` | id↔call_id; input(obj)↔arguments(json string) |
-| Tool result | user content `{type:tool_result,tool_use_id,content}` | `{type:function_call_output,call_id,output}` | structural move |
+| Tool result | user content `{type:tool_result,tool_use_id,content}` | `{type:function_call_output,call_id,output}` | structural move. `output` is a STRING: a Codex string/object output passes verbatim (structured object survives); a Claude Code `content` **array** of blocks is flattened to concatenated text |
 | Reasoning | `thinking:{type,budget_tokens}` | `reasoning:{effort,summary}` + `include:[encrypted_content]` | budget↔effort table (§3.4); echo encrypted_content |
 | Stop reason | `end_turn\|max_tokens\|tool_use…` | `response.completed.status` / `incomplete_details` | lookup table |
 | Streaming | `message_start`→`content_block_*`→`message_delta`→`message_stop` | `response.created`→`output_item/_text/_fn_args.*`→`response.completed` | **stateful** event-by-event state machine (both T3 and T4) |

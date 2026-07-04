@@ -97,9 +97,35 @@ internal static class ResponsesRequestBuilder
             if (ir.Stream is { } stream)
                 w.WriteBoolean("stream", stream);
 
-            // Re-apply the bag's un-modeled knobs, with coercions.
+            // Re-apply the bag's un-modeled knobs, with coercions. Track whether
+            // the bag supplied tools / tool_choice so the IR-derived emit below
+            // does NOT double-write them for a Codex request (whose bag wins).
+            var bagHasTools = false;
+            var bagHasToolChoice = false;
             if (bag is { ValueKind: JsonValueKind.Object } bagObj)
+            {
+                bagHasTools = bagObj.TryGetProperty("tools", out _);
+                bagHasToolChoice = bagObj.TryGetProperty("tool_choice", out _);
                 WriteBagFields(w, bagObj, profile, ref vision);
+            }
+
+            // Claude Code path: the request carries typed Anthropic tools /
+            // tool_choice on the IR body and has NO openai bag (bag == null). The
+            // Codex round-trip stashes tools INSIDE the bag (T1 → WriteBagFields),
+            // but a Claude Code request never had one — so without this the tools
+            // are silently dropped and gpt-5.5 can talk but never call a tool
+            // (the reported "complex tasks fail on gpt-5.5"). Emit them from the
+            // IR, but only when the bag didn't already supply them: a real Codex
+            // request's bag still wins, keeping that path byte-identical.
+            var irToolsEmitted = 0;
+            if (!bagHasTools)
+                irToolsEmitted = WriteIrTools(w, ir.Tools);
+            // Only emit tool_choice when tools are actually on the wire — a
+            // tool_choice of "required" or {function,name} with no tools array is a
+            // Responses 400. Tools are present iff the bag supplied them
+            // (bagHasTools) or WriteIrTools emitted at least one.
+            if (!bagHasToolChoice && (bagHasTools || irToolsEmitted > 0))
+                WriteIrToolChoice(w, ir.ToolChoice);
 
             w.WriteEndObject();
         }
@@ -134,8 +160,14 @@ internal static class ResponsesRequestBuilder
                     w.WriteString("type", "function_call_output");
                     w.WriteString("call_id", tr.ToolUseId);
                     w.WritePropertyName("output");
-                    if (tr.Content is { } content) content.WriteTo(w);
-                    else w.WriteStringValue("");
+                    // Responses' function_call_output.output is a STRING. A Codex
+                    // round-trip already carries a string here (T1 stored the
+                    // opaque Output element), so a string passes through verbatim.
+                    // But a Claude Code tool_result.content can be an ARRAY of
+                    // content blocks ([{type:text,text:...}, ...]) — gpt-5.5 400s
+                    // on a non-string output — so flatten an array to its
+                    // concatenated text. Null → empty string.
+                    WriteToolResultOutput(w, tr.Content);
                     w.WriteEndObject();
                     break;
                 case RedactedThinkingBlockParam rt:
@@ -197,6 +229,205 @@ internal static class ResponsesRequestBuilder
         UrlImageSource u => u.Url,
         _ => "",
     };
+
+    /// <summary>
+    /// Write the <c>tools</c> array from the IR's typed Anthropic tools
+    /// (<see cref="MessagesRequest.Tools"/>) into the Responses <c>function</c>
+    /// shape: <c>{ "type":"function", "name", "description", "parameters",
+    /// "strict":false }</c>. Called only on the Claude Code path — a Codex request
+    /// carries its tools in the openai bag and re-emits them via
+    /// <see cref="WriteToolsWithDrops"/>, so this is skipped there. Returns the
+    /// number of tools actually written (0 when nothing survived filtering), so the
+    /// caller can decide whether a <c>tool_choice</c> is meaningful.
+    /// </summary>
+    /// <remarks>
+    /// Every Claude Code tool is a custom function tool (no <c>type</c> field,
+    /// carries <c>input_schema</c>) — verified against the live capture corpus.
+    /// Anthropic's <c>input_schema</c> is renamed to Responses' <c>parameters</c>
+    /// (a JSON-Schema object). Two kinds of tool are dropped so this path matches
+    /// what the /cc→Anthropic path sends (the Anthropic-only sanitize stages —
+    /// including <c>ToolsSanitizeStage</c> — are gated off for a Responses target,
+    /// so their drops must be reproduced here):
+    /// <list type="bullet">
+    ///   <item><b>Server tools</b> (<c>Type</c> starts with <c>web_search_</c>) —
+    ///         the /cc endpoint already 400s them; T2 must never put one on the
+    ///         /responses wire either.</item>
+    ///   <item><b>IDE-only <c>mcp__ide__executeCode</c></b> without
+    ///         <c>defer_loading=true</c> — Copilot has no IDE execution channel, so
+    ///         <c>ToolsSanitizeStage</c> drops it on the /cc path; drop it here too
+    ///         rather than forward a tool gpt-5.5 could call but the client can't
+    ///         service.</item>
+    /// </list>
+    /// An empty / all-dropped tool list emits no <c>tools</c> key at all (Copilot
+    /// rejects an empty tools array on some models, and an absent key is the correct
+    /// "no tools" signal).
+    /// </remarks>
+    private static int WriteIrTools(Utf8JsonWriter w, IReadOnlyList<Tool>? tools)
+    {
+        if (tools is not { Count: > 0 }) return 0;
+
+        // Materialize the kept set first so we don't open a "tools":[] array for a
+        // request whose only tools are dropped (server / IDE-only).
+        var kept = new List<Tool>(tools.Count);
+        foreach (var t in tools)
+        {
+            if (t.Type is { Length: > 0 } typ
+                && typ.StartsWith("web_search_", StringComparison.OrdinalIgnoreCase))
+                continue; // server tool — never reaches Copilot /responses
+            // Mirror ToolsSanitizeStage: the IDE-execution tool is a no-op on a
+            // non-IDE backend unless the client explicitly defer-loaded it.
+            if (t.Name == "mcp__ide__executeCode" && t.DeferLoading != true)
+                continue;
+            kept.Add(t);
+        }
+        if (kept.Count == 0) return 0;
+
+        w.WritePropertyName("tools");
+        w.WriteStartArray();
+        foreach (var t in kept)
+        {
+            w.WriteStartObject();
+            w.WriteString("type", "function");
+            w.WriteString("name", t.Name);
+            if (t.Description is { } desc)
+                w.WriteString("description", desc);
+            w.WritePropertyName("parameters");
+            WriteInputSchema(w, t.InputSchema);
+            // Anthropic tools are not strict-mode; mirror what the successful Codex
+            // function tools send (strict:false) so gpt-5.5 doesn't enforce a
+            // stricter schema than the tool author intended.
+            w.WriteBoolean("strict", false);
+            w.WriteEndObject();
+        }
+        w.WriteEndArray();
+        return kept.Count;
+    }
+
+    /// <summary>
+    /// Serialize the IR's lossy <see cref="InputSchema"/> as a JSON-Schema object
+    /// under the Responses <c>parameters</c> key. The IR models only
+    /// <c>type</c>/<c>properties</c>/<c>required</c> (the rest was dropped at
+    /// deserialize — see docs). A null schema (server tools omit it, though those
+    /// are already skipped) still needs a valid empty object so gpt-5.5 doesn't
+    /// reject a parameter-less function.
+    /// </summary>
+    private static void WriteInputSchema(Utf8JsonWriter w, InputSchema? schema)
+    {
+        w.WriteStartObject();
+        w.WriteString("type", schema?.Type ?? "object");
+        if (schema?.Properties is { } props)
+        {
+            w.WritePropertyName("properties");
+            props.WriteTo(w);
+        }
+        else
+        {
+            // No properties → an empty object, not an absent key: a Responses
+            // function schema with type:object and no properties is a valid
+            // no-argument tool.
+            w.WritePropertyName("properties");
+            w.WriteStartObject();
+            w.WriteEndObject();
+        }
+        if (schema?.Required is { Count: > 0 } required)
+        {
+            w.WriteStartArray("required");
+            foreach (var r in required) w.WriteStringValue(r);
+            w.WriteEndArray();
+        }
+        w.WriteEndObject();
+    }
+
+    /// <summary>
+    /// Write <c>tool_choice</c> from the IR's typed <see cref="ToolChoice"/>:
+    /// <c>auto</c>→<c>"auto"</c>, <c>any</c>→<c>"required"</c>,
+    /// <c>none</c>→<c>"none"</c>, <c>tool{name}</c>→<c>{type:"function",name}</c>.
+    /// Called only on the Claude Code path (Codex re-emits its own from the bag).
+    /// Null → omit (Responses defaults to auto).
+    /// </summary>
+    private static void WriteIrToolChoice(Utf8JsonWriter w, ToolChoice? choice)
+    {
+        switch (choice)
+        {
+            case null:
+                return;
+            case ToolChoiceAuto:
+                w.WriteString("tool_choice", "auto");
+                break;
+            case ToolChoiceAny:
+                // Anthropic "any" (must use a tool) maps to Responses "required".
+                w.WriteString("tool_choice", "required");
+                break;
+            case ToolChoiceNone:
+                w.WriteString("tool_choice", "none");
+                break;
+            case ToolChoiceTool tool:
+                w.WritePropertyName("tool_choice");
+                w.WriteStartObject();
+                w.WriteString("type", "function");
+                w.WriteString("name", tool.Name);
+                w.WriteEndObject();
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Write a Responses <c>function_call_output.output</c> from an Anthropic
+    /// <c>tool_result.content</c> (<see cref="ToolResultBlockParam.Content"/>),
+    /// which is <c>string | Array&lt;block&gt; | null</c>, OR a Codex round-trip's
+    /// raw <c>JsonElement</c> output (string / object / scalar):
+    /// <list type="bullet">
+    ///   <item><b>Array</b> (Claude Code content blocks like
+    ///         <c>[{type:text,text:…}]</c>) → the <c>text</c> fields concatenated
+    ///         with newlines; a non-text block is kept as compact JSON so nothing
+    ///         is lost. gpt-5.5 can't read the Anthropic block shape as a Responses
+    ///         output-content array, so it MUST be flattened to a string.</item>
+    ///   <item><b>Anything else</b> (string, object, scalar) → written verbatim.
+    ///         This preserves two contracts at once: the common string case is
+    ///         byte-identical to the old <c>content.WriteTo</c>, and a Codex
+    ///         structured output object (<c>{"rows":[1,2],"ok":true}</c>) survives
+    ///         as an object rather than being stringified
+    ///         (<c>StructuredToolOutput_RoundTripsThroughT1T2</c>).</item>
+    ///   <item><b>null</b> → empty string.</item>
+    /// </list>
+    /// </summary>
+    private static void WriteToolResultOutput(Utf8JsonWriter w, JsonElement? content)
+    {
+        if (content is not { } c)
+        {
+            w.WriteStringValue("");
+            return;
+        }
+        if (c.ValueKind == JsonValueKind.Array)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var block in c.EnumerateArray())
+            {
+                if (sb.Length > 0) sb.Append('\n');
+                if (block.ValueKind == JsonValueKind.Object
+                    && block.TryGetProperty("type", out var bt)
+                    && bt.ValueKind == JsonValueKind.String
+                    && bt.GetString() == "text"
+                    && block.TryGetProperty("text", out var txt)
+                    && txt.ValueKind == JsonValueKind.String)
+                {
+                    sb.Append(txt.GetString());
+                }
+                else
+                {
+                    // Non-text block (image, etc.): preserve it as compact JSON
+                    // rather than dropping it — the model at least sees the shape.
+                    sb.Append(block.GetRawText());
+                }
+            }
+            w.WriteStringValue(sb.ToString());
+            return;
+        }
+        // String / object / scalar: verbatim. Byte-identical to the previous
+        // content.WriteTo for the common string case, and keeps a Codex structured
+        // output object intact.
+        c.WriteTo(w);
+    }
 
     /// <summary>
     /// Read a top-level string property out of the openai bag, or null if the bag
