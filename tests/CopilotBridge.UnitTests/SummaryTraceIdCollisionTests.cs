@@ -173,6 +173,21 @@ public class SummaryTraceIdCollisionTests
             System.Threading.CancellationToken ct = default) => throw new NotSupportedException();
     }
 
+    /// <summary>Minimal <see cref="CopilotBridge.Cli.Auth.IAuthService"/> stub — the
+    /// count_tokens endpoint reads only <c>CopilotApiBaseUrl</c> for its audit URL.</summary>
+    private sealed class StubAuth : CopilotBridge.Cli.Auth.IAuthService
+    {
+        public bool IsAuthenticated => true;
+        public string TokenLocation => "(test)";
+        public string? CopilotApiBaseUrl => "https://api.test.githubcopilot.com";
+        public DateTimeOffset? CopilotTokenExpiry => DateTimeOffset.MaxValue;
+        public ValueTask<string> EnsureGitHubTokenAsync(System.Threading.CancellationToken ct = default) =>
+            ValueTask.FromResult("gh-token");
+        public ValueTask<string> GetCopilotTokenAsync(System.Threading.CancellationToken ct = default) =>
+            ValueTask.FromResult("test-token");
+        public void SignOut() { }
+    }
+
     /// <summary>
     /// Regression (PR #20 review): <c>count_tokens</c> pushes NO pipeline and has
     /// no enter/exit lines, but it still emits a summary — and that summary, like
@@ -209,6 +224,7 @@ public class SummaryTraceIdCollisionTests
         await ClaudeCodeCountTokensEndpoint.HandleAsync(
             http,
             new CountTokensStubClient(),
+            new StubAuth(),
             new RequestSummaryLogger(factory.CreateLogger<RequestSummaryLogger>()),
             TestAudit.Create(false));
 

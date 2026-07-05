@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Hosting.Logging;
 using CopilotBridge.Cli.Models;
@@ -27,6 +28,7 @@ internal static class ClaudeCodeCountTokensEndpoint
     public static async Task HandleAsync(
         HttpContext httpCtx,
         ICopilotClient copilot,
+        IAuthService auth,
         RequestSummaryLogger summaryLogger,
         RequestAudit audit)
     {
@@ -53,10 +55,14 @@ internal static class ClaudeCodeCountTokensEndpoint
         // Read the body via the shared pooled reader. count_tokens needs the bytes
         // as an independent array regardless of tracing (the summary model probe and
         // the forwarded upstream POST both consume them), so materialize ONE owned
-        // copy here and reuse it for probe + POST + audit. The pooled buffer is
-        // returned by the `using` at handler exit.
-        using var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.BodyReader, ct).ConfigureAwait(false);
-        var inboundAuditBody = inbound.Memory.ToArray();
+        // copy here and reuse it for probe + POST + audit. Dispose the pooled reader
+        // immediately — the copy is independent, so we release the pooled buffer back
+        // to the manager right away rather than pinning it across the upstream POST.
+        byte[] inboundAuditBody;
+        using (var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false))
+        {
+            inboundAuditBody = inbound.Memory.ToArray();
+        }
 
         audit.RecordInbound(
             seq,
@@ -95,11 +101,17 @@ internal static class ClaudeCodeCountTokensEndpoint
             using var upstream = await copilot.PostCountTokensAsync(inboundAuditBody, ct);
 
             var upstreamHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            // Audit the ACTUAL upstream URL the client POSTed to. CopilotClient builds
+            // it as `{baseUrl}/v1/messages/count_tokens` where baseUrl comes from the
+            // resolved Copilot token (enterprise → api.enterprise.githubcopilot.com);
+            // a hardcoded api.githubcopilot.com would misreport it for non-individual
+            // accounts. Populated by now — PostCountTokensAsync forced the token fetch.
+            var upstreamUrl = $"{auth.CopilotApiBaseUrl ?? "https://api.githubcopilot.com"}/v1/messages/count_tokens";
             audit.RecordUpstreamRequest(
                 seq,
                 traceId,
                 "POST",
-                "https://api.githubcopilot.com/v1/messages/count_tokens",
+                upstreamUrl,
                 upstreamHeaders,
                 inboundAuditBody,
                 inboundAuditBody.Length);

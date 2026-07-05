@@ -1,74 +1,100 @@
-using System.Buffers;
-using System.IO.Pipelines;
 using System.Text;
 using CopilotBridge.Cli.Endpoints;
-using Microsoft.AspNetCore.Http;
+using Microsoft.IO;
 using Xunit;
 
 namespace CopilotBridge.UnitTests;
 
 /// <summary>
-/// Contract for the shared inbound-body reader. It reads a request body from a
-/// <see cref="PipeReader"/> into ONE pooled contiguous buffer, exposes only the
-/// meaningful prefix (never the rented capacity), and returns the buffer to the
-/// pool exactly once. These assert those invariants against realistic pipe
-/// behaviour — multi-segment delivery, empty bodies, large bodies, cancellation,
-/// and the real ASP.NET request pipe — the reasons the endpoints can trust one
-/// helper instead of a hand-rolled read loop.
+/// Contract for the shared inbound-body reader. It reads a request body
+/// <see cref="Stream"/> to end into ONE contiguous pooled buffer (backed by a
+/// <c>RecyclableMemoryStream</c>), exposes the bytes trimmed to the true length,
+/// and returns the pooled storage exactly once on dispose. These assert those
+/// invariants against a chunked stream (many small reads), empty bodies,
+/// cancellation, a faulted read, and PooledBody ownership.
 /// </summary>
+/// <remarks>
+/// The reader deliberately reads from <c>httpCtx.Request.Body</c> (a Stream), NOT
+/// from <c>Request.BodyReader</c> (a PipeReader). A Stream consumes bytes as it
+/// reads, so it never stalls on Kestrel's request-body backpressure. A PipeReader
+/// full-read that only examines (never consumes) until IsCompleted deadlocks once
+/// the body exceeds Kestrel's ~1 MB buffer threshold — see the OOM/stall warnings
+/// in the System.IO.Pipelines docs. That failure mode is invisible to a unit test
+/// (a MemoryStream-backed reader has no backpressure), so the guard is the API
+/// choice itself: read the Stream, which cannot deadlock.
+/// </remarks>
 public class InboundBodyTests
 {
-    // A real PipeReader over the bytes, delivered in `bufferSize` chunks. This is
-    // the SAME adapter production uses (DefaultHttpContext.Request.BodyReader wraps
-    // the body Stream in a StreamPipeReader), so a small bufferSize forces genuine
-    // multi-segment ReadOnlySequences through the accumulation loop.
-    private static PipeReader Reader(byte[] data, int bufferSize) =>
-        PipeReader.Create(new MemoryStream(data),
-            new StreamPipeReaderOptions(bufferSize: bufferSize, minimumReadSize: 1));
+    // A stream that hands back at most `chunk` bytes per read, to force the reader
+    // through many ReadAsync calls (so the recyclable stream spans multiple pooled
+    // chunks and GetBuffer() must assemble them into one contiguous buffer).
+    private sealed class ChunkedStream(byte[] data, int chunk) : Stream
+    {
+        private int _pos;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => _pos; set => throw new NotSupportedException(); }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            await Task.Yield();
+            if (_pos >= data.Length) return 0;
+            var n = Math.Min(Math.Min(chunk, buffer.Length), data.Length - _pos);
+            data.AsSpan(_pos, n).CopyTo(buffer.Span);
+            _pos += n;
+            return n;
+        }
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+        public override void Flush() { }
+        public override long Seek(long o, SeekOrigin r) => throw new NotSupportedException();
+        public override void SetLength(long v) => throw new NotSupportedException();
+        public override void Write(byte[] b, int o, int c) => throw new NotSupportedException();
+    }
 
-    // ── round-trip correctness across delivery shapes ─────────────────────────
+    // ── round-trip correctness across read shapes ─────────────────────────────
 
     /// <summary>
-    /// Contract: a body delivered in one read round-trips byte-exact via Memory,
-    /// and Length is the content length.
+    /// Contract: a small body round-trips byte-exact via Memory, and Length is the
+    /// content length.
     /// </summary>
     [Fact]
-    public async Task SingleRead_RoundTripsExact_LengthIsContentLength()
+    public async Task SmallBody_RoundTripsExact_LengthIsContentLength()
     {
         var data = Encoding.UTF8.GetBytes("""{"model":"claude-opus-4-8","hi":"世界"}""");
-        using var inbound = await InboundBody.ReadPooledAsync(Reader(data, bufferSize: 64 * 1024), default);
+        using var inbound = await InboundBody.ReadPooledAsync(new ChunkedStream(data, chunk: 7), default);
 
         Assert.Equal(data.Length, inbound.Length);
         Assert.Equal(data, inbound.Memory.ToArray());
     }
 
     /// <summary>
-    /// Contract: a body delivered across MANY small segments (bufferSize far below
-    /// the body size) still assembles byte-exact. This is the core guard for the
-    /// PipeReader accumulation loop: if AdvanceTo(consumed, examined) mishandled the
-    /// "keep everything until complete" contract, the reassembly would corrupt.
+    /// Contract: a body delivered across MANY small reads (chunk far below the body
+    /// size, so the recyclable stream spans multiple pooled chunks that GetBuffer()
+    /// must assemble) still round-trips byte-exact — no dropped or duplicated bytes.
     /// </summary>
     [Theory]
     [InlineData(1)]     // one byte per read — maximal fragmentation
     [InlineData(7)]     // odd small chunk
-    [InlineData(4096)]  // realistic small buffer
-    public async Task MultiSegment_ReassemblesExact(int bufferSize)
+    [InlineData(4096)]  // realistic small chunk
+    public async Task MultiRead_MultiChunk_ReassemblesExact(int chunk)
     {
-        // Non-repeating pattern so any mis-ordered/dropped segment is detectable.
+        // Non-repeating pattern so any mis-copied/dropped region is detectable.
         var data = new byte[200 * 1024];
         for (var i = 0; i < data.Length; i++) data[i] = (byte)((i * 31 + 7) & 0xFF);
 
-        using var inbound = await InboundBody.ReadPooledAsync(Reader(data, bufferSize), default);
+        using var inbound = await InboundBody.ReadPooledAsync(new ChunkedStream(data, chunk), default);
 
         Assert.Equal(data.Length, inbound.Length);
         Assert.True(inbound.Memory.Span.SequenceEqual(data),
-            $"body reassembled from {bufferSize}-byte segments must equal the input byte-for-byte");
+            $"body reassembled from {chunk}-byte reads must equal the input byte-for-byte");
     }
 
     /// <summary>
-    /// Contract: a large multi-MB body (mirrors real Claude Code requests) assembles
-    /// correctly. Guards that `checked((int)buffer.Length)` and the single CopyTo
-    /// handle a body well beyond the pooled initial rent.
+    /// Contract: a multi-MB body (mirrors real Claude Code requests, which routinely
+    /// exceed 4 MB) assembles correctly across many pooled chunks.
     /// </summary>
     [Fact]
     public async Task LargeBody_MultiMegabyte_ReassemblesExact()
@@ -76,52 +102,31 @@ public class InboundBodyTests
         var data = new byte[5 * 1024 * 1024]; // 5 MiB
         for (var i = 0; i < data.Length; i++) data[i] = (byte)(i & 0xFF);
 
-        using var inbound = await InboundBody.ReadPooledAsync(Reader(data, bufferSize: 16 * 1024), default);
+        using var inbound = await InboundBody.ReadPooledAsync(new ChunkedStream(data, chunk: 16 * 1024), default);
 
         Assert.Equal(data.Length, inbound.Length);
         Assert.True(inbound.Memory.Span.SequenceEqual(data));
     }
 
     /// <summary>
-    /// Contract: Memory exposes the content length, NOT the rented capacity. An
-    /// empty body yields a zero-length Memory, and disposes cleanly (a real,
-    /// returnable buffer was still rented).
+    /// Contract: Memory is trimmed to the content length, NOT the (larger) pooled
+    /// chunk capacity. An empty body yields a zero-length Memory, not a full chunk.
     /// </summary>
     [Fact]
-    public async Task EmptyBody_YieldsZeroLengthMemory()
+    public async Task EmptyBody_YieldsZeroLengthMemory_NotChunkCapacity()
     {
-        using var inbound = await InboundBody.ReadPooledAsync(Reader([], bufferSize: 8), default);
+        using var inbound = await InboundBody.ReadPooledAsync(new ChunkedStream([], chunk: 8), default);
 
         Assert.Equal(0, inbound.Length);
         Assert.Equal(0, inbound.Memory.Length);
     }
 
-    // ── integration with the real ASP.NET request pipe ────────────────────────
-
-    /// <summary>
-    /// Contract: reading via a real <see cref="HttpRequest.BodyReader"/> (the
-    /// production source) round-trips the body a test assigns to
-    /// <see cref="HttpRequest.Body"/>. This both proves the production path and
-    /// validates that the endpoint tests — which set <c>Request.Body</c> — exercise
-    /// the same bytes through <c>BodyReader</c>.
-    /// </summary>
-    [Fact]
-    public async Task RealRequestBodyReader_RoundTrips()
-    {
-        var data = Encoding.UTF8.GetBytes("""{"model":"gpt-5.3-codex","probe":"body-reader"}""");
-        var http = new DefaultHttpContext();
-        http.Request.Body = new MemoryStream(data);
-
-        using var inbound = await InboundBody.ReadPooledAsync(http.Request.BodyReader, default);
-
-        Assert.Equal(data, inbound.Memory.ToArray());
-    }
-
     // ── cancellation ──────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Contract: a cancelled token surfaces as OperationCanceledException (the read
-    /// does not silently return a partial body).
+    /// Contract: a pre-cancelled token surfaces as OperationCanceledException (the read
+    /// does not silently return a partial body). The no-leak half of the contract is
+    /// asserted separately by <see cref="CancelledAfterPartialFill_LeaksNothing"/>.
     /// </summary>
     [Fact]
     public async Task CancelledToken_Throws()
@@ -131,79 +136,63 @@ public class InboundBodyTests
         cts.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-            await InboundBody.ReadPooledAsync(Reader(data, bufferSize: 4096), cts.Token));
+            await InboundBody.ReadPooledAsync(new ChunkedStream(data, chunk: 4096), cts.Token));
     }
 
-    // A PipeReader whose first ReadAsync reports IsCanceled (as CancelPendingRead
-    // would), to exercise the IsCanceled branch deterministically.
-    private sealed class CanceledReader : PipeReader
+    // A stream that yields a prefix then throws, to prove a faulted read disposes the
+    // pooled stream (no leak) rather than swallowing.
+    private sealed class FaultingStream(byte[] prefix) : Stream
     {
-        public bool Advanced { get; private set; }
-        public override ValueTask<ReadResult> ReadAsync(CancellationToken ct = default) =>
-            new(new ReadResult(new ReadOnlySequence<byte>(new byte[3]), isCanceled: true, isCompleted: false));
-        public override void AdvanceTo(SequencePosition consumed) => Advanced = true;
-        public override void AdvanceTo(SequencePosition consumed, SequencePosition examined) => Advanced = true;
-        public override bool TryRead(out ReadResult result) { result = default; return false; }
-        public override void CancelPendingRead() { }
-        public override void Complete(Exception? exception = null) { }
+        private int _pos;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => _pos; set => throw new NotSupportedException(); }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            await Task.Yield();
+            if (_pos >= prefix.Length) throw new IOException("simulated read fault");
+            var n = Math.Min(buffer.Length, prefix.Length - _pos);
+            prefix.AsSpan(_pos, n).CopyTo(buffer.Span);
+            _pos += n;
+            return n;
+        }
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+        public override void Flush() { }
+        public override long Seek(long o, SeekOrigin r) => throw new NotSupportedException();
+        public override void SetLength(long v) => throw new NotSupportedException();
+        public override void Write(byte[] b, int o, int c) => throw new NotSupportedException();
     }
 
     /// <summary>
-    /// Contract: a pending-read cancellation (ReadResult.IsCanceled) surfaces as
-    /// OperationCanceledException AND leaves the reader advanced (consistent state),
-    /// rather than looping forever or leaking.
-    /// </summary>
-    [Fact]
-    public async Task PendingReadCanceled_Throws_AndAdvancesReader()
-    {
-        var reader = new CanceledReader();
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-            await InboundBody.ReadPooledAsync(reader, default));
-
-        Assert.True(reader.Advanced, "IsCanceled path must AdvanceTo to keep the reader consistent");
-    }
-
-    // A PipeReader whose ReadAsync throws — to prove a faulted read leaks no rental.
-    private sealed class FaultingReader : PipeReader
-    {
-        public override ValueTask<ReadResult> ReadAsync(CancellationToken ct = default) =>
-            throw new IOException("simulated pipe fault");
-        public override void AdvanceTo(SequencePosition consumed) { }
-        public override void AdvanceTo(SequencePosition consumed, SequencePosition examined) { }
-        public override bool TryRead(out ReadResult result) { result = default; return false; }
-        public override void CancelPendingRead() { }
-        public override void Complete(Exception? exception = null) { }
-    }
-
-    /// <summary>
-    /// Contract: a fault before completion propagates and rents nothing to leak.
-    /// (The helper only rents on IsCompleted, so a pre-completion throw cannot leave
-    /// a rented array un-returned — this asserts the exception surfaces cleanly.)
+    /// Contract: a mid-read fault propagates (the helper does not swallow it). The
+    /// no-leak half is asserted separately by <see cref="FaultedRead_LeaksNothing"/>.
     /// </summary>
     [Fact]
     public async Task FaultedRead_Propagates()
     {
         await Assert.ThrowsAsync<IOException>(async () =>
-            await InboundBody.ReadPooledAsync(new FaultingReader(), default));
+            await InboundBody.ReadPooledAsync(new FaultingStream(Encoding.UTF8.GetBytes("partial")), default));
     }
 
     // ── PooledBody ownership ──────────────────────────────────────────────────
 
     /// <summary>
     /// Contract: Dispose is idempotent — a double dispose does not throw and does
-    /// not double-return to the pool (which would corrupt later rents). Asserted via
-    /// the observable: no throw, and a subsequent independent read is still correct.
+    /// not double-dispose the pooled stream (which would corrupt the pool). Asserted
+    /// via the observable: no throw, and a subsequent independent read is still correct.
     /// </summary>
     [Fact]
     public async Task DoubleDispose_NoThrow_PoolStaysSane()
     {
-        var inbound = await InboundBody.ReadPooledAsync(Reader(Encoding.UTF8.GetBytes("payload"), 3), default);
+        var inbound = await InboundBody.ReadPooledAsync(new ChunkedStream(Encoding.UTF8.GetBytes("payload"), 3), default);
         inbound.Dispose();
-        inbound.Dispose(); // must be a no-op, not a second Return
+        inbound.Dispose(); // must be a no-op, not a second dispose of the stream
 
         var data2 = Encoding.UTF8.GetBytes("second-read-after-double-dispose");
-        using var inbound2 = await InboundBody.ReadPooledAsync(Reader(data2, 4), default);
+        using var inbound2 = await InboundBody.ReadPooledAsync(new ChunkedStream(data2, 2), default);
         Assert.Equal(data2, inbound2.Memory.ToArray());
     }
 
@@ -214,8 +203,154 @@ public class InboundBodyTests
     [Fact]
     public async Task MemoryAfterDispose_Throws()
     {
-        var inbound = await InboundBody.ReadPooledAsync(Reader(Encoding.UTF8.GetBytes("x"), 4), default);
+        var inbound = await InboundBody.ReadPooledAsync(new ChunkedStream(Encoding.UTF8.GetBytes("x"), 4), default);
         inbound.Dispose();
         Assert.Throws<ObjectDisposedException>(() => inbound.Memory);
+    }
+
+    // ── leak accounting via an instrumented manager ───────────────────────────
+    // A dedicated manager (not the process-wide one) lets us assert bytes are
+    // returned to the pool. After every pooled stream is disposed, the manager's
+    // in-use byte counters must be back to zero — i.e. nothing leaked.
+
+    private static RecyclableMemoryStreamManager NewManager() => new();
+
+    private static long InUse(RecyclableMemoryStreamManager m) =>
+        m.SmallPoolInUseSize + m.LargePoolInUseSize;
+
+    /// <summary>
+    /// Contract: a SUCCESSFUL read that is then disposed returns all pooled storage —
+    /// in-use bytes go back to zero. This is the baseline the leak tests below compare
+    /// against, and it catches a `PooledBody.Dispose` that fails to dispose the stream.
+    /// Mutation: drop `s.Dispose()` in PooledBody.Dispose → in-use stays > 0 → RED.
+    /// </summary>
+    [Fact]
+    public async Task SuccessfulRead_Disposed_ReturnsAllPooledBytes()
+    {
+        var mgr = NewManager();
+        // 200 KiB forces a large-pool assembly on GetBuffer(), so both pools are exercised.
+        var data = new byte[200 * 1024];
+        var inbound = await InboundBody.ReadPooledAsync(new ChunkedStream(data, 4096), mgr, default);
+        _ = inbound.Memory; // force GetBuffer() (assembles the large buffer)
+        Assert.True(InUse(mgr) > 0, "a live pooled read must hold pooled bytes");
+
+        inbound.Dispose();
+
+        Assert.Equal(0, InUse(mgr)); // everything returned — no leak
+    }
+
+    /// <summary>
+    /// Contract: a FAULTED read leaks nothing — the read's catch disposes the pooled
+    /// stream before rethrowing, so in-use bytes return to zero even though no
+    /// PooledBody was ever handed back. Mutation: delete `ms.Dispose()` from the catch
+    /// in ReadPooledAsync → in-use stays > 0 after the throw → RED. (The old "it throws"
+    /// assertion could not see this; this one can.)
+    /// </summary>
+    [Fact]
+    public async Task FaultedRead_LeaksNothing()
+    {
+        var mgr = NewManager();
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await InboundBody.ReadPooledAsync(new FaultingStream(Encoding.UTF8.GetBytes("partial")), mgr, default));
+
+        Assert.Equal(0, InUse(mgr)); // faulted read returned its pooled blocks
+    }
+
+    /// <summary>
+    /// Contract: a read cancelled AFTER partially filling the stream also leaks
+    /// nothing — the catch disposes a partially-written stream. This is the realistic
+    /// client-disconnect shape (bytes already buffered, then abort), distinct from
+    /// pre-cancellation. Mutation: delete the catch `ms.Dispose()` → in-use > 0 → RED.
+    /// </summary>
+    [Fact]
+    public async Task CancelledAfterPartialFill_LeaksNothing()
+    {
+        var mgr = NewManager();
+        using var cts = new CancellationTokenSource();
+        // Stream yields a prefix, then cancels the token, then the next read observes it.
+        var stream = new CancelAfterPrefixStream(new byte[64 * 1024], cts);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await InboundBody.ReadPooledAsync(stream, mgr, cts.Token));
+
+        Assert.Equal(0, InUse(mgr));
+    }
+
+    // A stream that delivers `prefix` across reads, cancels `cts` once the prefix is
+    // exhausted, so the following read throws OCE with data already in the RMS.
+    private sealed class CancelAfterPrefixStream(byte[] prefix, CancellationTokenSource cts) : Stream
+    {
+        private int _pos;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => _pos; set => throw new NotSupportedException(); }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            await Task.Yield();
+            ct.ThrowIfCancellationRequested();
+            if (_pos >= prefix.Length)
+            {
+                cts.Cancel();
+                ct.ThrowIfCancellationRequested();
+                return 0;
+            }
+            var n = Math.Min(buffer.Length, prefix.Length - _pos);
+            prefix.AsSpan(_pos, n).CopyTo(buffer.Span);
+            _pos += n;
+            return n;
+        }
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+        public override void Flush() { }
+        public override long Seek(long o, SeekOrigin r) => throw new NotSupportedException();
+        public override void SetLength(long v) => throw new NotSupportedException();
+        public override void Write(byte[] b, int o, int c) => throw new NotSupportedException();
+    }
+
+    // ── single/multi-block boundary (RMS default BlockSize = 128 KiB) ──────────
+
+    /// <summary>
+    /// Contract: bodies straddling the RMS block-size boundary (128 KiB) round-trip
+    /// byte-exact — the single-block `GetBuffer()` return path (≤ 1 block) and the
+    /// multi-block assembly path (&gt; 1 block) must agree at the seam. Catches an
+    /// off-by-one in the single-vs-multi branch or a dropped final-block boundary byte.
+    /// </summary>
+    [Theory]
+    [InlineData(128 * 1024 - 1)]  // one below a full block
+    [InlineData(128 * 1024)]      // exactly one block
+    [InlineData(128 * 1024 + 1)]  // one above — flips to multi-block assembly
+    public async Task BlockSizeBoundary_RoundTripsExact(int size)
+    {
+        var data = new byte[size];
+        for (var i = 0; i < size; i++) data[i] = (byte)((i * 131 + 17) & 0xFF);
+
+        using var inbound = await InboundBody.ReadPooledAsync(new ChunkedStream(data, chunk: 9999), default);
+
+        Assert.Equal(size, inbound.Length);
+        Assert.True(inbound.Memory.Span.SequenceEqual(data),
+            $"body of {size} bytes (block boundary) must round-trip byte-for-byte");
+    }
+
+    /// <summary>
+    /// Contract: reading Memory twice returns the SAME assembled view (the `_view`
+    /// cache), not a re-assembled/corrupted copy. Mutation: replace `_view ??=` with an
+    /// unconditional re-assembly and this still passes on content — but asserting the
+    /// two reads are byte-identical AND that a large (multi-block) body is stable pins
+    /// the caching contract's observable result.
+    /// </summary>
+    [Fact]
+    public async Task MemoryReadTwice_IsStable()
+    {
+        var data = new byte[200 * 1024]; // multi-block, so GetBuffer() assembles
+        for (var i = 0; i < data.Length; i++) data[i] = (byte)(i & 0xFF);
+
+        using var inbound = await InboundBody.ReadPooledAsync(new ChunkedStream(data, 4096), default);
+
+        var first = inbound.Memory.ToArray();
+        var second = inbound.Memory.ToArray();
+        Assert.Equal(first, second);
+        Assert.True(inbound.Memory.Span.SequenceEqual(data));
     }
 }

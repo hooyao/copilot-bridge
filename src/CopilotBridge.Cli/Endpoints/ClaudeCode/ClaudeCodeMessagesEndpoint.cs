@@ -79,7 +79,7 @@ internal static class ClaudeCodeMessagesEndpoint
         // folded into a log call that already runs — no extra per-request alloc.
         // Audit the raw inbound bytes (pre-T1) — RequestAudit copies the view to an
         // array only when tracing is on, so off-trace there's no extra copy.
-        using (var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.BodyReader, ct).ConfigureAwait(false))
+        using (var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false))
         {
             audit.RecordInbound(
                 seq,
@@ -170,6 +170,14 @@ internal static class ClaudeCodeMessagesEndpoint
                 }
 
                 var irBody = await inboundAdapter.AdaptAsync(clientBody, inboundHeaders, ct);
+
+                // The inbound body is fully consumed now (deserialize + audit above);
+                // the pipeline operates on the IR, never the raw bytes. Release the
+                // pooled buffer back to the manager IMMEDIATELY rather than pinning it
+                // (for a 4 MB+ body, a large-pool buffer) across the whole pipeline +
+                // streaming relay. Dispose is idempotent, so the enclosing `using`
+                // remains a correct backstop on the early-return paths above.
+                inbound.Dispose();
 
                 // Populate the injected scoped context (created empty by DI; the same
                 // instance the pipeline components resolved). The pipeline reads it in

@@ -71,7 +71,7 @@ internal static class CodexResponsesEndpoint
         // buffer to the pool at handler exit; the body is used synchronously below
         // and not carried into the pipeline. Inbound size is reported on the exit
         // line (folded into a log call that already runs — no extra per-request alloc).
-        using var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.BodyReader, ct).ConfigureAwait(false);
+        using var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false);
         // Audit the raw inbound Codex request (pre-T1). RequestAudit copies the
         // view only when tracing is on, so off-trace there's no extra copy.
         audit.RecordInbound(seq, traceId, httpCtx.Request.Method,
@@ -126,6 +126,12 @@ internal static class CodexResponsesEndpoint
 
             // T1: Responses → IR (Anthropic shape).
             var irBody = await inboundAdapter.AdaptAsync(clientBody, inboundHeaders, ct);
+
+            // Inbound body fully consumed (deserialize + audit above); the pipeline
+            // operates on the IR. Release the pooled buffer NOW rather than pinning it
+            // across the pipeline + streaming relay. Dispose is idempotent — the
+            // enclosing `using var` stays a correct backstop for the error paths.
+            inbound.Dispose();
 
             // Populate the injected scoped context (created empty by DI; the same
             // instance the pipeline components resolved). The pipeline reads it in

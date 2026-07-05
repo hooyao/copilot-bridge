@@ -1187,16 +1187,17 @@ BridgeIoSink (custom ILogEventSink, Hosting/Logging/BridgeIoSink.cs)
 Worker task (single reader)
    ▼  pretty-prints to <utc>-<seq>-<kind>.json (using JsonNode tree;
    ▼  body is parsed as JSON when possible, falls back to string)
-   ▼  returns pooled byte[] back to ArrayPool<byte>.Shared
+   ▼  the payload body is a plain array, reclaimed by GC (the sink does not pool)
 ```
 
 #### Buffer ownership
 
-Endpoints read inbound bodies into `ArrayPool<byte>.Shared`-rented buffers
-to avoid GC pressure on conversation-sized payloads, via the shared
+Endpoints read inbound bodies into a pooled buffer (a
+`Microsoft.IO.RecyclableMemoryStream`, pooled chunks) to avoid per-request LOH
+allocation churn on conversation-sized payloads, via the shared
 `InboundBody.ReadPooledAsync` helper which returns a disposable `PooledBody`.
 The endpoint consumes the body **synchronously** (deserialize + the audit
-capture) inside a `using`, so the pooled buffer is returned to the pool within
+capture) inside a `using`, so the pooled storage is returned to the manager within
 the endpoint's synchronous section — it does **not** cross `await` into the
 pipeline (the request context has no raw-bytes field for a stage to read). When
 tracing is on, `RequestAudit.RecordInbound` makes a one-shot copy for the sink;

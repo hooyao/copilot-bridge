@@ -8,6 +8,11 @@
   <ItemGroup>
     <PackageVersion Include="System.CommandLine" Version="3.0.0-preview.3.26207.106" />
     <PackageVersion Include="System.Security.Cryptography.ProtectedData" Version="10.0.7" />
+    <!-- Pooled MemoryStream for the inbound body read (avoids per-request LOH
+         allocation churn on 4 MB+ CC bodies — buffers are pooled and reused).
+         Microsoft-maintained, MIT, no dependencies on net6.0+. Reads the request
+         body Stream into pooled chunks — no hand-rolled buffer growth. -->
+    <PackageVersion Include="Microsoft.IO.RecyclableMemoryStream" Version="3.0.1" />
   </ItemGroup>
 
   <!-- Logging stack. Serilog 4.3+ is NativeAOT-clean (PR #2175 fixed the

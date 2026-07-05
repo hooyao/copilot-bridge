@@ -574,16 +574,21 @@ flowchart LR
 
 ### Buffer ownership
 
-Inbound bodies are read from the request `PipeReader` (`httpCtx.Request.BodyReader`)
-into a single `ArrayPool`-rented buffer to avoid GC pressure on conversation-sized
-payloads, via `InboundBody.ReadPooledAsync` which returns a disposable `PooledBody`
-— the request pipe accumulates the body, then it is copied into one contiguous
-pooled array (no hand-written growth loop). The endpoint consumes the body
-synchronously (deserialize + the audit capture) inside a `using` and the buffer
-returns to the pool within that synchronous section — it does not cross `await`
-into the pipeline. The audit copy (`RecordInbound`, tracing-on only) is a separate
-plain array the sink owns; the sink's body is reclaimed by GC after the JSON is
-written (no pooling on the sink side).
+Inbound bodies are read from the request body `Stream` (`httpCtx.Request.Body`)
+into a pooled buffer via `InboundBody.ReadPooledAsync`, which copies the body into a
+`Microsoft.IO.RecyclableMemoryStream` (pooled chunks, no hand-rolled growth) and
+returns a disposable `PooledBody` exposing the bytes as one contiguous
+`ReadOnlyMemory`. This avoids per-request LOH allocation churn on conversation-sized
+payloads — the pooled buffers are reused, not re-allocated. Reading the Stream (not
+`Request.BodyReader`) is deliberate: a Stream consumes bytes as it reads, so it
+never stalls on Kestrel's request-body backpressure, whereas a PipeReader full-read
+that only examines until `IsCompleted` deadlocks once the body exceeds the ~1 MB
+buffer threshold. The endpoint consumes the body synchronously (deserialize + the
+audit capture) inside a `using` and the pooled storage returns to the manager within
+that synchronous section — it does not cross `await` into the pipeline. The audit
+copy (`RecordInbound`, tracing-on only) is a separate plain array the sink owns; the
+sink's body is reclaimed by GC after the JSON is written (no pooling on the sink
+side).
 
 ### Redaction
 

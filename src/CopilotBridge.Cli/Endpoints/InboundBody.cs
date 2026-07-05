@@ -1,102 +1,137 @@
-using System.Buffers;
-using System.IO.Pipelines;
+using Microsoft.IO;
 
 namespace CopilotBridge.Cli.Endpoints;
 
 /// <summary>
-/// Reads an inbound HTTP request body from its <see cref="PipeReader"/> into a
-/// single pooled buffer whose lifetime is owned by the returned
-/// <see cref="PooledBody"/>. Uses the request pipe to accumulate the body (no
-/// hand-written buffer growth — the pipe does the buffering), copies the assembled
-/// <see cref="ReadOnlySequence{T}"/> into one contiguous rented array with a single
-/// <see cref="ReadOnlySequence{T}.CopyTo(System.Span{byte})"/>, then advances the
-/// reader to release the pipe's buffer immediately.
+/// Reads an inbound HTTP request body <see cref="Stream"/> into a pooled buffer
+/// whose lifetime is owned by the returned <see cref="PooledBody"/>. Backed by
+/// <see cref="RecyclableMemoryStream"/> (pooled chunks) so conversation-sized
+/// bodies (4 MB+ for Claude Code) avoid per-request LOH allocation churn, and there
+/// is no hand-rolled buffer growth — the recyclable stream grows itself as bytes
+/// are copied in.
 /// </summary>
 /// <remarks>
-/// Ownership is expressed by <see cref="IDisposable"/>: the caller wraps the read
-/// in a <c>using</c>, consumes <see cref="PooledBody.Memory"/> synchronously
-/// (deserialize + audit capture), and the rented buffer returns to
-/// <see cref="ArrayPool{T}.Shared"/> on dispose. The pipe's own buffer is released
-/// inside this method (via <see cref="PipeReader.AdvanceTo(System.SequencePosition)"/>)
-/// as soon as the body is copied out, so nothing large is pinned for the pipeline.
+/// Ownership is expressed by <see cref="IDisposable"/>: the caller consumes
+/// <see cref="PooledBody.Memory"/> synchronously (deserialize + audit capture) and
+/// then disposes the <see cref="PooledBody"/> — the endpoints dispose it right after
+/// building the IR, so the pooled buffer (a large-pool buffer for a 4 MB+ body) is
+/// returned to the manager in the brief parse window and NOT pinned across the
+/// pipeline + streaming relay. The body never crosses an <c>await</c> into the
+/// pipeline (the pipeline operates on the IR, not the raw bytes).
+/// <para>
+/// <b>Reads the body <see cref="Stream"/>, NOT <c>Request.BodyReader</c>.</b> A
+/// Stream consumes bytes as it reads, so it never stalls on Kestrel's request-body
+/// backpressure. A PipeReader full-read that examines-without-consuming until
+/// <c>IsCompleted</c> deadlocks once the body exceeds Kestrel's ~1 MB buffer
+/// threshold — do not switch this to a PipeReader.
+/// </para>
 /// </remarks>
 internal static class InboundBody
 {
-    /// <summary>
-    /// Read <paramref name="reader"/> to completion into a pooled buffer. The
-    /// returned <see cref="PooledBody"/> owns the buffer; dispose it (via
-    /// <c>using</c>) after the bytes have been consumed synchronously. Production
-    /// callers pass <c>httpCtx.Request.BodyReader</c>.
-    /// </summary>
-    /// <exception cref="OperationCanceledException">
-    /// <paramref name="ct"/> fired, or the pending read was cancelled.
-    /// </exception>
-    public static async ValueTask<PooledBody> ReadPooledAsync(PipeReader reader, CancellationToken ct)
-    {
-        while (true)
+    // Process-wide manager: thread-safe, holds the small/large chunk pools, lives
+    // for the whole process (the library's documented pattern). Free-list caps are
+    // set EXPLICITLY: the default (0) means "unbounded free list that never shrinks",
+    // so a burst of concurrent 4 MB bodies would leave a permanent high-watermark of
+    // retained large buffers. Cap the retained free bytes so idle memory returns to
+    // the OS; buffers over the cap are dropped to GC on return rather than pooled.
+    private static readonly RecyclableMemoryStreamManager Manager = new(
+        new RecyclableMemoryStreamManager.Options
         {
-            ReadResult result = await reader.ReadAsync(ct).ConfigureAwait(false);
-            ReadOnlySequence<byte> buffer = result.Buffer;
+            // Defaults: 128 KiB blocks, 1 MiB large-buffer multiple. Retain a bounded
+            // working set of each pool; excess is released rather than hoarded.
+            MaximumSmallPoolFreeBytes = 16L * 1024 * 1024,   // 16 MiB of 128 KiB blocks
+            MaximumLargePoolFreeBytes = 64L * 1024 * 1024,   // 64 MiB of assembled buffers
+        });
 
-            if (result.IsCanceled)
-            {
-                // CancelPendingRead was invoked. Leave the reader in a consistent
-                // (advanced) state, then surface as cancellation.
-                reader.AdvanceTo(buffer.Start, buffer.End);
-                throw new OperationCanceledException(ct);
-            }
+    /// <summary>
+    /// Read <paramref name="body"/> to end into a pooled buffer. The returned
+    /// <see cref="PooledBody"/> owns the buffer; dispose it (via <c>using</c>) after
+    /// the bytes have been consumed synchronously.
+    /// </summary>
+    public static Task<PooledBody> ReadPooledAsync(Stream body, CancellationToken ct) =>
+        ReadPooledAsync(body, Manager, ct);
 
-            if (result.IsCompleted)
-            {
-                // The whole body is now buffered in `buffer`. Copy it into one
-                // contiguous pooled array (a single memcpy — no growth loop), then
-                // release the pipe's buffer immediately.
-                var len = checked((int)buffer.Length);
-                // Rent at least 1 so an empty body still yields a real (returnable)
-                // buffer; Memory below trims to the true length.
-                var buf = ArrayPool<byte>.Shared.Rent(Math.Max(len, 1));
-                buffer.CopyTo(buf);
-                reader.AdvanceTo(buffer.End);
-                return new PooledBody(buf, len);
-            }
-
-            // Not complete: consumed nothing, examined everything — the pipe keeps
-            // accumulating the rest while retaining what we have already seen, so the
-            // final (IsCompleted) read returns the whole body in one sequence.
-            reader.AdvanceTo(buffer.Start, buffer.End);
+    /// <summary>
+    /// Test seam: read into a caller-supplied manager so a test can pass an
+    /// instrumented <see cref="RecyclableMemoryStreamManager"/> and assert
+    /// created-vs-disposed stream counts (e.g. that a faulted read leaks nothing).
+    /// Production callers use the <see cref="ReadPooledAsync(Stream, CancellationToken)"/>
+    /// overload, which supplies the process-wide manager.
+    /// </summary>
+    internal static async Task<PooledBody> ReadPooledAsync(
+        Stream body, RecyclableMemoryStreamManager manager, CancellationToken ct)
+    {
+        var ms = manager.GetStream("InboundBody");
+        try
+        {
+            await body.CopyToAsync(ms, ct).ConfigureAwait(false);
+            // Compute the length INSIDE the try: the checked cast throws on a body
+            // larger than int.MaxValue (~2 GB), and constructing PooledBody must not
+            // happen outside the try or such a fault would orphan `ms` (leaking its
+            // pooled blocks). A >2 GB body is only reachable if Kestrel's
+            // MaxRequestBodySize is raised, but the guarantee holds regardless.
+            var len = checked((int)ms.Length);
+            return new PooledBody(ms, len);
+        }
+        catch
+        {
+            // Copy (or the length cast) failed: dispose so the pooled chunks return
+            // before the exception surfaces — a faulted read never leaks buffers.
+            ms.Dispose();
+            throw;
         }
     }
 }
 
 /// <summary>
-/// Owns a rented buffer holding an inbound body. Exposes the meaningful prefix as
-/// <see cref="Memory"/> (already trimmed to <see cref="Length"/> — the rented
-/// capacity is never visible), and returns the buffer to the pool exactly once on
+/// Owns a <see cref="RecyclableMemoryStream"/> holding an inbound body. Exposes the
+/// bytes as a contiguous <see cref="Memory"/> (trimmed to the true length — the
+/// pooled capacity is never visible) and returns the pooled chunks exactly once on
 /// <see cref="Dispose"/>.
 /// </summary>
 internal sealed class PooledBody : IDisposable
 {
-    private byte[]? _buffer;
+    private RecyclableMemoryStream? _stream;
+    // GetBuffer() assembles the chunked stream into a single (large-pool-backed)
+    // buffer on first call and caches it; we cache the resulting view so repeated
+    // Memory reads don't re-assemble. Null until first Memory access.
+    private ReadOnlyMemory<byte>? _view;
 
-    internal PooledBody(byte[] buffer, int length)
+    internal PooledBody(RecyclableMemoryStream stream, int length)
     {
-        _buffer = buffer;
+        _stream = stream;
         Length = length;
     }
 
-    /// <summary>Content length in bytes (NOT the rented capacity).</summary>
+    /// <summary>Content length in bytes.</summary>
     public int Length { get; }
 
-    /// <summary>The body bytes, trimmed to <see cref="Length"/>. Valid until <see cref="Dispose"/>.</summary>
-    public ReadOnlyMemory<byte> Memory =>
-        new(_buffer ?? throw new ObjectDisposedException(nameof(PooledBody)), 0, Length);
+    /// <summary>
+    /// The body bytes as one contiguous buffer, trimmed to <see cref="Length"/>.
+    /// Valid until <see cref="Dispose"/>. Backed by the recyclable stream's pooled
+    /// storage (a single large-pool block when the body spanned multiple chunks).
+    /// Pooling avoids per-request LOH allocation churn (the buffers are reused); a
+    /// multi-MB assembled buffer still physically lives on the LOH, it just isn't
+    /// re-allocated per request.
+    /// </summary>
+    public ReadOnlyMemory<byte> Memory
+    {
+        get
+        {
+            var s = _stream ?? throw new ObjectDisposedException(nameof(PooledBody));
+            // GetBuffer() returns the single chunk directly when the body fit in one
+            // block, else assembles+caches one large-pool buffer. Trim to Length.
+            return _view ??= s.GetBuffer().AsMemory(0, Length);
+        }
+    }
 
-    /// <summary>Return the buffer to the pool. Idempotent — a second call is a no-op.</summary>
+    /// <summary>Return the pooled chunks to the manager. Idempotent — a second call is a no-op.</summary>
     public void Dispose()
     {
-        var buf = _buffer;
-        if (buf is null) return;
-        _buffer = null;
-        ArrayPool<byte>.Shared.Return(buf, clearArray: false);
+        var s = _stream;
+        if (s is null) return;
+        _stream = null;
+        _view = null;
+        s.Dispose();
     }
 }
