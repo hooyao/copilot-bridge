@@ -1,61 +1,70 @@
 using System.Buffers;
+using System.IO.Pipelines;
 
 namespace CopilotBridge.Cli.Endpoints;
 
 /// <summary>
-/// Reads an inbound HTTP request body into a pooled buffer whose lifetime is owned
-/// by the returned <see cref="PooledBody"/>. Replaces the hand-rolled
-/// <c>ReadBodyPooledAsync</c> that was duplicated across endpoints and leaked a
-/// (buffer, length) tuple whose rented capacity differed from the real length.
+/// Reads an inbound HTTP request body from its <see cref="PipeReader"/> into a
+/// single pooled buffer whose lifetime is owned by the returned
+/// <see cref="PooledBody"/>. Uses the request pipe to accumulate the body (no
+/// hand-written buffer growth — the pipe does the buffering), copies the assembled
+/// <see cref="ReadOnlySequence{T}"/> into one contiguous rented array with a single
+/// <see cref="ReadOnlySequence{T}.CopyTo(System.Span{byte})"/>, then advances the
+/// reader to release the pipe's buffer immediately.
 /// </summary>
 /// <remarks>
 /// Ownership is expressed by <see cref="IDisposable"/>: the caller wraps the read
 /// in a <c>using</c>, consumes <see cref="PooledBody.Memory"/> synchronously
-/// (deserialize + audit capture), and the buffer returns to
-/// <see cref="ArrayPool{T}.Shared"/> on dispose. The body does NOT cross an
-/// <c>await</c> into the pipeline — the endpoint uses it before running the
-/// pipeline and disposes it, so the pooled buffer is not pinned for the whole
-/// request.
+/// (deserialize + audit capture), and the rented buffer returns to
+/// <see cref="ArrayPool{T}.Shared"/> on dispose. The pipe's own buffer is released
+/// inside this method (via <see cref="PipeReader.AdvanceTo(System.SequencePosition)"/>)
+/// as soon as the body is copied out, so nothing large is pinned for the pipeline.
 /// </remarks>
 internal static class InboundBody
 {
-    // Initial rent size. Matches the prior ClaudeCode/Codex endpoints (64 KiB);
-    // grows by doubling for larger bodies. count_tokens kept its own smaller read.
-    private const int InitialRent = 64 * 1024;
-
     /// <summary>
-    /// Read <paramref name="body"/> to end into a pooled buffer. The returned
-    /// <see cref="PooledBody"/> owns the buffer; dispose it (via <c>using</c>) after
-    /// the bytes have been consumed synchronously.
+    /// Read <paramref name="reader"/> to completion into a pooled buffer. The
+    /// returned <see cref="PooledBody"/> owns the buffer; dispose it (via
+    /// <c>using</c>) after the bytes have been consumed synchronously. Production
+    /// callers pass <c>httpCtx.Request.BodyReader</c>.
     /// </summary>
-    public static async Task<PooledBody> ReadPooledAsync(Stream body, CancellationToken ct)
+    /// <exception cref="OperationCanceledException">
+    /// <paramref name="ct"/> fired, or the pending read was cancelled.
+    /// </exception>
+    public static async ValueTask<PooledBody> ReadPooledAsync(PipeReader reader, CancellationToken ct)
     {
-        var buf = ArrayPool<byte>.Shared.Rent(InitialRent);
-        var written = 0;
-        try
+        while (true)
         {
-            while (true)
+            ReadResult result = await reader.ReadAsync(ct).ConfigureAwait(false);
+            ReadOnlySequence<byte> buffer = result.Buffer;
+
+            if (result.IsCanceled)
             {
-                if (written == buf.Length)
-                {
-                    var bigger = ArrayPool<byte>.Shared.Rent(buf.Length * 2);
-                    Buffer.BlockCopy(buf, 0, bigger, 0, written);
-                    ArrayPool<byte>.Shared.Return(buf, clearArray: false);
-                    buf = bigger;
-                }
-                var n = await body.ReadAsync(buf.AsMemory(written), ct).ConfigureAwait(false);
-                if (n == 0) break;
-                written += n;
+                // CancelPendingRead was invoked. Leave the reader in a consistent
+                // (advanced) state, then surface as cancellation.
+                reader.AdvanceTo(buffer.Start, buffer.End);
+                throw new OperationCanceledException(ct);
             }
+
+            if (result.IsCompleted)
+            {
+                // The whole body is now buffered in `buffer`. Copy it into one
+                // contiguous pooled array (a single memcpy — no growth loop), then
+                // release the pipe's buffer immediately.
+                var len = checked((int)buffer.Length);
+                // Rent at least 1 so an empty body still yields a real (returnable)
+                // buffer; Memory below trims to the true length.
+                var buf = ArrayPool<byte>.Shared.Rent(Math.Max(len, 1));
+                buffer.CopyTo(buf);
+                reader.AdvanceTo(buffer.End);
+                return new PooledBody(buf, len);
+            }
+
+            // Not complete: consumed nothing, examined everything — the pipe keeps
+            // accumulating the rest while retaining what we have already seen, so the
+            // final (IsCompleted) read returns the whole body in one sequence.
+            reader.AdvanceTo(buffer.Start, buffer.End);
         }
-        catch
-        {
-            // Read failed mid-way: return the buffer before surfacing, so a faulted
-            // read never leaks a rented array.
-            ArrayPool<byte>.Shared.Return(buf, clearArray: false);
-            throw;
-        }
-        return new PooledBody(buf, written);
     }
 }
 

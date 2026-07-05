@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Diagnostics;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Hosting.Logging;
@@ -51,11 +50,13 @@ internal static class ClaudeCodeCountTokensEndpoint
             inboundHeaders[header.Key] = header.Value.ToString();
         }
 
-        var (inboundBuf, inboundLen) = await ReadBodyPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false);
-        // Materialized once: the summary model probe below and the forwarded
-        // count_tokens body both need these bytes regardless of tracing, so this
-        // copy is not audit-only (unlike the messages endpoint).
-        var inboundAuditBody = new ReadOnlyMemory<byte>(inboundBuf, 0, inboundLen).ToArray();
+        // Read the body via the shared pooled reader. count_tokens needs the bytes
+        // as an independent array regardless of tracing (the summary model probe and
+        // the forwarded upstream POST both consume them), so materialize ONE owned
+        // copy here and reuse it for probe + POST + audit. The pooled buffer is
+        // returned by the `using` at handler exit.
+        using var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.BodyReader, ct).ConfigureAwait(false);
+        var inboundAuditBody = inbound.Memory.ToArray();
 
         audit.RecordInbound(
             seq,
@@ -91,8 +92,7 @@ internal static class ClaudeCodeCountTokensEndpoint
 
         try
         {
-            using var upstream = await copilot.PostCountTokensAsync(
-                inboundBuf.AsMemory(0, inboundLen).ToArray(), ct);
+            using var upstream = await copilot.PostCountTokensAsync(inboundAuditBody, ct);
 
             var upstreamHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             audit.RecordUpstreamRequest(
@@ -177,8 +177,6 @@ internal static class ClaudeCodeCountTokensEndpoint
                 responseBody.Length,
                 error: error,
                 durationMs: sw.ElapsedMilliseconds);
-
-            ArrayPool<byte>.Shared.Return(inboundBuf, clearArray: false);
         }
     }
 
@@ -202,33 +200,5 @@ internal static class ClaudeCodeCountTokensEndpoint
         }
         catch (System.Text.Json.JsonException) { /* malformed body — skip */ }
         return null;
-    }
-
-    private static async Task<(byte[] Buffer, int Length)> ReadBodyPooledAsync(Stream body, CancellationToken ct)
-    {
-        var buf = ArrayPool<byte>.Shared.Rent(16 * 1024);
-        var written = 0;
-        try
-        {
-            while (true)
-            {
-                if (written == buf.Length)
-                {
-                    var bigger = ArrayPool<byte>.Shared.Rent(buf.Length * 2);
-                    Buffer.BlockCopy(buf, 0, bigger, 0, written);
-                    ArrayPool<byte>.Shared.Return(buf, clearArray: false);
-                    buf = bigger;
-                }
-                var n = await body.ReadAsync(buf.AsMemory(written), ct).ConfigureAwait(false);
-                if (n == 0) break;
-                written += n;
-            }
-        }
-        catch
-        {
-            ArrayPool<byte>.Shared.Return(buf, clearArray: false);
-            throw;
-        }
-        return (buf, written);
     }
 }

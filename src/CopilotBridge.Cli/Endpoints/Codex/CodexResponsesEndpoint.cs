@@ -71,7 +71,7 @@ internal static class CodexResponsesEndpoint
         // buffer to the pool at handler exit; the body is used synchronously below
         // and not carried into the pipeline. Inbound size is reported on the exit
         // line (folded into a log call that already runs — no extra per-request alloc).
-        using var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false);
+        using var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.BodyReader, ct).ConfigureAwait(false);
         // Audit the raw inbound Codex request (pre-T1). RequestAudit copies the
         // view only when tracing is on, so off-trace there's no extra copy.
         audit.RecordInbound(seq, traceId, httpCtx.Request.Method,

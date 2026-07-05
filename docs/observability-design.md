@@ -574,14 +574,16 @@ flowchart LR
 
 ### Buffer ownership
 
-Inbound bodies are read into `ArrayPool`-rented buffers to avoid GC pressure on
-conversation-sized payloads, via `InboundBody.ReadPooledAsync` which returns a
-disposable `PooledBody`. The endpoint consumes the body synchronously (deserialize
-+ the audit capture) inside a `using` and the buffer returns to the pool within
-that synchronous section — it does not cross `await` into the pipeline. The audit
-copy (`RecordInbound`, tracing-on only) is a separate plain array the sink owns;
-the sink's body is reclaimed by GC after the JSON is written (no pooling on the
-sink side).
+Inbound bodies are read from the request `PipeReader` (`httpCtx.Request.BodyReader`)
+into a single `ArrayPool`-rented buffer to avoid GC pressure on conversation-sized
+payloads, via `InboundBody.ReadPooledAsync` which returns a disposable `PooledBody`
+— the request pipe accumulates the body, then it is copied into one contiguous
+pooled array (no hand-written growth loop). The endpoint consumes the body
+synchronously (deserialize + the audit capture) inside a `using` and the buffer
+returns to the pool within that synchronous section — it does not cross `await`
+into the pipeline. The audit copy (`RecordInbound`, tracing-on only) is a separate
+plain array the sink owns; the sink's body is reclaimed by GC after the JSON is
+written (no pooling on the sink side).
 
 ### Redaction
 

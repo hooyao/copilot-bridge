@@ -79,7 +79,7 @@ internal static class ClaudeCodeMessagesEndpoint
         // folded into a log call that already runs — no extra per-request alloc.
         // Audit the raw inbound bytes (pre-T1) — RequestAudit copies the view to an
         // array only when tracing is on, so off-trace there's no extra copy.
-        using (var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false))
+        using (var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.BodyReader, ct).ConfigureAwait(false))
         {
             audit.RecordInbound(
                 seq,
