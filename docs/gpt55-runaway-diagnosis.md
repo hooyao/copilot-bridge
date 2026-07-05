@@ -22,7 +22,8 @@ all worth fixing:
 2. `output_config.effort=max` is silently down-clamped to `medium` on gpt-5.5
    (should be `xhigh`) — a real translation bug.
 3. The summary log prints the **inbound** effort (`max`), not what was actually
-   sent upstream (`medium`) — misleading, explains "effort 有时 max 有时 null".
+   sent upstream (`medium`) — misleading, explains why the logged effort was
+   "sometimes max, sometimes null".
 
 ## The runaway (seq 0102) — what actually happened
 
@@ -122,7 +123,7 @@ arm. Verify against a probe before shipping.
 
 The per-request summary logs the **inbound** effort, not the coerced outbound
 value. So seq 0102 logs `effort=max` while the wire actually carried
-`reasoning.effort=medium`. That is the "非常不正常" the user noticed.
+`reasoning.effort=medium`. That is the "very abnormal" behavior the user noticed.
 
 The `max` vs `(none)` flip-flop across lines is *mostly* normal, though:
 - Foreground CC main-loop requests carry `effort=max` (79× gpt-5.5, 4× opus, 3× sonnet).

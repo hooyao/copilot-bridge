@@ -19,7 +19,7 @@ The intent was that Claude Code would discard the attempt and retry from clean h
 
 Local Claude Code source confirms that the retry helper recognizes both HTTP `529` and error messages containing `"type":"overloaded_error"`:
 
-- `F:\MyProjects\claude-code-sourcemap\restored-src\src\services\api\withRetry.ts`
+- The API retry helper (Claude Code's `services/api` retry module, e.g. `withRetry`):
   - `is529Error(error)` checks `error.status === 529` or `error.message?.includes('"type":"overloaded_error"')`.
   - `shouldRetry(error)` also treats messages containing `"type":"overloaded_error"` as retryable.
 
@@ -29,7 +29,7 @@ So the bridge's `ResponseLeakSignal.OverloadedError` wire shape is not the prima
 
 Local Claude Code source shows that streaming iteration errors are caught in:
 
-- `F:\MyProjects\claude-code-sourcemap\restored-src\src\services\api\claude.ts`
+- The main Anthropic API client (Claude Code's `services/api` client module, e.g. `claude.ts`)
 
 In the streaming catch block, Claude Code computes:
 

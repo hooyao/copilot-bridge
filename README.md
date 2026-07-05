@@ -123,18 +123,22 @@ The file next to the executable. A few keys worth knowing:
   caught. The retry error and the log both name the exact switch to flip; a
   **restart** is required after changing it.
 - **`Routing.Locations`** — optional nginx-style rules to remap a model or tweak
-  headers per request. For example, the shipped rule:
+  headers per request. Ships **empty** (`"Locations": []`) — no rewrites by
+  default. `appsettings.json` also carries a disabled example under
+  `_Locations_disabled` (a key the config binder ignores) that you can enable by
+  renaming it to `Locations`:
 
   ```jsonc
   {
-    "When": { "Model": "gpt-5.5-1m" },
-    "Use":  { "Model": "gpt-5.5" }
+    "When": { "Model": "claude-opus-4.8" },
+    "Use":  { "Model": "gpt-5.5", "EffortMap": { "max": "xhigh" } }
   }
   ```
 
-  rewrites a request for `gpt-5.5-1m` to the real `gpt-5.5` (Codex uses the
-  `-1m` alias to unlock the 1M window client-side; the bridge maps it back). See
-  [`docs/routing.md`](docs/routing.md) for the full match/rewrite syntax.
+  which would route Claude Code's `claude-opus-4.8` traffic to Copilot's
+  `gpt-5.5` (with `max` effort mapped to `xhigh`, since gpt-5.5 doesn't accept
+  `max`). See [`docs/routing.md`](docs/routing.md) for the full match/rewrite
+  syntax.
 
 ## Limitations
 
