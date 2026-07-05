@@ -69,9 +69,9 @@ internal static class CodexResponsesEndpoint
 
         // Owned pooled read (see ClaudeCodeMessagesEndpoint): `using` returns the
         // buffer to the pool at handler exit; the body is used synchronously below
-        // and not carried into the pipeline.
+        // and not carried into the pipeline. Inbound size is reported on the exit
+        // line (folded into a log call that already runs — no extra per-request alloc).
         using var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false);
-        endpointLog.LogDebug("endpoint {Path}: body-bytes={Bytes}", httpCtx.Request.Path, inbound.Length);
         // Audit the raw inbound Codex request (pre-T1). RequestAudit copies the
         // view only when tracing is on, so off-trace there's no extra copy.
         audit.RecordInbound(seq, traceId, httpCtx.Request.Method,
@@ -302,7 +302,8 @@ internal static class CodexResponsesEndpoint
             audit.RecordInboundResponse(seq, traceId, responseStatus, responseHeaders,
                 responseBody, responseBodyLen, events: capturedEvents, error: endpointError, durationMs: sw.ElapsedMilliseconds);
 
-            endpointLog.LogDebug("endpoint exit duration_ms={Ms}", sw.ElapsedMilliseconds);
+            endpointLog.LogDebug("endpoint exit duration_ms={Ms} body-bytes={Bytes}",
+                sw.ElapsedMilliseconds, inbound.Length);
         }
     }
 

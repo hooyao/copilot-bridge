@@ -346,7 +346,7 @@ public class CodexEndpointTests
         }
 
         var enterId = IdForTemplate("endpoint {Path}: enter remote={Remote}");
-        var exitId = IdForTemplate("endpoint exit duration_ms={Ms}");
+        var exitId = IdForTemplate("endpoint exit duration_ms={Ms} body-bytes={Bytes}");
 
         // Both boundary lines carry the id, and it is the BuildTraceId shape
         // (yyyyMMdd-HHmmss-nnnn), not empty and not a 32-hex Activity id.
