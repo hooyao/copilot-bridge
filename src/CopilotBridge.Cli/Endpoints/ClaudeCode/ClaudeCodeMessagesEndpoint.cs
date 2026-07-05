@@ -71,53 +71,60 @@ internal static class ClaudeCodeMessagesEndpoint
             inboundHeaders[h.Key] = h.Value.ToString();
         }
 
-        // Owned pooled read: `using` returns the buffer to the pool at handler exit
-        // (replacing the old scattered `finally { ArrayPool.Return }`). The body is
-        // used only synchronously below — deserialize + audit capture — and is NOT
-        // carried into the pipeline (BridgeRequest no longer has a RawBody). The
-        // inbound size is reported on the exit line below (a boundary observation),
-        // folded into a log call that already runs — no extra per-request alloc.
-        // Audit the raw inbound bytes (pre-T1) — RequestAudit copies the view to an
-        // array only when tracing is on, so off-trace there's no extra copy.
-        using (var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false))
+        // The inbound body is read + audited + deserialized in a narrow `using`
+        // block inside the try below, so its pooled buffer is released as soon as
+        // the IR is built — not pinned across the pipeline + streaming relay. The
+        // inbound size is captured there into `inboundLen` for the exit line.
+        var responseHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var responseStatus = StatusCodes.Status500InternalServerError;
+        byte[] responseBody = [];
+        var responseBodyLen = 0;
+        List<CapturedSseEvent>? capturedEvents = null;
+        string? endpointError = null;
+        // Inbound body size, captured in the narrow read block below; reported on the
+        // exit line in the finally (the raw bytes themselves do not outlive that block).
+        var inboundLen = 0;
+
+        string? upstreamUrl = null;
+        Dictionary<string, string>? upstreamHeaders = null;
+        byte[] upstreamBody = [];
+        var upstreamBodyLen = 0;
+        var upstreamStatus = 0;
+        Dictionary<string, string>? upstreamResponseHeaders = null;
+        // The pipeline response, snapshotted post-RunAsync so the finally can read
+        // the raw upstream-resp bytes (BridgeResponse.RawUpstreamRespBytesOrNull,
+        // which finalizes the streaming capture). Null if the pipeline threw before
+        // producing a response.
+        BridgeResponse? pipelineResponse = null;
+
+        // Per-request summary, populated as the pipeline progresses. Always
+        // emitted in finally regardless of error path.
+        var summary = new RequestSummary { Kind = "messages" };
+        var usageSnapshot = summary.Usage;
+        var inboundBetaSet = ClaudeCodeInboundAdapter.ParseInboundBetas(inboundHeaders);
+        summary.InboundBetas = inboundBetaSet.ToArray();
+
+        try
         {
-            audit.RecordInbound(
-                seq,
-                traceId,
-                httpCtx.Request.Method,
-                httpCtx.Request.Path.Value ?? "",
-                inboundHeaders,
-                inbound.Memory);
-
-            var responseHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            var responseStatus = StatusCodes.Status500InternalServerError;
-            byte[] responseBody = [];
-            var responseBodyLen = 0;
-            List<CapturedSseEvent>? capturedEvents = null;
-            string? endpointError = null;
-
-            string? upstreamUrl = null;
-            Dictionary<string, string>? upstreamHeaders = null;
-            byte[] upstreamBody = [];
-            var upstreamBodyLen = 0;
-            var upstreamStatus = 0;
-            Dictionary<string, string>? upstreamResponseHeaders = null;
-            // The pipeline response, snapshotted post-RunAsync so the finally can read
-            // the raw upstream-resp bytes (BridgeResponse.RawUpstreamRespBytesOrNull,
-            // which finalizes the streaming capture). Null if the pipeline threw before
-            // producing a response.
-            BridgeResponse? pipelineResponse = null;
-
-            // Per-request summary, populated as the pipeline progresses. Always
-            // emitted in finally regardless of error path.
-            var summary = new RequestSummary { Kind = "messages" };
-            var usageSnapshot = summary.Usage;
-            var inboundBetaSet = ClaudeCodeInboundAdapter.ParseInboundBetas(inboundHeaders);
-            summary.InboundBetas = inboundBetaSet.ToArray();
-
-            try
+            MessagesRequest? clientBody;
+            // Narrow read scope: read → audit → deserialize, then dispose at the
+            // block's close, so the (large-pool) buffer returns to the manager in the
+            // parse window, not pinned across the pipeline + streaming relay. `inbound`
+            // is out of scope afterwards, so reading its Memory after dispose is a
+            // compile error, not a use-after-free. Inside the outer try so the finally
+            // still emits the summary + inbound-resp audit on the deserialize-400 path.
+            using (var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false))
             {
-                MessagesRequest? clientBody;
+                inboundLen = inbound.Length;
+                // Audit the raw inbound bytes (pre-T1) — RequestAudit copies the view
+                // to an array only when tracing is on, so off-trace there's no copy.
+                audit.RecordInbound(
+                    seq,
+                    traceId,
+                    httpCtx.Request.Method,
+                    httpCtx.Request.Path.Value ?? "",
+                    inboundHeaders,
+                    inbound.Memory);
                 try
                 {
                     clientBody = JsonSerializer.Deserialize(inbound.Memory.Span, JsonContext.Default.MessagesRequest);
@@ -130,292 +137,285 @@ internal static class ClaudeCodeMessagesEndpoint
                     await httpCtx.Response.WriteAsync($"invalid request body: {ex.Message}", ct);
                     return;
                 }
+            }
 
-                if (clientBody is null)
-                {
-                    endpointError = "deserialize: null";
-                    responseStatus = StatusCodes.Status400BadRequest;
-                    httpCtx.Response.StatusCode = responseStatus;
-                    return;
-                }
-
-                // Snapshot the pre-pipeline state for the INFO summary log.
-                // Pre-seed ResolvedModel with the requested name so that if the
-                // pipeline throws before the post-pipeline block runs (e.g.
-                // ModelRouterStage fails), the summary still names which model
-                // the client asked for rather than rendering "?".
-                summary.RequestedModel = clientBody.Model;
-                summary.ResolvedModel = clientBody.Model;
-                summary.InboundEffort = clientBody.OutputConfig?.Effort;
-                summary.OutboundEffort = clientBody.OutputConfig?.Effort;
-                summary.MaxTokens = clientBody.MaxTokens;
-
-                // Short-circuit on Anthropic server tools Copilot doesn't support.
-                if (TryGetUnsupportedServerTool(clientBody, out var badType))
-                {
-                    endpointError = $"unsupported server tool: {badType}";
-                    responseStatus = StatusCodes.Status400BadRequest;
-                    httpCtx.Response.StatusCode = responseStatus;
-                    httpCtx.Response.ContentType = "application/json";
-                    var msg =
-                        $"The '{badType}' server tool is not supported on the GitHub Copilot backend. Configure a custom search MCP server in your Claude Code MCP config (e.g. via --mcp-config) and disable the built-in WebSearch tool.";
-                    var bytes = Encoding.UTF8.GetBytes(
-                        $"{{\"type\":\"error\",\"error\":{{\"type\":\"not_supported\",\"message\":\"{System.Text.Encodings.Web.JavaScriptEncoder.Default.Encode(msg)}\"}}}}");
-                    responseBody = bytes;
-                    responseBodyLen = bytes.Length;
-                    httpCtx.Response.ContentType = "application/json";
-                    httpCtx.Response.ContentLength = bytes.Length;
-                    await httpCtx.Response.Body.WriteAsync(bytes, ct);
-                    return;
-                }
-
-                var irBody = await inboundAdapter.AdaptAsync(clientBody, inboundHeaders, ct);
-
-                // The inbound body is fully consumed now (deserialize + audit above);
-                // the pipeline operates on the IR, never the raw bytes. Release the
-                // pooled buffer back to the manager IMMEDIATELY rather than pinning it
-                // (for a 4 MB+ body, a large-pool buffer) across the whole pipeline +
-                // streaming relay. Dispose is idempotent, so the enclosing `using`
-                // remains a correct backstop on the early-return paths above.
-                inbound.Dispose();
-
-                // Populate the injected scoped context (created empty by DI; the same
-                // instance the pipeline components resolved). The pipeline reads it in
-                // RunAsync, strictly after this fill.
-                bridgeCtx.Request = new BridgeRequest<MessagesRequest>
-                {
-                    Method = httpCtx.Request.Method,
-                    Path = httpCtx.Request.Path.Value ?? "",
-                    Body = irBody,
-                    Headers = new Dictionary<string, string>(inboundHeaders, StringComparer.OrdinalIgnoreCase),
-                };
-                bridgeCtx.Response = new BridgeResponse();
-                bridgeCtx.Ct = ct;
-                bridgeCtx.InboundBetas = inboundBetaSet;
-                bridgeCtx.TraceId = traceId;
-
-                await runner.RunAsync(pipeline);
-
-                // Post-pipeline summary fields.
-                summary.ResolvedModel = bridgeCtx.Request.Body.Model;
-                summary.OutboundEffort = bridgeCtx.Request.Body.OutputConfig?.Effort;
-                // Re-lookup the profile for the summary. Use GetNearest so a
-                // fuzzy-matched (un-profiled but forwarded) model reports the borrowed
-                // profile id here rather than blank — matches what the router actually
-                // used to shape the body.
-                summary.CanonicalProfileId =
-                    (profiles.Get(bridgeCtx.Request.Body.Model)
-                     ?? profiles.GetNearest(bridgeCtx.Request.Body.Model, out _, out _))?.CanonicalId;
-                summary.TargetVendor = bridgeCtx.Target?.Vendor.ToString();
-                summary.TargetEndpoint = bridgeCtx.Target?.Endpoint;
-                summary.OutboundBetas = ParseOutboundBetas(bridgeCtx.Request.Headers);
-
-                upstreamUrl = bridgeCtx.Target?.Endpoint;
-                // Audit the exact bytes POSTed upstream. Both strategies stash them on
-                // Response.UpstreamWireBody when tracing is on (the passthrough Anthropic
-                // body OR the Codex T2 Responses body) — the same array they handed the
-                // Copilot client, never a re-serialized IR. Off-trace UpstreamWireBody is
-                // null and the finally's RecordUpstreamRequest no-ops, so nothing is
-                // serialized for an audit that isn't written. Routing identity is read
-                // from bridgeCtx.Target.Vendor (above), never inferred from this field.
-                upstreamBody = bridgeCtx.Response.UpstreamWireBody ?? [];
-                upstreamBodyLen = upstreamBody.Length;
-                upstreamHeaders =
-                    new Dictionary<string, string>(bridgeCtx.Request.Headers, StringComparer.OrdinalIgnoreCase);
-                upstreamStatus = bridgeCtx.Response.Status;
-                upstreamResponseHeaders =
-                    new Dictionary<string, string>(bridgeCtx.Response.Headers, StringComparer.OrdinalIgnoreCase);
-                // Snapshot the response so the finally can read the raw upstream-resp
-                // bytes. For streaming, the capture inside it is filled by the relay
-                // loop below BEFORE the finally finalizes it; for buffered, the raw
-                // pre-rewrite reference is already set.
-                pipelineResponse = bridgeCtx.Response;
-
-                responseStatus = bridgeCtx.Response.Status;
-                foreach (var (k, v) in bridgeCtx.Response.Headers)
-                {
-                    responseHeaders[k] = v;
-                }
-
+            if (clientBody is null)
+            {
+                endpointError = "deserialize: null";
+                responseStatus = StatusCodes.Status400BadRequest;
                 httpCtx.Response.StatusCode = responseStatus;
-                if (bridgeCtx.Response.Headers.TryGetValue("Content-Type", out var ctype))
+                return;
+            }
+
+            // Snapshot the pre-pipeline state for the INFO summary log.
+            // Pre-seed ResolvedModel with the requested name so that if the
+            // pipeline throws before the post-pipeline block runs (e.g.
+            // ModelRouterStage fails), the summary still names which model
+            // the client asked for rather than rendering "?".
+            summary.RequestedModel = clientBody.Model;
+            summary.ResolvedModel = clientBody.Model;
+            summary.InboundEffort = clientBody.OutputConfig?.Effort;
+            summary.OutboundEffort = clientBody.OutputConfig?.Effort;
+            summary.MaxTokens = clientBody.MaxTokens;
+
+            // Short-circuit on Anthropic server tools Copilot doesn't support.
+            if (TryGetUnsupportedServerTool(clientBody, out var badType))
+            {
+                endpointError = $"unsupported server tool: {badType}";
+                responseStatus = StatusCodes.Status400BadRequest;
+                httpCtx.Response.StatusCode = responseStatus;
+                httpCtx.Response.ContentType = "application/json";
+                var msg =
+                    $"The '{badType}' server tool is not supported on the GitHub Copilot backend. Configure a custom search MCP server in your Claude Code MCP config (e.g. via --mcp-config) and disable the built-in WebSearch tool.";
+                var bytes = Encoding.UTF8.GetBytes(
+                    $"{{\"type\":\"error\",\"error\":{{\"type\":\"not_supported\",\"message\":\"{System.Text.Encodings.Web.JavaScriptEncoder.Default.Encode(msg)}\"}}}}");
+                responseBody = bytes;
+                responseBodyLen = bytes.Length;
+                httpCtx.Response.ContentType = "application/json";
+                httpCtx.Response.ContentLength = bytes.Length;
+                await httpCtx.Response.Body.WriteAsync(bytes, ct);
+                return;
+            }
+
+            var irBody = await inboundAdapter.AdaptAsync(clientBody, inboundHeaders, ct);
+
+
+            // Populate the injected scoped context (created empty by DI; the same
+            // instance the pipeline components resolved). The pipeline reads it in
+            // RunAsync, strictly after this fill.
+            bridgeCtx.Request = new BridgeRequest<MessagesRequest>
+            {
+                Method = httpCtx.Request.Method,
+                Path = httpCtx.Request.Path.Value ?? "",
+                Body = irBody,
+                Headers = new Dictionary<string, string>(inboundHeaders, StringComparer.OrdinalIgnoreCase),
+            };
+            bridgeCtx.Response = new BridgeResponse();
+            bridgeCtx.Ct = ct;
+            bridgeCtx.InboundBetas = inboundBetaSet;
+            bridgeCtx.TraceId = traceId;
+
+            await runner.RunAsync(pipeline);
+
+            // Post-pipeline summary fields.
+            summary.ResolvedModel = bridgeCtx.Request.Body.Model;
+            summary.OutboundEffort = bridgeCtx.Request.Body.OutputConfig?.Effort;
+            // Re-lookup the profile for the summary. Use GetNearest so a
+            // fuzzy-matched (un-profiled but forwarded) model reports the borrowed
+            // profile id here rather than blank — matches what the router actually
+            // used to shape the body.
+            summary.CanonicalProfileId =
+                (profiles.Get(bridgeCtx.Request.Body.Model)
+                 ?? profiles.GetNearest(bridgeCtx.Request.Body.Model, out _, out _))?.CanonicalId;
+            summary.TargetVendor = bridgeCtx.Target?.Vendor.ToString();
+            summary.TargetEndpoint = bridgeCtx.Target?.Endpoint;
+            summary.OutboundBetas = ParseOutboundBetas(bridgeCtx.Request.Headers);
+
+            upstreamUrl = bridgeCtx.Target?.Endpoint;
+            // Audit the exact bytes POSTed upstream. Both strategies stash them on
+            // Response.UpstreamWireBody when tracing is on (the passthrough Anthropic
+            // body OR the Codex T2 Responses body) — the same array they handed the
+            // Copilot client, never a re-serialized IR. Off-trace UpstreamWireBody is
+            // null and the finally's RecordUpstreamRequest no-ops, so nothing is
+            // serialized for an audit that isn't written. Routing identity is read
+            // from bridgeCtx.Target.Vendor (above), never inferred from this field.
+            upstreamBody = bridgeCtx.Response.UpstreamWireBody ?? [];
+            upstreamBodyLen = upstreamBody.Length;
+            upstreamHeaders =
+                new Dictionary<string, string>(bridgeCtx.Request.Headers, StringComparer.OrdinalIgnoreCase);
+            upstreamStatus = bridgeCtx.Response.Status;
+            upstreamResponseHeaders =
+                new Dictionary<string, string>(bridgeCtx.Response.Headers, StringComparer.OrdinalIgnoreCase);
+            // Snapshot the response so the finally can read the raw upstream-resp
+            // bytes. For streaming, the capture inside it is filled by the relay
+            // loop below BEFORE the finally finalizes it; for buffered, the raw
+            // pre-rewrite reference is already set.
+            pipelineResponse = bridgeCtx.Response;
+
+            responseStatus = bridgeCtx.Response.Status;
+            foreach (var (k, v) in bridgeCtx.Response.Headers)
+            {
+                responseHeaders[k] = v;
+            }
+
+            httpCtx.Response.StatusCode = responseStatus;
+            if (bridgeCtx.Response.Headers.TryGetValue("Content-Type", out var ctype))
+            {
+                httpCtx.Response.ContentType = ctype;
+            }
+
+            summary.Streaming = bridgeCtx.Response.Mode == ResponseMode.Streaming;
+
+            if (bridgeCtx.Response.Mode == ResponseMode.Streaming && bridgeCtx.Response.EventStream is not null)
+            {
+                // Only buffer per-event copies for the inbound-resp audit when
+                // tracing is on — off-trace this stays null and we never grow a
+                // list (the SSE body can be large; this is the hot path).
+                capturedEvents = audit.NewEventList();
+                var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, ct);
+                await foreach (var evt in clientStream.WithCancellation(ct))
                 {
-                    httpCtx.Response.ContentType = ctype;
+                    capturedEvents?.Add(new CapturedSseEvent(evt.EventType, evt.Data, Filtered: false));
+                    // Sniff usage from message_start / message_delta as they
+                    // pass through — Anthropic emits cumulative values so the
+                    // probe simply overwrites the snapshot on each event.
+                    UsageProbe.TryUpdateFromStreamEvent(evt.EventType, evt.Data, usageSnapshot);
+                    await WriteSseEventAsync(httpCtx.Response, evt.EventType, evt.Data, ct);
                 }
 
-                summary.Streaming = bridgeCtx.Response.Mode == ResponseMode.Streaming;
-
-                if (bridgeCtx.Response.Mode == ResponseMode.Streaming && bridgeCtx.Response.EventStream is not null)
+                if (capturedEvents is not null)
                 {
-                    // Only buffer per-event copies for the inbound-resp audit when
-                    // tracing is on — off-trace this stays null and we never grow a
-                    // list (the SSE body can be large; this is the hot path).
-                    capturedEvents = audit.NewEventList();
-                    var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, ct);
-                    await foreach (var evt in clientStream.WithCancellation(ct))
+                    foreach (var d in bridgeCtx.DroppedEvents)
                     {
-                        capturedEvents?.Add(new CapturedSseEvent(evt.EventType, evt.Data, Filtered: false));
-                        // Sniff usage from message_start / message_delta as they
-                        // pass through — Anthropic emits cumulative values so the
-                        // probe simply overwrites the snapshot on each event.
-                        UsageProbe.TryUpdateFromStreamEvent(evt.EventType, evt.Data, usageSnapshot);
-                        await WriteSseEventAsync(httpCtx.Response, evt.EventType, evt.Data, ct);
+                        capturedEvents.Add(new CapturedSseEvent(d.EventType, d.Data, Filtered: true));
                     }
-
-                    if (capturedEvents is not null)
-                    {
-                        foreach (var d in bridgeCtx.DroppedEvents)
-                        {
-                            capturedEvents.Add(new CapturedSseEvent(d.EventType, d.Data, Filtered: true));
-                        }
-                    }
-                }
-                else if (bridgeCtx.Response.BufferedBody is not null)
-                {
-                    var outBody = await outboundAdapter.AdaptBufferedAsync(bridgeCtx.Response.BufferedBody, ct);
-                    responseBody = outBody;
-                    responseBodyLen = outBody.Length;
-                    // Non-streaming Anthropic body — parse usage out of it.
-                    UsageProbe.TryReadBuffered(outBody, usageSnapshot);
-                    httpCtx.Response.ContentLength = outBody.Length;
-                    await httpCtx.Response.Body.WriteAsync(outBody, ct);
-                }
-
-                // Copy the response-leak flag off the context AFTER the stream has drained
-                // (streaming sets it mid-relay) so the summary line reports it.
-                summary.ResponseLeakDetected = bridgeCtx.ResponseLeakDetected;
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                endpointError = "cancelled by client";
-                summary.Error = "cancelled by client";
-                endpointLog.LogDebug("endpoint cancelled by client");
-                throw;
-            }
-            catch (UnknownModelException ex)
-            {
-                // The bridge refused the model because it has no profile for it
-                // (after normalize + any user rule that fired). Surface as 400 +
-                // Anthropic-format error body so clients display it as a normal
-                // model error rather than a transport failure; the message
-                // ([copilot-bridge] prefix) tells the operator what to fix.
-                endpointError = ex.Message;
-                summary.Error = ex.Message;
-                if (!httpCtx.Response.HasStarted)
-                {
-                    responseStatus = StatusCodes.Status400BadRequest;
-                    httpCtx.Response.StatusCode = responseStatus;
-                    httpCtx.Response.ContentType = "application/json";
-                    var error = new ErrorResponse
-                    {
-                        Error = new ErrorBody { Type = "invalid_request_error", Message = ex.Message },
-                    };
-                    var bytes = JsonSerializer.SerializeToUtf8Bytes(error, JsonContext.Default.ErrorResponse);
-                    responseBody = bytes;
-                    responseBodyLen = bytes.Length;
-                    httpCtx.Response.ContentLength = bytes.Length;
-                    await httpCtx.Response.Body.WriteAsync(bytes, CancellationToken.None);
                 }
             }
-            catch (Exception ex) when (IsTransientUpstreamError(ex))
+            else if (bridgeCtx.Response.BufferedBody is not null)
             {
-                // Upstream cut the connection or the read failed at the TCP level
-                // — happens occasionally with Copilot, especially on long thinking
-                // requests or when the upstream gateway times out a slow stream.
-                // NOT a bridge bug; render as a single Warning line (no stack)
-                // so the operator sees the signal without being misled into
-                // hunting a regression.
-                endpointError = ex.Message;
-                summary.Error = $"{ex.GetType().Name}: {ex.Message}";
-                endpointLog.LogWarning("endpoint upstream-disconnect: {Type}: {Message}", ex.GetType().Name,
-                    ex.Message);
-                if (!httpCtx.Response.HasStarted)
-                {
-                    responseStatus = StatusCodes.Status502BadGateway;
-                    httpCtx.Response.StatusCode = responseStatus;
-                    await httpCtx.Response.WriteAsync($"upstream disconnected: {ex.Message}", CancellationToken.None);
-                }
-                else
-                {
-                    // Already sent response headers (mid-stream disconnect); we
-                    // cannot rewrite the status, so reflect what the wire sees:
-                    // a 200 stream that was cut short. The Warning + summary
-                    // error field tell the operator why.
-                    responseStatus = httpCtx.Response.StatusCode;
-                }
+                var outBody = await outboundAdapter.AdaptBufferedAsync(bridgeCtx.Response.BufferedBody, ct);
+                responseBody = outBody;
+                responseBodyLen = outBody.Length;
+                // Non-streaming Anthropic body — parse usage out of it.
+                UsageProbe.TryReadBuffered(outBody, usageSnapshot);
+                httpCtx.Response.ContentLength = outBody.Length;
+                await httpCtx.Response.Body.WriteAsync(outBody, ct);
             }
-            catch (Exception ex)
+
+            // Copy the response-leak flag off the context AFTER the stream has drained
+            // (streaming sets it mid-relay) so the summary line reports it.
+            summary.ResponseLeakDetected = bridgeCtx.ResponseLeakDetected;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            endpointError = "cancelled by client";
+            summary.Error = "cancelled by client";
+            endpointLog.LogDebug("endpoint cancelled by client");
+            throw;
+        }
+        catch (UnknownModelException ex)
+        {
+            // The bridge refused the model because it has no profile for it
+            // (after normalize + any user rule that fired). Surface as 400 +
+            // Anthropic-format error body so clients display it as a normal
+            // model error rather than a transport failure; the message
+            // ([copilot-bridge] prefix) tells the operator what to fix.
+            endpointError = ex.Message;
+            summary.Error = ex.Message;
+            if (!httpCtx.Response.HasStarted)
             {
-                // Genuinely unexpected — keep the stack trace, it's the only
-                // diagnostic we have.
-                endpointError = ex.Message;
-                summary.Error = $"{ex.GetType().Name}: {ex.Message}";
-                endpointLog.LogError(ex, "endpoint exception: {Type}: {Message}", ex.GetType().Name, ex.Message);
-                if (!httpCtx.Response.HasStarted)
+                responseStatus = StatusCodes.Status400BadRequest;
+                httpCtx.Response.StatusCode = responseStatus;
+                httpCtx.Response.ContentType = "application/json";
+                var error = new ErrorResponse
                 {
-                    responseStatus = StatusCodes.Status502BadGateway;
-                    httpCtx.Response.StatusCode = responseStatus;
-                    await httpCtx.Response.WriteAsync($"upstream error: {ex.Message}", CancellationToken.None);
-                }
-                else
-                {
-                    // Same as the transient branch: headers already sent, we
-                    // can only record the wire-visible status so the summary
-                    // line doesn't claim a misleading 500 from the initial
-                    // default value.
-                    responseStatus = httpCtx.Response.StatusCode;
-                }
+                    Error = new ErrorBody { Type = "invalid_request_error", Message = ex.Message },
+                };
+                var bytes = JsonSerializer.SerializeToUtf8Bytes(error, JsonContext.Default.ErrorResponse);
+                responseBody = bytes;
+                responseBodyLen = bytes.Length;
+                httpCtx.Response.ContentLength = bytes.Length;
+                await httpCtx.Response.Body.WriteAsync(bytes, CancellationToken.None);
             }
-            finally
+        }
+        catch (Exception ex) when (IsTransientUpstreamError(ex))
+        {
+            // Upstream cut the connection or the read failed at the TCP level
+            // — happens occasionally with Copilot, especially on long thinking
+            // requests or when the upstream gateway times out a slow stream.
+            // NOT a bridge bug; render as a single Warning line (no stack)
+            // so the operator sees the signal without being misled into
+            // hunting a regression.
+            endpointError = ex.Message;
+            summary.Error = $"{ex.GetType().Name}: {ex.Message}";
+            endpointLog.LogWarning("endpoint upstream-disconnect: {Type}: {Message}", ex.GetType().Name,
+                ex.Message);
+            if (!httpCtx.Response.HasStarted)
             {
-                sw.Stop();
-                summary.StatusCode = responseStatus;
-                summary.DurationMs = sw.ElapsedMilliseconds;
-                summaryLogger.Log(summary);
+                responseStatus = StatusCodes.Status502BadGateway;
+                httpCtx.Response.StatusCode = responseStatus;
+                await httpCtx.Response.WriteAsync($"upstream disconnected: {ex.Message}", CancellationToken.None);
+            }
+            else
+            {
+                // Already sent response headers (mid-stream disconnect); we
+                // cannot rewrite the status, so reflect what the wire sees:
+                // a 200 stream that was cut short. The Warning + summary
+                // error field tell the operator why.
+                responseStatus = httpCtx.Response.StatusCode;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Genuinely unexpected — keep the stack trace, it's the only
+            // diagnostic we have.
+            endpointError = ex.Message;
+            summary.Error = $"{ex.GetType().Name}: {ex.Message}";
+            endpointLog.LogError(ex, "endpoint exception: {Type}: {Message}", ex.GetType().Name, ex.Message);
+            if (!httpCtx.Response.HasStarted)
+            {
+                responseStatus = StatusCodes.Status502BadGateway;
+                httpCtx.Response.StatusCode = responseStatus;
+                await httpCtx.Response.WriteAsync($"upstream error: {ex.Message}", CancellationToken.None);
+            }
+            else
+            {
+                // Same as the transient branch: headers already sent, we
+                // can only record the wire-visible status so the summary
+                // line doesn't claim a misleading 500 from the initial
+                // default value.
+                responseStatus = httpCtx.Response.StatusCode;
+            }
+        }
+        finally
+        {
+            sw.Stop();
+            summary.StatusCode = responseStatus;
+            summary.DurationMs = sw.ElapsedMilliseconds;
+            summaryLogger.Log(summary);
 
-                if (audit.Enabled && upstreamUrl is not null && upstreamHeaders is not null)
-                {
-                    audit.RecordUpstreamRequest(
-                        seq,
-                        traceId,
-                        "POST",
-                        upstreamUrl,
-                        upstreamHeaders,
-                        upstreamBody,
-                        upstreamBodyLen);
-
-                    // Surface exactly what Copilot put on the wire, pre-stage: the
-                    // buffered pre-rewrite array, or the streaming tee (finalized now
-                    // that the relay loop above has drained the stream). See
-                    // BridgeResponse.RawUpstreamRespBytesOrNull — reading it SEALS the
-                    // streaming capture, so it must run once, here, after the relay
-                    // loop drained. Gated on audit.Enabled: off-trace there is no
-                    // capture to seal and this whole block is audit-only work.
-                    var upstreamRespBody = pipelineResponse?.RawUpstreamRespBytesOrNull() ?? Array.Empty<byte>();
-                    audit.RecordUpstreamResponse(
-                        seq,
-                        traceId,
-                        upstreamStatus,
-                        upstreamResponseHeaders ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
-                        upstreamRespBody,
-                        upstreamRespBody.Length,
-                        error: endpointError);
-                }
-
-                audit.RecordInboundResponse(
+            if (audit.Enabled && upstreamUrl is not null && upstreamHeaders is not null)
+            {
+                audit.RecordUpstreamRequest(
                     seq,
                     traceId,
-                    responseStatus,
-                    responseHeaders,
-                    responseBody,
-                    responseBodyLen,
-                    events: capturedEvents,
-                    error: endpointError,
-                    durationMs: sw.ElapsedMilliseconds);
+                    "POST",
+                    upstreamUrl,
+                    upstreamHeaders,
+                    upstreamBody,
+                    upstreamBodyLen);
 
-                endpointLog.LogDebug("endpoint exit  duration_ms={Ms}  body-bytes={Bytes}",
-                    sw.ElapsedMilliseconds, inbound.Length);
+                // Surface exactly what Copilot put on the wire, pre-stage: the
+                // buffered pre-rewrite array, or the streaming tee (finalized now
+                // that the relay loop above has drained the stream). See
+                // BridgeResponse.RawUpstreamRespBytesOrNull — reading it SEALS the
+                // streaming capture, so it must run once, here, after the relay
+                // loop drained. Gated on audit.Enabled: off-trace there is no
+                // capture to seal and this whole block is audit-only work.
+                var upstreamRespBody = pipelineResponse?.RawUpstreamRespBytesOrNull() ?? Array.Empty<byte>();
+                audit.RecordUpstreamResponse(
+                    seq,
+                    traceId,
+                    upstreamStatus,
+                    upstreamResponseHeaders ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                    upstreamRespBody,
+                    upstreamRespBody.Length,
+                    error: endpointError);
             }
+
+            audit.RecordInboundResponse(
+                seq,
+                traceId,
+                responseStatus,
+                responseHeaders,
+                responseBody,
+                responseBodyLen,
+                events: capturedEvents,
+                error: endpointError,
+                durationMs: sw.ElapsedMilliseconds);
+
+            endpointLog.LogDebug("endpoint exit  duration_ms={Ms}  body-bytes={Bytes}",
+                sw.ElapsedMilliseconds, inboundLen);
         }
     }
 

@@ -67,22 +67,15 @@ internal static class CodexResponsesEndpoint
         foreach (var h in httpCtx.Request.Headers)
             inboundHeaders[h.Key] = h.Value.ToString();
 
-        // Owned pooled read (see ClaudeCodeMessagesEndpoint): `using` returns the
-        // buffer to the pool at handler exit; the body is used synchronously below
-        // and not carried into the pipeline. Inbound size is reported on the exit
-        // line (folded into a log call that already runs — no extra per-request alloc).
-        using var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false);
-        // Audit the raw inbound Codex request (pre-T1). RequestAudit copies the
-        // view only when tracing is on, so off-trace there's no extra copy.
-        audit.RecordInbound(seq, traceId, httpCtx.Request.Method,
-            httpCtx.Request.Path.Value ?? "", inboundHeaders, inbound.Memory);
-
         var responseHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var responseStatus = StatusCodes.Status500InternalServerError;
         byte[] responseBody = [];
         var responseBodyLen = 0;
         List<CapturedSseEvent>? capturedEvents = null;
         string? endpointError = null;
+        // Inbound body size, captured in the narrow read block below; reported on the
+        // exit line in the finally (the raw bytes themselves do not outlive that block).
+        var inboundLen = 0;
 
         string? upstreamUrl = null;
         Dictionary<string, string>? upstreamHeaders = null;
@@ -99,17 +92,30 @@ internal static class CodexResponsesEndpoint
         try
         {
             ResponsesRequest? clientBody;
-            try
+            // Narrow read scope: the pooled body is read, audited, and deserialized
+            // here, then disposed at the block's close — so the (large-pool) buffer is
+            // returned to the manager in the parse window, not pinned across the
+            // pipeline + streaming relay. `inbound` is out of scope afterwards, so a
+            // read of its Memory after dispose is a compile error, not a use-after-free.
+            using (var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false))
             {
-                clientBody = JsonSerializer.Deserialize(inbound.Memory.Span, JsonContext.Default.ResponsesRequest);
-            }
-            catch (JsonException ex)
-            {
-                endpointError = $"deserialize: {ex.Message}";
-                responseStatus = StatusCodes.Status400BadRequest;
-                httpCtx.Response.StatusCode = responseStatus;
-                await httpCtx.Response.WriteAsync($"invalid request body: {ex.Message}", ct);
-                return;
+                inboundLen = inbound.Length;
+                // Audit the raw inbound Codex request (pre-T1). RequestAudit copies the
+                // view only when tracing is on, so off-trace there's no extra copy.
+                audit.RecordInbound(seq, traceId, httpCtx.Request.Method,
+                    httpCtx.Request.Path.Value ?? "", inboundHeaders, inbound.Memory);
+                try
+                {
+                    clientBody = JsonSerializer.Deserialize(inbound.Memory.Span, JsonContext.Default.ResponsesRequest);
+                }
+                catch (JsonException ex)
+                {
+                    endpointError = $"deserialize: {ex.Message}";
+                    responseStatus = StatusCodes.Status400BadRequest;
+                    httpCtx.Response.StatusCode = responseStatus;
+                    await httpCtx.Response.WriteAsync($"invalid request body: {ex.Message}", ct);
+                    return;
+                }
             }
             if (clientBody is null)
             {
@@ -126,12 +132,6 @@ internal static class CodexResponsesEndpoint
 
             // T1: Responses → IR (Anthropic shape).
             var irBody = await inboundAdapter.AdaptAsync(clientBody, inboundHeaders, ct);
-
-            // Inbound body fully consumed (deserialize + audit above); the pipeline
-            // operates on the IR. Release the pooled buffer NOW rather than pinning it
-            // across the pipeline + streaming relay. Dispose is idempotent — the
-            // enclosing `using var` stays a correct backstop for the error paths.
-            inbound.Dispose();
 
             // Populate the injected scoped context (created empty by DI; the same
             // instance the pipeline components resolved). The pipeline reads it in
@@ -309,7 +309,7 @@ internal static class CodexResponsesEndpoint
                 responseBody, responseBodyLen, events: capturedEvents, error: endpointError, durationMs: sw.ElapsedMilliseconds);
 
             endpointLog.LogDebug("endpoint exit duration_ms={Ms} body-bytes={Bytes}",
-                sw.ElapsedMilliseconds, inbound.Length);
+                sw.ElapsedMilliseconds, inboundLen);
         }
     }
 
