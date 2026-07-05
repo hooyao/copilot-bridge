@@ -1,13 +1,13 @@
-using System.Buffers;
 using System.Diagnostics;
+using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Hosting.Logging;
 using CopilotBridge.Cli.Models;
+using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 
@@ -28,8 +28,9 @@ internal static class ClaudeCodeCountTokensEndpoint
     public static async Task HandleAsync(
         HttpContext httpCtx,
         ICopilotClient copilot,
+        IAuthService auth,
         RequestSummaryLogger summaryLogger,
-        ILogger<CountTokensTag> ioLogger)
+        RequestAudit audit)
     {
         var ct = httpCtx.RequestAborted;
         var sw = Stopwatch.StartNew();
@@ -51,18 +52,25 @@ internal static class ClaudeCodeCountTokensEndpoint
             inboundHeaders[header.Key] = header.Value.ToString();
         }
 
-        var (inboundBuf, inboundLen) = await ReadBodyPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false);
-        var inboundAuditBody = new ReadOnlyMemory<byte>(inboundBuf, 0, inboundLen).ToArray();
+        // Read the body via the shared pooled reader. count_tokens needs the bytes
+        // as an independent array regardless of tracing (the summary model probe and
+        // the forwarded upstream POST both consume them), so materialize ONE owned
+        // copy here and reuse it for probe + POST + audit. Dispose the pooled reader
+        // immediately — the copy is independent, so we release the pooled buffer back
+        // to the manager right away rather than pinning it across the upstream POST.
+        byte[] inboundAuditBody;
+        using (var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false))
+        {
+            inboundAuditBody = inbound.Memory.ToArray();
+        }
 
-        ioLogger.LogInboundRequest(
+        audit.RecordInbound(
             seq,
             traceId,
             httpCtx.Request.Method,
             httpCtx.Request.Path.Value ?? "",
             inboundHeaders,
-            inboundAuditBody,
-            inboundAuditBody.Length,
-            bodyPooled: false);
+            inboundAuditBody);
 
         var responseStatus = StatusCodes.Status500InternalServerError;
         var responseHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -90,19 +98,23 @@ internal static class ClaudeCodeCountTokensEndpoint
 
         try
         {
-            using var upstream = await copilot.PostCountTokensAsync(
-                inboundBuf.AsMemory(0, inboundLen).ToArray(), ct);
+            using var upstream = await copilot.PostCountTokensAsync(inboundAuditBody, ct);
 
             var upstreamHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            ioLogger.LogUpstreamRequest(
+            // Audit the ACTUAL upstream URL the client POSTed to. CopilotClient builds
+            // it as `{baseUrl}/v1/messages/count_tokens` where baseUrl comes from the
+            // resolved Copilot token (enterprise → api.enterprise.githubcopilot.com);
+            // a hardcoded api.githubcopilot.com would misreport it for non-individual
+            // accounts. Populated by now — PostCountTokensAsync forced the token fetch.
+            var upstreamUrl = $"{auth.CopilotApiBaseUrl ?? "https://api.githubcopilot.com"}/v1/messages/count_tokens";
+            audit.RecordUpstreamRequest(
                 seq,
                 traceId,
                 "POST",
-                "https://api.githubcopilot.com/v1/messages/count_tokens",
+                upstreamUrl,
                 upstreamHeaders,
                 inboundAuditBody,
-                inboundAuditBody.Length,
-                bodyPooled: false);
+                inboundAuditBody.Length);
 
             var upstreamRespHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var h in upstream.Headers)
@@ -121,14 +133,13 @@ internal static class ClaudeCodeCountTokensEndpoint
             // Pull input_tokens out for the summary line.
             UsageProbe.TryReadCountTokens(bytes, summary.Usage);
 
-            ioLogger.LogUpstreamResponse(
+            audit.RecordUpstreamResponse(
                 seq,
                 traceId,
                 responseStatus,
                 upstreamRespHeaders,
                 bytes,
-                bytes.Length,
-                bodyPooled: false);
+                bytes.Length);
             upstreamLogged = true;
 
             httpCtx.Response.StatusCode = responseStatus;
@@ -159,29 +170,25 @@ internal static class ClaudeCodeCountTokensEndpoint
 
             if (!upstreamLogged)
             {
-                ioLogger.LogUpstreamResponse(
+                audit.RecordUpstreamResponse(
                     seq,
                     traceId,
                     0,
                     new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     [],
                     0,
-                    bodyPooled: false,
                     error: error);
             }
 
-            ioLogger.LogInboundResponse(
+            audit.RecordInboundResponse(
                 seq,
                 traceId,
                 responseStatus,
                 responseHeaders,
                 responseBody,
                 responseBody.Length,
-                bodyPooled: false,
                 error: error,
                 durationMs: sw.ElapsedMilliseconds);
-
-            ArrayPool<byte>.Shared.Return(inboundBuf, clearArray: false);
         }
     }
 
@@ -206,35 +213,4 @@ internal static class ClaudeCodeCountTokensEndpoint
         catch (System.Text.Json.JsonException) { /* malformed body — skip */ }
         return null;
     }
-
-    private static async Task<(byte[] Buffer, int Length)> ReadBodyPooledAsync(Stream body, CancellationToken ct)
-    {
-        var buf = ArrayPool<byte>.Shared.Rent(16 * 1024);
-        var written = 0;
-        try
-        {
-            while (true)
-            {
-                if (written == buf.Length)
-                {
-                    var bigger = ArrayPool<byte>.Shared.Rent(buf.Length * 2);
-                    Buffer.BlockCopy(buf, 0, bigger, 0, written);
-                    ArrayPool<byte>.Shared.Return(buf, clearArray: false);
-                    buf = bigger;
-                }
-                var n = await body.ReadAsync(buf.AsMemory(written), ct).ConfigureAwait(false);
-                if (n == 0) break;
-                written += n;
-            }
-        }
-        catch
-        {
-            ArrayPool<byte>.Shared.Return(buf, clearArray: false);
-            throw;
-        }
-        return (buf, written);
-    }
 }
-
-/// <summary>Marker type used to give count_tokens its own <c>ILogger</c> category.</summary>
-internal sealed class CountTokensTag { }

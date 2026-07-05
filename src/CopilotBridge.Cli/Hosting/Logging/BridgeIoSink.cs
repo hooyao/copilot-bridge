@@ -110,10 +110,6 @@ internal sealed class BridgeIoSink : ILogEventSink, IDisposable
                     }
                     catch { /* truly nowhere to go */ }
                 }
-                finally
-                {
-                    payload.Release();
-                }
             }
         }
         catch (OperationCanceledException) { /* shutdown */ }

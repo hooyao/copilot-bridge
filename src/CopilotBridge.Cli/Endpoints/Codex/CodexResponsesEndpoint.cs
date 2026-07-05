@@ -1,9 +1,7 @@
-using System.Buffers;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Hosting.Logging;
-using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Errors;
 using CopilotBridge.Cli.Models.Anthropic.Request;
@@ -16,7 +14,6 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Endpoints.Codex;
 
@@ -46,8 +43,7 @@ internal static class CodexResponsesEndpoint
         ResponsesToIrInboundAdapter inboundAdapter,
         IrToResponsesOutboundAdapter outboundAdapter,
         RequestSummaryLogger summaryLogger,
-        IOptions<TracingOptions> tracingOptions,
-        ILogger<MessagesRequest> ioLogger,
+        RequestAudit audit,
         ILogger<CodexResponsesEndpointTag> endpointLog)
     {
         var ct = httpCtx.RequestAborted;
@@ -63,8 +59,6 @@ internal static class CodexResponsesEndpoint
         // scope pushed inside the try would drop before finally's exit line.
         // Mirrors /cc.
         using var _traceScope = Serilog.Context.LogContext.PushProperty("ReqTrace", traceId);
-        // Gate all trace-only buffering on this (parity with /cc).
-        var tracingEnabled = tracingOptions.Value.Enabled;
 
         endpointLog.LogDebug("endpoint {Path}: enter remote={Remote}",
             httpCtx.Request.Path, httpCtx.Connection.RemoteIpAddress);
@@ -73,18 +67,15 @@ internal static class CodexResponsesEndpoint
         foreach (var h in httpCtx.Request.Headers)
             inboundHeaders[h.Key] = h.Value.ToString();
 
-        var (inboundBuf, inboundLen) = await ReadBodyPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false);
-        var inboundBytesView = new ReadOnlyMemory<byte>(inboundBuf, 0, inboundLen);
-        var inboundAuditBody = inboundBytesView.ToArray();
-        ioLogger.LogInboundRequest(seq, traceId, httpCtx.Request.Method,
-            httpCtx.Request.Path.Value ?? "", inboundHeaders, inboundAuditBody, inboundAuditBody.Length, bodyPooled: false);
-
         var responseHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var responseStatus = StatusCodes.Status500InternalServerError;
         byte[] responseBody = [];
         var responseBodyLen = 0;
         List<CapturedSseEvent>? capturedEvents = null;
         string? endpointError = null;
+        // Inbound body size, captured in the narrow read block below; reported on the
+        // exit line in the finally (the raw bytes themselves do not outlive that block).
+        var inboundLen = 0;
 
         string? upstreamUrl = null;
         Dictionary<string, string>? upstreamHeaders = null;
@@ -101,17 +92,30 @@ internal static class CodexResponsesEndpoint
         try
         {
             ResponsesRequest? clientBody;
-            try
+            // Narrow read scope: the pooled body is read, audited, and deserialized
+            // here, then disposed at the block's close — so the (large-pool) buffer is
+            // returned to the manager in the parse window, not pinned across the
+            // pipeline + streaming relay. `inbound` is out of scope afterwards, so a
+            // read of its Memory after dispose is a compile error, not a use-after-free.
+            using (var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false))
             {
-                clientBody = JsonSerializer.Deserialize(inboundBytesView.Span, JsonContext.Default.ResponsesRequest);
-            }
-            catch (JsonException ex)
-            {
-                endpointError = $"deserialize: {ex.Message}";
-                responseStatus = StatusCodes.Status400BadRequest;
-                httpCtx.Response.StatusCode = responseStatus;
-                await httpCtx.Response.WriteAsync($"invalid request body: {ex.Message}", ct);
-                return;
+                inboundLen = inbound.Length;
+                // Audit the raw inbound Codex request (pre-T1). RequestAudit copies the
+                // view only when tracing is on, so off-trace there's no extra copy.
+                audit.RecordInbound(seq, traceId, httpCtx.Request.Method,
+                    httpCtx.Request.Path.Value ?? "", inboundHeaders, inbound.Memory);
+                try
+                {
+                    clientBody = JsonSerializer.Deserialize(inbound.Memory.Span, JsonContext.Default.ResponsesRequest);
+                }
+                catch (JsonException ex)
+                {
+                    endpointError = $"deserialize: {ex.Message}";
+                    responseStatus = StatusCodes.Status400BadRequest;
+                    httpCtx.Response.StatusCode = responseStatus;
+                    await httpCtx.Response.WriteAsync($"invalid request body: {ex.Message}", ct);
+                    return;
+                }
             }
             if (clientBody is null)
             {
@@ -136,7 +140,6 @@ internal static class CodexResponsesEndpoint
             {
                 Method = httpCtx.Request.Method,
                 Path = httpCtx.Request.Path.Value ?? "",
-                RawBody = inboundBytesView,
                 Body = irBody,
                 Headers = new Dictionary<string, string>(inboundHeaders, StringComparer.OrdinalIgnoreCase),
             };
@@ -152,17 +155,15 @@ internal static class CodexResponsesEndpoint
             summary.TargetEndpoint = bridgeCtx.Target?.Endpoint;
 
             upstreamUrl = bridgeCtx.Target?.Endpoint;
-            // Audit the bytes the Codex strategy actually POSTed upstream: T2
-            // built a Responses-shaped body and stashed it on
-            // Response.UpstreamWireBody (Contract A). Prefer that real wire body;
-            // fall back to serializing the IR when null (a passthrough path that
-            // never translated). Note: this is the upstream REQUEST body only —
-            // the raw upstream SSE before T3 is consumed inside the strategy and
-            // isn't captured here.
-            var upBody = bridgeCtx.Response.UpstreamWireBody
-                ?? JsonSerializer.SerializeToUtf8Bytes(bridgeCtx.Request.Body, JsonContext.Default.MessagesRequest);
-            upstreamBody = upBody;
-            upstreamBodyLen = upBody.Length;
+            // Audit the exact bytes the Codex strategy POSTed upstream: T2 built a
+            // Responses-shaped body and stashed it on Response.UpstreamWireBody when
+            // tracing is on — the same array handed to the Copilot client, never a
+            // re-serialized IR. Off-trace it's null and the finally's
+            // RecordUpstreamRequest no-ops. Note: this is the upstream REQUEST body
+            // only — the raw upstream SSE before T3 is captured via the tee, read in
+            // finally through RawUpstreamRespBytesOrNull.
+            upstreamBody = bridgeCtx.Response.UpstreamWireBody ?? [];
+            upstreamBodyLen = upstreamBody.Length;
             upstreamHeaders = new Dictionary<string, string>(bridgeCtx.Request.Headers, StringComparer.OrdinalIgnoreCase);
             upstreamStatus = bridgeCtx.Response.Status;
             upstreamResponseHeaders = new Dictionary<string, string>(bridgeCtx.Response.Headers, StringComparer.OrdinalIgnoreCase);
@@ -184,7 +185,7 @@ internal static class CodexResponsesEndpoint
             {
                 httpCtx.Response.ContentType = "text/event-stream";
                 // Only buffer per-event copies for the audit when tracing is on.
-                capturedEvents = tracingEnabled ? new List<CapturedSseEvent>() : null;
+                capturedEvents = audit.NewEventList();
                 // T4: IR (Anthropic) stream → Responses SSE back to Codex.
                 var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, ct);
                 await foreach (var evt in clientStream.WithCancellation(ct))
@@ -290,52 +291,26 @@ internal static class CodexResponsesEndpoint
             summary.DurationMs = sw.ElapsedMilliseconds;
             summaryLogger.Log(summary);
 
-            if (upstreamUrl is not null && upstreamHeaders is not null)
+            if (audit.Enabled && upstreamUrl is not null && upstreamHeaders is not null)
             {
-                ioLogger.LogUpstreamRequest(seq, traceId, "POST", upstreamUrl, upstreamHeaders, upstreamBody, upstreamBodyLen, bodyPooled: false);
+                audit.RecordUpstreamRequest(seq, traceId, "POST", upstreamUrl, upstreamHeaders, upstreamBody, upstreamBodyLen);
                 // Copilot's raw /responses wire bytes, pre-T3/T4 (buffered
                 // pre-rewrite array, or the streaming tee finalized after the
-                // relay loop). See BridgeResponse.RawUpstreamRespBytesOrNull.
+                // relay loop). See BridgeResponse.RawUpstreamRespBytesOrNull —
+                // reading it SEALS the streaming capture, so run once here after the
+                // relay loop drained. Gated on audit.Enabled: audit-only work.
                 var upstreamRespBody = pipelineResponse?.RawUpstreamRespBytesOrNull() ?? Array.Empty<byte>();
-                ioLogger.LogUpstreamResponse(seq, traceId, upstreamStatus,
+                audit.RecordUpstreamResponse(seq, traceId, upstreamStatus,
                     upstreamResponseHeaders ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
-                    upstreamRespBody, upstreamRespBody.Length, bodyPooled: false, error: endpointError);
+                    upstreamRespBody, upstreamRespBody.Length, error: endpointError);
             }
 
-            ioLogger.LogInboundResponse(seq, traceId, responseStatus, responseHeaders,
-                responseBody, responseBodyLen, bodyPooled: false, events: capturedEvents, error: endpointError, durationMs: sw.ElapsedMilliseconds);
+            audit.RecordInboundResponse(seq, traceId, responseStatus, responseHeaders,
+                responseBody, responseBodyLen, events: capturedEvents, error: endpointError, durationMs: sw.ElapsedMilliseconds);
 
-            ArrayPool<byte>.Shared.Return(inboundBuf, clearArray: false);
-            endpointLog.LogDebug("endpoint exit duration_ms={Ms}", sw.ElapsedMilliseconds);
+            endpointLog.LogDebug("endpoint exit duration_ms={Ms} body-bytes={Bytes}",
+                sw.ElapsedMilliseconds, inboundLen);
         }
-    }
-
-    private static async Task<(byte[] Buffer, int Length)> ReadBodyPooledAsync(Stream body, CancellationToken ct)
-    {
-        var buf = ArrayPool<byte>.Shared.Rent(64 * 1024);
-        var written = 0;
-        try
-        {
-            while (true)
-            {
-                if (written == buf.Length)
-                {
-                    var bigger = ArrayPool<byte>.Shared.Rent(buf.Length * 2);
-                    Buffer.BlockCopy(buf, 0, bigger, 0, written);
-                    ArrayPool<byte>.Shared.Return(buf, clearArray: false);
-                    buf = bigger;
-                }
-                var n = await body.ReadAsync(buf.AsMemory(written), ct).ConfigureAwait(false);
-                if (n == 0) break;
-                written += n;
-            }
-        }
-        catch
-        {
-            ArrayPool<byte>.Shared.Return(buf, clearArray: false);
-            throw;
-        }
-        return (buf, written);
     }
 
     private static async Task WriteSseEventAsync(HttpResponse downstream, string? eventType, string data, CancellationToken ct)

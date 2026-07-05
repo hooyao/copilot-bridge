@@ -47,8 +47,7 @@ internal static class BridgeIoLoggerExtensions
         string path,
         IReadOnlyDictionary<string, string> headers,
         byte[] body,
-        int bodyLength,
-        bool bodyPooled)
+        int bodyLength)
     {
         var payload = new BridgeIoPayload
         {
@@ -61,7 +60,6 @@ internal static class BridgeIoLoggerExtensions
             Headers = headers,
             Body = body,
             BodyLength = bodyLength,
-            BodyPooled = bodyPooled,
         };
         Emit(logger, BridgeIoEvents.InboundRequest, payload);
     }
@@ -74,7 +72,6 @@ internal static class BridgeIoLoggerExtensions
         IReadOnlyDictionary<string, string> headers,
         byte[] body,
         int bodyLength,
-        bool bodyPooled,
         IReadOnlyList<CapturedSseEvent>? events = null,
         string? error = null,
         long? durationMs = null)
@@ -89,7 +86,6 @@ internal static class BridgeIoLoggerExtensions
             Headers = headers,
             Body = body,
             BodyLength = bodyLength,
-            BodyPooled = bodyPooled,
             Events = events,
             Error = error,
             DurationMs = durationMs,
@@ -105,8 +101,7 @@ internal static class BridgeIoLoggerExtensions
         string url,
         IReadOnlyDictionary<string, string> headers,
         byte[] body,
-        int bodyLength,
-        bool bodyPooled)
+        int bodyLength)
     {
         var payload = new BridgeIoPayload
         {
@@ -119,7 +114,6 @@ internal static class BridgeIoLoggerExtensions
             Headers = headers,
             Body = body,
             BodyLength = bodyLength,
-            BodyPooled = bodyPooled,
         };
         Emit(logger, BridgeIoEvents.UpstreamRequest, payload);
     }
@@ -132,7 +126,6 @@ internal static class BridgeIoLoggerExtensions
         IReadOnlyDictionary<string, string> headers,
         byte[] body,
         int bodyLength,
-        bool bodyPooled,
         string? error = null)
     {
         var payload = new BridgeIoPayload
@@ -145,7 +138,6 @@ internal static class BridgeIoLoggerExtensions
             Headers = headers,
             Body = body,
             BodyLength = bodyLength,
-            BodyPooled = bodyPooled,
             Error = error,
         };
         Emit(logger, BridgeIoEvents.UpstreamResponse, payload);

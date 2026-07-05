@@ -162,12 +162,12 @@ public class CodexRoutingAndCatalogTests
         var anthropic = new CopilotBridge.Cli.Pipeline.Strategies.Anthropic.CopilotMessagesPassthroughStrategy(
             copilot: null!,
             ctx: sharedCtx,
-            tracing: Microsoft.Extensions.Options.Options.Create(new CopilotBridge.Cli.Hosting.Options.TracingOptions()),
+            audit: TestAudit.Create(false),
             log: NullLogger<CopilotBridge.Cli.Pipeline.Strategies.Anthropic.CopilotMessagesPassthroughStrategy>.Instance);
         var codex = new CopilotBridge.Cli.Pipeline.Strategies.Codex.CopilotResponsesStrategy(
             copilot: null!, profiles: new CodexModelProfileCatalog(),
             ctx: sharedCtx,
-            tracing: Microsoft.Extensions.Options.Options.Create(new CopilotBridge.Cli.Hosting.Options.TracingOptions()),
+            audit: TestAudit.Create(false),
             log: NullLogger<CopilotBridge.Cli.Pipeline.Strategies.Codex.CopilotResponsesStrategy>.Instance);
 
         var registry = new CopilotBridge.Cli.Pipeline.Strategies.StrategyRegistry<MessagesRequest>(

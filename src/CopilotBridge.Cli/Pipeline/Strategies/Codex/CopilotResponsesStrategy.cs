@@ -3,13 +3,11 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
-using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Pipeline.Strategies.Codex;
 
@@ -27,20 +25,20 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
     private readonly ICopilotClient _copilot;
     private readonly CodexModelProfileCatalog _profiles;
     private readonly BridgeContext<MessagesRequest> _ctx;
-    private readonly bool _tracingEnabled;
+    private readonly RequestAudit _audit;
     private readonly ILogger<CopilotResponsesStrategy> _log;
 
     public CopilotResponsesStrategy(
         ICopilotClient copilot,
         CodexModelProfileCatalog profiles,
         BridgeContext<MessagesRequest> ctx,
-        IOptions<TracingOptions> tracing,
+        RequestAudit audit,
         ILogger<CopilotResponsesStrategy> log)
     {
         _copilot = copilot;
         _profiles = profiles;
         _ctx = ctx;
-        _tracingEnabled = tracing.Value.Enabled;
+        _audit = audit;
         _log = log;
     }
 
@@ -57,8 +55,10 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         var (body, vision) = ResponsesRequestBuilder.Build(ctx.Request.Body, _profiles);
 
         // Stash the real wire bytes so the endpoint audits what we POSTed upstream
-        // (not the IR). Null on passthrough paths; here we always translated. (Contract A)
-        ctx.Response.UpstreamWireBody = body;
+        // (the T2 Responses body), not the IR. Gated on tracing — matching the
+        // buffered raw capture below (:103) — so UpstreamWireBody means exactly
+        // "captured wire bytes; non-null iff tracing on". (Contract A)
+        if (_audit.Enabled) ctx.Response.UpstreamWireBody = body;
 
         _log.LogDebug("strategy {Name}: T2 built Responses body bytes={Bytes} vision={Vision} model={Model}",
             Name, body.Length, vision, ctx.Request.Body.Model);
@@ -82,7 +82,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             // When tracing is on, tee the raw Copilot /responses SSE into a
             // capture so upstream-resp records what Copilot sent on the wire,
             // BEFORE T3 translation. Off ⇒ capture null ⇒ no tee, no allocation.
-            var capture = _tracingEnabled ? new RawResponseCapture() : null;
+            var capture = _audit.NewCapture();
             ctx.Response.RawUpstreamResponseCapture = capture;
             // T3: translate Responses SSE → IR (Anthropic) SSE on the fly. The
             // response stages + the outbound T4 adapter then operate on IR shape.
@@ -100,7 +100,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
                 ctx.Response.BufferedBody = await resp.Content.ReadAsByteArrayAsync(ctx.Ct);
                 // Stash the original reference for upstream-resp before any stage
                 // could rewrite BufferedBody (mirrors the /cc passthrough path).
-                if (_tracingEnabled) ctx.Response.RawUpstreamResponseBody = ctx.Response.BufferedBody;
+                if (_audit.Enabled) ctx.Response.RawUpstreamResponseBody = ctx.Response.BufferedBody;
                 _log.LogDebug("strategy {Name}: buffered status={Status} bytes={Bytes}",
                     Name, ctx.Response.Status, ctx.Response.BufferedBody.Length);
             }

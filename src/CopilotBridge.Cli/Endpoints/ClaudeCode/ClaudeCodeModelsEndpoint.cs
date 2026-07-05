@@ -4,10 +4,10 @@ using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Hosting.Logging;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Models;
+using CopilotBridge.Cli.Pipeline;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 
@@ -29,7 +29,7 @@ internal static class ClaudeCodeModelsEndpoint
     public static async Task HandleAsync(
         HttpContext httpCtx,
         ICopilotClient copilot,
-        ILogger<ModelsTag> ioLogger)
+        RequestAudit audit)
     {
         var ct = httpCtx.RequestAborted;
         var sw = Stopwatch.StartNew();
@@ -41,15 +41,13 @@ internal static class ClaudeCodeModelsEndpoint
         {
             inboundHeaders[header.Key] = header.Value.ToString();
         }
-        ioLogger.LogInboundRequest(
+        audit.RecordInbound(
             seq,
             traceId,
             httpCtx.Request.Method,
             httpCtx.Request.Path.Value ?? "",
             inboundHeaders,
-            [],
-            0,
-            bodyPooled: false);
+            ReadOnlyMemory<byte>.Empty);
 
         var responseStatus = StatusCodes.Status200OK;
         var responseHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -94,19 +92,15 @@ internal static class ClaudeCodeModelsEndpoint
         finally
         {
             sw.Stop();
-            ioLogger.LogInboundResponse(
+            audit.RecordInboundResponse(
                 seq,
                 traceId,
                 responseStatus,
                 responseHeaders,
                 responseBody,
                 responseBody.Length,
-                bodyPooled: false,
                 error: error,
                 durationMs: sw.ElapsedMilliseconds);
         }
     }
 }
-
-/// <summary>Marker type used to give the models endpoint its own <c>ILogger</c> category.</summary>
-internal sealed class ModelsTag { }

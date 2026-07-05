@@ -2,11 +2,9 @@ using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
-using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 
@@ -23,18 +21,18 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
 {
     private readonly ICopilotClient _copilot;
     private readonly BridgeContext<MessagesRequest> _ctx;
-    private readonly bool _tracingEnabled;
+    private readonly RequestAudit _audit;
     private readonly ILogger<CopilotMessagesPassthroughStrategy> _log;
 
     public CopilotMessagesPassthroughStrategy(
         ICopilotClient copilot,
         BridgeContext<MessagesRequest> ctx,
-        IOptions<TracingOptions> tracing,
+        RequestAudit audit,
         ILogger<CopilotMessagesPassthroughStrategy> log)
     {
         _copilot = copilot;
         _ctx = ctx;
-        _tracingEnabled = tracing.Value.Enabled;
+        _audit = audit;
         _log = log;
     }
 
@@ -48,6 +46,13 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
     {
         var ctx = _ctx;
         var body = JsonSerializer.SerializeToUtf8Bytes(ctx.Request.Body, JsonContext.Default.MessagesRequest);
+
+        // Stash the exact bytes we POST so the endpoint audits the real wire body
+        // instead of re-serializing the IR a second time (P1). On passthrough the
+        // IR IS the Anthropic wire body, so this is the same array we hand the
+        // client below — no extra serialize. Gated: null off-trace, so the endpoint
+        // writes nothing and UpstreamWireBody means exactly "captured wire bytes".
+        if (_audit.Enabled) ctx.Response.UpstreamWireBody = body;
 
         // HeadersOutboundStage emits these into ctx.Request.Headers; we read
         // them back here as the existing CopilotClient.PostMessagesAsync
@@ -92,7 +97,7 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             // When tracing is on, tee the raw upstream stream into a capture so
             // the upstream-resp audit gets Copilot's exact SSE bytes (pre-stage).
             // Off ⇒ capture is null ⇒ StreamEventsAsync is byte-identical passthrough.
-            var capture = _tracingEnabled ? new RawResponseCapture() : null;
+            var capture = _audit.NewCapture();
             ctx.Response.RawUpstreamResponseCapture = capture;
             // Ownership of `resp` transfers to the iterator — disposed when
             // the consumer (the endpoint writer) finishes enumeration.
@@ -108,7 +113,7 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
                 // Stash the original reference BEFORE any response stage can
                 // rewrite BufferedBody (ResponseModelRewriteStage reassigns it
                 // to a new array), so upstream-resp shows Copilot's wire bytes.
-                if (_tracingEnabled) ctx.Response.RawUpstreamResponseBody = ctx.Response.BufferedBody;
+                if (_audit.Enabled) ctx.Response.RawUpstreamResponseBody = ctx.Response.BufferedBody;
                 _log.LogDebug("strategy {Name}: buffered status={Status} bytes={Bytes}",
                     Name, ctx.Response.Status, ctx.Response.BufferedBody.Length);
             }

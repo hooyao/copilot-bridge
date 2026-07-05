@@ -145,6 +145,13 @@ internal static class BridgeServiceCollectionExtensions
         // a captive dependency, caught by ValidateOnBuild.
         services.AddScoped<BridgeContext<MessagesRequest>>();
 
+        // The single per-request tracing seam (RequestAudit). Same scoped lifetime
+        // as the context; owns the one Enabled flag + the four audit emissions + the
+        // trace-only buffer factories, no-op when tracing is off. Endpoints and
+        // strategies inject the same instance. Replaces the scattered _tracingEnabled
+        // fields / tracingEnabled locals / unguarded serialize sites.
+        services.AddScoped<RequestAudit>();
+
         // The whole per-request assembly tree is SCOPED (created per request scope,
         // disposed at request end): adapters, stages, strategies, the runner, and
         // the pipeline. The container — not the assembly point — instantiates each

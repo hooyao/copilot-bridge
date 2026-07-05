@@ -1,9 +1,7 @@
-using System.Buffers;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Hosting.Logging;
-using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Errors;
 using CopilotBridge.Cli.Models.Anthropic.Request;
@@ -14,7 +12,6 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 
@@ -43,16 +40,12 @@ internal static class ClaudeCodeMessagesEndpoint
         ClaudeCodeOutboundAdapter outboundAdapter,
         ModelProfileCatalog profiles,
         RequestSummaryLogger summaryLogger,
-        IOptions<TracingOptions> tracingOptions,
-        ILogger<MessagesRequest> ioLogger,
+        RequestAudit audit,
         ILogger<ClaudeCodeMessagesEndpointTag> endpointLog)
     {
         var ct = httpCtx.RequestAborted;
         var sw = Stopwatch.StartNew();
         var seq = BridgeIoSeq.Next();
-        // Gate all trace-only buffering (raw upstream capture, per-event list)
-        // on this — when tracing is off there must be zero extra allocation.
-        var tracingEnabled = tracingOptions.Value.Enabled;
         // One trace id pins the four audit files for this request and the
         // INFO summary line together — see BridgeIoSeq.BuildTraceId.
         var traceId = BridgeIoSeq.BuildTraceId(seq, DateTime.UtcNow);
@@ -78,32 +71,24 @@ internal static class ClaudeCodeMessagesEndpoint
             inboundHeaders[h.Key] = h.Value.ToString();
         }
 
-        var (inboundBuf, inboundLen) = await ReadBodyPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false);
-        var inboundBytesView = new ReadOnlyMemory<byte>(inboundBuf, 0, inboundLen);
-        var inboundAuditBody = inboundBytesView.ToArray();
-        ioLogger.LogInboundRequest(
-            seq,
-            traceId,
-            httpCtx.Request.Method,
-            httpCtx.Request.Path.Value ?? "",
-            inboundHeaders,
-            inboundAuditBody,
-            inboundAuditBody.Length,
-            bodyPooled: false);
-
+        // The inbound body is read + audited + deserialized in a narrow `using`
+        // block inside the try below, so its pooled buffer is released as soon as
+        // the IR is built — not pinned across the pipeline + streaming relay. The
+        // inbound size is captured there into `inboundLen` for the exit line.
         var responseHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var responseStatus = StatusCodes.Status500InternalServerError;
         byte[] responseBody = [];
         var responseBodyLen = 0;
-        var responseBodyPooled = false;
         List<CapturedSseEvent>? capturedEvents = null;
         string? endpointError = null;
+        // Inbound body size, captured in the narrow read block below; reported on the
+        // exit line in the finally (the raw bytes themselves do not outlive that block).
+        var inboundLen = 0;
 
         string? upstreamUrl = null;
         Dictionary<string, string>? upstreamHeaders = null;
         byte[] upstreamBody = [];
         var upstreamBodyLen = 0;
-        var upstreamBodyPooled = false;
         var upstreamStatus = 0;
         Dictionary<string, string>? upstreamResponseHeaders = null;
         // The pipeline response, snapshotted post-RunAsync so the finally can read
@@ -122,18 +107,38 @@ internal static class ClaudeCodeMessagesEndpoint
         try
         {
             MessagesRequest? clientBody;
-            try
+            // Narrow read scope: read → audit → deserialize, then dispose at the
+            // block's close, so the (large-pool) buffer returns to the manager in the
+            // parse window, not pinned across the pipeline + streaming relay. `inbound`
+            // is out of scope afterwards, so reading its Memory after dispose is a
+            // compile error, not a use-after-free. Inside the outer try so the finally
+            // still emits the summary + inbound-resp audit on the deserialize-400 path.
+            using (var inbound = await InboundBody.ReadPooledAsync(httpCtx.Request.Body, ct).ConfigureAwait(false))
             {
-                clientBody = JsonSerializer.Deserialize(inboundBytesView.Span, JsonContext.Default.MessagesRequest);
+                inboundLen = inbound.Length;
+                // Audit the raw inbound bytes (pre-T1) — RequestAudit copies the view
+                // to an array only when tracing is on, so off-trace there's no copy.
+                audit.RecordInbound(
+                    seq,
+                    traceId,
+                    httpCtx.Request.Method,
+                    httpCtx.Request.Path.Value ?? "",
+                    inboundHeaders,
+                    inbound.Memory);
+                try
+                {
+                    clientBody = JsonSerializer.Deserialize(inbound.Memory.Span, JsonContext.Default.MessagesRequest);
+                }
+                catch (JsonException ex)
+                {
+                    endpointError = $"deserialize: {ex.Message}";
+                    responseStatus = StatusCodes.Status400BadRequest;
+                    httpCtx.Response.StatusCode = responseStatus;
+                    await httpCtx.Response.WriteAsync($"invalid request body: {ex.Message}", ct);
+                    return;
+                }
             }
-            catch (JsonException ex)
-            {
-                endpointError = $"deserialize: {ex.Message}";
-                responseStatus = StatusCodes.Status400BadRequest;
-                httpCtx.Response.StatusCode = responseStatus;
-                await httpCtx.Response.WriteAsync($"invalid request body: {ex.Message}", ct);
-                return;
-            }
+
             if (clientBody is null)
             {
                 endpointError = "deserialize: null";
@@ -160,12 +165,12 @@ internal static class ClaudeCodeMessagesEndpoint
                 responseStatus = StatusCodes.Status400BadRequest;
                 httpCtx.Response.StatusCode = responseStatus;
                 httpCtx.Response.ContentType = "application/json";
-                var msg = $"The '{badType}' server tool is not supported on the GitHub Copilot backend. Configure a custom search MCP server in your Claude Code MCP config (e.g. via --mcp-config) and disable the built-in WebSearch tool.";
+                var msg =
+                    $"The '{badType}' server tool is not supported on the GitHub Copilot backend. Configure a custom search MCP server in your Claude Code MCP config (e.g. via --mcp-config) and disable the built-in WebSearch tool.";
                 var bytes = Encoding.UTF8.GetBytes(
                     $"{{\"type\":\"error\",\"error\":{{\"type\":\"not_supported\",\"message\":\"{System.Text.Encodings.Web.JavaScriptEncoder.Default.Encode(msg)}\"}}}}");
                 responseBody = bytes;
                 responseBodyLen = bytes.Length;
-                responseBodyPooled = false;
                 httpCtx.Response.ContentType = "application/json";
                 httpCtx.Response.ContentLength = bytes.Length;
                 await httpCtx.Response.Body.WriteAsync(bytes, ct);
@@ -174,6 +179,7 @@ internal static class ClaudeCodeMessagesEndpoint
 
             var irBody = await inboundAdapter.AdaptAsync(clientBody, inboundHeaders, ct);
 
+
             // Populate the injected scoped context (created empty by DI; the same
             // instance the pipeline components resolved). The pipeline reads it in
             // RunAsync, strictly after this fill.
@@ -181,7 +187,6 @@ internal static class ClaudeCodeMessagesEndpoint
             {
                 Method = httpCtx.Request.Method,
                 Path = httpCtx.Request.Path.Value ?? "",
-                RawBody = inboundBytesView,
                 Body = irBody,
                 Headers = new Dictionary<string, string>(inboundHeaders, StringComparer.OrdinalIgnoreCase),
             };
@@ -207,23 +212,20 @@ internal static class ClaudeCodeMessagesEndpoint
             summary.OutboundBetas = ParseOutboundBetas(bridgeCtx.Request.Headers);
 
             upstreamUrl = bridgeCtx.Target?.Endpoint;
-            // Audit the bytes actually POSTed upstream. On the Anthropic passthrough
-            // path (claude-* → /v1/messages) the body IS the IR, so UpstreamWireBody
-            // is null and we serialize the IR — byte-identical to before. But when
-            // Claude Code is routed to a gpt-* model, the Responses strategy (T2)
-            // built a Responses-shaped body ({input[], function_call, tools with
-            // parameters}) and stashed it on Response.UpstreamWireBody (Contract A);
-            // serializing the IR here would record a misleading Anthropic-shaped
-            // upstream-req that was never sent. Prefer the real wire body when set,
-            // mirroring CodexResponsesEndpoint.
-            var upBody = bridgeCtx.Response.UpstreamWireBody
-                ?? JsonSerializer.SerializeToUtf8Bytes(bridgeCtx.Request.Body, JsonContext.Default.MessagesRequest);
-            upstreamBody = upBody;
-            upstreamBodyLen = upBody.Length;
-            upstreamBodyPooled = false;
-            upstreamHeaders = new Dictionary<string, string>(bridgeCtx.Request.Headers, StringComparer.OrdinalIgnoreCase);
+            // Audit the exact bytes POSTed upstream. Both strategies stash them on
+            // Response.UpstreamWireBody when tracing is on (the passthrough Anthropic
+            // body OR the Codex T2 Responses body) — the same array they handed the
+            // Copilot client, never a re-serialized IR. Off-trace UpstreamWireBody is
+            // null and the finally's RecordUpstreamRequest no-ops, so nothing is
+            // serialized for an audit that isn't written. Routing identity is read
+            // from bridgeCtx.Target.Vendor (above), never inferred from this field.
+            upstreamBody = bridgeCtx.Response.UpstreamWireBody ?? [];
+            upstreamBodyLen = upstreamBody.Length;
+            upstreamHeaders =
+                new Dictionary<string, string>(bridgeCtx.Request.Headers, StringComparer.OrdinalIgnoreCase);
             upstreamStatus = bridgeCtx.Response.Status;
-            upstreamResponseHeaders = new Dictionary<string, string>(bridgeCtx.Response.Headers, StringComparer.OrdinalIgnoreCase);
+            upstreamResponseHeaders =
+                new Dictionary<string, string>(bridgeCtx.Response.Headers, StringComparer.OrdinalIgnoreCase);
             // Snapshot the response so the finally can read the raw upstream-resp
             // bytes. For streaming, the capture inside it is filled by the relay
             // loop below BEFORE the finally finalizes it; for buffered, the raw
@@ -249,7 +251,7 @@ internal static class ClaudeCodeMessagesEndpoint
                 // Only buffer per-event copies for the inbound-resp audit when
                 // tracing is on — off-trace this stays null and we never grow a
                 // list (the SSE body can be large; this is the hot path).
-                capturedEvents = tracingEnabled ? new List<CapturedSseEvent>() : null;
+                capturedEvents = audit.NewEventList();
                 var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, ct);
                 await foreach (var evt in clientStream.WithCancellation(ct))
                 {
@@ -260,6 +262,7 @@ internal static class ClaudeCodeMessagesEndpoint
                     UsageProbe.TryUpdateFromStreamEvent(evt.EventType, evt.Data, usageSnapshot);
                     await WriteSseEventAsync(httpCtx.Response, evt.EventType, evt.Data, ct);
                 }
+
                 if (capturedEvents is not null)
                 {
                     foreach (var d in bridgeCtx.DroppedEvents)
@@ -273,7 +276,6 @@ internal static class ClaudeCodeMessagesEndpoint
                 var outBody = await outboundAdapter.AdaptBufferedAsync(bridgeCtx.Response.BufferedBody, ct);
                 responseBody = outBody;
                 responseBodyLen = outBody.Length;
-                responseBodyPooled = false;
                 // Non-streaming Anthropic body — parse usage out of it.
                 UsageProbe.TryReadBuffered(outBody, usageSnapshot);
                 httpCtx.Response.ContentLength = outBody.Length;
@@ -312,7 +314,6 @@ internal static class ClaudeCodeMessagesEndpoint
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(error, JsonContext.Default.ErrorResponse);
                 responseBody = bytes;
                 responseBodyLen = bytes.Length;
-                responseBodyPooled = false;
                 httpCtx.Response.ContentLength = bytes.Length;
                 await httpCtx.Response.Body.WriteAsync(bytes, CancellationToken.None);
             }
@@ -327,7 +328,8 @@ internal static class ClaudeCodeMessagesEndpoint
             // hunting a regression.
             endpointError = ex.Message;
             summary.Error = $"{ex.GetType().Name}: {ex.Message}";
-            endpointLog.LogWarning("endpoint upstream-disconnect: {Type}: {Message}", ex.GetType().Name, ex.Message);
+            endpointLog.LogWarning("endpoint upstream-disconnect: {Type}: {Message}", ex.GetType().Name,
+                ex.Message);
             if (!httpCtx.Response.HasStarted)
             {
                 responseStatus = StatusCodes.Status502BadGateway;
@@ -372,52 +374,48 @@ internal static class ClaudeCodeMessagesEndpoint
             summary.DurationMs = sw.ElapsedMilliseconds;
             summaryLogger.Log(summary);
 
-            if (upstreamUrl is not null && upstreamHeaders is not null)
+            if (audit.Enabled && upstreamUrl is not null && upstreamHeaders is not null)
             {
-                ioLogger.LogUpstreamRequest(
+                audit.RecordUpstreamRequest(
                     seq,
                     traceId,
                     "POST",
                     upstreamUrl,
                     upstreamHeaders,
                     upstreamBody,
-                    upstreamBodyLen,
-                    upstreamBodyPooled);
+                    upstreamBodyLen);
 
                 // Surface exactly what Copilot put on the wire, pre-stage: the
                 // buffered pre-rewrite array, or the streaming tee (finalized now
                 // that the relay loop above has drained the stream). See
-                // BridgeResponse.RawUpstreamRespBytesOrNull. The BufferedBody
-                // fallback inside it only matters when no raw field was set; the
-                // sink itself is null unless tracing is on, so nothing persists
-                // off-trace regardless.
+                // BridgeResponse.RawUpstreamRespBytesOrNull — reading it SEALS the
+                // streaming capture, so it must run once, here, after the relay
+                // loop drained. Gated on audit.Enabled: off-trace there is no
+                // capture to seal and this whole block is audit-only work.
                 var upstreamRespBody = pipelineResponse?.RawUpstreamRespBytesOrNull() ?? Array.Empty<byte>();
-                ioLogger.LogUpstreamResponse(
+                audit.RecordUpstreamResponse(
                     seq,
                     traceId,
                     upstreamStatus,
                     upstreamResponseHeaders ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     upstreamRespBody,
                     upstreamRespBody.Length,
-                    bodyPooled: false,
                     error: endpointError);
             }
 
-            ioLogger.LogInboundResponse(
+            audit.RecordInboundResponse(
                 seq,
                 traceId,
                 responseStatus,
                 responseHeaders,
                 responseBody,
                 responseBodyLen,
-                responseBodyPooled,
                 events: capturedEvents,
                 error: endpointError,
                 durationMs: sw.ElapsedMilliseconds);
 
-            ArrayPool<byte>.Shared.Return(inboundBuf, clearArray: false);
-
-            endpointLog.LogDebug("endpoint exit  duration_ms={Ms}", sw.ElapsedMilliseconds);
+            endpointLog.LogDebug("endpoint exit  duration_ms={Ms}  body-bytes={Bytes}",
+                sw.ElapsedMilliseconds, inboundLen);
         }
     }
 
@@ -448,40 +446,6 @@ internal static class ClaudeCodeMessagesEndpoint
     /// </summary>
     private static bool IsTransientUpstreamError(Exception ex) =>
         Copilot.TransientUpstreamError.Is(ex);
-
-    /// <summary>
-    /// Read the inbound HTTP body into a pooled buffer. Caller (or its
-    /// downstream logger) is responsible for returning the buffer to the
-    /// pool. The returned length is the meaningful prefix; the rented
-    /// buffer may be larger.
-    /// </summary>
-    private static async Task<(byte[] Buffer, int Length)> ReadBodyPooledAsync(Stream body, CancellationToken ct)
-    {
-        var buf = ArrayPool<byte>.Shared.Rent(64 * 1024);
-        var written = 0;
-        try
-        {
-            while (true)
-            {
-                if (written == buf.Length)
-                {
-                    var bigger = ArrayPool<byte>.Shared.Rent(buf.Length * 2);
-                    Buffer.BlockCopy(buf, 0, bigger, 0, written);
-                    ArrayPool<byte>.Shared.Return(buf, clearArray: false);
-                    buf = bigger;
-                }
-                var n = await body.ReadAsync(buf.AsMemory(written), ct).ConfigureAwait(false);
-                if (n == 0) break;
-                written += n;
-            }
-        }
-        catch
-        {
-            ArrayPool<byte>.Shared.Return(buf, clearArray: false);
-            throw;
-        }
-        return (buf, written);
-    }
 
     private static bool TryGetUnsupportedServerTool(MessagesRequest body, out string? toolType)
     {

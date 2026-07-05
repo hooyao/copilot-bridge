@@ -25,8 +25,8 @@ internal sealed class PipelineRunner<TBody> : IPipelineRunner<TBody> where TBody
 
     public async Task RunAsync(Pipeline<TBody> pipeline)
     {
-        _log.LogDebug("pipeline {PipelineName} start  path={Path}  body-bytes={BodyBytes}",
-            pipeline.Name, _ctx.Request.Path, _ctx.Request.RawBody.Length);
+        _log.LogDebug("pipeline {PipelineName} start  path={Path}",
+            pipeline.Name, _ctx.Request.Path);
 
         foreach (var stage in pipeline.RequestStages)
         {

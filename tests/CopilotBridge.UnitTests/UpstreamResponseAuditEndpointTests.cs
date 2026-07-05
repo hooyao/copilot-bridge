@@ -107,7 +107,9 @@ public class UpstreamResponseAuditEndpointTests
     {
         var recorder = new RecordingLoggerProvider();
         using var loggerFactory = LoggerFactory.Create(b => b.AddProvider(recorder));
-        var tracing = Options.Create(new TracingOptions { Enabled = tracingEnabled });
+        // One RequestAudit shared by the strategy and the endpoint, emitting through
+        // the recording logger so the test can read the logged upstream-resp payload.
+        var audit = TestAudit.Create(tracingEnabled, loggerFactory.CreateLogger<MessagesRequest>());
 
         // One shared scoped context, mirroring DI: the endpoint populates it, and
         // the strategy / stages / runner all read the same instance.
@@ -115,7 +117,7 @@ public class UpstreamResponseAuditEndpointTests
         var stages = stagesFactory?.Invoke(bridgeCtx) ?? [];
 
         var strategy = new CopilotMessagesPassthroughStrategy(
-            new StubClient(copilotResp), bridgeCtx, tracing,
+            new StubClient(copilotResp), bridgeCtx, audit,
             NullLogger<CopilotMessagesPassthroughStrategy>.Instance);
 
         var http = new DefaultHttpContext();
@@ -139,8 +141,7 @@ public class UpstreamResponseAuditEndpointTests
             new ClaudeCodeOutboundAdapter(NullLogger<ClaudeCodeOutboundAdapter>.Instance),
             new ModelProfileCatalog(),
             new RequestSummaryLogger(NullLogger<RequestSummaryLogger>.Instance),
-            tracing,
-            loggerFactory.CreateLogger<MessagesRequest>(),
+            audit,
             NullLogger<ClaudeCodeMessagesEndpointTag>.Instance);
 
         return recorder.Events

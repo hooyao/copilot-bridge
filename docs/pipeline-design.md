@@ -268,8 +268,6 @@ internal sealed class BridgeRequest<TBody> where TBody : class
 {
     public required string Method { get; init; }
     public required string Path { get; init; }
-    /// <summary>Original inbound bytes — read-only after InboundCaptureStage.</summary>
-    public ReadOnlyMemory<byte> RawBody { get; init; }
     /// <summary>Mutable typed body — stages transform this.</summary>
     public TBody Body { get; set; } = default!;
     /// <summary>Mutable header dict — stages add/remove/rename.</summary>
@@ -1113,6 +1111,11 @@ client appends `/v1/messages` and lands on our `/cc/v1/messages`.
 Two log channels, both flowing through a single Serilog pipeline configured
 once in `Program.cs`.
 
+> **See also:** [`docs/observability-design.md`](observability-design.md) — the
+> full observability subsystem design: the four-artifact audit trace, trace-id
+> correlation, raw upstream capture, and the `RequestAudit` gating seam, with
+> mermaid diagrams. This section is the concise reference; that doc is the map.
+
 ### 9.1 Per-request IO audit (opt-in, four files per request)
 
 **Off by default.** The audit captures full request and response bodies —
@@ -1184,21 +1187,24 @@ BridgeIoSink (custom ILogEventSink, Hosting/Logging/BridgeIoSink.cs)
 Worker task (single reader)
    ▼  pretty-prints to <utc>-<seq>-<kind>.json (using JsonNode tree;
    ▼  body is parsed as JSON when possible, falls back to string)
-   ▼  returns pooled byte[] back to ArrayPool<byte>.Shared
+   ▼  the payload body is a plain array, reclaimed by GC (the sink does not pool)
 ```
 
 #### Buffer ownership
 
-Endpoints read inbound bodies into `ArrayPool<byte>.Shared`-rented buffers
-to avoid GC pressure on conversation-sized payloads. The pooled buffer is
-**not** the one handed to the sink — endpoints make a one-shot copy for
-the audit and keep the pooled buffer alive for the pipeline's `RawBody`
-view. The endpoint's `finally` block returns the pool buffer after the
-request completes.
+Endpoints read inbound bodies into a pooled buffer (a
+`Microsoft.IO.RecyclableMemoryStream`, pooled chunks) to avoid per-request LOH
+allocation churn on conversation-sized payloads, via the shared
+`InboundBody.ReadPooledAsync` helper which returns a disposable `PooledBody`.
+The endpoint consumes the body **synchronously** (deserialize + the audit
+capture) inside a `using`, so the pooled storage is returned to the manager within
+the endpoint's synchronous section — it does **not** cross `await` into the
+pipeline (the request context has no raw-bytes field for a stage to read). When
+tracing is on, `RequestAudit.RecordInbound` makes a one-shot copy for the sink;
+that copy is a plain payload-owned array, distinct from the pooled read buffer.
 
-The sink-owned body buffer is tracked by `BridgeIoPayload.BodyPooled` and
-released by the worker after the audit JSON is written (via
-`BridgeIoPayload.Release()`).
+The sink-owned body buffer is a plain array reclaimed by GC after the audit JSON
+is written; the sink does not pool or return it.
 
 #### Redaction
 
