@@ -76,9 +76,20 @@ internal static class ResponseLeakError
     /// names <paramref name="signature"/> and its disable switch.
     /// </summary>
     public static string Json(ResponseLeakSignal signal, string signature) =>
+        JsonWithMessage(signal, Message(signature));
+
+    /// <summary>
+    /// The Anthropic error JSON for the SSE <c>error</c> event / buffered body with
+    /// a caller-supplied <paramref name="message"/>. Single-sources the wire shape
+    /// (<c>{"type":"error","error":{"type":"…","message":"…"}}</c>) and the
+    /// <see cref="ErrorType"/> mapping so other guards (e.g. the runaway guard) emit
+    /// the identical retryable envelope with their own message. The message MUST NOT
+    /// contain <c>"</c> or <c>\</c> (embedded in hand-built JSON without escaping).
+    /// </summary>
+    public static string JsonWithMessage(ResponseLeakSignal signal, string message) =>
         "{\"type\":\"error\",\"error\":{\"type\":\""
         + ErrorType(signal)
         + "\",\"message\":\""
-        + Message(signature)
+        + message
         + "\"}}";
 }

@@ -51,11 +51,13 @@ public class DetectorCompositionTests
 
         var detectors = scope.ServiceProvider.GetServices<IResponseDetector>().ToArray();
 
-        // Registration order = precedence order: DONE-filter → model-rewrite → response-leak.
-        Assert.Equal(3, detectors.Length);
+        // Registration order = precedence order:
+        // DONE-filter → model-rewrite → response-leak → runaway-guard.
+        Assert.Equal(4, detectors.Length);
         Assert.Equal("DoneFilter", detectors[0].Name);
         Assert.Equal("ModelRewrite", detectors[1].Name);
         Assert.Equal("ResponseLeak", detectors[2].Name);
+        Assert.Equal("RunawayGuard", detectors[3].Name);
     }
 
     [Fact]
@@ -67,11 +69,12 @@ public class DetectorCompositionTests
         var detectors = scope.ServiceProvider.GetServices<IResponseDetector>().ToArray();
 
         // The registration sequence is materialized as explicit, unique Order
-        // values (0,1,2) — the guarantee that makes execution order independent of
+        // values (0,1,2,3) — the guarantee that makes execution order independent of
         // the container's enumeration order.
         Assert.Equal(0, detectors.Single(d => d.Name == "DoneFilter").Order);
         Assert.Equal(1, detectors.Single(d => d.Name == "ModelRewrite").Order);
         Assert.Equal(2, detectors.Single(d => d.Name == "ResponseLeak").Order);
+        Assert.Equal(3, detectors.Single(d => d.Name == "RunawayGuard").Order);
     }
 
     [Fact]

@@ -106,6 +106,33 @@ internal sealed class BridgeContext<TBody> where TBody : class
     public bool ResponseLeakDetected { get; set; }
 
     /// <summary>
+    /// Set true by the runaway guard (<c>RunawayGuardDetector</c>) when a streamed
+    /// response exceeds its byte / delta-count budget — the degenerate-generation
+    /// signature (e.g. a model stuck emitting tens of thousands of tiny tool-arg
+    /// fragments). The guard aborts the turn with a retryable error; the endpoint
+    /// copies this into the per-request summary (<c>runaway</c>) so trips are
+    /// grep-able and the rate is measurable. Distinct from
+    /// <see cref="ResponseLeakDetected"/> (protocol-leak, not volume). Set by the
+    /// detector's trip during stream relay / buffered scan.
+    /// </summary>
+    public bool RunawayDetected { get; set; }
+
+    /// <summary>
+    /// Count of inbound <c>tool_result</c> blocks that carry a replayed API-error
+    /// payload (content starting with <c>"API Error:"</c>) — failure debris from
+    /// earlier failed tool / sub-agent calls in the same session that Claude Code
+    /// keeps in the transcript and resends. A context heavily poisoned with these
+    /// pushed gpt-5.5 into the degenerate runaway (<c>docs/gpt55-runaway-diagnosis.md</c>);
+    /// no frontier model on the bridge can un-poison the client's transcript, so the
+    /// only cure is the user compacting the session. Set by
+    /// <c>PoisonedContextScanStage</c> during the request pipeline (0 when the stage is
+    /// disabled or finds none); the endpoint copies it into the per-request summary
+    /// (<c>poisoned_tool_results=</c>). COUNT ONLY — the transcript is never mutated
+    /// (dropping a <c>tool_result</c> without its paired <c>tool_use</c> 400s upstream).
+    /// </summary>
+    public int PoisonedToolResults { get; set; }
+
+    /// <summary>
     /// Per-request trace id (<c>BridgeIoSeq.BuildTraceId</c>) — the same id that
     /// names the four <c>&lt;traceId&gt;-*.json</c> trace files and prefixes every
     /// in-request log line as <c>[&lt;traceId&gt;] </c>. Set by the pipeline-driving
@@ -177,6 +204,19 @@ internal sealed class BridgeResponse
     /// <c>Vendor</c>, not inferred from this field being null.
     /// </summary>
     public byte[]? UpstreamWireBody { get; set; }
+
+    /// <summary>
+    /// The <c>reasoning.effort</c> the Codex strategy (T2) actually wrote to the
+    /// wire after per-model coercion, or null when no effort was set. Distinct from
+    /// the IR body's <c>OutputConfig.Effort</c>: on the Responses path coercion
+    /// happens in <c>ResponsesRequestBuilder</c> and is NOT written back to the IR,
+    /// so the endpoint reads the honest outbound value from here to log
+    /// <c>effort=max→xhigh</c> instead of the un-coerced inbound <c>max</c>. Null on
+    /// the Anthropic passthrough path (where effort coercion is done by
+    /// <c>ProfileAdjuster</c> and already reflected on the IR body — the endpoint
+    /// falls back to the IR body there). Not audit-gated: always set by the strategy.
+    /// </summary>
+    public string? OutboundEffortCoerced { get; set; }
 
     /// <summary>
     /// RAW upstream response bytes for the BUFFERED path, captured by the

@@ -24,10 +24,14 @@ namespace CopilotBridge.Cli.Pipeline.Strategies.Codex;
 internal static class ResponsesRequestBuilder
 {
     /// <summary>
-    /// Build the Responses wire body from the IR. Returns the serialized bytes
-    /// and whether the request carries an image (→ Copilot-Vision-Request).
+    /// Build the Responses wire body from the IR. Returns the serialized bytes,
+    /// whether the request carries an image (→ Copilot-Vision-Request), and the
+    /// effort actually written to the wire after per-model coercion (null when no
+    /// effort was set). The caller (which holds a logger) compares
+    /// <see cref="MessagesRequest.OutputConfig"/>'s inbound effort against this to
+    /// WARN on a fallback and to log the honest outbound value.
     /// </summary>
-    public static (byte[] Body, bool Vision) Build(MessagesRequest ir, CodexModelProfileCatalog profiles)
+    public static (byte[] Body, bool Vision, string? CoercedEffort) Build(MessagesRequest ir, CodexModelProfileCatalog profiles)
     {
         // Exact profile, or the nearest known one (best-effort fallback for a
         // Codex model newer than this build's catalog — the router already
@@ -43,6 +47,7 @@ internal static class ResponsesRequestBuilder
             bag = b;
 
         var vision = false;
+        string? effort = null;   // coerced effort actually written to the wire; hoisted so the return below (outside the writer's using) can report it
         using var buffer = new MemoryStream();
         using (var w = new Utf8JsonWriter(buffer))
         {
@@ -74,7 +79,7 @@ internal static class ResponsesRequestBuilder
             // survives. Emit a reasoning object if EITHER is present — if coercion
             // dropped effort but a summary exists, reasoning:{summary:…} still carries
             // it (WriteBagFields drops "reasoning_summary" at the top level).
-            var effort = CoerceEffort(ir.OutputConfig?.Effort, profile);
+            effort = CoerceEffort(ir.OutputConfig?.Effort, profile);
             var reasoningSummary = TryGetBagString(bag, "reasoning_summary");
             if (effort is not null || reasoningSummary is not null)
             {
@@ -133,7 +138,7 @@ internal static class ResponsesRequestBuilder
             w.WriteEndObject();
         }
 
-        return (buffer.ToArray(), vision);
+        return (buffer.ToArray(), vision, effort);
     }
 
     private static void WriteInputItem(Utf8JsonWriter w, MessageParam msg, ref bool vision)
@@ -564,9 +569,20 @@ internal static class ResponsesRequestBuilder
     }
 
     /// <summary>
-    /// Clamp an inbound effort to what the resolved model accepts (research §2.2).
-    /// Unknown profile → pass through (the model router already validated the id;
-    /// a missing profile is a catalog gap surfaced elsewhere). Null effort → null.
+    /// Coerce an inbound effort to what the resolved model accepts. Three cases:
+    /// <list type="number">
+    ///   <item>null → null (no effort set; nothing to write).</item>
+    ///   <item>accepted (case-insensitive) → returned as-is.</item>
+    ///   <item>not accepted → the model's <see cref="CodexModelProfile.DefaultEffort"/>.
+    ///         Notably Anthropic's <c>max</c> (no Codex equivalent) lands here.</item>
+    /// </list>
+    /// No nearest-neighbor guessing — the fallback is a deliberate per-model choice
+    /// on the profile. This is the FACT layer; an operator can override per location
+    /// with a routing <c>EffortMap</c> that runs earlier (research §2.2,
+    /// <c>docs/routing.md</c>). Unknown profile → pass through (the model router
+    /// already validated the id; a missing profile is a catalog gap surfaced
+    /// elsewhere). The caller WARN-logs when the returned value differs from the
+    /// inbound one.
     /// </summary>
     private static string? CoerceEffort(string? effort, CodexModelProfile? profile)
     {
@@ -574,18 +590,7 @@ internal static class ResponsesRequestBuilder
         if (profile is null) return effort;
         if (profile.AcceptedEfforts.Contains(effort, StringComparer.OrdinalIgnoreCase))
             return effort;
-        // Not accepted — clamp to the nearest accepted neighbor. The two profiles:
-        //   large rejects "minimal" → map to "low".
-        //   small rejects "none" → drop (return null); rejects "xhigh" → "high".
-        // Neighbor lookups use OrdinalIgnoreCase to match the accept check above
-        // (AcceptedEfforts values are lowercase today, but stay case-insensitive
-        // for consistency so a future mixed-case profile entry can't silently miss).
-        return effort.ToLowerInvariant() switch
-        {
-            "minimal" => profile.AcceptedEfforts.Contains("low", StringComparer.OrdinalIgnoreCase) ? "low" : null,
-            "xhigh" => profile.AcceptedEfforts.Contains("high", StringComparer.OrdinalIgnoreCase) ? "high" : null,
-            "none" => null,  // small models reject none and there's no neighbor
-            _ => profile.AcceptedEfforts.Contains("medium", StringComparer.OrdinalIgnoreCase) ? "medium" : null,
-        };
+        // Not accepted — fall back to the model's deliberate default (never a guess).
+        return profile.DefaultEffort;
     }
 }

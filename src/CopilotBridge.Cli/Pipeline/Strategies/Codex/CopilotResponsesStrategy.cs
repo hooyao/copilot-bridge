@@ -52,7 +52,23 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
     {
         var ctx = _ctx;
         // ── T2: IR MessagesRequest → Responses wire bytes ──
-        var (body, vision) = ResponsesRequestBuilder.Build(ctx.Request.Body, _profiles);
+        var (body, vision, coercedEffort) = ResponsesRequestBuilder.Build(ctx.Request.Body, _profiles);
+
+        // Effort coercion happens inside T2 (per-model DefaultEffort fallback) and
+        // is NOT written back to the IR body. Surface the honest wire value so the
+        // endpoint logs effort=max→xhigh, and WARN when the inbound effort was not
+        // accepted by the target and fell back to the model default — the operator
+        // can override per location with a routing EffortMap.
+        var inboundEffort = ctx.Request.Body.OutputConfig?.Effort;
+        ctx.Response.OutboundEffortCoerced = coercedEffort;
+        if (inboundEffort is not null && coercedEffort is not null
+            && !string.Equals(inboundEffort, coercedEffort, StringComparison.OrdinalIgnoreCase))
+        {
+            _log.LogWarning(
+                "strategy {Name}: effort '{Inbound}' not accepted by model '{Model}'; using default '{Default}' "
+                + "(override per location with Routing.Locations[].Use.EffortMap)",
+                Name, inboundEffort, ctx.Request.Body.Model, coercedEffort);
+        }
 
         // Stash the real wire bytes so the endpoint audits what we POSTed upstream
         // (the T2 Responses body), not the IR. Gated on tracing — matching the

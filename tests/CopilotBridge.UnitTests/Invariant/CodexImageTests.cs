@@ -46,7 +46,7 @@ public class CodexImageTests
         const string dataUrl = "data:image/jpeg;base64,/9j/4AAQSkZJRg";
         var ir = CodexRoundTrip.ToIr(CodexRoundTrip.ParseRequest(ImageRequest(dataUrl)));
 
-        var (bytes, vision) = ResponsesRequestBuilder.Build(ir, Profiles);
+        var (bytes, vision, _) = ResponsesRequestBuilder.Build(ir, Profiles);
         Assert.True(vision, "an input_image must set the vision flag (→ Copilot-Vision-Request)");
 
         var emitted = JsonNode.Parse(bytes)!.AsObject();
@@ -69,7 +69,7 @@ public class CodexImageTests
         Assert.Equal(httpUrl, src.Url);
 
         // And it round-trips back to the same image_url.
-        var (bytes, vision) = ResponsesRequestBuilder.Build(ir, Profiles);
+        var (bytes, vision, _) = ResponsesRequestBuilder.Build(ir, Profiles);
         Assert.True(vision);
         var emitted = JsonNode.Parse(bytes)!.AsObject();
         var imagePart = emitted["input"]!.AsArray()
@@ -99,7 +99,7 @@ public class CodexImageTests
             + "\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"}]}],"
             + "\"stream\":true,\"store\":false}";
         var ir = CodexRoundTrip.ToIr(CodexRoundTrip.ParseRequest(textOnly));
-        var (_, vision) = ResponsesRequestBuilder.Build(ir, Profiles);
+        var (_, vision, _) = ResponsesRequestBuilder.Build(ir, Profiles);
         Assert.False(vision);
     }
 }

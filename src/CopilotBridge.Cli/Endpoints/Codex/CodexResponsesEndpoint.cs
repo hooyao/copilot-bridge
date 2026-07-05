@@ -150,7 +150,12 @@ internal static class CodexResponsesEndpoint
             await runner.RunAsync(pipeline);
 
             summary.ResolvedModel = bridgeCtx.Request.Body.Model;
-            summary.OutboundEffort = bridgeCtx.Request.Body.OutputConfig?.Effort;
+            // Prefer the effort actually written to the wire by T2 (per-model
+            // coercion is NOT reflected on the IR body), falling back to the IR
+            // body's effort when the strategy didn't set it (non-Responses path).
+            // This makes the summary honest: effort=max→xhigh, not a bare max.
+            summary.OutboundEffort = bridgeCtx.Response.OutboundEffortCoerced
+                ?? bridgeCtx.Request.Body.OutputConfig?.Effort;
             summary.TargetVendor = bridgeCtx.Target?.Vendor.ToString();
             summary.TargetEndpoint = bridgeCtx.Target?.Endpoint;
 
@@ -214,6 +219,13 @@ internal static class CodexResponsesEndpoint
                 httpCtx.Response.ContentLength = outBody.Length;
                 await httpCtx.Response.Body.WriteAsync(outBody, ct);
             }
+
+            // Copy the response-side detector flags off the context AFTER the stream
+            // has drained (streaming sets them mid-relay) so the summary line reports
+            // them. The shared pipeline runs the same detectors on the Codex path, so
+            // a runaway (or a leak) can trip here too.
+            summary.ResponseLeakDetected = bridgeCtx.ResponseLeakDetected;
+            summary.RunawayDetected = bridgeCtx.RunawayDetected;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -289,6 +301,11 @@ internal static class CodexResponsesEndpoint
             sw.Stop();
             summary.StatusCode = responseStatus;
             summary.DurationMs = sw.ElapsedMilliseconds;
+            // Poisoned-context count is set by PoisonedContextScanStage during the
+            // request pipeline (before the strategy), so copy it here in finally —
+            // it survives even when a later stage or the strategy throws. 0 when the
+            // scan stage is disabled or the pipeline never reached it.
+            summary.PoisonedToolResults = bridgeCtx.PoisonedToolResults;
             summaryLogger.Log(summary);
 
             if (audit.Enabled && upstreamUrl is not null && upstreamHeaders is not null)
