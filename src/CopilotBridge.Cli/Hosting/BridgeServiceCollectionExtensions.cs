@@ -82,6 +82,8 @@ internal static class BridgeServiceCollectionExtensions
         services.Configure<ResponseModelRewriteOptions>(config.GetSection("Pipeline:Detectors:ModelRewrite"));
         services.Configure<UpstreamRetryOptions>(config.GetSection("Pipeline:UpstreamRetry"));
         services.Configure<ResponseLeakGuardOptions>(config.GetSection("Pipeline:Detectors:ResponseLeakGuard"));
+        services.Configure<RunawayGuardOptions>(config.GetSection("Pipeline:Detectors:RunawayGuard"));
+        services.Configure<PoisonedContextOptions>(config.GetSection("Pipeline:PoisonedContext"));
 
         // Kestrel listens on the (post-PostConfigure) port + uses our generous
         // keep-alive limits. Configured via IConfigureOptions so it can pull
@@ -163,6 +165,7 @@ internal static class BridgeServiceCollectionExtensions
         services.AddScoped<IPipelineRunner<MessagesRequest>, PipelineRunner<MessagesRequest>>();
 
         services.AddScoped<ModelRouterStage>();
+        services.AddScoped<PoisonedContextScanStage>();
         services.AddScoped<AssistantThinkingFilterStage>();
         services.AddScoped<SystemSanitizeStage>();
         services.AddScoped<MessagesSanitizeStage>();
@@ -175,14 +178,16 @@ internal static class BridgeServiceCollectionExtensions
         // (e.g. the response-leak automaton) never crosses requests; it self-gates on
         // its config (IResponseDetector.Enabled, backed by IOptionsSnapshot) and
         // reads its per-request data in Begin(). RegisterResponseDetector takes an
-        // EXPLICIT Order (DONE-filter 0 → model-rewrite 1 → response-leak 2); the stage
-        // runs them by that Order, so precedence does NOT depend on IEnumerable<T>
-        // resolution order. Adding a detector = one RegisterResponseDetector<...>
-        // line here with the next Order; a duplicate type or duplicate Order throws
-        // at registration rather than silently making precedence ambiguous.
+        // EXPLICIT Order (DONE-filter 0 → model-rewrite 1 → response-leak 2 →
+        // runaway-guard 3); the stage runs them by that Order, so precedence does
+        // NOT depend on IEnumerable<T> resolution order. Adding a detector = one
+        // RegisterResponseDetector<...> line here with the next Order; a duplicate
+        // type or duplicate Order throws at registration rather than silently making
+        // precedence ambiguous.
         services.RegisterResponseDetector<DoneFilterDetector>(0);
         services.RegisterResponseDetector<ModelRewriteDetector>(1);
         services.RegisterResponseDetector<ResponseLeakDetector>(2);
+        services.RegisterResponseDetector<RunawayGuardDetector>(3);
         services.AddScoped<ResponseInspectionStage>();
         services.AddScoped<CopilotMessagesPassthroughStrategy>();
 
@@ -290,6 +295,17 @@ internal static class BridgeServiceCollectionExtensions
                 //    CopilotResponses targets.
                 sp.GetRequiredService<ModelRouterStage>(),
 
+                // 1b. Observe-only poisoned-context scan. NOT vendor-gated and NOT
+                //    wrapped by CopilotAnthropicOnlyStage: it runs for both /cc and
+                //    /codex because a transcript poisoned with replayed API-error
+                //    tool_results degrades any weaker backend model. It mutates
+                //    nothing — counts the debris onto ctx.PoisonedToolResults and
+                //    logs a "compact your session" WARNING when heavy — so it is safe
+                //    on every path. Placed after routing so the count reflects the
+                //    body actually being sent; the messages it inspects are not
+                //    changed by routing.
+                sp.GetRequiredService<PoisonedContextScanStage>(),
+
                 // 2-6. Anthropic-backend-only stages. The shared pipeline also
                 //    carries the Codex/Responses IR (gpt-* → CopilotResponses);
                 //    these stages encode /v1/messages-specific assumptions and
@@ -322,8 +338,9 @@ internal static class BridgeServiceCollectionExtensions
             [
                 // One stage runs the whole detector framework in a single stream
                 // wrap: DONE-filter (drop [DONE]) → model-rewrite (restore the
-                // client model id) → response-leak guard (abort+retry on leaked XML).
-                // Order inside the set is the detectors' explicit Order (assigned by
+                // client model id) → response-leak guard (abort+retry on leaked XML)
+                // → runaway guard (abort a degenerate volume runaway). Order inside
+                // the set is the detectors' explicit Order (assigned by
                 // RegisterResponseDetector), applied by the stage.
                 sp.GetRequiredService<ResponseInspectionStage>(),
             ],

@@ -156,18 +156,30 @@ startup (exit code 2) with a message naming the offending `Routing.Locations[i]`
 
 ## Shipped configuration
 
-The bundled `appsettings.json` ships **one** location — the Codex `gpt-5.5-1m`
-context-window alias:
+The bundled `appsettings.json` ships an **empty** active location list
+(`"Locations": []`) — no rewrites by default. It also carries a **disabled**
+example under `_Locations_disabled`, a key the config binder ignores (the same
+leading-underscore convention used for `_comment` fields). To enable it, rename
+`_Locations_disabled` to `Locations` (and rename the active empty `Locations` to
+something else — exactly one `Locations` key may be active):
 
 ```jsonc
-"Locations": [
+"_Locations_disabled": [
   {
-    "When": { "Model": "gpt-5.5-1m" },
-    "Use": { "Model": "gpt-5.5" },
-    "Note": "Codex alias: gpt-5.5-1m -> gpt-5.5 (sidesteps Codex's client-side context cap; Copilot's gpt-5.5 is 1M-context natively)"
+    "When": { "Model": "claude-opus-4.8" },
+    "Use": { "Model": "gpt-5.5", "EffortMap": { "max": "xhigh" } },
+    "Note": "Route Claude Code's claude-opus-4.8 traffic to Copilot gpt-5.5. EffortMap max->xhigh is required: Claude Code sends the Anthropic effort 'max', which gpt-5.5 (a Codex model) does not accept. gpt-5.5 is a lossy fit for the Claude Code tool protocol (see docs/gpt55-runaway-diagnosis.md) — enable only for experimentation."
   }
 ]
 ```
+
+> Earlier releases shipped an active `gpt-5.5-1m -> gpt-5.5` Codex context-window
+> alias here; it was removed when the active list was emptied. The `-1m` alias
+> was a Codex-side trick (name the model `gpt-5.5-1m` with
+> `model_context_window=1000000` to sidestep a client-side context cap Codex
+> applies to the literal `gpt-5.5`, then map it back so Copilot's natively-1M
+> `gpt-5.5` is used); if you still drive gpt-5.5 from Codex you can re-add it as a
+> location.
 
 ### Retired: the opus 1M redirects
 

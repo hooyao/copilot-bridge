@@ -199,7 +199,12 @@ internal static class ClaudeCodeMessagesEndpoint
 
             // Post-pipeline summary fields.
             summary.ResolvedModel = bridgeCtx.Request.Body.Model;
-            summary.OutboundEffort = bridgeCtx.Request.Body.OutputConfig?.Effort;
+            // gpt-5.5 (and other Codex models) reached via /cc route to the Codex
+            // strategy, which coerces effort in T2 without writing it back to the IR
+            // body — so prefer the honest wire value it stashed (effort=max→xhigh),
+            // falling back to the IR body's effort on the Anthropic passthrough path.
+            summary.OutboundEffort = bridgeCtx.Response.OutboundEffortCoerced
+                ?? bridgeCtx.Request.Body.OutputConfig?.Effort;
             // Re-lookup the profile for the summary. Use GetNearest so a
             // fuzzy-matched (un-profiled but forwarded) model reports the borrowed
             // profile id here rather than blank — matches what the router actually
@@ -282,9 +287,11 @@ internal static class ClaudeCodeMessagesEndpoint
                 await httpCtx.Response.Body.WriteAsync(outBody, ct);
             }
 
-            // Copy the response-leak flag off the context AFTER the stream has drained
-            // (streaming sets it mid-relay) so the summary line reports it.
+            // Copy the response-side detector flags off the context AFTER the stream
+            // has drained (streaming sets them mid-relay) so the summary line reports
+            // them: response_leak (protocol leak) and runaway (volume circuit-breaker).
             summary.ResponseLeakDetected = bridgeCtx.ResponseLeakDetected;
+            summary.RunawayDetected = bridgeCtx.RunawayDetected;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -372,6 +379,11 @@ internal static class ClaudeCodeMessagesEndpoint
             sw.Stop();
             summary.StatusCode = responseStatus;
             summary.DurationMs = sw.ElapsedMilliseconds;
+            // Poisoned-context count is set by PoisonedContextScanStage during the
+            // request pipeline (before the strategy), so copy it here in finally —
+            // it survives even when a later stage or the strategy throws. 0 when the
+            // scan stage is disabled or the pipeline never reached it.
+            summary.PoisonedToolResults = bridgeCtx.PoisonedToolResults;
             summaryLogger.Log(summary);
 
             if (audit.Enabled && upstreamUrl is not null && upstreamHeaders is not null)

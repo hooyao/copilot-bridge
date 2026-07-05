@@ -15,7 +15,8 @@ namespace CopilotBridge.UnitTests.Invariant;
 /// EXACT bytes it emits for the probe-derived coercions the A-suite leaves
 /// untested:
 /// <list type="bullet">
-///   <item>per-model <c>reasoning.effort</c> clamp (<c>CoerceEffort</c>);</item>
+///   <item>per-model <c>reasoning.effort</c> fallback (<c>CoerceEffort</c> →
+///         profile <c>DefaultEffort</c> for an unaccepted inbound effort);</item>
 ///   <item>tool drops in <c>WriteToolsWithDrops</c> (uniform
 ///         <c>image_generation</c> drop; <c>custom</c> drop for
 ///         <c>mai-code-1-flash-picker</c>);</item>
@@ -60,36 +61,45 @@ public class CodexRequestBuildTests
         return doc.RootElement.Clone();
     }
 
-    // ── CoerceEffort: per-model clamp, read back off the emitted wire ────────────
-    // expectedEffort == null means the coercion dropped effort AND (with no
+    // ── CoerceEffort: per-model DefaultEffort fallback, read back off the wire ────
+    // Contract (change #2, docs/gpt55-runaway-diagnosis.md): an inbound effort the
+    // model's profile does NOT accept is replaced by that profile's deliberate
+    // DefaultEffort — NOT a nearest-accepted-neighbor guess. Anthropic's 'max' (no
+    // Codex equivalent) is the motivating case: it must land on the profile default
+    // (large → xhigh, small → high), never be silently down-clamped to medium.
+    // expectedEffort == null means the coercion produced no effort AND (with no
     // reasoning_summary in the bag) Build emits NO reasoning object at all.
 
     [Theory]
-    // large profile (gpt-5.3-codex): accepts none/low/medium/high/xhigh, rejects minimal.
-    [InlineData("gpt-5.3-codex", "minimal", "low")]   // rejected → nearest accepted neighbor
+    // large profile (gpt-5.3-codex): accepts none/low/medium/high/xhigh; DefaultEffort=xhigh.
+    [InlineData("gpt-5.3-codex", "max", "xhigh")]     // Anthropic max, unaccepted → profile default xhigh (THE #2 fix)
+    [InlineData("gpt-5.3-codex", "minimal", "xhigh")] // unaccepted → default (NOT neighbor 'low')
     [InlineData("gpt-5.3-codex", "none", "none")]     // accepted → kept verbatim
     [InlineData("gpt-5.3-codex", "medium", "medium")] // accepted → kept
     [InlineData("gpt-5.3-codex", "xhigh", "xhigh")]   // accepted by large → kept
-    // small profile (gpt-5-mini): accepts minimal/low/medium/high, rejects none + xhigh.
-    [InlineData("gpt-5-mini", "xhigh", "high")]       // rejected → clamp down to high
-    [InlineData("gpt-5-mini", "none", null)]          // rejected, no neighbor → dropped (no reasoning object)
+    // gpt-5.5 specifically — the model from the runaway incident. max → xhigh, never medium.
+    [InlineData("gpt-5.5", "max", "xhigh")]
+    // small profile (gpt-5-mini): accepts minimal/low/medium/high; DefaultEffort=high.
+    [InlineData("gpt-5-mini", "max", "high")]         // unaccepted → small default high
+    [InlineData("gpt-5-mini", "xhigh", "high")]       // unaccepted (small rejects xhigh) → default high
+    [InlineData("gpt-5-mini", "none", "high")]        // unaccepted (small rejects none) → default high (NOT dropped)
     [InlineData("gpt-5-mini", "minimal", "minimal")]  // accepted → kept
     [InlineData("gpt-5-mini", "medium", "medium")]    // accepted → kept
     // unknown model → below the fuzzy floor → no profile → passthrough unclamped
     // (a genuinely unrelated id borrows nothing; the router surfaced it elsewhere).
     [InlineData("totally-unknown-model", "minimal", "minimal")]
-    [InlineData("totally-unknown-model", "xhigh", "xhigh")]
-    // unknown-but-CLOSE Codex id → GetNearest borrows the nearest profile's clamp.
-    // 'gpt-5.6' has no exact profile but is closest to the large profiles
-    // (gpt-5.3-codex/5.4/5.5), which accept xhigh → kept. A close SMALL-family id
-    // ('gpt-5-nano' ~ gpt-5-mini) borrows the small clamp → xhigh clamped to high.
-    [InlineData("gpt-5.6", "xhigh", "xhigh")]
-    [InlineData("gpt-5-nano", "xhigh", "high")]
-    // case-insensitivity: accepted check is OrdinalIgnoreCase, so an accepted value
-    // keeps its original case; a clamped value lowercases via the neighbor table.
+    [InlineData("totally-unknown-model", "max", "max")]     // no profile → 'max' passes through untouched
+    // unknown-but-CLOSE Codex id → GetNearest borrows the nearest profile's default.
+    // 'gpt-5.6' is closest to the large profiles (accept xhigh, default xhigh);
+    // a close SMALL-family id ('gpt-5-nano' ~ gpt-5-mini) borrows the small default high.
+    [InlineData("gpt-5.6", "max", "xhigh")]
+    [InlineData("gpt-5-nano", "max", "high")]
+    // case-insensitivity: the accepted check is OrdinalIgnoreCase, so an accepted
+    // value keeps its original case; an unaccepted value is replaced by the profile
+    // default (emitted in the default's own case).
     [InlineData("gpt-5.3-codex", "MEDIUM", "MEDIUM")] // accepted case-insensitively → original case preserved
-    [InlineData("gpt-5.3-codex", "MINIMAL", "low")]   // rejected → clamp (ToLowerInvariant → "minimal" → "low")
-    public void CoerceEffort_ClampsPerModel(string model, string inboundEffort, string? expectedEffort)
+    [InlineData("gpt-5.3-codex", "MINIMAL", "xhigh")] // unaccepted → profile default xhigh
+    public void CoerceEffort_FallsBackToProfileDefault(string model, string inboundEffort, string? expectedEffort)
     {
         var emitted = Emit(Ir(model, effort: inboundEffort));
 

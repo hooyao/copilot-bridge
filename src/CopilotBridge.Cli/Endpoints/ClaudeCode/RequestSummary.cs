@@ -43,6 +43,31 @@ internal sealed class RequestSummary
     public bool ResponseLeakDetected { get; set; }
 
     /// <summary>
+    /// True when the runaway guard (<c>RunawayGuardDetector</c>) aborted the turn
+    /// because the streamed response exceeded its byte / delta-count budget (the
+    /// degenerate-generation signature). Surfaced on the summary line as
+    /// <c>runaway=</c> so trips are grep-able and the rate is measurable. Distinct
+    /// from <see cref="ResponseLeakDetected"/> (protocol leak, not volume). Default
+    /// false.
+    /// </summary>
+    public bool RunawayDetected { get; set; }
+
+    /// <summary>
+    /// Count of inbound <c>tool_result</c> blocks carrying a replayed API-error
+    /// payload (content starting with <c>"API Error:"</c>) — failure debris from
+    /// earlier failed tool / sub-agent calls in the same session that Claude Code
+    /// keeps in the transcript and resends. A heavily poisoned context can derail a
+    /// weak backend model (it triggered the gpt-5.5 runaway). Produced by
+    /// <c>PoisonedContextScanStage</c> in the request pipeline and copied here by the
+    /// endpoint; that stage also logs a "compact your session" WARNING once the count
+    /// crosses its threshold. COUNT ONLY — the transcript is never mutated (dropping a
+    /// <c>tool_result</c> without its paired <c>tool_use</c> would 400 upstream, and
+    /// the bridge cannot un-poison the client's history — only compacting can).
+    /// Emitted on the summary line as <c>poisoned_tool_results=</c>. Default 0.
+    /// </summary>
+    public int PoisonedToolResults { get; set; }
+
+    /// <summary>
     /// When the pipeline / endpoint throws, the exception's type + message
     /// land here so the INFO line surfaces what failed (e.g.
     /// <c>NullReferenceException: Object reference not set</c>) without

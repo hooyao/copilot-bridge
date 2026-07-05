@@ -993,19 +993,28 @@ typo can't produce silent 401s. Identity-header overrides thread through
 `BridgeContext.CopilotHeaderOverrides` into `CopilotHeaderFactory`;
 `anthropic-beta` add/remove flows through `HeadersOutboundStage`.
 
-Today's `appsettings.json` ships **one** location — the Codex `gpt-5.5-1m`
-context-window alias:
+Today's `appsettings.json` ships an **empty** active location list
+(`"Locations": []`) — no rewrites by default — plus a **disabled** example under
+`_Locations_disabled` (a key the config binder ignores; enable by renaming it to
+`Locations`):
 
 | `When` model | `Use.Model` | `Use.EffortMap` |
 | --- | --- | --- |
-| `gpt-5.5-1m` | `gpt-5.5` | — |
+| `claude-opus-4.8` | `gpt-5.5` | `max` → `xhigh` |
 
 Note:
-- `gpt-5.5-1m` is a Codex-side alias: naming the model `gpt-5.5-1m` (with
-  `model_context_window=1000000` in the Codex config) sidesteps a client-side
-  context cap Codex applies to the literal `gpt-5.5`; the bridge maps it back so
-  Copilot's natively-1M `gpt-5.5` is used. `Normalize` keeps the `-1m` suffix,
-  so the match is on the full `gpt-5.5-1m`.
+- The example routes Claude Code's `claude-opus-4.8` to Copilot's `gpt-5.5`. The
+  `EffortMap max→xhigh` is required because Claude Code sends the Anthropic effort
+  `max`, which gpt-5.5 (a Codex model) does not accept; mapping it at the routing
+  layer is the operator's explicit intent (versus T2's per-model `DefaultEffort`
+  fallback, which also lands on `xhigh` but emits a "not accepted" WARNING). It
+  ships disabled because gpt-5.5 is a lossy fit for the Claude Code tool protocol
+  (see `docs/gpt55-runaway-diagnosis.md`).
+- Earlier releases shipped an active `gpt-5.5-1m → gpt-5.5` Codex context-window
+  alias here (naming the model `gpt-5.5-1m` with `model_context_window=1000000`
+  sidesteps a client-side context cap Codex applies to the literal `gpt-5.5`; the
+  bridge maps it back so Copilot's natively-1M `gpt-5.5` is used, `Normalize`
+  keeping the `-1m` suffix). It was removed when the active list was emptied.
 
 **Retired: the opus 1M redirects.** Earlier releases shipped
 `"opus 4.x + 1M beta → dedicated 1M model id"` redirects (opus-4.7/4.8 →

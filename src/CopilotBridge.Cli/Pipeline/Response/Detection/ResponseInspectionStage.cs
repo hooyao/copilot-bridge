@@ -138,13 +138,14 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
             switch (action.Kind)
             {
                 case DetectionActionKind.Abort:
-                    _log.LogDebug("stage {Name}: buffered abort (response leak); status={Status}", Name, action.HttpStatus);
+                    _log.LogDebug("stage {Name}: buffered abort; status={Status}", Name, action.HttpStatus);
                     ctx.Response.Mode = ResponseMode.Buffered;
                     ctx.Response.Status = action.HttpStatus;
                     ctx.Response.BufferedBody = Encoding.UTF8.GetBytes(action.ErrorJson!);
                     ctx.Response.Headers["Content-Type"] = "application/json";
                     ctx.Response.EventStream = null;
-                    ctx.ResponseLeakDetected = true;
+                    // The tripping detector owns its own context flag (leak vs
+                    // runaway) — the stage can't distinguish them from the action.
                     return; // terminal — discard the rest of the buffered events
 
                 case DetectionActionKind.DropEvent:
@@ -189,7 +190,7 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
                     ctx.Response.Status = action.HttpStatus;
                     ctx.Response.BufferedBody = Encoding.UTF8.GetBytes(action.ErrorJson!);
                     ctx.Response.Headers["Content-Type"] = "application/json";
-                    ctx.ResponseLeakDetected = true;
+                    // Flag owned by the tripping detector (leak vs runaway).
                     return; // terminal — no later detector runs
                 case DetectionActionKind.RewriteEvent:
                     // Buffered rewrite carries replacement bytes as the event data.
@@ -241,9 +242,12 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
 
                 case DetectionActionKind.Abort:
                     // Inject the error event, then end the stream — the remaining
-                    // upstream events are abandoned. Claude Code discards the whole
-                    // attempt on this error and retries from clean history.
-                    ctx.ResponseLeakDetected = true;
+                    // upstream events are abandoned. The tripping detector already
+                    // set its own context flag (leak vs runaway). Claude Code treats
+                    // the injected overloaded_error as retryable, but note: once
+                    // visible output has already streamed, recent Claude Code
+                    // versions may preserve the partial response and show an
+                    // incomplete-response notice instead of retrying the whole turn.
                     yield return new SseItem<string>(action.ErrorJson!, "error");
                     yield break;
             }

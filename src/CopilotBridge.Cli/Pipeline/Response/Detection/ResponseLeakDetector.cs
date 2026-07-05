@@ -121,6 +121,11 @@ internal sealed class ResponseLeakDetector : AbstractOrderAwareDetector<Response
             blockType ?? "?",
             ResponseLeakError.ErrorType(signal),
             delivery);
+        // Own the "leak detected" flag here rather than in the stage: the stage
+        // sees only a generic Abort action and can't tell a leak from a runaway,
+        // so each detector marks its own context flag on trip. The endpoint reads
+        // it after the stream drains (same scoped BridgeContext instance).
+        _ctx.ResponseLeakDetected = true;
         return DetectionAction.Abort(
             ResponseLeakError.Json(signal, signature),
             ResponseLeakError.HttpStatus(signal));

@@ -108,15 +108,20 @@ internal sealed class CodexModelProfileCatalog
     private static IEnumerable<CodexModelProfile> BuildDefault()
     {
         // ── "large" effort profile: accept none/low/medium/high/xhigh, reject minimal ──
+        // DefaultEffort=xhigh: an unaccepted inbound effort (notably Anthropic's
+        // 'max', which Codex has no equivalent for) falls back to xhigh — the
+        // large profile's top accepted tier — with a WARNING in CoerceEffort.
         string[] large = ["none", "low", "medium", "high", "xhigh"];
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.3-codex", AcceptedEfforts = large };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.4",       AcceptedEfforts = large };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.4-mini",  AcceptedEfforts = large };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.5",       AcceptedEfforts = large };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.3-codex", AcceptedEfforts = large, DefaultEffort = "xhigh" };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.4",       AcceptedEfforts = large, DefaultEffort = "xhigh" };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.4-mini",  AcceptedEfforts = large, DefaultEffort = "xhigh" };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.5",       AcceptedEfforts = large, DefaultEffort = "xhigh" };
 
         // ── "small" effort profile: accept minimal/low/medium/high, reject none+xhigh ──
+        // DefaultEffort=high: small rejects xhigh, so its fallback is 'high' (its
+        // top accepted tier) — an inbound 'max'/'xhigh' lands here.
         string[] small = ["minimal", "low", "medium", "high"];
-        yield return new CodexModelProfile { CanonicalId = "gpt-5-mini", AcceptedEfforts = small };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5-mini", AcceptedEfforts = small, DefaultEffort = "high" };
         // mai-code-1-flash-INTERNAL was retired by Copilot (2026 reconciliation —
         // 400 "not available for integrator"); the live Responses id is
         // mai-code-1-flash-PICKER (200 — ResponsesProbe.MaiCode_LivenessProbe).
@@ -130,6 +135,7 @@ internal sealed class CodexModelProfileCatalog
         {
             CanonicalId = "mai-code-1-flash-picker",
             AcceptedEfforts = small,     // MaiCodePicker_Effort_ReProbe: none/xhigh → 400
+            DefaultEffort = "high",      // small's top accepted tier (xhigh rejected)
             RejectsCustomTools = true,   // MaiCodePicker_Tool_ReProbe: custom apply_patch → 500
         };
     }
