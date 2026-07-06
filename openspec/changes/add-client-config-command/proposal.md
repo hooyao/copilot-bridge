@@ -25,9 +25,9 @@ so what gets written always matches how the bridge actually runs.
     `serve`) and `--dry-run` (print the planned write, touch nothing).
 - **Derive values from `appsettings.json`, not hard-coded strings:** the port
   comes from `Server:Port` (default 8765); when either `ResponseLeakGuard` or
-  `ToolInputValidation` has `Enabled && PreserveStream`, the Claude Code `env`
-  gains `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` (and it is removed when
-  neither does, so the written config self-heals to the appsettings state).
+  `ToolInputValidation` has `Enabled && PreserveStream`, or `RunawayGuard` has
+  `Enabled` (it has no `PreserveStream` toggle), the Claude Code `env` gains `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` (and it is removed when
+  none does, so the written config self-heals to the appsettings state).
 - **Surgical, format-preserving merges** — only the bridge's own keys are
   touched; every unrelated key, table, comment, and literal in the user's file is
   preserved. JSON via `System.Text.Json.Nodes` (`JsonNode`); TOML via Tomlyn's

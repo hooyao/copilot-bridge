@@ -15,7 +15,7 @@
 ## 3. Config models & connection derivation (D3, D5)
 
 - [x] 3.1 Add `ConfigScope` (Global/Repo) enum and a `BridgeConnection` record (Port, ClaudeCodeBaseUrl, CodexBaseUrl, NeedFallback) under `Hosting/ClientConfig/`.
-- [x] 3.2 Implement connection derivation: load appsettings via the D6 helper, bind `BridgeServerOptions` + `ResponseLeakGuardOptions` + `ToolInputValidationOptions`, apply `--port` override, compute `NeedFallback = (LeakGuard.Enabled && LeakGuard.PreserveStream) || (ToolInputValidation.Enabled && ToolInputValidation.PreserveStream)`.
+- [x] 3.2 Implement connection derivation: load appsettings via the D6 helper, bind `BridgeServerOptions` + `ResponseLeakGuardOptions` + `ToolInputValidationOptions` + `RunawayGuardOptions`, apply `--port` override, compute `NeedFallback = (LeakGuard.Enabled && LeakGuard.PreserveStream) || (ToolInputValidation.Enabled && ToolInputValidation.PreserveStream) || RunawayGuard.Enabled` (RunawayGuard has no PreserveStream toggle — always mid-stream).
 - [x] 3.3 Add `ConfigPlan` (intended file content / structured diff, pure) and `ConfigState` (for status) types.
 
 ## 4. IClientConfigurator seam & isolated composition root (D1, D2)

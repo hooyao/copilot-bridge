@@ -39,7 +39,9 @@ Relevant current wiring (read during exploration):
 - `Pipeline:Detectors:ResponseLeakGuard` and
   `Pipeline:Detectors:ToolInputValidation` each carry `Enabled` and
   `PreserveStream` (both `true` by default), bound to `ResponseLeakGuardOptions`
-  / `ToolInputValidationOptions`.
+  / `ToolInputValidationOptions`. `Pipeline:Detectors:RunawayGuard`
+  (`RunawayGuardOptions`, `Enabled` default `true`) has no `PreserveStream` toggle
+  — it always aborts mid-stream when enabled.
 - `AddBridgeConfiguration` loads `appsettings.json` from `AppContext.BaseDirectory`
   — but only as an extension on `WebApplicationBuilder`, coupling it to the web
   host.
@@ -169,8 +171,8 @@ backup + write; `Read` reports current state.
 ### D5 — Derive connection facts from `appsettings.json` via bound Options
 
 `config` loads `appsettings.json` (D6) and binds `BridgeServerOptions`,
-`ResponseLeakGuardOptions`, `ToolInputValidationOptions`, then computes a
-`BridgeConnection`:
+`ResponseLeakGuardOptions`, `ToolInputValidationOptions`, `RunawayGuardOptions`,
+then computes a `BridgeConnection`:
 
 ```
 Port          = --port ?? BridgeServerOptions.Port        (default 8765)
@@ -178,6 +180,7 @@ BaseUrl(cc)   = http://localhost:{Port}/cc
 BaseUrl(codex)= http://localhost:{Port}/codex
 NeedFallback  = (ResponseLeakGuard.Enabled && ResponseLeakGuard.PreserveStream)
              || (ToolInputValidation.Enabled && ToolInputValidation.PreserveStream)
+             || RunawayGuard.Enabled   // no PreserveStream toggle — always mid-stream
 ```
 
 - **Env derivation (Claude Code only):**
