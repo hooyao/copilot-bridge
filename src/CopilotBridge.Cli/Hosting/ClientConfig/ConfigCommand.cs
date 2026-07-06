@@ -103,13 +103,29 @@ internal static class ConfigCommand
         {
             foreach (var scope in configurator.SupportedScopes)
             {
-                var state = configurator.Read(connection, scope);
+                var label = $"[{configurator.ClientId} / {scope.ToString().ToLowerInvariant()}]";
+
+                ConfigState state;
+                try
+                {
+                    state = configurator.Read(connection, scope);
+                }
+                catch (Exception ex)
+                {
+                    // One unreadable client (locked file, permission error, …) must not
+                    // sink the whole report — degrade to an error line and keep going.
+                    Console.WriteLine($"{label} error");
+                    Console.WriteLine($"  could not read: {ex.Message}");
+                    Console.WriteLine();
+                    continue;
+                }
+
                 var status = !state.Exists ? "not configured"
                     : !state.ConfiguredForBridge ? "not pointed at bridge"
                     : state.Drifted ? "DRIFTED"
                     : "configured";
 
-                Console.WriteLine($"[{configurator.ClientId} / {scope.ToString().ToLowerInvariant()}] {status}");
+                Console.WriteLine($"{label} {status}");
                 Console.WriteLine($"  file: {state.TargetPath}");
                 foreach (var detail in state.Details)
                 {

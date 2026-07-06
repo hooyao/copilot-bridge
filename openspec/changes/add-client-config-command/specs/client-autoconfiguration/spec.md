@@ -60,12 +60,14 @@ options binding the server uses, not ad-hoc key reads.
 ### Requirement: Non-streaming fallback env derived from detector options
 
 The bridge SHALL derive the Claude Code non-streaming fallback env from the
-detector options. When either the ResponseLeakGuard or the ToolInputValidation
-detector has Enabled true and PreserveStream true, the bridge SHALL set the env
-key CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK to the value 1. When neither
-detector meets that condition, the bridge SHALL remove that env key so the
-written config reflects the current appsettings state. The bridge SHALL NOT write
-that env key for Codex.
+detector options. When any response detector can inject an error mid-stream — the
+ResponseLeakGuard or ToolInputValidation detector with Enabled true and
+PreserveStream true, or the RunawayGuard detector with Enabled true (it has no
+PreserveStream toggle and always aborts mid-stream) — the bridge SHALL set the env
+key CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK to the value 1. When no detector
+meets that condition, the bridge SHALL remove that env key so the written config
+reflects the current appsettings state. The bridge SHALL NOT write that env key
+for Codex.
 
 #### Scenario: PreserveStream on one detector sets the env to 1
 
@@ -73,10 +75,17 @@ that env key for Codex.
 - **THEN** the Claude Code `env` contains
   `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` = `"1"`
 
+#### Scenario: RunawayGuard enabled alone sets the env to 1
+
+- **WHEN** ResponseLeakGuard and ToolInputValidation are both disabled but
+  RunawayGuard has `Enabled=true`
+- **THEN** the Claude Code `env` contains
+  `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` = `"1"`
+
 #### Scenario: Neither detector preserves the stream removes the env
 
-- **WHEN** both ResponseLeakGuard and ToolInputValidation have either
-  `Enabled=false` or `PreserveStream=false`
+- **WHEN** ResponseLeakGuard and ToolInputValidation have either `Enabled=false`
+  or `PreserveStream=false`, and RunawayGuard has `Enabled=false`
 - **AND** the target file already contains
   `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK`
 - **THEN** the bridge removes that env key from the written config
@@ -150,6 +159,13 @@ remain tolerant of such a file and report it instead of crashing.
   statusLine, enabledPlugins, and effortLevel keys
 - **THEN** those keys are present and unchanged after the write
 
+#### Scenario: Special characters and non-ASCII in unrelated values are byte-preserved
+
+- **WHEN** `config claude-code` runs against a `settings.json` whose unrelated
+  values contain characters the default JSON encoder would escape (`&`, `<`, `>`,
+  `+`) or non-ASCII text
+- **THEN** those values are written back verbatim (not `\uXXXX`-escaped)
+
 #### Scenario: Unparseable JSON is refused, not overwritten
 
 - **WHEN** `config claude-code` runs against a non-empty `settings.json` that is
@@ -217,6 +233,15 @@ drift). It SHALL modify no file.
 
 - **WHEN** `config status` runs
 - **THEN** no client config file is created or modified
+
+#### Scenario: Status tolerates a malformed or oddly-typed file
+
+- **WHEN** `config status` reads a client file that is malformed (Codex TOML with
+  syntax errors) or has an unexpected value type (a Claude Code env value that is a
+  number/boolean instead of a string), or that cannot be read (locked/permission
+  error)
+- **THEN** `config status` reports that client as unreadable/​not-configured and
+  continues reporting the other clients, rather than crashing
 
 ### Requirement: Isolation from the proxy server startup path
 

@@ -60,6 +60,18 @@ internal sealed class CodexConfigurator : IClientConfigurator
                 "Existing config.toml has TOML syntax errors. Refusing to edit it so your " +
                 $"other settings are not lost. Fix or remove the file, then re-run. Parser said: {first}");
         }
+
+        // Normalize the trailing newline BEFORE any node surgery: appending a top-level
+        // key or table onto a document whose last element has no trailing newline would
+        // glue the new node onto that final line (e.g. `sandbox = "x"[model_providers…]`),
+        // producing invalid TOML. Guaranteeing every existing element ends in a newline
+        // makes the append unconditionally safe. Idempotent: our own writes already end
+        // in a newline, so a re-run re-parses an already-normalized document.
+        if (!string.IsNullOrEmpty(original) && !original.EndsWith('\n'))
+        {
+            doc = Tomlyn.Parsing.SyntaxParser.Parse(original + "\n", sourcePath);
+        }
+
         var summary = MergeInto(doc, connection);
         return (doc.ToString(), summary);
     }
@@ -80,6 +92,18 @@ internal sealed class CodexConfigurator : IClientConfigurator
         }
 
         var doc = Tomlyn.Parsing.SyntaxParser.Parse(File.ReadAllText(path), path);
+
+        // Report a malformed file plainly instead of walking a partial tree and
+        // misreporting it as "not configured" — mirrors ClaudeCodeConfigurator.Read and
+        // matches what BuildContent would refuse to edit.
+        if (doc.HasErrors)
+        {
+            return new ConfigState(ClientId, scope, path, Exists: true,
+                ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
+                ExpectedFallback: null, CurrentFallback: null,
+                Details: ["file has TOML syntax errors (cannot read — fix or remove it, then re-run)"]);
+        }
+
         var provider = FindTopLevelString(doc, ModelProviderKey);
         var baseUrl = FindProviderBaseUrl(doc);
 

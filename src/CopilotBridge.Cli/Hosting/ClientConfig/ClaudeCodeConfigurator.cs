@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -38,6 +39,11 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
     private static readonly JsonSerializerOptions WriteOptions = new()
     {
         WriteIndented = true,
+        // Relaxed escaping so PRESERVED user values keep their bytes: the default
+        // (HTML-safe) encoder rewrites &, <, >, +, and all non-ASCII as \uXXXX, which
+        // would silently mangle an unrelated key like a statusLine command containing
+        // `&&` or a CJK/emoji value — breaking the surgical-preserve guarantee.
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
     public string ClientId => "claude-code";
@@ -112,8 +118,8 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         }
 
         var env = root["env"] as JsonObject;
-        var current = env?[BaseUrlKey]?.GetValue<string>();
-        var fallback = env?[FallbackKey]?.GetValue<string>();
+        var current = AsStringOrNull(env?[BaseUrlKey]);
+        var fallback = AsStringOrNull(env?[FallbackKey]);
 
         var details = new List<string>();
         details.Add(current is null
@@ -129,6 +135,17 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
             ExpectedFallback: connection.NeedNonStreamingFallbackDisabled ? FallbackOn : null,
             CurrentFallback: fallback, Details: details);
     }
+
+    /// <summary>
+    /// Read a JSON node as a string, or <c>null</c> if it is absent or not a string.
+    /// Tolerant by design: a hand-edited file where an env value is a number/bool (e.g.
+    /// <c>"CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": 1</c> instead of the string
+    /// <c>"1"</c>) must not crash <c>config status</c> —
+    /// <see cref="JsonNode.GetValue{T}"/> would throw
+    /// <see cref="System.InvalidOperationException"/> on a type mismatch.
+    /// </summary>
+    private static string? AsStringOrNull(JsonNode? node) =>
+        node is JsonValue value && value.TryGetValue<string>(out var s) ? s : null;
 
     /// <summary>
     /// Apply the bridge's managed keys to the <c>env</c> object, preserving all other
