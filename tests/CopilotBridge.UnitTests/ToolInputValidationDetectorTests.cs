@@ -9,8 +9,37 @@ using Xunit;
 
 namespace CopilotBridge.UnitTests;
 
+/// <summary>
+/// Behavioural contract tests for <see cref="ToolInputValidationDetector"/> — the
+/// response detector that validates a real <c>tool_use</c> block's reassembled input
+/// against the request's declared tool schema and aborts on malformed / schema-invalid
+/// arguments so the bad block never enters Claude Code's context.
+/// </summary>
+/// <remarks>
+/// Two families of tests:
+/// <list type="bullet">
+/// <item><b>Detector-level</b> (via <see cref="Feed"/>): push SSE events straight at
+/// the detector and assert the returned <see cref="DetectionAction"/>s plus
+/// <see cref="BridgeContext{T}.ToolInputInvalidDetected"/>. These pin the validation
+/// logic itself.</item>
+/// <item><b>Stage-level</b> (via <see cref="RunStage"/>): drive the real
+/// <see cref="ResponseInspectionStage"/> and assert the exact event sequence a client
+/// receives. These pin the guarantee the user depends on — a malformed block's
+/// <c>content_block_stop</c> is never delivered (Claude Code commits a content block
+/// into its message list only at <c>content_block_stop</c>), so it cannot pollute the
+/// next turn's context.</item>
+/// </list>
+/// </remarks>
 public class ToolInputValidationDetectorTests
 {
+    /// <summary>
+    /// Tests: a well-formed tool call whose input satisfies the declared schema is
+    /// passed through untouched (the happy path — the guard must not fire on good input).
+    /// Input: a streamed <c>AskUserQuestion</c> block whose input has every nested
+    /// required field (<c>question</c>/<c>header</c>/<c>options</c>/<c>multiSelect</c>).
+    /// Expects: every <c>InspectEvent</c> returns <see cref="DetectionActionKind.None"/>
+    /// and <c>ToolInputInvalidDetected</c> stays false.
+    /// </summary>
     [Fact]
     public async Task ValidToolInput_PassesThroughUnchanged()
     {
@@ -24,6 +53,15 @@ public class ToolInputValidationDetectorTests
         Assert.False(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests: a required field missing from a nested schema level trips the guard, and
+    /// the abort carries the default retryable wire shape.
+    /// Input: an <c>AskUserQuestion</c> block whose question object omits the nested
+    /// required <c>question</c> field (schema-valid JSON, schema-invalid content).
+    /// Expects: exactly one <see cref="DetectionActionKind.Abort"/>;
+    /// <c>ToolInputInvalidDetected</c> true; abort HTTP status 529 and the error JSON
+    /// names <c>overloaded_error</c> (the default <c>OverloadedError</c> signal).
+    /// </summary>
     [Fact]
     public async Task MissingNestedRequiredField_AbortsAndMarksContext()
     {
@@ -39,6 +77,14 @@ public class ToolInputValidationDetectorTests
         Assert.Contains("overloaded_error", abort.ErrorJson);
     }
 
+    /// <summary>
+    /// Tests: when the reassembled tool input is not even valid JSON, the guard trips
+    /// (this fires regardless of any schema — a broken JSON payload can never be parsed).
+    /// Input: an <c>AskUserQuestion</c> block whose accumulated fragments close into
+    /// truncated JSON (<c>{"questions":[{"question":"oops"}</c> — unbalanced braces).
+    /// Expects: an <see cref="DetectionActionKind.Abort"/> and
+    /// <c>ToolInputInvalidDetected</c> true.
+    /// </summary>
     [Fact]
     public async Task MalformedJson_AbortsAndMarksContext()
     {
@@ -52,6 +98,15 @@ public class ToolInputValidationDetectorTests
         Assert.True(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests: a value whose JSON type disagrees with the schema type is rejected, and
+    /// the detector does not silently "repair" it (e.g. by unwrapping the string). This
+    /// guards the deliberate no-repair policy.
+    /// Input: an <c>AskUserQuestion</c> block where <c>questions</c> is the string
+    /// <c>"[]"</c> instead of an array (schema declares <c>type: array</c>).
+    /// Expects: an <see cref="DetectionActionKind.Abort"/> and
+    /// <c>ToolInputInvalidDetected</c> true.
+    /// </summary>
     [Fact]
     public async Task StringifiedArrayForArrayProperty_AbortsInsteadOfRepairing()
     {
@@ -65,6 +120,15 @@ public class ToolInputValidationDetectorTests
         Assert.True(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests: the detector recognises a tool block whose start payload uses the legacy
+    /// <c>start</c> field name (instead of <c>content_block</c>) and still validates it.
+    /// This pins backward compatibility of block-start parsing.
+    /// Input: a stream whose <c>content_block_start</c> carries the tool_use under a
+    /// <c>start</c> key, with schema-invalid input (<c>questions</c> as a string).
+    /// Expects: an <see cref="DetectionActionKind.Abort"/> and
+    /// <c>ToolInputInvalidDetected</c> true — i.e. the legacy shape is not ignored.
+    /// </summary>
     [Fact]
     public async Task LegacyStartField_IsAcceptedForToolBlockStart()
     {
@@ -78,6 +142,13 @@ public class ToolInputValidationDetectorTests
         Assert.True(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests: duplicate tool names in the request's tool list do not throw during
+    /// <c>Begin()</c> (the name-keyed lookup keeps the first and skips duplicates).
+    /// Input: two identical <c>AskUserQuestion</c> schemas plus a valid tool call.
+    /// Expects: no exception; all actions <see cref="DetectionActionKind.None"/> and
+    /// <c>ToolInputInvalidDetected</c> false (the valid input still passes).
+    /// </summary>
     [Fact]
     public async Task DuplicateToolNames_DoNotCrashDetector()
     {
@@ -93,6 +164,15 @@ public class ToolInputValidationDetectorTests
     }
 
 
+    /// <summary>
+    /// Tests: when the streamed tool name is not among the request's declared tools, the
+    /// detector cannot know its schema, so it only enforces the minimal invariant "input
+    /// is a JSON object" and otherwise passes through (fail-open on unknown tools).
+    /// Input: a tool call named <c>OtherTool</c> (not in the schema list) with an
+    /// arbitrary but well-formed object input.
+    /// Expects: all actions <see cref="DetectionActionKind.None"/> and
+    /// <c>ToolInputInvalidDetected</c> false.
+    /// </summary>
     [Fact]
     public async Task UnknownToolSchema_OnlyRequiresInputObject()
     {
@@ -106,6 +186,16 @@ public class ToolInputValidationDetectorTests
         Assert.False(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests: the buffered (non-streaming) entry point validates a <c>tool_use</c> block
+    /// found in a whole response body and returns a real abort with an HTTP status.
+    /// Input: a buffered JSON body containing an <c>AskUserQuestion</c> tool_use whose
+    /// nested question omits the required <c>question</c> field; detector configured with
+    /// <c>PreserveStream=false</c>.
+    /// Expects: <see cref="ToolInputValidationDetector.InspectBuffered"/> returns an
+    /// <see cref="DetectionActionKind.Abort"/> with HTTP 529 and
+    /// <c>ToolInputInvalidDetected</c> true.
+    /// </summary>
     [Fact]
     public void BufferedInvalidToolInput_AbortsWithRealStatus()
     {
@@ -135,6 +225,17 @@ public class ToolInputValidationDetectorTests
     // in isolation, so an inverted Enabled/RequiresBuffering or a broken stage-render
     // would be caught here (the direct-call tests above would not catch those).
 
+    /// <summary>
+    /// Tests (stage-level, the core no-context-pollution guarantee): a malformed tool
+    /// block driven through the real stage with the default <c>PreserveStream=true</c>
+    /// has its <c>content_block_stop</c> replaced by a terminal <c>error</c> event, so
+    /// Claude Code never commits the block.
+    /// Input: a complete stream (<c>message_start</c> … tool block with a nested-required
+    /// violation … <c>message_stop</c>) run through <see cref="RunStage"/>.
+    /// Expects: the delivered sequence contains NO <c>content_block_stop</c> and NO
+    /// <c>message_stop</c>; the last (and only) event is a single <c>error</c> whose data
+    /// names <c>overloaded_error</c>; and <c>ToolInputInvalidDetected</c> is true.
+    /// </summary>
     [Fact]
     public async Task Streaming_MalformedTool_StageDropsStop_AndInjectsError_NoContextCommit()
     {
@@ -154,6 +255,13 @@ public class ToolInputValidationDetectorTests
         Assert.True(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests (stage-level, negative case): a valid tool response streams through the
+    /// stage completely untouched — the guard adds nothing on the happy path.
+    /// Input: a complete stream carrying a schema-valid <c>AskUserQuestion</c> tool call.
+    /// Expects: no <c>error</c> event; the final event is <c>message_stop</c>; the block's
+    /// <c>content_block_stop</c> IS delivered; <c>ToolInputInvalidDetected</c> false.
+    /// </summary>
     [Fact]
     public async Task Streaming_ValidTool_StageDeliversWholeStream_Untouched()
     {
@@ -168,6 +276,14 @@ public class ToolInputValidationDetectorTests
         Assert.False(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests (stage-level, config gate): with <c>Enabled=false</c> the stage never begins
+    /// or runs the detector, so even a malformed tool block is delivered whole.
+    /// Input: the same malformed tool stream as the abort case, but
+    /// <see cref="RunStage"/> is called with <c>enabled: false</c>.
+    /// Expects: no <c>error</c> event; the final event is <c>message_stop</c>;
+    /// <c>ToolInputInvalidDetected</c> stays false (the guard is fully inert).
+    /// </summary>
     [Fact]
     public async Task Streaming_Disabled_IsInert_MalformedToolPassesThrough()
     {
@@ -183,6 +299,16 @@ public class ToolInputValidationDetectorTests
         Assert.False(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests (stage-level, buffered delivery): with <c>PreserveStream=false</c> the stage
+    /// buffers the whole stream and returns a real HTTP error status whose body is only
+    /// the error envelope — none of the malformed tool input reaches the client.
+    /// Input: the malformed tool stream run through <see cref="RunStage"/> with
+    /// <c>preserveStream: false</c> (so <c>RequiresBuffering</c> is true).
+    /// Expects: <c>Response.Mode == Buffered</c>, status 529,
+    /// <c>ToolInputInvalidDetected</c> true, the body contains <c>overloaded_error</c>
+    /// and does NOT contain any tool-input content (e.g. <c>multiSelect</c>).
+    /// </summary>
     [Fact]
     public async Task BufferedPreserveStreamFalse_StageWithholdsMalformedContent_RealStatus()
     {
@@ -200,6 +326,14 @@ public class ToolInputValidationDetectorTests
         Assert.DoesNotContain("multiSelect", body); // no leaked tool-input content
     }
 
+    /// <summary>
+    /// Tests: across several tool blocks in one response, per-block state resets so a
+    /// valid block does not trip and only the invalid one does.
+    /// Input: two <c>AskUserQuestion</c> blocks at distinct indices — the first valid,
+    /// the second missing a nested required field.
+    /// Expects: exactly one <see cref="DetectionActionKind.Abort"/> (the second block)
+    /// and <c>ToolInputInvalidDetected</c> true.
+    /// </summary>
     [Fact]
     public async Task MultipleToolBlocks_ValidThenInvalid_TripsOnSecondOnly()
     {
@@ -217,6 +351,14 @@ public class ToolInputValidationDetectorTests
         Assert.True(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests: a non-tool (text) block preceding a tool block is ignored — its text deltas
+    /// are never accumulated or parsed as tool input.
+    /// Input: a text block whose delta contains brace characters (<c>{ braces }</c>, not
+    /// JSON) followed by a valid <c>AskUserQuestion</c> tool block.
+    /// Expects: all actions <see cref="DetectionActionKind.None"/> and
+    /// <c>ToolInputInvalidDetected</c> false (the stray braces do not trip a false abort).
+    /// </summary>
     [Fact]
     public async Task InterleavedTextBlock_IsIgnored_ValidToolPasses()
     {
@@ -235,6 +377,15 @@ public class ToolInputValidationDetectorTests
         Assert.False(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests: the speculative path where a backend ships the whole input object on
+    /// <c>content_block_start</c> and sends no deltas — that start-carried input is still
+    /// validated.
+    /// Input: a tool block whose <c>content_block_start</c> input is a complete but
+    /// schema-invalid object (nested required missing), with no <c>input_json_delta</c>.
+    /// Expects: an <see cref="DetectionActionKind.Abort"/> and
+    /// <c>ToolInputInvalidDetected</c> true.
+    /// </summary>
     [Fact]
     public async Task StartCarriedInput_NoDeltas_IsValidated()
     {
@@ -251,6 +402,16 @@ public class ToolInputValidationDetectorTests
         Assert.True(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests (regression for the start-input concatenation bug): when a block carries a
+    /// complete valid input object on start AND also streams the same input as deltas,
+    /// the two must NOT be concatenated (which would produce <c>{...}{...}</c> — malformed
+    /// JSON — and a false abort). Deltas are authoritative when present.
+    /// Input: a tool block with a valid input object on <c>content_block_start</c> plus
+    /// delta fragments carrying the same valid input.
+    /// Expects: all actions <see cref="DetectionActionKind.None"/> and
+    /// <c>ToolInputInvalidDetected</c> false. (This test fails on the pre-fix code.)
+    /// </summary>
     [Fact]
     public async Task StartCarriedInput_PlusDeltas_DoesNotConcatenateIntoMalformedJson()
     {
@@ -268,6 +429,14 @@ public class ToolInputValidationDetectorTests
         Assert.False(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests: a required property declared at the TOP level of the schema (not nested)
+    /// is enforced.
+    /// Input: an <c>AskUserQuestion</c> call whose input is a valid object but omits the
+    /// top-level required <c>questions</c> property (<c>{"other":"value"}</c>).
+    /// Expects: an <see cref="DetectionActionKind.Abort"/> and
+    /// <c>ToolInputInvalidDetected</c> true.
+    /// </summary>
     [Fact]
     public async Task TopLevelRequiredMissing_Aborts()
     {
@@ -282,6 +451,14 @@ public class ToolInputValidationDetectorTests
         Assert.True(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests: the configurable <c>Signal</c> selects the abort's wire shape — with
+    /// <c>ApiError</c> the abort is HTTP 500 / <c>api_error</c> instead of the default
+    /// 529 / <c>overloaded_error</c>.
+    /// Input: a schema-invalid tool call (top-level required missing) with a detector
+    /// configured <c>Signal = ResponseLeakSignal.ApiError</c>.
+    /// Expects: the abort's HTTP status is 500 and the error JSON names <c>api_error</c>.
+    /// </summary>
     [Fact]
     public async Task ApiErrorSignal_AbortsWith500()
     {
