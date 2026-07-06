@@ -20,7 +20,10 @@ internal static class ConfigCommand
     /// supported scopes.</param>
     /// <param name="cliPort">Optional <c>--port</c> override.</param>
     /// <param name="dryRun">When true, print the planned result and write nothing.</param>
-    public static int Configure(string clientId, ConfigScope scope, int? cliPort, bool dryRun)
+    /// <param name="showContent">When true (and <paramref name="dryRun"/>), also print
+    /// the full merged file content. Off by default so preserved secrets are not echoed.</param>
+    public static int Configure(string clientId, ConfigScope scope, int? cliPort, bool dryRun,
+        bool showContent = false)
     {
         if (cliPort is { } p && p is < 1 or > 65535)
         {
@@ -58,7 +61,7 @@ internal static class ConfigCommand
             return 1;
         }
 
-        PrintPlan(plan, dryRun);
+        PrintPlan(plan, dryRun, showContent);
 
         if (dryRun)
         {
@@ -146,7 +149,14 @@ internal static class ConfigCommand
         provider.GetServices<IClientConfigurator>()
             .FirstOrDefault(c => string.Equals(c.ClientId, clientId, StringComparison.OrdinalIgnoreCase));
 
-    private static void PrintPlan(ConfigPlan plan, bool dryRun)
+    /// <param name="dryRun">Whether this is a <c>--dry-run</c> (affects wording).</param>
+    /// <param name="showFullContent">Whether to print the entire planned file content.
+    /// Off by default because the merged file preserves the user's unrelated content,
+    /// which can include secrets (an existing <c>ANTHROPIC_AUTH_TOKEN</c>, API keys in
+    /// other Codex provider blocks) — echoing it to the console would leak them into
+    /// terminal scrollback / shell history / CI logs. The per-key summary already shows
+    /// exactly what the command changes.</param>
+    private static void PrintPlan(ConfigPlan plan, bool dryRun, bool showFullContent)
     {
         var verb = dryRun ? "Would configure" : "Configuring";
         Console.WriteLine($"{verb} {plan.ClientId} ({plan.Scope.ToString().ToLowerInvariant()} scope)");
@@ -156,12 +166,17 @@ internal static class ConfigCommand
             Console.WriteLine($"  - {line}");
         }
 
-        if (dryRun)
+        if (dryRun && showFullContent)
         {
             Console.WriteLine();
             Console.WriteLine("--- planned file content ---");
-            Console.WriteLine(plan.NewContent.TrimEnd('\n'));
+            Console.WriteLine(plan.NewContent.TrimEnd('\r', '\n'));
             Console.WriteLine("--- end ---");
+        }
+        else if (dryRun && !plan.IsNew)
+        {
+            Console.WriteLine("  (unrelated existing content is preserved and not shown; " +
+                "pass --show-content to print the full merged file)");
         }
     }
 }

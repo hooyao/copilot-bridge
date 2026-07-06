@@ -121,6 +121,14 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         var current = AsStringOrNull(env?[BaseUrlKey]);
         var fallback = AsStringOrNull(env?[FallbackKey]);
 
+        // "Configured for bridge" means the base URL points at THIS bridge's Claude Code
+        // route (the `/cc` prefix), not merely that ANTHROPIC_BASE_URL is set — a config
+        // aimed at some other Anthropic-compatible endpoint must read as "not pointed at
+        // bridge", not as a drifted bridge config. The port/host may legitimately differ
+        // (a bridge on another port is still a bridge, just drifted), so we key off the
+        // route suffix rather than the full expected URL.
+        var pointsAtBridge = current is not null && current.TrimEnd('/').EndsWith("/cc", StringComparison.Ordinal);
+
         var details = new List<string>();
         details.Add(current is null
             ? $"{BaseUrlKey}: (unset)"
@@ -130,10 +138,10 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
             : $"{FallbackKey}: {fallback}");
 
         return new ConfigState(ClientId, scope, path, Exists: true,
-            ConfiguredForBridge: current is not null, CurrentBaseUrl: current,
+            ConfiguredForBridge: pointsAtBridge, CurrentBaseUrl: pointsAtBridge ? current : null,
             ExpectedBaseUrl: expected,
             ExpectedFallback: connection.NeedNonStreamingFallbackDisabled ? FallbackOn : null,
-            CurrentFallback: fallback, Details: details);
+            CurrentFallback: pointsAtBridge ? fallback : null, Details: details);
     }
 
     /// <summary>

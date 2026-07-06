@@ -215,6 +215,13 @@ drift). It SHALL modify no file.
 - **WHEN** a client's config already points at the appsettings-derived endpoint
 - **THEN** `config status` reports that client as configured and not drifted
 
+#### Scenario: A non-bridge endpoint is reported as not pointed at bridge
+
+- **WHEN** a Claude Code config sets `ANTHROPIC_BASE_URL` to an endpoint that is
+  not a bridge route (does not carry the `/cc` path)
+- **THEN** `config status` reports it as "not pointed at bridge", not as a drifted
+  bridge config
+
 #### Scenario: Reports drift when appsettings changed
 
 - **WHEN** the client's stored base URL port differs from the current

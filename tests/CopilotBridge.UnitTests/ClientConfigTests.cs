@@ -498,6 +498,54 @@ public class ClientConfigTests
             try { Directory.Delete(dir, true); } catch { }
         }
     }
+
+    // ---- Review round 3: a non-bridge base URL is "not pointed at bridge", not drift ----
+
+    [Fact]
+    public void ClaudeCode_read_non_bridge_url_is_not_configured_for_bridge()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
+        // Points at some other Anthropic-compatible endpoint, not this bridge's /cc route.
+        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
+            "{ \"env\": { \"ANTHROPIC_BASE_URL\": \"https://api.anthropic.com\" } }");
+        var old = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = dir;
+            var state = new ClaudeCodeConfigurator().Read(Conn(), ConfigScope.Repo);
+            Assert.False(state.ConfiguredForBridge);  // not "configured for bridge"
+            Assert.False(state.Drifted);              // and therefore not "DRIFTED"
+        }
+        finally
+        {
+            Environment.CurrentDirectory = old;
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void ClaudeCode_read_bridge_url_on_other_port_is_drifted()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
+        // A bridge endpoint (/cc) but a different port than the current appsettings → drift.
+        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
+            "{ \"env\": { \"ANTHROPIC_BASE_URL\": \"http://localhost:9999/cc\" } }");
+        var old = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = dir;
+            var state = new ClaudeCodeConfigurator().Read(Conn(port: 8765), ConfigScope.Repo);
+            Assert.True(state.ConfiguredForBridge);
+            Assert.True(state.Drifted);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = old;
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
 }
 
 /// <summary>

@@ -96,6 +96,10 @@ internal static class RootCli
         {
             Description = "Print the planned configuration without writing any file",
         };
+        var showContentOption = new Option<bool>("--show-content")
+        {
+            Description = "With --dry-run, also print the full merged file (may include preserved secrets)",
+        };
         var scopeOption = new Option<ConfigScope>("--scope")
         {
             Description = "Which config to write: global (user-level) or repo (./.claude/settings.local.json)",
@@ -107,24 +111,28 @@ internal static class RootCli
         configClaudeCode.Options.Add(scopeOption);
         configClaudeCode.Options.Add(configPortOption);
         configClaudeCode.Options.Add(dryRunOption);
+        configClaudeCode.Options.Add(showContentOption);
         configClaudeCode.SetAction((parseResult, _) => Task.FromResult(
             ConfigCommand.Configure(
                 "claude-code",
                 parseResult.GetValue(scopeOption),
                 parseResult.GetValue(configPortOption),
-                parseResult.GetValue(dryRunOption))));
+                parseResult.GetValue(dryRunOption),
+                parseResult.GetValue(showContentOption))));
 
         // Codex honors global scope only — no --scope option is offered.
         var configCodex = new Command("codex",
             "Point Codex at the bridge (writes the provider block in config.toml)");
         configCodex.Options.Add(configPortOption);
         configCodex.Options.Add(dryRunOption);
+        configCodex.Options.Add(showContentOption);
         configCodex.SetAction((parseResult, _) => Task.FromResult(
             ConfigCommand.Configure(
                 "codex",
                 ConfigScope.Global,
                 parseResult.GetValue(configPortOption),
-                parseResult.GetValue(dryRunOption))));
+                parseResult.GetValue(dryRunOption),
+                parseResult.GetValue(showContentOption))));
 
         var configStatus = new Command("status",
             "Show where each client currently points and whether it has drifted from appsettings");
