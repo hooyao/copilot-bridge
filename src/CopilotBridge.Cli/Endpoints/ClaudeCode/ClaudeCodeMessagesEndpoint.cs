@@ -292,6 +292,7 @@ internal static class ClaudeCodeMessagesEndpoint
             // them: response_leak (protocol leak) and runaway (volume circuit-breaker).
             summary.ResponseLeakDetected = bridgeCtx.ResponseLeakDetected;
             summary.RunawayDetected = bridgeCtx.RunawayDetected;
+            summary.ToolInputInvalidDetected = bridgeCtx.ToolInputInvalidDetected;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

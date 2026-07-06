@@ -226,6 +226,7 @@ internal static class CodexResponsesEndpoint
             // a runaway (or a leak) can trip here too.
             summary.ResponseLeakDetected = bridgeCtx.ResponseLeakDetected;
             summary.RunawayDetected = bridgeCtx.RunawayDetected;
+            summary.ToolInputInvalidDetected = bridgeCtx.ToolInputInvalidDetected;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

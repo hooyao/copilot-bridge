@@ -122,6 +122,12 @@ The file next to the executable. A few keys worth knowing:
   e.g. when you're discussing this markup with the model and a sample reply gets
   caught. The retry error and the log both name the exact switch to flip; a
   **restart** is required after changing it.
+- **`Pipeline:Detectors:ToolInputValidation`** — validates real `tool_use`
+  input JSON against the declared tool schema after the tool block closes. On
+  malformed JSON or obvious schema violations (missing `required`, wrong basic
+  type), it emits a retryable error instead of letting Claude Code fail the turn
+  with `Invalid tool parameters`. On by default; `PreserveStream=false` buffers
+  responses to return a real HTTP status before any bytes reach the client.
 - **`Routing.Locations`** — optional nginx-style rules to remap a model or tweak
   headers per request. Ships **empty** (`"Locations": []`) — no rewrites by
   default. `appsettings.json` also carries a disabled example under

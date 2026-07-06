@@ -118,6 +118,16 @@ internal sealed class BridgeContext<TBody> where TBody : class
     public bool RunawayDetected { get; set; }
 
     /// <summary>
+    /// Set true by <c>ToolInputValidationDetector</c> when a real streamed
+    /// <c>tool_use</c> block closes with malformed JSON input or input that violates
+    /// the request's declared tool schema. The detector aborts with a retryable
+    /// error; the endpoint copies this into the per-request summary as
+    /// <c>tool_input_invalid=</c>. Distinct from response leaks (tool calls emitted
+    /// as text) and runaway output (volume).
+    /// </summary>
+    public bool ToolInputInvalidDetected { get; set; }
+
+    /// <summary>
     /// Count of inbound <c>tool_result</c> blocks that carry a replayed API-error
     /// payload (content starting with <c>"API Error:"</c>) — failure debris from
     /// earlier failed tool / sub-agent calls in the same session that Claude Code
