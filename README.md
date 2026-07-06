@@ -83,8 +83,11 @@ This merges the bridge's keys into your existing settings **without touching any
 other setting** — the port comes from `appsettings.json` (`Server.Port`), and
 `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` is set automatically when the response
 detectors run with `PreserveStream=true`. Add `--dry-run` to preview the change,
-or `--port N` to override. Run `copilot-bridge config status` to see where each
-client currently points and whether it has drifted from `appsettings.json`.
+or `--port N` to override. `--dry-run` prints only the keys the command changes;
+add `--show-content` to also print the full merged file (which includes your
+preserved settings, so avoid it in shared logs). Run `copilot-bridge config
+status` to see where each client currently points and whether it has drifted from
+`appsettings.json`.
 
 **Or do it by hand** — add an `env` block to `.claude/settings.local.json` (or
 your global `~/.claude/settings.json`):
