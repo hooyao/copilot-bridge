@@ -289,9 +289,11 @@ internal static class ClaudeCodeMessagesEndpoint
 
             // Copy the response-side detector flags off the context AFTER the stream
             // has drained (streaming sets them mid-relay) so the summary line reports
-            // them: response_leak (protocol leak) and runaway (volume circuit-breaker).
+            // them: response_leak (protocol leak), runaway (volume circuit-breaker),
+            // and tool_input_invalid (malformed/schema-invalid tool arguments).
             summary.ResponseLeakDetected = bridgeCtx.ResponseLeakDetected;
             summary.RunawayDetected = bridgeCtx.RunawayDetected;
+            summary.ToolInputInvalidDetected = bridgeCtx.ToolInputInvalidDetected;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

@@ -41,7 +41,7 @@ internal sealed class RequestSummaryLogger
             + "target={TargetVendor}:{TargetEndpoint} "
             + "betas_in=[{InboundBetasCsv}] betas_out=[{OutboundBetasCsv}] "
             + "effort={EffortDisplay} max_tokens={MaxTokensDisplay} usage={UsageDisplay} "
-            + "status={StatusCode} streaming={Streaming} response_leak={ResponseLeakDetected} runaway={RunawayDetected} "
+            + "status={StatusCode} streaming={Streaming} response_leak={ResponseLeakDetected} runaway={RunawayDetected} tool_input_invalid={ToolInputInvalidDetected} "
             + "poisoned_tool_results={PoisonedToolResults} duration_ms={DurationMs} error={ErrorDisplay}",
             s.Kind,
             s.RequestedModel ?? "?",
@@ -58,6 +58,7 @@ internal sealed class RequestSummaryLogger
             s.Streaming,
             s.ResponseLeakDetected,
             s.RunawayDetected,
+            s.ToolInputInvalidDetected,
             s.PoisonedToolResults,
             s.DurationMs,
             s.Error ?? "(none)");

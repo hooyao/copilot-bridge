@@ -42,6 +42,7 @@ public class RequestSummaryFormatterTests
             Streaming = true,
             DurationMs = 1234,
             RunawayDetected = true,
+            ToolInputInvalidDetected = true,
             PoisonedToolResults = 7,
         });
 
@@ -61,10 +62,15 @@ public class RequestSummaryFormatterTests
         Assert.Equal(200, evt.Properties["StatusCode"]);
         Assert.Equal(true, evt.Properties["Streaming"]);
         Assert.Equal(1234L, evt.Properties["DurationMs"]);
-        // The two gpt-5.5-diagnosis fields must ride the same line as structured
-        // properties so an operator can grep runaway= / poisoned_tool_results=.
+        // The response-diagnosis fields must ride the same line as structured
+        // properties so an operator can grep runaway= / tool_input_invalid= /
+        // poisoned_tool_results=.
         Assert.Equal(true, evt.Properties["RunawayDetected"]);
+        Assert.Equal(true, evt.Properties["ToolInputInvalidDetected"]);
         Assert.Equal(7, evt.Properties["PoisonedToolResults"]);
+        // Guard the actual grep contract, not just the structured key: the literal
+        // `tool_input_invalid=` token must appear in the rendered message template.
+        Assert.Contains("tool_input_invalid=", evt.Message);
 
         // The usage display string must include both the raw IO counters
         // and the cache fields — that's what the operator looks at to see

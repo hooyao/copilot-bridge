@@ -82,6 +82,7 @@ internal static class BridgeServiceCollectionExtensions
         services.Configure<ResponseModelRewriteOptions>(config.GetSection("Pipeline:Detectors:ModelRewrite"));
         services.Configure<UpstreamRetryOptions>(config.GetSection("Pipeline:UpstreamRetry"));
         services.Configure<ResponseLeakGuardOptions>(config.GetSection("Pipeline:Detectors:ResponseLeakGuard"));
+        services.Configure<ToolInputValidationOptions>(config.GetSection("Pipeline:Detectors:ToolInputValidation"));
         services.Configure<RunawayGuardOptions>(config.GetSection("Pipeline:Detectors:RunawayGuard"));
         services.Configure<PoisonedContextOptions>(config.GetSection("Pipeline:PoisonedContext"));
 
@@ -179,8 +180,8 @@ internal static class BridgeServiceCollectionExtensions
         // its config (IResponseDetector.Enabled, backed by IOptionsSnapshot) and
         // reads its per-request data in Begin(). RegisterResponseDetector takes an
         // EXPLICIT Order (DONE-filter 0 → model-rewrite 1 → response-leak 2 →
-        // runaway-guard 3); the stage runs them by that Order, so precedence does
-        // NOT depend on IEnumerable<T> resolution order. Adding a detector = one
+        // runaway-guard 3 → tool-input-validation 4); the stage runs them by that
+        // Order, so precedence does NOT depend on IEnumerable<T> resolution order. Adding a detector = one
         // RegisterResponseDetector<...> line here with the next Order; a duplicate
         // type or duplicate Order throws at registration rather than silently making
         // precedence ambiguous.
@@ -188,6 +189,7 @@ internal static class BridgeServiceCollectionExtensions
         services.RegisterResponseDetector<ModelRewriteDetector>(1);
         services.RegisterResponseDetector<ResponseLeakDetector>(2);
         services.RegisterResponseDetector<RunawayGuardDetector>(3);
+        services.RegisterResponseDetector<ToolInputValidationDetector>(4);
         services.AddScoped<ResponseInspectionStage>();
         services.AddScoped<CopilotMessagesPassthroughStrategy>();
 
@@ -339,7 +341,8 @@ internal static class BridgeServiceCollectionExtensions
                 // One stage runs the whole detector framework in a single stream
                 // wrap: DONE-filter (drop [DONE]) → model-rewrite (restore the
                 // client model id) → response-leak guard (abort+retry on leaked XML)
-                // → runaway guard (abort a degenerate volume runaway). Order inside
+                // → runaway guard (abort a degenerate volume runaway) → tool-input
+                // validation (abort malformed tool arguments). Order inside
                 // the set is the detectors' explicit Order (assigned by
                 // RegisterResponseDetector), applied by the stage.
                 sp.GetRequiredService<ResponseInspectionStage>(),

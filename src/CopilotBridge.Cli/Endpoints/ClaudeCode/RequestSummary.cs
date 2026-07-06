@@ -53,6 +53,13 @@ internal sealed class RequestSummary
     public bool RunawayDetected { get; set; }
 
     /// <summary>
+    /// True when tool input validation aborted the response because a real
+    /// <c>tool_use</c> block produced malformed JSON or violated the declared tool
+    /// schema. Emitted as <c>tool_input_invalid=</c>. Default false.
+    /// </summary>
+    public bool ToolInputInvalidDetected { get; set; }
+
+    /// <summary>
     /// Count of inbound <c>tool_result</c> blocks carrying a replayed API-error
     /// payload (content starting with <c>"API Error:"</c>) — failure debris from
     /// earlier failed tool / sub-agent calls in the same session that Claude Code

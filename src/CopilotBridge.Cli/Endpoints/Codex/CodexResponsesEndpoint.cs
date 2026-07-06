@@ -223,9 +223,10 @@ internal static class CodexResponsesEndpoint
             // Copy the response-side detector flags off the context AFTER the stream
             // has drained (streaming sets them mid-relay) so the summary line reports
             // them. The shared pipeline runs the same detectors on the Codex path, so
-            // a runaway (or a leak) can trip here too.
+            // a runaway, a leak, or a tool-input-invalid abort can trip here too.
             summary.ResponseLeakDetected = bridgeCtx.ResponseLeakDetected;
             summary.RunawayDetected = bridgeCtx.RunawayDetected;
+            summary.ToolInputInvalidDetected = bridgeCtx.ToolInputInvalidDetected;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

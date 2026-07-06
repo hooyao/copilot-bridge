@@ -492,7 +492,7 @@ convention: the boundary is drawn by DI lifetime.
 
 **Scoped (one per request):** `BridgeContext<MessagesRequest>` (§4.1), the six
 request stages, both upstream strategies, the four client adapters,
-`IPipelineRunner<MessagesRequest>`, `ResponseInspectionStage`, and the three
+`IPipelineRunner<MessagesRequest>`, `ResponseInspectionStage`, and the five
 `IResponseDetector`s (plus the `Pipeline<MessagesRequest>` object itself, composed
 per scope by `BuildAnthropicPipeline`). Because these inject the scoped
 `BridgeContext`, they *cannot* be singletons — a singleton capturing a scoped service
@@ -594,10 +594,12 @@ ResponseInspectionStage   injected with IEnumerable<IResponseDetector> (each a
     │                     keeps the config-enabled detectors, calls Begin(ctx) on
     │                     each, then renders every event through them in order:
     │
-    ├─ DoneFilterDetector      DropEvent on `event:message data:[DONE]`
-    ├─ ModelRewriteDetector    RewriteEvent on the first `message_start`
-    │                          (and the buffered body's top-level `model`)
-    └─ ResponseLeakDetector        Abort on a leaked tool call (see §6.1)
+    ├─ DoneFilterDetector          DropEvent on `event:message data:[DONE]`
+    ├─ ModelRewriteDetector        RewriteEvent on the first `message_start`
+    │                              (and the buffered body's top-level `model`)
+    ├─ ResponseLeakDetector        Abort on leaked protocol markup (see §6.1)
+    ├─ RunawayGuardDetector        Abort on degenerate response volume
+    └─ ToolInputValidationDetector Abort on malformed/schema-invalid tool input
     │
     ▼
 endpoint writes ctx.Response.EventStream (streaming) or BufferedBody (buffered)
@@ -615,8 +617,8 @@ Detectors are **scoped DI services** (one instance per request scope) because a
 streaming detector may carry cross-delta state (the response-leak automaton) that must
 not be shared across requests. They are injected as the whole set
 `IEnumerable<IResponseDetector>`, and the stage runs them in ascending
-`IResponseDetector.Order` — an explicit value assigned from registration order (see
-§6.2), so **precedence does not depend on the container's enumeration order**. Each
+`IResponseDetector.Order` — an explicit value assigned at registration (see
+§6.3), so **precedence does not depend on the container's enumeration order**. Each
 detector self-gates on its own config via `Enabled` (backed by an
 `IOptionsSnapshot<T>`), and reads its per-request data (declared tools, model ids)
 from the injected `BridgeContext` in a parameterless `Begin()` — the stage calls
@@ -686,26 +688,67 @@ request scope, so the only change needed to make a flipped switch take effect li
 is registering the JSON file with `reloadOnChange: true` in
 `BridgeConfigurationExtensions` — no change to any detector or the stage.)
 
-### 6.2 Adding a detector
+### 6.2 Tool-input validation
+
+`ToolInputValidationDetector` covers the adjacent failure mode where the model emits
+a **real** `tool_use` block, but the accumulated `input_json_delta.partial_json`
+fragments close into malformed JSON or an object that obviously violates the
+request's declared tool schema. This is distinct from `ResponseLeakDetector`:
+there is no leaked `<invoke>` text here; the transport shape is correct, but the
+tool arguments would make Claude Code fail the turn with `Invalid tool parameters`.
+
+The detector accumulates fragments for the current tool block and validates only at
+`content_block_stop`, when the final JSON object is available. The schema check is
+a conservative JSON-Schema subset (implemented by the standalone
+`JsonSchemaSubsetValidator`, unit-tested directly): top-level input must be an
+object; declared `required` properties must exist; declared `object` / `array` /
+`string` / `boolean` / `number` / `integer` / `null` types must match; and `items`
+/ nested `properties` (including nested `required`) are checked recursively. Every
+keyword it does not model (`enum`, `pattern`, `additionalProperties`, …) fails
+**open** — a pass means "not obviously invalid", not "fully schema-valid". It
+deliberately does **not** repair bad arguments or inject dummy values.
+
+**Semantics — stop-loss, not guaranteed retry.** The abort fires at
+`content_block_stop`, which is exactly where Claude Code would otherwise *commit* the
+tool block into its conversation (a content block is pushed onto the message list
+only at `content_block_stop`; see `claude.ts`). Because the stage's `Abort` replaces
+that `content_block_stop` with an injected `error` event and ends the stream, the
+malformed `tool_use` block is never committed and **never enters the next turn's
+context** — this is the guarantee the detector provides. Whether Claude Code
+*retries automatically* is a client decision the bridge cannot force: with the
+default `PreserveStream=true` the error is injected mid-stream (after the block's
+deltas have already rendered), and current Claude Code silently re-requests in
+non-streaming mode unless `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` (or the
+matching feature flag) is set, in which case the error propagates to its `withRetry`
+path. The non-streaming re-request is re-validated by the same detector on the
+buffered path (`InspectBuffered`), so the bad block stays out of context there too.
+`PreserveStream=false` sidesteps the mid-stream question entirely by buffering the
+whole response and returning a real HTTP status before any byte is written.
+
+Config lives at `Pipeline:Detectors:ToolInputValidation`: `Enabled` (default true),
+`PreserveStream` (default true, emit an SSE `error` when the bad block closes;
+false buffers the whole response to return a real HTTP status), and `Signal`
+(default `OverloadedError` -> `overloaded_error`/529, matching the leak and
+runaway guards). Trips set `tool_input_invalid=true` on the per-request summary
+line.
+
+### 6.3 Adding a detector
 
 Derive from `AbstractOrderAwareDetector<TSelf>` (CRTP — it carries the `Order`
 property and the default members, so you implement only `Name`, `Enabled`, and
 `InspectEvent`), and register it with one line in `BridgeServiceCollectionExtensions`
-— `services.RegisterResponseDetector<YourDetector>()` — in the right position.
-`RegisterResponseDetector` registers the detector as a scoped `IResponseDetector`
-AND a singleton `DetectorOrder<YourDetector>` whose value is the current count of
-detector registrations, i.e. the zero-based position in the call sequence. So the
-call order in that block is the **single source of truth for precedence**,
-materialized as an explicit unique `Order` the stage sorts by — no reliance on
-`IEnumerable<T>` resolution order. The detector's constructor injects
-`DetectorOrder<YourDetector>` (forwarded to `base(order)`), the scoped
-`BridgeContext<MessagesRequest>`, and its `IOptionsSnapshot<T>` config (exposed
-through `Enabled`); read request data and reset streaming state in the parameterless
-`Begin()`. The `RewriteBlock`-style whole-block transform (e.g. a JSON-repair
-detector for malformed JSON inside real `tool_use` blocks) is the framework's
-designed extension point; it is not implemented in this change. The standard
-async-iterator combinator still applies (the stage owns it; a detector only returns
-a `DetectionAction`).
+— `services.RegisterResponseDetector<YourDetector>(order)` — in the right
+position. `RegisterResponseDetector` registers the detector as a scoped
+`IResponseDetector` AND a singleton `DetectorOrder<YourDetector>` holding that
+explicit precedence value. Lower order runs first; duplicate detector types or
+duplicate order values throw during registration, so precedence stays visible at
+the call site and never falls back to `IEnumerable<T>` resolution order. The
+detector's constructor injects `DetectorOrder<YourDetector>` (forwarded to
+`base(order)`), the scoped `BridgeContext<MessagesRequest>`, and its
+`IOptionsSnapshot<T>` config (exposed through `Enabled`); read request data and
+reset streaming state in the parameterless `Begin()`. The standard async-iterator
+combinator still applies (the stage owns it; a detector only returns a
+`DetectionAction`).
 
 For reference, the stage's stream-wrap uses the standard async-iterator combinator:
 
