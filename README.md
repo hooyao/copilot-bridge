@@ -72,8 +72,25 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 
 ## Point Claude Code at the bridge
 
-Add an `env` block to `.claude/settings.local.json` (or your global
-`~/.claude/settings.json`):
+**One step — let the bridge write it for you:**
+
+```pwsh
+copilot-bridge config claude-code --scope global   # ~/.claude/settings.json
+copilot-bridge config claude-code --scope repo     # ./.claude/settings.local.json (this repo only)
+```
+
+This merges the bridge's keys into your existing settings **without touching any
+other setting** — the port comes from `appsettings.json` (`Server.Port`), and
+`CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` is set automatically when the response
+detectors run with `PreserveStream=true`. Add `--dry-run` to preview the change,
+or `--port N` to override. `--dry-run` prints only the keys the command changes;
+add `--show-content` to also print the full merged file (which includes your
+preserved settings, so avoid it in shared logs). Run `copilot-bridge config
+status` to see where each client currently points and whether it has drifted from
+`appsettings.json`.
+
+**Or do it by hand** — add an `env` block to `.claude/settings.local.json` (or
+your global `~/.claude/settings.json`):
 
 ```jsonc
 {
@@ -90,8 +107,21 @@ model in Claude Code as usual — the bridge maps it to the matching Copilot mod
 
 ## Point Codex at the bridge
 
-Edit `~/.codex/config.toml` — set the default model + provider at the top and add
-the provider block:
+**One step:**
+
+```pwsh
+copilot-bridge config codex
+```
+
+This edits `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) in place,
+preserving every unrelated table, comment, and literal — it only repoints
+`model_provider` and writes the `[model_providers.copilot-bridge]` block, leaving
+any existing provider block intact so switching back is a one-line change. Codex
+honors a single global config, so there is no `--scope` here. `--dry-run` and
+`--port` work the same as above.
+
+**Or do it by hand** — edit `~/.codex/config.toml`, set the default model +
+provider at the top and add the provider block:
 
 ```toml
 model = "gpt-5.5"

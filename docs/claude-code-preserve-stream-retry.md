@@ -60,6 +60,19 @@ Therefore the Claude Code setting that copilot-bridge should write is an environ
 
 This is not a magic "force retry" switch. It is a guardrail to avoid users or inherited config disabling the fallback path.
 
+> **Update — what `copilot-bridge config claude-code` actually writes.** The
+> auto-configuration command (see `openspec/changes/add-client-config-command`)
+> writes `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` — the *opposite* of the
+> `"false"` guardrail argued for above — whenever a response detector runs with
+> `PreserveStream=true` (the shipped default for both `ResponseLeakGuard` and
+> `ToolInputValidation`). This is a deliberate product choice: with those
+> detectors preserving the stream, a mid-stream abort should drive a **whole-turn
+> retry** (the error reaches Claude Code's `withRetry` path) rather than a silent
+> non-streaming re-request. `isEnvTruthy("1")` is true, so `"1"` disables the
+> fallback; `"false"`/`"0"`/unset keep it. Both README and the detector source
+> comments state `=1`; this doc's earlier `"false"` recommendation predates the
+> detectors and is kept for the reasoning, not as the current default.
+
 ### Current Claude Code may preserve partial output after visible text has streamed
 
 Official Claude Code docs state that transient failures are retried, but also document a key exception: if a server error arrives after Claude has already streamed visible output, Claude Code keeps the partial response and appends an incomplete-response notice instead of re-running the request, because re-running could execute the same tools twice.

@@ -13,6 +13,13 @@
          Microsoft-maintained, MIT, no dependencies on net6.0+. Reads the request
          body Stream into pooled chunks — no hand-rolled buffer growth. -->
     <PackageVersion Include="Microsoft.IO.RecyclableMemoryStream" Version="3.0.1" />
+    <!-- TOML read/write for `config codex`. Only the low-level, trivia-preserving
+         syntax tree (Tomlyn.Syntax.DocumentSyntax) is used — NOT the model DOM
+         (TomlTable/TomlSerializer), which discards comments and formatting. The
+         syntax-tree path is pure parsing with no reflection, and Tomlyn disables
+         reflection serialization automatically under PublishAot=true, so it is
+         AOT-clean. -->
+    <PackageVersion Include="Tomlyn" Version="2.10.1" />
   </ItemGroup>
 
   <!-- Logging stack. Serilog 4.3+ is NativeAOT-clean (PR #2175 fixed the

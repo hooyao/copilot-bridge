@@ -1,6 +1,7 @@
 using System.CommandLine;
 using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Debug;
+using CopilotBridge.Cli.Hosting.ClientConfig;
 
 namespace CopilotBridge.Cli.Hosting;
 
@@ -82,12 +83,75 @@ internal static class RootCli
         debugCommand.Subcommands.Add(listModelsCommand);
         debugCommand.Subcommands.Add(selfTestCommand);
 
+        // --- config ---------------------------------------------------------
+        // Auto-configure a client (Claude Code / Codex) to point at this bridge.
+        // Runs in its own web-host-free composition root (ClientConfigServices) —
+        // shares no runtime service with `serve`.
+        var configPortOption = new Option<int?>("--port", "-p")
+        {
+            Description = "Port to write into the client config (overrides Server:Port from appsettings.json)",
+            DefaultValueFactory = _ => null,
+        };
+        var dryRunOption = new Option<bool>("--dry-run")
+        {
+            Description = "Print the planned configuration without writing any file",
+        };
+        var showContentOption = new Option<bool>("--show-content")
+        {
+            Description = "With --dry-run, also print the full merged file (may include preserved secrets)",
+        };
+        var scopeOption = new Option<ConfigScope>("--scope")
+        {
+            Description = "Which config to write: global (user-level) or repo (./.claude/settings.local.json)",
+            DefaultValueFactory = _ => ConfigScope.Global,
+        };
+
+        var configClaudeCode = new Command("claude-code",
+            "Point Claude Code at the bridge (writes the ANTHROPIC_* env block)");
+        configClaudeCode.Options.Add(scopeOption);
+        configClaudeCode.Options.Add(configPortOption);
+        configClaudeCode.Options.Add(dryRunOption);
+        configClaudeCode.Options.Add(showContentOption);
+        configClaudeCode.SetAction((parseResult, _) => Task.FromResult(
+            ConfigCommand.Configure(
+                "claude-code",
+                parseResult.GetValue(scopeOption),
+                parseResult.GetValue(configPortOption),
+                parseResult.GetValue(dryRunOption),
+                parseResult.GetValue(showContentOption))));
+
+        // Codex honors global scope only — no --scope option is offered.
+        var configCodex = new Command("codex",
+            "Point Codex at the bridge (writes the provider block in config.toml)");
+        configCodex.Options.Add(configPortOption);
+        configCodex.Options.Add(dryRunOption);
+        configCodex.Options.Add(showContentOption);
+        configCodex.SetAction((parseResult, _) => Task.FromResult(
+            ConfigCommand.Configure(
+                "codex",
+                ConfigScope.Global,
+                parseResult.GetValue(configPortOption),
+                parseResult.GetValue(dryRunOption),
+                parseResult.GetValue(showContentOption))));
+
+        var configStatus = new Command("status",
+            "Show where each client currently points and whether it has drifted from appsettings");
+        configStatus.Options.Add(configPortOption);
+        configStatus.SetAction((parseResult, _) => Task.FromResult(
+            ConfigCommand.Status(parseResult.GetValue(configPortOption))));
+
+        var configCommand = new Command("config", "Auto-configure a client to use this bridge");
+        configCommand.Subcommands.Add(configClaudeCode);
+        configCommand.Subcommands.Add(configCodex);
+        configCommand.Subcommands.Add(configStatus);
+
         // --- root -----------------------------------------------------------
         var root = new RootCommand(
             $"{ProductInfo.Name} v{ProductInfo.Version}: GitHub Copilot reverse proxy for Claude Code");
         root.Subcommands.Add(serveCommand);
         root.Subcommands.Add(authCommand);
         root.Subcommands.Add(debugCommand);
+        root.Subcommands.Add(configCommand);
 
         // Default action when no subcommand is given: behave like 'serve' on
         // the default port (== whatever appsettings.json declares).
