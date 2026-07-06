@@ -289,6 +289,76 @@ public class ClientConfigTests
         Assert.Contains("model_provider = \"copilot-bridge\"", content);
         Assert.Contains("[model_providers.copilot-bridge]", content);
     }
+
+    // ---- Refuse-on-unparseable (PR review #1: surgical merge must not silently
+    //      discard content it cannot parse) ----
+
+    [Fact]
+    public void ClaudeCode_refuses_to_merge_invalid_json_rather_than_discard()
+    {
+        // A JSONC-style comment makes System.Text.Json reject the file. The merge must
+        // throw (so the caller aborts) rather than return an env-only file that has
+        // dropped statusLine/enabledPlugins/etc.
+        var withComment = "{\n  // my settings\n  \"statusLine\": { \"type\": \"command\" }\n}";
+
+        Assert.Throws<ClientConfigException>(
+            () => ClaudeCodeConfigurator.BuildContent(withComment, Conn()));
+    }
+
+    [Fact]
+    public void ClaudeCode_refuses_non_object_json()
+    {
+        // Valid JSON, but an array — merging would discard it. Must throw.
+        Assert.Throws<ClientConfigException>(
+            () => ClaudeCodeConfigurator.BuildContent("[1, 2, 3]", Conn()));
+    }
+
+    [Fact]
+    public void Codex_refuses_to_merge_malformed_toml_rather_than_corrupt()
+    {
+        // A syntactically broken TOML line. Editing an error-laden tree could drop or
+        // corrupt unrelated content, so the merge must throw.
+        var broken = "model = \"gpt-5.5\"\n[unclosed_table\nkey = 1\n";
+
+        Assert.Throws<ClientConfigException>(
+            () => CodexConfigurator.BuildContent(broken, Conn()));
+    }
+
+    // ---- Fallback-env drift (PR review #3: status must detect fallback drift, not
+    //      only base-URL drift) ----
+
+    [Fact]
+    public void Status_reports_fallback_drift_even_when_base_url_matches()
+    {
+        // A ConfigState whose base URL matches but whose fallback-env does not (e.g.
+        // appsettings later turned a detector off) must be reported as drifted.
+        var drifted = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
+            ConfiguredForBridge: true,
+            CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
+            ExpectedFallback: null, CurrentFallback: "1", Details: []);
+        Assert.True(drifted.Drifted);
+    }
+
+    [Fact]
+    public void Status_not_drifted_when_base_url_and_fallback_both_match()
+    {
+        var ok = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
+            ConfiguredForBridge: true,
+            CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
+            ExpectedFallback: "1", CurrentFallback: "1", Details: []);
+        Assert.False(ok.Drifted);
+    }
+
+    [Fact]
+    public void Status_fallback_null_null_is_not_drift()
+    {
+        // Codex (no fallback concept) passes null for both — must never count as drift.
+        var codexLike = new ConfigState("codex", ConfigScope.Global, "x", Exists: true,
+            ConfiguredForBridge: true,
+            CurrentBaseUrl: "http://localhost:8765/codex", ExpectedBaseUrl: "http://localhost:8765/codex",
+            ExpectedFallback: null, CurrentFallback: null, Details: []);
+        Assert.False(codexLike.Drifted);
+    }
 }
 
 /// <summary>
@@ -370,6 +440,26 @@ public class ClientConfigWriteTests : IDisposable
         ConfigFileWriter.Write(plan2);
 
         Assert.Equal(afterFirst, File.ReadAllText(plan.TargetPath));
+    }
+
+    // ---- Apply seam (PR review #2: the write must go through IClientConfigurator.Apply) ----
+
+    [Fact]
+    public void Configurator_apply_writes_and_returns_backup_path()
+    {
+        // Drive the write through the seam (as the dispatcher does), not the static
+        // writer, so Apply is a live path and returns the backup on an overwrite.
+        IClientConfigurator configurator = new ClaudeCodeConfigurator();
+        var path = Path.Combine(_dir, "settings.json");
+        File.WriteAllText(path, "{ \"keep\": true }");
+
+        var plan = new ConfigPlan(configurator.ClientId, ConfigScope.Global, path,
+            "{\n  \"env\": {}\n}\n", "{ \"keep\": true }", ["change"]);
+        var backup = configurator.Apply(plan);
+
+        Assert.NotNull(backup);
+        Assert.Equal("{ \"keep\": true }", File.ReadAllText(backup!));
+        Assert.Equal("{\n  \"env\": {}\n}\n", File.ReadAllText(path));
     }
 
     // ---- Isolation (spec: "Isolation from the proxy server startup path") ----

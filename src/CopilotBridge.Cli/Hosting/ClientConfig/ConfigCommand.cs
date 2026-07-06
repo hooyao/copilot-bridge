@@ -73,7 +73,7 @@ internal static class ConfigCommand
 
         try
         {
-            var backup = ConfigFileWriter.Write(plan);
+            var backup = configurator.Apply(plan);
             Console.WriteLine($"Wrote {plan.TargetPath}");
             if (backup is not null)
             {

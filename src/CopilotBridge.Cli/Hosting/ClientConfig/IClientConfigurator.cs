@@ -34,9 +34,12 @@ internal interface IClientConfigurator
 
     /// <summary>
     /// Persist a plan: back up the prior file (if any) then write
-    /// <see cref="ConfigPlan.NewContent"/>. A no-op plan writes nothing.
+    /// <see cref="ConfigPlan.NewContent"/>. A no-op plan writes nothing. Returns the
+    /// backup path written, or <c>null</c> when no backup was needed (new file or
+    /// no-op). This is the seam the dispatcher drives — per-client apply customization
+    /// hooks here rather than in the command.
     /// </summary>
-    void Apply(ConfigPlan plan);
+    string? Apply(ConfigPlan plan);
 
     /// <summary>Read the client's current bridge-configuration state for
     /// <c>config status</c>. Writes nothing.</summary>

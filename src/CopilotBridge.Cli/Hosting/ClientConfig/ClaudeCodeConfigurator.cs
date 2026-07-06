@@ -59,10 +59,14 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
     /// exist), produce the new content and a human-readable summary. No filesystem
     /// access — this is the seam contract tests exercise directly.
     /// </summary>
+    /// <exception cref="ClientConfigException">The file is non-empty but is not
+    /// parseable as a JSON object. Merging would silently discard the user's unrelated
+    /// keys, so the merge refuses rather than overwrite — the caller aborts without
+    /// touching the file.</exception>
     internal static (string Content, IReadOnlyList<string> Summary) BuildContent(
         string? original, BridgeConnection connection)
     {
-        var root = ParseOrNewObject(original);
+        var root = ParseObjectOrThrow(original);
         var summary = MergeInto(root, connection);
 
         // Trailing newline: editors and git generally expect a final newline; keeps
@@ -71,7 +75,7 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         return (content, summary);
     }
 
-    public void Apply(ConfigPlan plan) => ConfigFileWriter.Write(plan);
+    public string? Apply(ConfigPlan plan) => ConfigFileWriter.Write(plan);
 
     public ConfigState Read(BridgeConnection connection, ConfigScope scope)
     {
@@ -82,10 +86,31 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         {
             return new ConfigState(ClientId, scope, path, Exists: false,
                 ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
-                Details: ["not configured (file does not exist)"]);
+                ExpectedFallback: connection.NeedNonStreamingFallbackDisabled ? FallbackOn : null,
+                CurrentFallback: null, Details: ["not configured (file does not exist)"]);
         }
 
-        var root = ParseOrNewObject(File.ReadAllText(path));
+        // Read must stay tolerant — `config status` should never crash on a malformed
+        // file. Report it plainly instead of throwing.
+        JsonObject? root;
+        try
+        {
+            root = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
+        }
+        catch (JsonException)
+        {
+            root = null;
+        }
+
+        if (root is null)
+        {
+            return new ConfigState(ClientId, scope, path, Exists: true,
+                ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
+                ExpectedFallback: connection.NeedNonStreamingFallbackDisabled ? FallbackOn : null,
+                CurrentFallback: null,
+                Details: ["file is not a JSON object (cannot read — run the config command to rewrite)"]);
+        }
+
         var env = root["env"] as JsonObject;
         var current = env?[BaseUrlKey]?.GetValue<string>();
         var fallback = env?[FallbackKey]?.GetValue<string>();
@@ -100,7 +125,9 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
 
         return new ConfigState(ClientId, scope, path, Exists: true,
             ConfiguredForBridge: current is not null, CurrentBaseUrl: current,
-            ExpectedBaseUrl: expected, Details: details);
+            ExpectedBaseUrl: expected,
+            ExpectedFallback: connection.NeedNonStreamingFallbackDisabled ? FallbackOn : null,
+            CurrentFallback: fallback, Details: details);
     }
 
     /// <summary>
@@ -149,11 +176,16 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
     }
 
     /// <summary>
-    /// Parse existing JSON into a mutable object, or start a fresh object. A file that
-    /// is not a JSON object (or is empty/whitespace) yields a new empty object so the
-    /// merge still produces valid output.
+    /// Parse existing JSON into a mutable object. An empty/whitespace file (or null,
+    /// meaning the file does not exist) yields a fresh object. A <b>non-empty</b> file
+    /// that is not a JSON object — invalid JSON (e.g. a JSONC <c>//</c> comment or
+    /// trailing comma, which <see cref="JsonNode.Parse(string, JsonNodeOptions?, JsonDocumentOptions)"/>
+    /// rejects) or a JSON value that is not an object — throws
+    /// <see cref="ClientConfigException"/> rather than returning empty. Returning empty
+    /// would silently discard the user's unrelated keys and violate the surgical-merge
+    /// guarantee, so the write path aborts instead of overwriting.
     /// </summary>
-    private static JsonObject ParseOrNewObject(string? content)
+    private static JsonObject ParseObjectOrThrow(string? content)
     {
         if (string.IsNullOrWhiteSpace(content))
         {
@@ -165,12 +197,18 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         {
             node = JsonNode.Parse(content);
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            return new JsonObject();
+            throw new ClientConfigException(
+                "Existing settings file is not valid JSON (note: JSON does not allow " +
+                "comments or trailing commas). Refusing to overwrite it so your other " +
+                $"settings are not lost. Fix or remove the file, then re-run. Parser said: {ex.Message}");
         }
 
-        return node as JsonObject ?? new JsonObject();
+        return node as JsonObject
+            ?? throw new ClientConfigException(
+                "Existing settings file is valid JSON but not a JSON object. Refusing to " +
+                "overwrite it so your other settings are not lost. Fix or remove the file, then re-run.");
     }
 
     /// <summary>Resolve the target settings file for a scope.</summary>

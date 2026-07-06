@@ -45,15 +45,26 @@ internal sealed class CodexConfigurator : IClientConfigurator
     /// render. No filesystem access — the seam contract tests exercise directly.
     /// <paramref name="sourcePath"/> is only used for parser diagnostics.
     /// </summary>
+    /// <exception cref="ClientConfigException">The existing file is non-empty but has
+    /// TOML parse errors. Editing an error-laden tree could drop or corrupt the user's
+    /// unrelated content, so the merge refuses rather than risk it — the caller aborts
+    /// without touching the file.</exception>
     internal static (string Content, IReadOnlyList<string> Summary) BuildContent(
         string? original, BridgeConnection connection, string sourcePath = "config.toml")
     {
         var doc = Tomlyn.Parsing.SyntaxParser.Parse(original ?? string.Empty, sourcePath);
+        if (!string.IsNullOrWhiteSpace(original) && doc.HasErrors)
+        {
+            var first = doc.Diagnostics.Count > 0 ? doc.Diagnostics[0].ToString() : "unknown error";
+            throw new ClientConfigException(
+                "Existing config.toml has TOML syntax errors. Refusing to edit it so your " +
+                $"other settings are not lost. Fix or remove the file, then re-run. Parser said: {first}");
+        }
         var summary = MergeInto(doc, connection);
         return (doc.ToString(), summary);
     }
 
-    public void Apply(ConfigPlan plan) => ConfigFileWriter.Write(plan);
+    public string? Apply(ConfigPlan plan) => ConfigFileWriter.Write(plan);
 
     public ConfigState Read(BridgeConnection connection, ConfigScope scope)
     {
@@ -64,6 +75,7 @@ internal sealed class CodexConfigurator : IClientConfigurator
         {
             return new ConfigState(ClientId, scope, path, Exists: false,
                 ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
+                ExpectedFallback: null, CurrentFallback: null,
                 Details: ["not configured (file does not exist)"]);
         }
 
@@ -80,7 +92,8 @@ internal sealed class CodexConfigurator : IClientConfigurator
 
         return new ConfigState(ClientId, scope, path, Exists: true,
             ConfiguredForBridge: configured, CurrentBaseUrl: configured ? baseUrl : null,
-            ExpectedBaseUrl: expected, Details: details);
+            ExpectedBaseUrl: expected, ExpectedFallback: null, CurrentFallback: null,
+            Details: details);
     }
 
     /// <summary>

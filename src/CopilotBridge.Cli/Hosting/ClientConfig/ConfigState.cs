@@ -16,6 +16,13 @@ namespace CopilotBridge.Cli.Hosting.ClientConfig;
 /// <c>null</c> if not configured for the bridge.</param>
 /// <param name="ExpectedBaseUrl">The base URL the current appsettings-derived
 /// connection would write.</param>
+/// <param name="ExpectedFallback">The fallback-env value the current appsettings
+/// would write (<c>"1"</c> when a detector preserves the stream), or <c>null</c> when
+/// it would write none. Clients without a fallback-env concept (e.g. Codex) pass
+/// <c>null</c> for both this and <paramref name="CurrentFallback"/>, so it never
+/// contributes to <see cref="Drifted"/>.</param>
+/// <param name="CurrentFallback">The fallback-env value currently stored in the
+/// client's file, or <c>null</c> if unset.</param>
 /// <param name="Details">Extra human-readable lines (e.g. the fallback-env state)
 /// shown under <c>config status</c>.</param>
 internal sealed record ConfigState(
@@ -26,13 +33,18 @@ internal sealed record ConfigState(
     bool ConfiguredForBridge,
     string? CurrentBaseUrl,
     string ExpectedBaseUrl,
+    string? ExpectedFallback,
+    string? CurrentFallback,
     IReadOnlyList<string> Details)
 {
     /// <summary>
-    /// True when the client is configured for the bridge but its stored base URL no
-    /// longer matches what the current appsettings would produce (e.g. the port was
-    /// changed in appsettings after the client was configured).
+    /// True when the client is configured for the bridge but its stored config no
+    /// longer matches what the current appsettings would produce — either the base URL
+    /// (e.g. the port changed) or the fallback-env value (e.g. a detector's
+    /// <c>PreserveStream</c>/<c>Enabled</c> changed, so the expected
+    /// <c>CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK</c> differs from what is stored).
     /// </summary>
     public bool Drifted => ConfiguredForBridge &&
-        !string.Equals(CurrentBaseUrl, ExpectedBaseUrl, System.StringComparison.Ordinal);
+        (!string.Equals(CurrentBaseUrl, ExpectedBaseUrl, System.StringComparison.Ordinal) ||
+         !string.Equals(CurrentFallback, ExpectedFallback, System.StringComparison.Ordinal));
 }

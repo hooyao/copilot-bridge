@@ -128,7 +128,12 @@ SHALL be kept.
 The bridge SHALL preserve every key, table, comment, whitespace region, and
 literal that it does not manage. Claude Code JSON SHALL be edited via a
 DOM-preserving node model. Codex TOML SHALL be edited via a trivia-preserving
-syntax tree, not a model round-trip that discards comments or formatting.
+syntax tree, not a model round-trip that discards comments or formatting. When an
+existing non-empty file cannot be parsed safely (Claude Code: not valid JSON, or
+valid JSON but not an object; Codex: TOML syntax errors), the bridge SHALL refuse
+to write and abort with an error rather than overwrite it — merging would silently
+discard the user's unrelated content. The read path used by `config status` SHALL
+remain tolerant of such a file and report it instead of crashing.
 
 #### Scenario: Dense Codex file keeps unrelated tables byte-for-byte
 
@@ -144,6 +149,19 @@ syntax tree, not a model round-trip that discards comments or formatting.
 - **WHEN** `config claude-code` runs against a `settings.json` that also holds
   statusLine, enabledPlugins, and effortLevel keys
 - **THEN** those keys are present and unchanged after the write
+
+#### Scenario: Unparseable JSON is refused, not overwritten
+
+- **WHEN** `config claude-code` runs against a non-empty `settings.json` that is
+  not valid JSON (for example it contains a `//` comment) or is valid JSON that is
+  not an object
+- **THEN** the command aborts with an error and the file on disk is left unchanged
+
+#### Scenario: Malformed TOML is refused, not corrupted
+
+- **WHEN** `config codex` runs against a non-empty `config.toml` that has TOML
+  syntax errors
+- **THEN** the command aborts with an error and the file on disk is left unchanged
 
 ### Requirement: Safe and idempotent writes
 
@@ -186,6 +204,14 @@ drift). It SHALL modify no file.
 - **WHEN** the client's stored base URL port differs from the current
   `Server:Port`
 - **THEN** `config status` reports the client as drifted and shows both values
+
+#### Scenario: Reports drift when the fallback-env no longer matches
+
+- **WHEN** a Claude Code config's base URL still matches but its stored
+  `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` no longer matches what the current
+  detector settings would produce (e.g. a detector's `PreserveStream` was turned
+  off in `appsettings.json`)
+- **THEN** `config status` reports the client as drifted
 
 #### Scenario: Status never writes
 
