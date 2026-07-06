@@ -21,9 +21,23 @@ internal static class BridgeConfigurationExtensions
     /// </summary>
     public static WebApplicationBuilder AddBridgeConfiguration(this WebApplicationBuilder builder)
     {
-        builder.Configuration
+        builder.Configuration.AddBridgeAppSettings();
+        return builder;
+    }
+
+    /// <summary>
+    /// The web-host-neutral core: add <c>appsettings.json</c> (required, rebased to
+    /// <see cref="AppContext.BaseDirectory"/>, no reload-on-change) to any
+    /// <see cref="IConfigurationBuilder"/>. Shared by <c>serve</c> (through
+    /// <see cref="AddBridgeConfiguration"/>) and the <c>config</c> command's own
+    /// composition root, so both read the exact same file the same way — no web
+    /// host required to load settings.
+    /// </summary>
+    public static IConfigurationBuilder AddBridgeAppSettings(this IConfigurationBuilder configuration)
+    {
+        configuration
             .SetBasePath(AppContext.BaseDirectory)
             .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false);
-        return builder;
+        return configuration;
     }
 }
