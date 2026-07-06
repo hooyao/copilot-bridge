@@ -124,10 +124,16 @@ The file next to the executable. A few keys worth knowing:
   **restart** is required after changing it.
 - **`Pipeline:Detectors:ToolInputValidation`** — validates real `tool_use`
   input JSON against the declared tool schema after the tool block closes. On
-  malformed JSON or obvious schema violations (missing `required`, wrong basic
-  type), it emits a retryable error instead of letting Claude Code fail the turn
-  with `Invalid tool parameters`. On by default; `PreserveStream=false` buffers
-  responses to return a real HTTP status before any bytes reach the client.
+  malformed JSON or an obvious schema violation (missing `required`, wrong basic
+  type), it aborts the turn so the bad `tool_use` block never enters Claude
+  Code's conversation context. This is a **stop-loss, not an automatic retry**:
+  with the default `PreserveStream=true` the error is injected mid-stream (after
+  the tool deltas have rendered), and current Claude Code silently re-requests in
+  non-streaming mode — set `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` in
+  Claude Code's environment if you want it to auto-retry the turn instead. Either
+  way the bad block stays out of context. On by default; `PreserveStream=false`
+  buffers the response to return a real HTTP status before any bytes reach the
+  client. A **restart** is required after changing it.
 - **`Routing.Locations`** — optional nginx-style rules to remap a model or tweak
   headers per request. Ships **empty** (`"Locations": []`) — no rewrites by
   default. `appsettings.json` also carries a disabled example under

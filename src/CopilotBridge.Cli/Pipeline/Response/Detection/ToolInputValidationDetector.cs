@@ -10,10 +10,30 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
 /// <summary>
 /// Validates real <c>tool_use</c> blocks after their streamed
-/// <c>input_json_delta</c> fragments have closed. It catches malformed upstream
-/// tool arguments before Claude Code turns them into an unrecoverable
-/// "Invalid tool parameters" client-side failure.
+/// <c>input_json_delta</c> fragments have closed, and aborts the response when the
+/// tool input is malformed JSON or obviously violates the declared tool schema.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <b>Semantics: stop-loss, not repair or guaranteed retry.</b> The detector trips at
+/// <c>content_block_stop</c> — the point where Claude Code would otherwise commit the
+/// tool block into its conversation context (a content block is only pushed onto the
+/// message list at <c>content_block_stop</c>). The abort replaces that
+/// <c>content_block_stop</c> with an error event and ends the stream, so the bad
+/// <c>tool_use</c> block is never committed and never pollutes the next turn's
+/// context — which is the primary guarantee this detector provides.
+/// </para>
+/// <para>
+/// Whether Claude Code then <i>retries automatically</i> depends on the client, not on
+/// this detector: with the default <c>PreserveStream=true</c> the error is injected
+/// mid-stream, after the tool block's deltas have already rendered, and current Claude
+/// Code silently falls back to a non-streaming re-request unless
+/// <c>CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1</c> (or the matching feature flag) is
+/// set, in which case the error propagates to its <c>withRetry</c> path. Either way the
+/// malformed tool block does not reach the client's context. <c>PreserveStream=false</c>
+/// buffers the whole response and returns a real HTTP status before any byte is written.
+/// </para>
+/// </remarks>
 internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<ToolInputValidationDetector>
 {
     private readonly ToolInputValidationOptions _opts;
@@ -25,6 +45,11 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
     private int _currentIndex = -1;
     private string? _currentToolName;
     private bool _currentBlockIsTool;
+    // Full input object carried on content_block_start itself (some backends may ship
+    // it here instead of as deltas). Kept separate from _currentInput so a start-seed
+    // and streamed deltas can never be concatenated into corrupt JSON — deltas win
+    // when both are present (see StopBlock).
+    private string? _currentStartInput;
 
     public ToolInputValidationDetector(
         DetectorOrder<ToolInputValidationDetector> order,
@@ -57,10 +82,7 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
                 _toolsByName.Add(tool.Name, tool);
             }
         }
-        _currentInput = null;
-        _currentIndex = -1;
-        _currentToolName = null;
-        _currentBlockIsTool = false;
+        ResetCurrentBlock();
     }
 
     public override DetectionAction InspectEvent(in SseItem<string> evt)
@@ -151,17 +173,23 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
 
             if (block.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object)
             {
-                // Some starts carry an initial empty object. Preserve non-empty input
-                // if a backend ever sends it here instead of deltas.
+                // Some starts carry an initial empty object. Stash a non-empty input
+                // separately (not appended to _currentInput) so it can seed validation
+                // ONLY if no deltas follow — mixing start-input with deltas would
+                // concatenate two JSON objects into malformed text (see StopBlock).
                 var initial = input.GetRawText();
                 if (!string.Equals(initial, "{}", StringComparison.Ordinal))
                 {
-                    _currentInput.Append(initial);
+                    _currentStartInput = initial;
                 }
             }
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
+            // A malformed content_block_start frame means we cannot know if this block
+            // is a tool_use; abandon tracking (fail open) but leave a trace — a silent
+            // miss here skips this detector's whole job for the block.
+            _log.LogDebug(ex, "tool-input-validation: unparseable content_block_start; skipping block validation");
             ResetCurrentBlock();
         }
     }
@@ -199,10 +227,15 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
                 _currentInput.Append(partial.GetString());
             }
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            // A malformed event frame is not the same as malformed tool input; let
-            // the rest of the pipeline/client see it unchanged.
+            // A malformed event frame is not the same as malformed tool input; the
+            // detector returns None so the frame still passes to the client unchanged.
+            // But we skipped accumulating this fragment, so the reassembled input is
+            // now incomplete and will most likely trip as "malformed JSON" at stop —
+            // trace it so a spurious abort can be attributed to a dropped frame, not
+            // the model.
+            _log.LogDebug(ex, "tool-input-validation: unparseable content_block_delta; fragment dropped from accumulated input");
         }
     }
 
@@ -221,16 +254,29 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
                 && index.TryGetInt32(out var i)
                 && i != _currentIndex)
             {
+                // A stop for a different index than the block we are tracking. Under
+                // Anthropic's contiguous-block ordering this should not happen; leave
+                // our block open (a correctly-indexed stop may still arrive) but trace
+                // it, since a wrong-index stop that never corrects would silently skip
+                // validation of this block.
+                _log.LogDebug(
+                    "tool-input-validation: content_block_stop index {StopIndex} != tracked {TrackedIndex}; block not yet validated",
+                    i, _currentIndex);
                 return DetectionAction.None;
             }
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
+            _log.LogDebug(ex, "tool-input-validation: unparseable content_block_stop; block not validated");
             return DetectionAction.None;
         }
 
         var toolName = _currentToolName;
-        var raw = _currentInput.ToString();
+        // Deltas are authoritative; fall back to the start-carried input only when no
+        // delta fragments arrived (so start-seed and deltas can never concatenate).
+        var raw = _currentInput.Length > 0
+            ? _currentInput.ToString()
+            : _currentStartInput ?? "";
         ResetCurrentBlock();
 
         JsonDocument inputDoc;
@@ -278,8 +324,11 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
     {
         var signal = _opts.Signal;
         _ctx.ToolInputInvalidDetected = true;
+        // "stop-loss": the abort keeps the malformed tool block out of the client's
+        // context. Whether the client then retries automatically depends on it (see
+        // the class remarks); the log records the trip, not a promise of retry.
         _log.LogWarning(
-            "tool-input-invalid detected: tool={Tool} reason={Reason} signal={Signal} delivery={Delivery} - forcing client retry",
+            "tool-input-invalid detected: tool={Tool} reason={Reason} signal={Signal} delivery={Delivery} - aborting the turn to keep it out of client context",
             string.IsNullOrEmpty(toolName) ? "?" : toolName,
             reason,
             ResponseLeakError.ErrorType(signal),
@@ -295,6 +344,7 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
         _currentIndex = -1;
         _currentToolName = null;
         _currentBlockIsTool = false;
+        _currentStartInput = null;
     }
 
     private static bool TryGetObject(JsonElement root, string name, out JsonElement value)
@@ -307,128 +357,9 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
         return false;
     }
 
+    // No " or \ (embedded in hand-built JSON without escaping — same constraint as
+    // ResponseLeakError.Message). Describes both trip causes (malformed JSON OR schema
+    // mismatch), since a malformed-JSON trip can fire even with no declared schema.
     private const string ToolInputInvalidMessage =
-        "[copilot-bridge] The upstream model produced malformed tool input that does not match the declared tool schema; forcing a clean retry.";
-
-    private static class JsonSchemaSubsetValidator
-    {
-        public static bool Validate(InputSchema schema, JsonElement value, out string reason)
-        {
-            using var schemaDoc = JsonDocument.Parse(SchemaToJson(schema));
-            return ValidateAgainstSchema(schemaDoc.RootElement, value, "$", out reason);
-        }
-
-        private static string SchemaToJson(InputSchema schema)
-        {
-            using var stream = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(stream))
-            {
-                writer.WriteStartObject();
-                writer.WriteString("type", schema.Type);
-                if (schema.Properties is { } properties)
-                {
-                    writer.WritePropertyName("properties");
-                    properties.WriteTo(writer);
-                }
-                if (schema.Required is { Count: > 0 } required)
-                {
-                    writer.WritePropertyName("required");
-                    writer.WriteStartArray();
-                    foreach (var name in required)
-                    {
-                        writer.WriteStringValue(name);
-                    }
-                    writer.WriteEndArray();
-                }
-                writer.WriteEndObject();
-            }
-            return Encoding.UTF8.GetString(stream.ToArray());
-        }
-
-        private static bool ValidateAgainstSchema(JsonElement schema, JsonElement value, string path, out string reason)
-        {
-            var expectedType = TryGetType(schema);
-            if (expectedType is not null && !MatchesType(value, expectedType))
-            {
-                reason = $"{path} expected {expectedType} but got {KindName(value.ValueKind)}";
-                return false;
-            }
-
-            if (value.ValueKind == JsonValueKind.Object)
-            {
-                if (schema.TryGetProperty("required", out var required) && required.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var req in required.EnumerateArray())
-                    {
-                        if (req.ValueKind != JsonValueKind.String) continue;
-                        var name = req.GetString();
-                        if (string.IsNullOrEmpty(name)) continue;
-                        if (!value.TryGetProperty(name, out _))
-                        {
-                            reason = $"{path}.{name} is required";
-                            return false;
-                        }
-                    }
-                }
-
-                if (schema.TryGetProperty("properties", out var properties) && properties.ValueKind == JsonValueKind.Object)
-                {
-                    foreach (var prop in properties.EnumerateObject())
-                    {
-                        if (value.TryGetProperty(prop.Name, out var child)
-                            && !ValidateAgainstSchema(prop.Value, child, path + "." + prop.Name, out reason))
-                        {
-                            return false;
-                        }
-                    }
-                }
-            }
-            else if (value.ValueKind == JsonValueKind.Array
-                     && schema.TryGetProperty("items", out var items)
-                     && items.ValueKind == JsonValueKind.Object)
-            {
-                var idx = 0;
-                foreach (var item in value.EnumerateArray())
-                {
-                    if (!ValidateAgainstSchema(items, item, path + "[" + idx + "]", out reason))
-                    {
-                        return false;
-                    }
-                    idx++;
-                }
-            }
-
-            reason = "";
-            return true;
-        }
-
-        private static string? TryGetType(JsonElement schema)
-        {
-            if (!schema.TryGetProperty("type", out var type)) return null;
-            return type.ValueKind == JsonValueKind.String ? type.GetString() : null;
-        }
-
-        private static bool MatchesType(JsonElement value, string expected) => expected switch
-        {
-            "object" => value.ValueKind == JsonValueKind.Object,
-            "array" => value.ValueKind == JsonValueKind.Array,
-            "string" => value.ValueKind == JsonValueKind.String,
-            "boolean" => value.ValueKind is JsonValueKind.True or JsonValueKind.False,
-            "number" => value.ValueKind == JsonValueKind.Number,
-            "integer" => value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out _),
-            "null" => value.ValueKind == JsonValueKind.Null,
-            _ => true,
-        };
-
-        private static string KindName(JsonValueKind kind) => kind switch
-        {
-            JsonValueKind.Object => "object",
-            JsonValueKind.Array => "array",
-            JsonValueKind.String => "string",
-            JsonValueKind.Number => "number",
-            JsonValueKind.True or JsonValueKind.False => "boolean",
-            JsonValueKind.Null => "null",
-            _ => kind.ToString(),
-        };
-    }
+        "[copilot-bridge] The upstream model produced tool input that is malformed JSON or does not match the declared tool schema; the turn was aborted so it does not enter the conversation.";
 }

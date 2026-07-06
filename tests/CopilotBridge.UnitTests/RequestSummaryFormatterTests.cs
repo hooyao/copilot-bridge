@@ -68,6 +68,9 @@ public class RequestSummaryFormatterTests
         Assert.Equal(true, evt.Properties["RunawayDetected"]);
         Assert.Equal(true, evt.Properties["ToolInputInvalidDetected"]);
         Assert.Equal(7, evt.Properties["PoisonedToolResults"]);
+        // Guard the actual grep contract, not just the structured key: the literal
+        // `tool_input_invalid=` token must appear in the rendered message template.
+        Assert.Contains("tool_input_invalid=", evt.Message);
 
         // The usage display string must include both the raw IO counters
         // and the cache fields — that's what the operator looks at to see

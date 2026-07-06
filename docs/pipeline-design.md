@@ -699,13 +699,31 @@ tool arguments would make Claude Code fail the turn with `Invalid tool parameter
 
 The detector accumulates fragments for the current tool block and validates only at
 `content_block_stop`, when the final JSON object is available. The schema check is
-a conservative JSON-Schema subset: top-level input must be an object; declared
-`required` properties must exist; declared `object` / `array` / `string` /
-`boolean` / `number` / `integer` types must match; and `items` / nested
-`properties` are checked recursively. It deliberately does **not** repair bad
-arguments or inject dummy values: a missing required value is a model failure, so
-the safe behavior is to abort with a retryable Anthropic error and let the client
-retry from a clean turn.
+a conservative JSON-Schema subset (implemented by the standalone
+`JsonSchemaSubsetValidator`, unit-tested directly): top-level input must be an
+object; declared `required` properties must exist; declared `object` / `array` /
+`string` / `boolean` / `number` / `integer` / `null` types must match; and `items`
+/ nested `properties` (including nested `required`) are checked recursively. Every
+keyword it does not model (`enum`, `pattern`, `additionalProperties`, …) fails
+**open** — a pass means "not obviously invalid", not "fully schema-valid". It
+deliberately does **not** repair bad arguments or inject dummy values.
+
+**Semantics — stop-loss, not guaranteed retry.** The abort fires at
+`content_block_stop`, which is exactly where Claude Code would otherwise *commit* the
+tool block into its conversation (a content block is pushed onto the message list
+only at `content_block_stop`; see `claude.ts`). Because the stage's `Abort` replaces
+that `content_block_stop` with an injected `error` event and ends the stream, the
+malformed `tool_use` block is never committed and **never enters the next turn's
+context** — this is the guarantee the detector provides. Whether Claude Code
+*retries automatically* is a client decision the bridge cannot force: with the
+default `PreserveStream=true` the error is injected mid-stream (after the block's
+deltas have already rendered), and current Claude Code silently re-requests in
+non-streaming mode unless `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` (or the
+matching feature flag) is set, in which case the error propagates to its `withRetry`
+path. The non-streaming re-request is re-validated by the same detector on the
+buffered path (`InspectBuffered`), so the bad block stays out of context there too.
+`PreserveStream=false` sidesteps the mid-stream question entirely by buffering the
+whole response and returning a real HTTP status before any byte is written.
 
 Config lives at `Pipeline:Detectors:ToolInputValidation`: `Enabled` (default true),
 `PreserveStream` (default true, emit an SSE `error` when the bad block closes;
