@@ -575,4 +575,28 @@ public class RunawayGuardDetectorTests
         Assert.Equal(expectTrip ? DetectionActionKind.Abort : DetectionActionKind.None, action.Kind);
         Assert.Equal(expectTrip, ctx.RunawayDetected);
     }
+
+    [Fact]
+    public void Repetition_AbsurdWindow_IsClamped_NoHugeAllocation()
+    {
+        // Contract: a fat-fingered RepetitionWindow (e.g. an extra few zeros) must be
+        // clamped so the per-request ring array can't OOM the bridge. Constructing +
+        // Begin() with a billion-token window must not throw / allocate ~GBs; the signal
+        // still functions (a repeated token trips) under the clamped 100k window.
+        var ctx = Ctx();
+        var d = Detector(ctx, RepOpts(window: 1_000_000_000, ratio: 0.05));
+        d.InspectEvent(BlockStart(0));
+
+        // Fill past the clamped window efficiently: 1000 tokens per delta, ~101 deltas
+        // fills 100k. (Feeding one token per delta would be 100k JSON parses.)
+        var chunk = string.Concat(System.Linq.Enumerable.Repeat("x ", 1000));
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < 102 && action.Kind == DetectionActionKind.None; i++)
+        {
+            action = d.InspectEvent(TextDelta(chunk));
+        }
+
+        Assert.Equal(DetectionActionKind.Abort, action.Kind);
+        Assert.True(ctx.RunawayDetected);
+    }
 }

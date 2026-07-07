@@ -23,7 +23,7 @@ Local Claude Code source confirms that the retry helper recognizes both HTTP `52
   - `is529Error(error)` checks `error.status === 529` or `error.message?.includes('"type":"overloaded_error"')`.
   - `shouldRetry(error)` also treats messages containing `"type":"overloaded_error"` as retryable.
 
-So the bridge's `ResponseLeakSignal.OverloadedError` wire shape is not the primary problem.
+So the bridge's `ResponseDetectionSignal.OverloadedError` wire shape is not the primary problem.
 
 ### Claude Code has a streaming-to-non-streaming fallback path
 

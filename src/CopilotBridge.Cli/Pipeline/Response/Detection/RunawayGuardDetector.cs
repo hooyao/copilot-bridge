@@ -61,6 +61,10 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
     // negative, or >= 1 which would force a trip on any full window) disables the signal
     // rather than force-aborting every response. Computed once in Begin().
     private bool _repetitionEnabled;
+    // The effective (clamped) window used for the fullness gate, ratio floor, and tail
+    // cap. NOT _opts.RepetitionWindow directly — that can be an absurd config value; the
+    // ring is sized to this, so every comparison must use this too.
+    private int _window;
     // Cap on the carried partial token so a whitespace-free run (base64, minified JSON,
     // CJK) cannot make `_tokenTail + text` reallocate ever-larger strings (quadratic).
     // A token longer than the window is itself degenerate and its exact bytes past the
@@ -89,10 +93,18 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
         ResetRepetition();
     }
 
+    // Upper bound on RepetitionWindow. The detector is a per-request scoped service, so
+    // _ring is allocated per request — a fat-fingered config (an extra few zeros) must
+    // not OOM the bridge on the first /cc request. 100k tokens is orders of magnitude
+    // above any legitimate window (the signal targets ~500) and caps the array at ~800 KB.
+    private const int MaxRepetitionWindow = 100_000;
+
     private void ResetRepetition()
     {
-        var window = _opts.RepetitionWindow;
         var ratio = _opts.RepetitionMinUniqueRatio;
+        // Clamp the window to a sane ceiling so a config typo can't allocate a huge
+        // per-request array (see MaxRepetitionWindow).
+        var window = Math.Min(_opts.RepetitionWindow, MaxRepetitionWindow);
         // Enable only for a positive window AND a usable ratio floor (0 < ratio < 1).
         // ratio <= 0 can never trip (dead config); ratio >= 1 would trip on EVERY full
         // window (distinct <= window always) — a config typo must not force-abort every
@@ -100,6 +112,7 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
         _repetitionEnabled = window > 0 && ratio > 0.0 && ratio < 1.0;
         if (_repetitionEnabled)
         {
+            _window = window;
             // Allocate lazily to window size; reused per block by clearing counts.
             if (_ring is null || _ring.Length != window)
             {
@@ -111,7 +124,8 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
                 _ringCounts!.Clear();
             }
             // A partial token never needs to exceed the window to affect the ratio; cap
-            // it there (min 1) so a whitespace-free run cannot grow the tail unboundedly.
+            // it there so a whitespace-free run cannot grow the tail unboundedly. window
+            // is >= 1 here (guarded by _repetitionEnabled).
             _tokenTailCap = window;
         }
         _ringHead = 0;
@@ -187,14 +201,15 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
             PushToken(pieces[i]);
 
             // Only meaningful once the window is full: a short legitimate repetition
-            // (fewer than window tokens) must not trip.
-            if (_ringCount >= _opts.RepetitionWindow)
+            // (fewer than window tokens) must not trip. Uses the clamped _window, which
+            // the ring is sized to (NOT the raw config value).
+            if (_ringCount >= _window)
             {
                 var distinct = _ringCounts!.Count;
-                if (distinct < _opts.RepetitionWindow * _opts.RepetitionMinUniqueRatio)
+                if (distinct < _window * _opts.RepetitionMinUniqueRatio)
                 {
-                    reason = $"repetition: {distinct} unique of the trailing {_opts.RepetitionWindow} tokens "
-                        + $"(ratio {(double)distinct / _opts.RepetitionWindow:0.###} < RepetitionMinUniqueRatio {_opts.RepetitionMinUniqueRatio}) in a single content block";
+                    reason = $"repetition: {distinct} unique of the trailing {_window} tokens "
+                        + $"(ratio {(double)distinct / _window:0.###} < RepetitionMinUniqueRatio {_opts.RepetitionMinUniqueRatio}) in a single content block";
                     return true;
                 }
             }
