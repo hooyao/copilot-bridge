@@ -207,6 +207,9 @@ public class ToolInputValidationDetectorTests
         Assert.False(observeBuffered.RequiresBuffering); // observe-only never buffers
     }
 
+    /// <summary>
+    /// Tests: a required field missing from a nested schema level trips the guard (with
+    /// the abort machinery opted in via the <see cref="Detector"/> helper).
     /// Input: an <c>AskUserQuestion</c> block whose question object omits the nested
     /// required <c>question</c> field (schema-valid JSON, schema-invalid content).
     /// Expects: exactly one <see cref="DetectionActionKind.Abort"/>;
@@ -499,7 +502,9 @@ public class ToolInputValidationDetectorTests
         Assert.True(ctx.ToolInputInvalidDetected); // observed, not aborted
     }
 
-
+    /// <summary>
+    /// Tests: across several tool blocks in one response, per-block state resets so a
+    /// valid block does not trip and only the invalid one does (abort machinery opted in).
     /// Input: two <c>AskUserQuestion</c> blocks at distinct indices — the first valid,
     /// the second missing a nested required field.
     /// Expects: exactly one <see cref="DetectionActionKind.Abort"/> (the second block)
