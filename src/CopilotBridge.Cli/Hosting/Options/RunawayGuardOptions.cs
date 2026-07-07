@@ -47,8 +47,29 @@ internal sealed class RunawayGuardOptions
     /// </summary>
     public int MaxDeltaCount { get; set; } = 20_000;
 
+    /// <summary>
+    /// Sliding-window size (in whitespace-delimited tokens) for the repetition-density
+    /// signal, per content block. The guard trips when the trailing
+    /// <see cref="RepetitionWindow"/> tokens are FULL and their unique-token ratio
+    /// (distinct/window) is below <see cref="RepetitionMinUniqueRatio"/> — catching a
+    /// degenerate single-token loop (observed: <c>claude-opus-4.8</c> repeating one
+    /// token ~32,000× to <c>max_tokens</c>, ~1,010 deltas / ~500 KB) that stays under
+    /// both volume budgets. Default 500. A value ≤ 0 disables the repetition signal
+    /// (the byte and delta-count budgets still apply).
+    /// </summary>
+    public int RepetitionWindow { get; set; } = 500;
+
+    /// <summary>
+    /// Unique-token-ratio floor for the repetition signal: trip when
+    /// <c>distinct/RepetitionWindow &lt; RepetitionMinUniqueRatio</c>. Default 0.05 —
+    /// ~25× above the observed runaway ratio (~0.002) and ~17× below a normal diverse
+    /// response (~0.88), a wide margin on both sides so legitimate large output never
+    /// trips. Ignored when <see cref="RepetitionWindow"/> ≤ 0.
+    /// </summary>
+    public double RepetitionMinUniqueRatio { get; set; } = 0.05;
+
     /// <summary>Which error to raise on a trip. Default
-    /// <see cref="ResponseLeakSignal.OverloadedError"/> (retryable), shared with the
+    /// <see cref="ResponseDetectionSignal.OverloadedError"/> (retryable), shared with the
     /// response-leak guard so the wire shape is consistent.</summary>
-    public ResponseLeakSignal Signal { get; set; } = ResponseLeakSignal.OverloadedError;
+    public ResponseDetectionSignal Signal { get; set; } = ResponseDetectionSignal.OverloadedError;
 }

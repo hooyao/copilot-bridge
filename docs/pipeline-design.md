@@ -598,8 +598,8 @@ ResponseInspectionStage   injected with IEnumerable<IResponseDetector> (each a
     ├─ ModelRewriteDetector        RewriteEvent on the first `message_start`
     │                              (and the buffered body's top-level `model`)
     ├─ ResponseLeakDetector        Abort on leaked protocol markup (see §6.1)
-    ├─ RunawayGuardDetector        Abort on degenerate response volume
-    └─ ToolInputValidationDetector Abort on malformed/schema-invalid tool input
+    ├─ RunawayGuardDetector        Abort on degenerate response volume or token repetition
+    └─ ToolInputValidationDetector Observe (default) / Abort invalid tool input
     │
     ▼
 endpoint writes ctx.Response.EventStream (streaming) or BufferedBody (buffered)
@@ -692,10 +692,10 @@ is registering the JSON file with `reloadOnChange: true` in
 
 `ToolInputValidationDetector` covers the adjacent failure mode where the model emits
 a **real** `tool_use` block, but the accumulated `input_json_delta.partial_json`
-fragments close into malformed JSON or an object that obviously violates the
-request's declared tool schema. This is distinct from `ResponseLeakDetector`:
-there is no leaked `<invoke>` text here; the transport shape is correct, but the
-tool arguments would make Claude Code fail the turn with `Invalid tool parameters`.
+fragments close into malformed JSON or an object that violates the request's declared
+tool schema. This is distinct from `ResponseLeakDetector`: there is no leaked
+`<invoke>` text here; the transport shape is correct, but the tool arguments are
+invalid.
 
 The detector accumulates fragments for the current tool block and validates only at
 `content_block_stop`, when the final JSON object is available. The schema check is
@@ -708,29 +708,28 @@ keyword it does not model (`enum`, `pattern`, `additionalProperties`, …) fails
 **open** — a pass means "not obviously invalid", not "fully schema-valid". It
 deliberately does **not** repair bad arguments or inject dummy values.
 
-**Semantics — stop-loss, not guaranteed retry.** The abort fires at
-`content_block_stop`, which is exactly where Claude Code would otherwise *commit* the
-tool block into its conversation (a content block is pushed onto the message list
-only at `content_block_stop`; see `claude.ts`). Because the stage's `Abort` replaces
-that `content_block_stop` with an injected `error` event and ends the stream, the
-malformed `tool_use` block is never committed and **never enters the next turn's
-context** — this is the guarantee the detector provides. Whether Claude Code
-*retries automatically* is a client decision the bridge cannot force: with the
-default `PreserveStream=true` the error is injected mid-stream (after the block's
-deltas have already rendered), and current Claude Code silently re-requests in
-non-streaming mode unless `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` (or the
-matching feature flag) is set, in which case the error propagates to its `withRetry`
-path. The non-streaming re-request is re-validated by the same detector on the
-buffered path (`InspectBuffered`), so the bad block stays out of context there too.
-`PreserveStream=false` sidesteps the mid-stream question entirely by buffering the
-whole response and returning a real HTTP status before any byte is written.
+**Semantics — observe by default; Claude Code self-heals.** Aborting an invalid tool
+call was found to *cut off* a recovery Claude Code already performs. CC parses the
+accumulated tool input with `safeParseJSON` (malformed JSON → `null` → falls back to
+`{}`; see `messages.ts`), then runs the tool's `zod strictObject.safeParse`, and on
+failure feeds the model an `is_error` `tool_result` (`toolExecution.ts`) so it retries
+the tool call with corrected input. A real trace showed a valid-looking
+`AskUserQuestion` emitted without the required `question` field: CC would have
+re-prompted the model, but a mid-stream abort instead surfaced *"API Error: Server
+error mid-response"* to the user. So the detector **records the diagnosis
+(`tool_input_invalid=true` on the summary) but relays the response unchanged** unless
+a class is explicitly opted into an abort.
 
-Config lives at `Pipeline:Detectors:ToolInputValidation`: `Enabled` (default true),
-`PreserveStream` (default true, emit an SSE `error` when the bad block closes;
-false buffers the whole response to return a real HTTP status), and `Signal`
-(default `OverloadedError` -> `overloaded_error`/529, matching the leak and
-runaway guards). Trips set `tool_input_invalid=true` on the per-request summary
-line.
+Config lives at `Pipeline:Detectors:ToolInputValidation`: `Enabled` (default true,
+keeps the diagnosis flowing); `MalformedJsonAction` and `SchemaViolationAction` — the
+two failure classes, each `Observe` (default) / `AbortOverloaded` / `AbortApiError`
+(the abort variants fold the wire shape into the action, so there is no separate
+signal knob to diverge); and `PreserveStream` (only relevant when a class aborts:
+default true injects the SSE `error` mid-stream, false buffers for a real HTTP
+status). When an action *is* `Abort*`, the abort replaces the block's
+`content_block_stop` — the point where CC commits a content block into its
+conversation — so the bad block never enters context; the buffered path
+(`InspectBuffered`) re-validates the same way.
 
 ### 6.3 Adding a detector
 
