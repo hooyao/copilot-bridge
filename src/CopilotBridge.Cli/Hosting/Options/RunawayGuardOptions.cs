@@ -59,7 +59,8 @@ internal sealed class RunawayGuardOptions
     /// degenerate single-token loop (observed: <c>claude-opus-4.8</c> repeating one
     /// token ~32,000× to <c>max_tokens</c>, ~1,010 deltas / ~500 KB) that stays under
     /// both volume budgets. Default 500. A value ≤ 0 disables the repetition signal
-    /// (the byte and delta-count budgets still apply).
+    /// (the byte and delta-count budgets still apply). Clamped to 100,000 max — the ring
+    /// is allocated per request, so an absurd value cannot OOM the bridge.
     /// </summary>
     public int RepetitionWindow { get; set; } = 500;
 
@@ -68,7 +69,10 @@ internal sealed class RunawayGuardOptions
     /// <c>distinct/RepetitionWindow &lt; RepetitionMinUniqueRatio</c>. Default 0.05 —
     /// ~25× above the observed runaway ratio (~0.002) and ~17× below a normal diverse
     /// response (~0.88), a wide margin on both sides so legitimate large output never
-    /// trips. Ignored when <see cref="RepetitionWindow"/> ≤ 0.
+    /// trips. MUST be in the open interval (0, 1); a value ≤ 0 or ≥ 1 is out of range and
+    /// SILENTLY DISABLES the repetition signal (it is not clamped) — so e.g. <c>5</c> (a
+    /// typo for <c>0.5</c>) is a no-op, not a stricter setting. Also ignored when
+    /// <see cref="RepetitionWindow"/> ≤ 0.
     /// </summary>
     public double RepetitionMinUniqueRatio { get; set; } = 0.05;
 
