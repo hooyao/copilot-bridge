@@ -10,28 +10,32 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
 /// <summary>
 /// Validates real <c>tool_use</c> blocks after their streamed
-/// <c>input_json_delta</c> fragments have closed, and aborts the response when the
-/// tool input is malformed JSON or obviously violates the declared tool schema.
+/// <c>input_json_delta</c> fragments have closed, flagging tool input that is
+/// malformed JSON or violates the declared tool schema.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Semantics: stop-loss, not repair or guaranteed retry.</b> The detector trips at
-/// <c>content_block_stop</c> — the point where Claude Code would otherwise commit the
+/// <b>Observe-by-default.</b> Claude Code recovers from an invalid tool call
+/// natively: it parses the accumulated input with <c>safeParseJSON</c> (malformed
+/// JSON falls back to <c>{}</c>), runs the tool's <c>zod strictObject.safeParse</c>,
+/// and on failure feeds the model an <c>is_error</c> tool_result so it retries with
+/// corrected input. Aborting the response was found to cut off exactly that recovery
+/// (e.g. a real <c>AskUserQuestion</c> emitted without the required <c>question</c>
+/// field — CC would have re-prompted the model, but a mid-stream abort surfaced
+/// "Server error mid-response" instead). So the detector records the diagnosis
+/// (<c>tool_input_invalid=</c> on the summary) but relays the response unchanged
+/// unless a class is explicitly set to an <c>Abort*</c> action.
+/// </para>
+/// <para>
+/// <b>When Abort is opted in</b> (per-class via
+/// <c>MalformedJsonAction</c> / <c>SchemaViolationAction</c>): the detector aborts at
+/// <c>content_block_stop</c>, the point where Claude Code would otherwise commit the
 /// tool block into its conversation context (a content block is only pushed onto the
 /// message list at <c>content_block_stop</c>). The abort replaces that
 /// <c>content_block_stop</c> with an error event and ends the stream, so the bad
-/// <c>tool_use</c> block is never committed and never pollutes the next turn's
-/// context — which is the primary guarantee this detector provides.
-/// </para>
-/// <para>
-/// Whether Claude Code then <i>retries automatically</i> depends on the client, not on
-/// this detector: with the default <c>PreserveStream=true</c> the error is injected
-/// mid-stream, after the tool block's deltas have already rendered, and current Claude
-/// Code silently falls back to a non-streaming re-request unless
-/// <c>CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1</c> (or the matching feature flag) is
-/// set, in which case the error propagates to its <c>withRetry</c> path. Either way the
-/// malformed tool block does not reach the client's context. <c>PreserveStream=false</c>
-/// buffers the whole response and returns a real HTTP status before any byte is written.
+/// <c>tool_use</c> block is never committed. With the default <c>PreserveStream=true</c>
+/// the error is injected mid-stream; <c>PreserveStream=false</c> buffers the whole
+/// response and returns a real HTTP status before any byte is written.
 /// </para>
 /// </remarks>
 internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<ToolInputValidationDetector>
@@ -66,7 +70,14 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
 
     public override bool Enabled => _opts.Enabled;
 
-    public override bool RequiresBuffering => !_opts.PreserveStream;
+    // Only force whole-response buffering when a class is actually set to an Abort
+    // action AND real-status delivery (PreserveStream=false) is wanted. Observe-only
+    // (the default) never aborts, so it must not pay the buffering cost.
+    private bool AnyAbort =>
+        _opts.MalformedJsonAction != ToolInputAction.Observe
+        || _opts.SchemaViolationAction != ToolInputAction.Observe;
+
+    public override bool RequiresBuffering => AnyAbort && !_opts.PreserveStream;
 
     public override void Begin()
     {
@@ -137,7 +148,13 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
                 var toolName = block.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : null;
                 if (!ValidateToolInput(toolName, input, out var reason))
                 {
-                    return Trip(toolName, reason, "buffer");
+                    // A buffered body's tool_use.input is already parsed JSON, so any
+                    // failure here is a schema violation, never a JSON-parse failure.
+                    var action = Flag(_opts.SchemaViolationAction, toolName, reason, "buffer");
+                    if (action.Kind != DetectionActionKind.None)
+                    {
+                        return action;
+                    }
                 }
             }
         }
@@ -286,14 +303,14 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
         }
         catch (JsonException ex)
         {
-            return Trip(toolName, "malformed JSON: " + ex.Message, RequiresBuffering ? "buffer" : "stream");
+            return Flag(_opts.MalformedJsonAction, toolName, "malformed JSON: " + ex.Message, RequiresBuffering ? "buffer" : "stream");
         }
 
         using (inputDoc)
         {
             if (!ValidateToolInput(toolName, inputDoc.RootElement, out var reason))
             {
-                return Trip(toolName, reason, RequiresBuffering ? "buffer" : "stream");
+                return Flag(_opts.SchemaViolationAction, toolName, reason, RequiresBuffering ? "buffer" : "stream");
             }
         }
 
@@ -320,22 +337,42 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
         return JsonSchemaSubsetValidator.Validate(tool.InputSchema, input, out reason);
     }
 
-    private DetectionAction Trip(string? toolName, string reason, string delivery)
+    /// <summary>
+    /// Record the diagnosis and, per the class-specific <paramref name="action"/>,
+    /// either observe-only (mark the summary flag, log, relay unchanged) or abort with
+    /// the configured retryable envelope. The flag is set in BOTH cases so
+    /// <c>tool_input_invalid=</c> reports the diagnosis regardless of action — an
+    /// operator can see the rate of invalid tool calls without the bridge cutting off
+    /// Claude Code's native self-heal.
+    /// </summary>
+    private DetectionAction Flag(ToolInputAction action, string? toolName, string reason, string delivery)
     {
-        var signal = _opts.Signal;
         _ctx.ToolInputInvalidDetected = true;
-        // "stop-loss": the abort keeps the malformed tool block out of the client's
-        // context. Whether the client then retries automatically depends on it (see
-        // the class remarks); the log records the trip, not a promise of retry.
+        var tool = string.IsNullOrEmpty(toolName) ? "?" : toolName;
+
+        if (action == ToolInputAction.Observe)
+        {
+            // Observe-only (default): Claude Code recovers from an invalid tool call
+            // natively (safeParseJSON→{} for malformed JSON, then strictObject.safeParse
+            // → is_error tool_result → model retries). Aborting here would cut that off,
+            // so relay unchanged and just record it.
+            _log.LogWarning(
+                "tool-input-invalid observed: tool={Tool} reason={Reason} delivery={Delivery} - relaying (Claude Code self-heals invalid tool input; action=Observe)",
+                tool, reason, delivery);
+            return DetectionAction.None;
+        }
+
+        // The abort variant carries its own wire shape — no separate Signal knob to
+        // diverge from the action.
+        var signal = action == ToolInputAction.AbortApiError
+            ? ResponseDetectionSignal.ApiError
+            : ResponseDetectionSignal.OverloadedError;
         _log.LogWarning(
             "tool-input-invalid detected: tool={Tool} reason={Reason} signal={Signal} delivery={Delivery} - aborting the turn to keep it out of client context",
-            string.IsNullOrEmpty(toolName) ? "?" : toolName,
-            reason,
-            ResponseLeakError.ErrorType(signal),
-            delivery);
+            tool, reason, ResponseDetectionError.ErrorType(signal), delivery);
         return DetectionAction.Abort(
-            ResponseLeakError.JsonWithMessage(signal, ToolInputInvalidMessage),
-            ResponseLeakError.HttpStatus(signal));
+            ResponseDetectionError.JsonWithMessage(signal, ToolInputInvalidMessage),
+            ResponseDetectionError.HttpStatus(signal));
     }
 
     private void ResetCurrentBlock()
@@ -358,7 +395,7 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
     }
 
     // No " or \ (embedded in hand-built JSON without escaping — same constraint as
-    // ResponseLeakError.Message). Describes both trip causes (malformed JSON OR schema
+    // ResponseDetectionError.Message). Describes both trip causes (malformed JSON OR schema
     // mismatch), since a malformed-JSON trip can fire even with no declared schema.
     private const string ToolInputInvalidMessage =
         "[copilot-bridge] The upstream model produced tool input that is malformed JSON or does not match the declared tool schema; the turn was aborted so it does not enter the conversation.";

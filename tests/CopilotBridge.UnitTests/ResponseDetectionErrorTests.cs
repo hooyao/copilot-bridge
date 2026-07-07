@@ -5,13 +5,13 @@ using Xunit;
 namespace CopilotBridge.UnitTests;
 
 /// <summary>
-/// Contract tests for <see cref="ResponseLeakError"/>: the kebab→PascalCase config-key
+/// Contract tests for <see cref="ResponseDetectionError"/>: the kebab→PascalCase config-key
 /// mapping (which must line up with the <see cref="ResponseLeakSignaturesOptions"/>
 /// property that disables each signature), and that the retry message is actionable
 /// (names the signature, its disable switch, and the restart requirement) while
 /// staying safe to embed in hand-built JSON.
 /// </summary>
-public class ResponseLeakErrorTests
+public class ResponseDetectionErrorTests
 {
     [Theory]
     [InlineData("invoke", "Invoke")]
@@ -24,7 +24,7 @@ public class ResponseLeakErrorTests
     {
         // Contract: a kebab signature id maps to the PascalCase config property name
         // that disables it (cross-session-message → CrossSessionMessage).
-        Assert.Equal(expected, ResponseLeakError.ConfigKey(signature));
+        Assert.Equal(expected, ResponseDetectionError.ConfigKey(signature));
     }
 
     [Fact]
@@ -32,7 +32,7 @@ public class ResponseLeakErrorTests
     {
         Assert.Equal(
             "Pipeline:Detectors:ResponseLeakGuard:Signatures:CrossSessionMessage",
-            ResponseLeakError.ConfigPath("cross-session-message"));
+            ResponseDetectionError.ConfigPath("cross-session-message"));
     }
 
     [Fact]
@@ -40,7 +40,7 @@ public class ResponseLeakErrorTests
     {
         // Contract: the message is actionable — names the tripped signature, the
         // exact switch to disable it, and that a restart is required.
-        var msg = ResponseLeakError.Message("invoke");
+        var msg = ResponseDetectionError.Message("invoke");
         Assert.Contains("invoke", msg);
         Assert.Contains("Pipeline:Detectors:ResponseLeakGuard:Signatures:Invoke=false", msg);
         Assert.Contains("restart", msg);
@@ -53,7 +53,7 @@ public class ResponseLeakErrorTests
         // escaping, so it must contain no '"' or '\' for any signature.
         foreach (var sig in LeakSignatures.All)
         {
-            var msg = ResponseLeakError.Message(sig);
+            var msg = ResponseDetectionError.Message(sig);
             Assert.DoesNotContain("\"", msg);
             Assert.DoesNotContain("\\", msg);
         }
@@ -62,7 +62,7 @@ public class ResponseLeakErrorTests
     [Fact]
     public void Json_EmbedsSignatureMessage_AndParsesAsError()
     {
-        var json = ResponseLeakError.Json(ResponseLeakSignal.OverloadedError, "channel");
+        var json = ResponseDetectionError.Json(ResponseDetectionSignal.OverloadedError, "channel");
         Assert.Contains("overloaded_error", json);
         Assert.Contains("Pipeline:Detectors:ResponseLeakGuard:Signatures:Channel=false", json);
         // Well-formed JSON (the embedded message introduced no stray quote/backslash).

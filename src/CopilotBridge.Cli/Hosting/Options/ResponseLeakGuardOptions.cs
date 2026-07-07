@@ -1,26 +1,6 @@
 namespace CopilotBridge.Cli.Hosting.Options;
 
 /// <summary>
-/// The error the guard raises when it detects a leak — a tool-call leak or a
-/// control-envelope leak. Selects both the Anthropic <c>error.type</c> string and
-/// (buffered delivery) the HTTP status.
-/// </summary>
-/// <remarks>
-/// <see cref="OverloadedError"/> is the default: Claude Code's retry logic
-/// (<c>withRetry.ts</c> <c>is529Error</c>) matches the literal
-/// <c>"type":"overloaded_error"</c> mid-stream and retries; 3 consecutive on a
-/// non-custom Opus model trigger an opus→Sonnet fallback — a fitting backstop for
-/// a poisoned session. <see cref="ApiError"/> maps to a generic
-/// <c>api_error</c>/500; Claude Code retries 5xx too, but mid-stream
-/// classification is less certain than the overloaded string match.
-/// </remarks>
-internal enum ResponseLeakSignal
-{
-    OverloadedError = 0,
-    ApiError = 1,
-}
-
-/// <summary>
 /// Bound from <c>appsettings.json</c> section
 /// <c>Pipeline:Detectors:ResponseLeakGuard</c>. Controls <see cref="Pipeline.Response.Detection.ResponseLeakDetector"/>, which
 /// detects two families of leaks from a Copilot-served Claude model: a tool call
@@ -60,8 +40,8 @@ internal sealed class ResponseLeakGuardOptions
     /// </summary>
     public bool PreserveStream { get; set; } = true;
 
-    /// <summary>Which error to raise. Default <see cref="ResponseLeakSignal.OverloadedError"/>.</summary>
-    public ResponseLeakSignal Signal { get; set; } = ResponseLeakSignal.OverloadedError;
+    /// <summary>Which error to raise. Default <see cref="ResponseDetectionSignal.OverloadedError"/>.</summary>
+    public ResponseDetectionSignal Signal { get; set; } = ResponseDetectionSignal.OverloadedError;
 
     /// <summary>Also scan <c>thinking</c> blocks, not just <c>text</c>. Default true.</summary>
     public bool ScanThinking { get; set; } = true;

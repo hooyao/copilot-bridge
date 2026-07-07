@@ -391,7 +391,7 @@ public class ResponseInspectionStageTests
     public async Task ApiErrorSignal_Streaming_EmitsApiError()
     {
         var ctx = Ctx(LeakStream(Leak));
-        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true, Signal = ResponseLeakSignal.ApiError });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true, Signal = ResponseDetectionSignal.ApiError });
         var got = await Drain(ctx.Response.EventStream!);
         Assert.Contains("api_error", got[^1].Data);
     }
@@ -400,7 +400,7 @@ public class ResponseInspectionStageTests
     public async Task ApiErrorSignal_Buffered_Emits500()
     {
         var ctx = Ctx(LeakStream(Leak));
-        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true, PreserveStream = false, Signal = ResponseLeakSignal.ApiError });
+        await Run(ctx, new ResponseLeakGuardOptions { Enabled = true, PreserveStream = false, Signal = ResponseDetectionSignal.ApiError });
         Assert.Equal(500, ctx.Response.Status);
         Assert.Contains("api_error", Encoding.UTF8.GetString(ctx.Response.BufferedBody!));
     }

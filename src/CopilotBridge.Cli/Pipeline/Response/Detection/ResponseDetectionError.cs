@@ -3,23 +3,23 @@ using CopilotBridge.Cli.Hosting.Options;
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
 /// <summary>
-/// Maps a <see cref="ResponseLeakSignal"/> to the Anthropic error wire shape it emits
+/// Maps a <see cref="ResponseDetectionSignal"/> to the Anthropic error wire shape it emits
 /// and the HTTP status it uses in buffered delivery. Shared by both delivery
 /// modes so streaming injection and buffered rejection agree.
 /// </summary>
-internal static class ResponseLeakError
+internal static class ResponseDetectionError
 {
     /// <summary>The Anthropic <c>error.type</c> string for a signal.</summary>
-    public static string ErrorType(ResponseLeakSignal signal) => signal switch
+    public static string ErrorType(ResponseDetectionSignal signal) => signal switch
     {
-        ResponseLeakSignal.ApiError => "api_error",
+        ResponseDetectionSignal.ApiError => "api_error",
         _ => "overloaded_error",
     };
 
     /// <summary>The HTTP status used in buffered delivery for a signal.</summary>
-    public static int HttpStatus(ResponseLeakSignal signal) => signal switch
+    public static int HttpStatus(ResponseDetectionSignal signal) => signal switch
     {
-        ResponseLeakSignal.ApiError => 500,
+        ResponseDetectionSignal.ApiError => 500,
         _ => 529,
     };
 
@@ -75,7 +75,7 @@ internal static class ResponseLeakError
     /// <c>{"type":"error","error":{"type":"…","message":"…"}}</c>. The message
     /// names <paramref name="signature"/> and its disable switch.
     /// </summary>
-    public static string Json(ResponseLeakSignal signal, string signature) =>
+    public static string Json(ResponseDetectionSignal signal, string signature) =>
         JsonWithMessage(signal, Message(signature));
 
     /// <summary>
@@ -86,7 +86,7 @@ internal static class ResponseLeakError
     /// the identical retryable envelope with their own message. The message MUST NOT
     /// contain <c>"</c> or <c>\</c> (embedded in hand-built JSON without escaping).
     /// </summary>
-    public static string JsonWithMessage(ResponseLeakSignal signal, string message) =>
+    public static string JsonWithMessage(ResponseDetectionSignal signal, string message) =>
         "{\"type\":\"error\",\"error\":{\"type\":\""
         + ErrorType(signal)
         + "\",\"message\":\""

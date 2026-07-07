@@ -117,9 +117,9 @@ internal sealed class ResponseLeakDetector : AbstractOrderAwareDetector<Response
             "response-leak detected: signature={Signature} subject={Subject} disable-key={DisableKey} block={Block} signal={Signal} delivery={Delivery} — forcing client retry (restart required after changing the switch)",
             signature,
             subject,
-            ResponseLeakError.ConfigPath(signature),
+            ResponseDetectionError.ConfigPath(signature),
             blockType ?? "?",
-            ResponseLeakError.ErrorType(signal),
+            ResponseDetectionError.ErrorType(signal),
             delivery);
         // Own the "leak detected" flag here rather than in the stage: the stage
         // sees only a generic Abort action and can't tell a leak from a runaway,
@@ -127,8 +127,8 @@ internal sealed class ResponseLeakDetector : AbstractOrderAwareDetector<Response
         // it after the stream drains (same scoped BridgeContext instance).
         _ctx.ResponseLeakDetected = true;
         return DetectionAction.Abort(
-            ResponseLeakError.Json(signal, signature),
-            ResponseLeakError.HttpStatus(signal));
+            ResponseDetectionError.Json(signal, signature),
+            ResponseDetectionError.HttpStatus(signal));
     }
 
     public override DetectionAction InspectEvent(in SseItem<string> evt)

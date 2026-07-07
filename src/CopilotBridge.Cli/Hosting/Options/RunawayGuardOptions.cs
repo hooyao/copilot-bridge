@@ -2,10 +2,10 @@ namespace CopilotBridge.Cli.Hosting.Options;
 
 /// <summary>
 /// Bound from <c>appsettings.json</c> section <c>Pipeline:Detectors:RunawayGuard</c>.
-/// Controls <see cref="Pipeline.Response.Detection.RunawayGuardDetector"/>, a volume
-/// circuit-breaker on the streamed response: it aborts a degenerate-generation
-/// runaway (a model stuck emitting an unbounded stream of tiny fragments) before it
-/// hangs the client for minutes.
+/// Controls <see cref="Pipeline.Response.Detection.RunawayGuardDetector"/>, a
+/// volume/degeneracy circuit-breaker on the streamed response: it aborts a
+/// degenerate-generation runaway (a model stuck emitting an unbounded stream of tiny
+/// fragments, or one repeating the same token) before it hangs the client for minutes.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -13,9 +13,13 @@ namespace CopilotBridge.Cli.Hosting.Options;
 /// 27,643 <c>input_json_delta</c> events (avg ~3.6 chars each, ~17 MB on the wire)
 /// whose content collapsed into repeated whitespace/garbage — it never terminated,
 /// and the bridge relayed it for 6.5 minutes until the user cancelled
-/// (<c>docs/gpt55-runaway-diagnosis.md</c>). This guard trips on the <b>volume</b>
-/// signature (byte / delta-count budget), not on content, so it is robust and has
-/// near-zero false positives — legitimate large outputs pass under generous limits.
+/// (<c>docs/gpt55-runaway-diagnosis.md</c>). A later trace caught a different shape:
+/// <c>claude-opus-4.8</c> repeating one token ~32,000× to <c>max_tokens</c> in ~1,010
+/// deltas / ~500 KB — under both volume budgets. So the guard trips on THREE signals:
+/// the two <b>volume</b> budgets (byte / delta-count), which key off size and have
+/// near-zero false positives, and a per-block <b>repetition-density</b> signal, which
+/// keys off content (token diversity) to catch the low-volume repetition shape. All
+/// three have generous defaults so legitimate large, diverse outputs pass.
 /// </para>
 /// <para>
 /// On a trip it reuses the same abort machinery and error shape as
@@ -47,8 +51,33 @@ internal sealed class RunawayGuardOptions
     /// </summary>
     public int MaxDeltaCount { get; set; } = 20_000;
 
+    /// <summary>
+    /// Sliding-window size (in whitespace-delimited tokens) for the repetition-density
+    /// signal, per content block. The guard trips when the trailing
+    /// <see cref="RepetitionWindow"/> tokens are FULL and their unique-token ratio
+    /// (distinct/window) is below <see cref="RepetitionMinUniqueRatio"/> — catching a
+    /// degenerate single-token loop (observed: <c>claude-opus-4.8</c> repeating one
+    /// token ~32,000× to <c>max_tokens</c>, ~1,010 deltas / ~500 KB) that stays under
+    /// both volume budgets. Default 500. A value ≤ 0 disables the repetition signal
+    /// (the byte and delta-count budgets still apply). Clamped to 100,000 max — the ring
+    /// is allocated per request, so an absurd value cannot OOM the bridge.
+    /// </summary>
+    public int RepetitionWindow { get; set; } = 500;
+
+    /// <summary>
+    /// Unique-token-ratio floor for the repetition signal: trip when
+    /// <c>distinct/RepetitionWindow &lt; RepetitionMinUniqueRatio</c>. Default 0.05 —
+    /// ~25× above the observed runaway ratio (~0.002) and ~17× below a normal diverse
+    /// response (~0.88), a wide margin on both sides so legitimate large output never
+    /// trips. MUST be in the open interval (0, 1); a value ≤ 0 or ≥ 1 is out of range and
+    /// SILENTLY DISABLES the repetition signal (it is not clamped) — so e.g. <c>5</c> (a
+    /// typo for <c>0.5</c>) is a no-op, not a stricter setting. Also ignored when
+    /// <see cref="RepetitionWindow"/> ≤ 0.
+    /// </summary>
+    public double RepetitionMinUniqueRatio { get; set; } = 0.05;
+
     /// <summary>Which error to raise on a trip. Default
-    /// <see cref="ResponseLeakSignal.OverloadedError"/> (retryable), shared with the
+    /// <see cref="ResponseDetectionSignal.OverloadedError"/> (retryable), shared with the
     /// response-leak guard so the wire shape is consistent.</summary>
-    public ResponseLeakSignal Signal { get; set; } = ResponseLeakSignal.OverloadedError;
+    public ResponseDetectionSignal Signal { get; set; } = ResponseDetectionSignal.OverloadedError;
 }
