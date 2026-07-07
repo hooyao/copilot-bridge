@@ -137,6 +137,43 @@ public class ToolInputValidationDetectorTests
     }
 
     /// <summary>
+    /// Tests (mirror of the above): with <c>MalformedJsonAction=Observe</c>,
+    /// <c>SchemaViolationAction=AbortOverloaded</c>, malformed JSON is relayed (its class
+    /// is Observe) while a schema violation under the SAME config aborts — proving each
+    /// class reads its own knob, in the opposite direction.
+    /// </summary>
+    [Fact]
+    public async Task PerClassActions_MalformedObserveSchemaAbort_MalformedRelayed_SchemaAborts()
+    {
+        var opts = new ToolInputValidationOptions
+        {
+            Enabled = true,
+            MalformedJsonAction = ToolInputAction.Observe,
+            SchemaViolationAction = ToolInputAction.AbortOverloaded,
+        };
+
+        // Malformed JSON → its class is Observe → relayed, no abort.
+        var malformedCtx = Context(ToolSchema(), ToolStream("AskUserQuestion", """{"questions":[{"question":"oops"}"""));
+        var d1 = new ToolInputValidationDetector(
+            new DetectorOrder<ToolInputValidationDetector>(4), TestOptions.Snapshot(opts),
+            malformedCtx, NullLogger<ToolInputValidationDetector>.Instance);
+        d1.Begin();
+        var malformedActions = await Feed(d1, malformedCtx.Response.EventStream!);
+        Assert.All(malformedActions, a => Assert.Equal(DetectionActionKind.None, a.Kind));
+        Assert.True(malformedCtx.ToolInputInvalidDetected);
+
+        // Schema violation (valid JSON) → its class is Abort → aborts.
+        var schemaCtx = Context(ToolSchema(), ToolStream("AskUserQuestion", """{"questions":[{"header":"DB","options":[],"multiSelect":false}]}"""));
+        var d2 = new ToolInputValidationDetector(
+            new DetectorOrder<ToolInputValidationDetector>(4), TestOptions.Snapshot(opts),
+            schemaCtx, NullLogger<ToolInputValidationDetector>.Instance);
+        d2.Begin();
+        var schemaActions = await Feed(d2, schemaCtx.Response.EventStream!);
+        Assert.Contains(schemaActions, a => a.Kind == DetectionActionKind.Abort);
+        Assert.True(schemaCtx.ToolInputInvalidDetected);
+    }
+
+    /// <summary>
     /// Tests: an observe-only configuration never forces whole-response buffering
     /// (<c>RequiresBuffering</c> false), so it adds no latency on the default path.
     /// Input: a default detector, and one with only <c>SchemaViolationAction=AbortOverloaded</c>
@@ -441,8 +478,28 @@ public class ToolInputValidationDetectorTests
     }
 
     /// <summary>
-    /// Tests: across several tool blocks in one response, per-block state resets so a
-    /// valid block does not trip and only the invalid one does.
+    /// Tests (stage-level, the shipped default): with the DEFAULT observe options and
+    /// Enabled=true, a schema-invalid tool block is delivered whole through the real
+    /// stage — no <c>error</c> injected, <c>content_block_stop</c> and <c>message_stop</c>
+    /// both present — while the summary flag is set. This is the end-to-end guarantee of
+    /// the fix (CC's self-heal is not cut off), driven through <see cref="ResponseInspectionStage"/>
+    /// rather than the detector alone.
+    /// </summary>
+    [Fact]
+    public async Task Streaming_DefaultObserve_StageDeliversWholeStream_FlagSet_NoAbort()
+    {
+        var ctx = Context(ToolSchema(), FullToolStream("AskUserQuestion", """{"questions":[{"header":"DB","options":[],"multiSelect":false}]}"""));
+        await RunStageObserve(ctx);
+
+        var delivered = await Drain(ctx.Response.EventStream!);
+
+        Assert.DoesNotContain(delivered, e => e.EventType == "error");
+        Assert.Contains(delivered, e => e.EventType == "content_block_stop");
+        Assert.Equal("message_stop", delivered[^1].EventType);
+        Assert.True(ctx.ToolInputInvalidDetected); // observed, not aborted
+    }
+
+
     /// Input: two <c>AskUserQuestion</c> blocks at distinct indices — the first valid,
     /// the second missing a nested required field.
     /// Expects: exactly one <see cref="DetectionActionKind.Abort"/> (the second block)
@@ -603,7 +660,7 @@ public class ToolInputValidationDetectorTests
         // detector, sharing ctx as production DI does. This exercises Begin() gating,
         // RequiresBuffering branch selection, and the stage's Abort rendering. Both
         // classes are opted into Abort so the stage-abort path is exercised; the
-        // observe-default stage behaviour is covered by Observe_* tests.
+        // observe-default stage behaviour is covered by RunStageObserve.
         var detectors = new IResponseDetector[]
         {
             new DoneFilterDetector(new DetectorOrder<DoneFilterDetector>(0)),
@@ -616,6 +673,22 @@ public class ToolInputValidationDetectorTests
                     MalformedJsonAction = ToolInputAction.AbortOverloaded,
                     SchemaViolationAction = ToolInputAction.AbortOverloaded,
                 }),
+                ctx,
+                NullLogger<ToolInputValidationDetector>.Instance),
+        };
+        var stage = new ResponseInspectionStage(detectors, ctx, NullLogger<ResponseInspectionStage>.Instance);
+        await stage.ApplyAsync();
+    }
+
+    // Drive the REAL stage with DEFAULT (observe) options — the shipped configuration.
+    private static async Task RunStageObserve(BridgeContext<MessagesRequest> ctx)
+    {
+        var detectors = new IResponseDetector[]
+        {
+            new DoneFilterDetector(new DetectorOrder<DoneFilterDetector>(0)),
+            new ToolInputValidationDetector(
+                new DetectorOrder<ToolInputValidationDetector>(4),
+                TestOptions.Snapshot(new ToolInputValidationOptions { Enabled = true }),
                 ctx,
                 NullLogger<ToolInputValidationDetector>.Instance),
         };

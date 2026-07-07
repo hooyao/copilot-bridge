@@ -236,8 +236,10 @@ public class RunawayGuardDetectorTests
     // ~32,000x to max_tokens in ~1,010 deltas / ~500 KB — under both volume budgets.
     // trailing-500-token unique ratio was ~0.002 (runaway) vs ~0.88 (normal output).
 
-    // A real content_block_delta text payload. Split the text across fragments the way
-    // Anthropic streams it, so token carry-over across delta boundaries is exercised.
+    // A content_block_delta text payload carrying `text` as one text_delta. Callers
+    // that pass a whole token + trailing whitespace exercise the whole-token path;
+    // Repetition_TokenSplitAcrossManyDeltas passes one char at a time to exercise the
+    // _tokenTail carry-over across delta boundaries.
     private static SseItem<string> TextDelta(string text) =>
         new("{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":"
             + System.Text.Json.JsonSerializer.Serialize(text) + "}}", "content_block_delta");
@@ -394,5 +396,183 @@ public class RunawayGuardDetectorTests
 
         Assert.Equal(DetectionActionKind.None, action.Kind);
         Assert.False(ctx.RunawayDetected);
+    }
+
+    // ── Ratio out-of-range disables the signal (config-typo safety) ──────────────
+
+    [Theory]
+    [InlineData(1.0)]   // >= 1 would trip on EVERY full window (distinct <= window)
+    [InlineData(1.5)]
+    [InlineData(0.0)]   // <= 0 is dead config
+    [InlineData(-0.1)]
+    public void Repetition_OutOfRangeRatio_DisablesSignal_NeverTrips(double ratio)
+    {
+        // Contract: an out-of-range RepetitionMinUniqueRatio must NOT force-abort. A
+        // ratio >= 1 in particular would otherwise trip on any full window; treat it
+        // (and <= 0) as disabling the repetition signal.
+        var ctx = Ctx();
+        var d = Detector(ctx, RepOpts(window: 50, ratio: ratio));
+        d.InspectEvent(BlockStart(0));
+
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < 500 && action.Kind == DetectionActionKind.None; i++)
+        {
+            action = d.InspectEvent(TextDelta("court\n\n"));
+        }
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.RunawayDetected);
+    }
+
+    // ── Whitespace-free run does not blow up the carried tail ────────────────────
+
+    [Fact]
+    public void Repetition_WhitespaceFreeRun_DoesNotGrowTailUnbounded_AndDoesNotFalseTrip()
+    {
+        // Contract: a long whitespace-free run (base64/minified/CJK) is a single token
+        // that never completes, so it must not trip the repetition signal, and the
+        // carried tail must stay bounded (no quadratic reallocation). We can't measure
+        // memory here, but a single unbroken 100k-char token across 1000 deltas must
+        // (a) never trip (one token = never fills the window) and (b) complete promptly,
+        // which it cannot if the tail grows to 100k and reallocates each delta.
+        var ctx = Ctx();
+        var d = Detector(ctx, RepOpts(window: 50));
+        d.InspectEvent(BlockStart(0));
+
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < 1000 && action.Kind == DetectionActionKind.None; i++)
+        {
+            action = d.InspectEvent(TextDelta(new string('A', 100))); // no whitespace, ever
+        }
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void Repetition_TokenSplitAcrossManyDeltas_CountedOnce_TripsOnRepeatedWord()
+    {
+        // Contract: a token whose characters arrive across MULTIPLE deltas is counted
+        // exactly once (carry-over correctness). Stream "elephant " one char per delta,
+        // repeated — it must trip (one distinct token) once the window fills, proving
+        // the char-fragment carry-over reassembles the same token rather than many
+        // spurious distinct ones.
+        var ctx = Ctx();
+        var d = Detector(ctx, RepOpts(window: 50));
+        d.InspectEvent(BlockStart(0));
+
+        DetectionAction action = DetectionAction.None;
+        const string word = "elephant ";
+        for (var w = 0; w < 200 && action.Kind == DetectionActionKind.None; w++)
+        {
+            foreach (var ch in word)
+            {
+                action = d.InspectEvent(TextDelta(ch.ToString()));
+                if (action.Kind != DetectionActionKind.None) break;
+            }
+        }
+
+        Assert.Equal(DetectionActionKind.Abort, action.Kind);
+        Assert.True(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void Repetition_ThinkingDelta_AlsoFeedsWindow()
+    {
+        // Contract: thinking_delta text feeds the window too (not just text_delta), so a
+        // repetition loop inside a thinking block is caught.
+        var ctx = Ctx();
+        var d = Detector(ctx, RepOpts(window: 50));
+        d.InspectEvent(BlockStart(0));
+
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < 200 && action.Kind == DetectionActionKind.None; i++)
+        {
+            action = d.InspectEvent(new SseItem<string>(
+                "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":"
+                + System.Text.Json.JsonSerializer.Serialize("hmm ") + "}}", "content_block_delta"));
+        }
+
+        Assert.Equal(DetectionActionKind.Abort, action.Kind);
+        Assert.True(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void Repetition_DiversePrefixThenRepeatedToken_TripsOnlyAfterWindowRollsOver()
+    {
+        // Contract (exercises ring EVICTION): fill the window with `window` DISTINCT
+        // tokens (no trip — distinct == window), then stream one repeated token. The
+        // signal must trip only once the window has fully rolled over to that token,
+        // which requires eviction to decrement the evicted tokens out of the multiset.
+        // A broken eviction (never decrements) would keep distinct high and never trip.
+        const int window = 30;
+        var ctx = Ctx();
+        var d = Detector(ctx, RepOpts(window: window, ratio: 0.2)); // floor = 6 distinct
+        d.InspectEvent(BlockStart(0));
+
+        // Fill with 30 distinct tokens — must NOT trip (distinct == window).
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < window; i++)
+        {
+            action = d.InspectEvent(TextDelta($"w{i} "));
+            Assert.Equal(DetectionActionKind.None, action.Kind);
+        }
+
+        // Now repeat one token. As it evicts the distinct prefix, the distinct count
+        // falls; once distinct < 6 the guard trips. It must trip within ~window pushes.
+        for (var i = 0; i < window + 5 && action.Kind == DetectionActionKind.None; i++)
+        {
+            action = d.InspectEvent(TextDelta("same "));
+        }
+
+        Assert.Equal(DetectionActionKind.Abort, action.Kind);
+        Assert.True(ctx.RunawayDetected);
+    }
+
+    [Theory]
+    [InlineData(6, false)]  // distinct == floor (window*ratio = 30*0.2 = 6): NOT < floor -> no trip
+    [InlineData(5, true)]   // distinct == floor-1: < floor -> trip
+    public void Repetition_RatioBoundary_IsStrictLessThan(int distinctTokens, bool expectTrip)
+    {
+        // Contract: the trip condition is `distinct < window*ratio` (strict). With
+        // window 30 and ratio 0.2 the floor is exactly 6, so 6 distinct must NOT trip
+        // and 5 distinct must. Pins the strict `<` against a `<=` mutation.
+        const int window = 30;
+        var ctx = Ctx();
+        var d = Detector(ctx, RepOpts(window: window, ratio: 0.2));
+        d.InspectEvent(BlockStart(0));
+
+        // Fill the window cycling through exactly `distinctTokens` distinct values so the
+        // full window holds that many distinct tokens.
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < window * 3 && action.Kind == DetectionActionKind.None; i++)
+        {
+            action = d.InspectEvent(TextDelta($"t{i % distinctTokens} "));
+        }
+
+        Assert.Equal(expectTrip ? DetectionActionKind.Abort : DetectionActionKind.None, action.Kind);
+        Assert.Equal(expectTrip, ctx.RunawayDetected);
+    }
+
+    [Theory]
+    [InlineData(50, true)]   // exactly window identical tokens -> full -> trips
+    [InlineData(49, false)]  // one short of window -> not full -> no trip
+    public void Repetition_FullnessBoundary_TripsAtExactlyWindow(int count, bool expectTrip)
+    {
+        // Contract: the fullness gate is `_ringCount >= window` (strict boundary). Exactly
+        // `window` identical tokens fills the window and trips; `window-1` does not.
+        const int window = 50;
+        var ctx = Ctx();
+        var d = Detector(ctx, RepOpts(window: window));
+        d.InspectEvent(BlockStart(0));
+
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < count && action.Kind == DetectionActionKind.None; i++)
+        {
+            action = d.InspectEvent(TextDelta("x "));
+        }
+
+        Assert.Equal(expectTrip ? DetectionActionKind.Abort : DetectionActionKind.None, action.Kind);
+        Assert.Equal(expectTrip, ctx.RunawayDetected);
     }
 }

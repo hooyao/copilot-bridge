@@ -56,6 +56,16 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
     private int _ringCount;     // tokens currently in the ring (<= window)
     private Dictionary<string, int>? _ringCounts;
     private string _tokenTail = "";
+    // Whole-request gate for the repetition signal: window > 0 AND the ratio floor is a
+    // usable fraction (0 < ratio < 1). An out-of-range ratio (a config typo like 0, a
+    // negative, or >= 1 which would force a trip on any full window) disables the signal
+    // rather than force-aborting every response. Computed once in Begin().
+    private bool _repetitionEnabled;
+    // Cap on the carried partial token so a whitespace-free run (base64, minified JSON,
+    // CJK) cannot make `_tokenTail + text` reallocate ever-larger strings (quadratic).
+    // A token longer than the window is itself degenerate and its exact bytes past the
+    // cap do not change the unique-token ratio, so truncating is safe. Bounded per delta.
+    private int _tokenTailCap;
 
     public RunawayGuardDetector(
         DetectorOrder<RunawayGuardDetector> order,
@@ -82,7 +92,13 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
     private void ResetRepetition()
     {
         var window = _opts.RepetitionWindow;
-        if (window > 0)
+        var ratio = _opts.RepetitionMinUniqueRatio;
+        // Enable only for a positive window AND a usable ratio floor (0 < ratio < 1).
+        // ratio <= 0 can never trip (dead config); ratio >= 1 would trip on EVERY full
+        // window (distinct <= window always) — a config typo must not force-abort every
+        // response, so treat out-of-range as disabled.
+        _repetitionEnabled = window > 0 && ratio > 0.0 && ratio < 1.0;
+        if (_repetitionEnabled)
         {
             // Allocate lazily to window size; reused per block by clearing counts.
             if (_ring is null || _ring.Length != window)
@@ -94,6 +110,9 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
             {
                 _ringCounts!.Clear();
             }
+            // A partial token never needs to exceed the window to affect the ratio; cap
+            // it there (min 1) so a whitespace-free run cannot grow the tail unboundedly.
+            _tokenTailCap = window;
         }
         _ringHead = 0;
         _ringCount = 0;
@@ -126,7 +145,7 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
                 if (_totalDeltaBytes > _opts.MaxDeltaBytes)
                     return Trip($"cumulative delta bytes {_totalDeltaBytes} exceeded MaxDeltaBytes {_opts.MaxDeltaBytes}");
 
-                if (_opts.RepetitionWindow > 0 && FeedRepetition(evt.Data, out var repReason))
+                if (_repetitionEnabled && FeedRepetition(evt.Data, out var repReason))
                     return Trip(repReason);
                 break;
         }
@@ -157,7 +176,11 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
         var pieces = combined.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
 
         var complete = endsOnBoundary ? pieces.Length : pieces.Length - 1;
-        _tokenTail = endsOnBoundary ? "" : (pieces.Length > 0 ? pieces[^1] : combined);
+        var tail = endsOnBoundary ? "" : (pieces.Length > 0 ? pieces[^1] : combined);
+        // Bound the carried tail: a whitespace-free run (base64/minified/CJK) must not
+        // grow it without limit (quadratic reallocation on the default path). Truncating
+        // a token past the window length cannot change the unique-token ratio.
+        _tokenTail = tail.Length > _tokenTailCap ? tail[.._tokenTailCap] : tail;
 
         for (var i = 0; i < complete; i++)
         {
@@ -250,7 +273,7 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
     /// <see cref="ResponseDetectionError.Message"/>).</summary>
     private const string RunawayMessage =
         "[copilot-bridge] The upstream model produced a runaway response "
-        + "(exceeded the configured size/length budget) and was aborted; forcing a clean retry. "
-        + "If this is a false positive on a legitimately large output, raise "
-        + "Pipeline:Detectors:RunawayGuard:MaxDeltaBytes / MaxDeltaCount in appsettings.json and restart copilot-bridge.";
+        + "(exceeded a configured volume budget or degenerated into repeated tokens) and was aborted; forcing a clean retry. "
+        + "If this is a false positive on a legitimately large or repetitive output, raise "
+        + "Pipeline:Detectors:RunawayGuard:MaxDeltaBytes / MaxDeltaCount / RepetitionMinUniqueRatio (or lower RepetitionWindow to 0) in appsettings.json and restart copilot-bridge.";
 }
