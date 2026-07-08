@@ -8,19 +8,18 @@ point with enough detail to act on (which subject leaked — a tool or a control
 envelope — in which block, what the guard did), and log records emitted while
 handling a request are correlated to the request's trace id so an operator can
 move between a log line and its trace JSON files.
-
 ## Requirements
-
 ### Requirement: Response-leak detection is logged at the detection point
 
 When the response-leak guard detects a leak, the bridge SHALL emit exactly one
 `Warning` log record at the point of detection — for both a leaked `<invoke>`
 tool call and a leaked Claude Code control envelope (task notification,
-teammate/channel/cross-session message, or tick) — identifying the leaked subject
-(the tool name for an `<invoke>` leak, or the control-envelope subject such as
-`task-notification` for a control-envelope leak), the content block type it was
-found in (`text` or `thinking`), the action taken (the error signal and whether it
-was delivered by injecting a mid-stream event or by buffering), and the exact
+teammate/channel/cross-session message, tick, or system-reminder) — identifying
+the leaked subject (the tool name for an `<invoke>` leak, or the control-envelope
+subject such as `task-notification` or `system-reminder` for a control-envelope
+leak), the content block type it was found in (`text` or `thinking`), the action
+taken (the error signal and whether it was delivered by injecting a mid-stream
+event or by buffering), and the exact
 `Pipeline:Detectors:ResponseLeakGuard:Signatures` configuration key that disables the
 tripped signature (with the note that a restart is required to apply the change).
 The record SHALL NOT contain the leaked markup or any tool parameter, envelope
@@ -196,3 +195,4 @@ real bytes on each side is what lets an operator diff the translation.
 - **THEN** `upstream-resp` records the partial bytes received before the fault and
   carries the fault in its error field, rather than recording an empty or
   clean-200 artifact
+
