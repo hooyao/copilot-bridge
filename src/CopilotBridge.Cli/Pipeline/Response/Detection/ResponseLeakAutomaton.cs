@@ -14,8 +14,8 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// <item>a leaked Claude Code control/event envelope
 /// (<c>&lt;task-notification&gt;</c>, <c>&lt;teammate-message&gt;</c>,
 /// <c>&lt;channel&gt;</c>, <c>&lt;cross-session-message&gt;</c>,
-/// <c>&lt;tick&gt;</c>) echoed back as the model's own output (instead of
-/// remaining injected context).</item>
+/// <c>&lt;tick&gt;</c>, <c>&lt;system-reminder&gt;</c>) echoed back as the
+/// model's own output (instead of remaining injected context).</item>
 /// </list>
 /// Both force the same clean client retry.
 /// </summary>
@@ -99,6 +99,7 @@ internal sealed class ResponseLeakAutomaton
             openPrefix: "<cross-session-message", attribute: "from",
             closeTag: "</cross-session-message>", subject: LeakSignatures.CrossSessionMessage));
         AddIfEnabled(LeakSignatures.Tick, () => new TickMatcher());
+        AddIfEnabled(LeakSignatures.SystemReminder, () => new SystemReminderMatcher());
 
         _matchers = matchers.ToArray();
     }
@@ -695,6 +696,63 @@ internal sealed class ResponseLeakAutomaton
         public string Signature => LeakSignatures.Tick;
 
         public string? Subject => LeakSignatures.Tick;
+
+        public void Reset()
+        {
+            _open.Reset(); _close.Reset();
+            _opened = false;
+            _sinceOpen = 0;
+        }
+
+        public bool Feed(char c)
+        {
+            if (_open.Feed(c))
+            {
+                _opened = true;
+                _sinceOpen = 0;
+                _close.Reset();
+                return false; // the opening '>' is not inner content
+            }
+
+            if (!_opened) return false;
+
+            if (_sinceOpen <= CloseLength) _sinceOpen++;
+
+            if (_close.Feed(c))
+            {
+                var nonEmpty = _sinceOpen > CloseLength;
+                _opened = false; // end this envelope; a later one can still trip
+                return nonEmpty;
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Matches <c>&lt;system-reminder&gt;…&lt;/system-reminder&gt;</c> with non-empty
+    /// inner text. Claude Code wraps every attachment/system context block with this
+    /// bare tag (no attributes) via <c>wrapInSystemReminder</c>; a Copilot-served
+    /// model intermittently echoes one back as its own output. Shape is identical to
+    /// <see cref="TickMatcher"/> — a fixed open tag, a fixed close tag, and non-empty
+    /// inner text as the sole proof — so the inner length is tracked as a small
+    /// bounded counter (chars since the opening tag, minus the closing tag's length),
+    /// letting an empty <c>&lt;system-reminder&gt;&lt;/system-reminder&gt;</c> pass and
+    /// keeping the counter from growing without bound.
+    /// </summary>
+    private sealed class SystemReminderMatcher : ILeakMatcher
+    {
+        private const int CloseLength = 18; // "</system-reminder>".Length
+
+        private readonly KmpMatcher _open = new("<system-reminder>");
+        private readonly KmpMatcher _close = new("</system-reminder>");
+
+        private bool _opened;
+        private int _sinceOpen; // capped at CloseLength + 1; > CloseLength ⇒ non-empty inner
+
+        public string Signature => LeakSignatures.SystemReminder;
+
+        public string? Subject => LeakSignatures.SystemReminder;
 
         public void Reset()
         {

@@ -38,9 +38,9 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 - **Auto-repairs tool-call and control-envelope leaks.** Copilot-served models
   occasionally emit a tool call as literal `<invoke …>` text — or a Claude Code
   control envelope such as `<task-notification>`, `<teammate-message>`,
-  `<channel>`, `<cross-session-message>`, or `<tick>` — instead of a real
-  structured block. The bridge detects this and makes the client retry the turn
-  cleanly, so it doesn't get stuck (new in 0.2.2-beta).
+  `<channel>`, `<cross-session-message>`, `<tick>`, or the `<system-reminder>`
+  wrapper — instead of a real structured block. The bridge detects this and makes
+  the client retry the turn cleanly, so it doesn't get stuck (new in 0.2.2-beta).
 
 ## Install & run
 

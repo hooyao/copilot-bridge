@@ -20,6 +20,7 @@ public class ResponseDetectionErrorTests
     [InlineData("channel", "Channel")]
     [InlineData("cross-session-message", "CrossSessionMessage")]
     [InlineData("tick", "Tick")]
+    [InlineData("system-reminder", "SystemReminder")]
     public void ConfigKey_MapsKebabToPascal(string signature, string expected)
     {
         // Contract: a kebab signature id maps to the PascalCase config property name
