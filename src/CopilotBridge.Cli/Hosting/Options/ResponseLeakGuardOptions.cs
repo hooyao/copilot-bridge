@@ -8,8 +8,9 @@ namespace CopilotBridge.Cli.Hosting.Options;
 /// than a real <c>tool_use</c> block), and a Claude Code control/event envelope
 /// (<c>&lt;task-notification&gt;</c>, <c>&lt;teammate-message&gt;</c>,
 /// <c>&lt;channel&gt;</c>, <c>&lt;cross-session-message&gt;</c>,
-/// <c>&lt;tick&gt;</c>) leaked as literal text inside a text/thinking block. On
-/// either it forces the client to retry the turn cleanly.
+/// <c>&lt;tick&gt;</c>, <c>&lt;system-reminder&gt;</c>) leaked as literal text
+/// inside a text/thinking block. On either it forces the client to retry the turn
+/// cleanly.
 /// </summary>
 /// <remarks>
 /// Detection is structural and shape-gated. For a tool-call leak it requires ALL
@@ -104,6 +105,18 @@ internal sealed class ResponseLeakSignaturesOptions
     public bool Tick { get; set; } = true;
 
     /// <summary>
+    /// Leaked <c>&lt;system-reminder&gt;</c> wrapper. Claude Code wraps every
+    /// attachment/system context block as <c>&lt;system-reminder&gt;…&lt;/system-reminder&gt;</c>
+    /// (a bare tag, no attributes); a Copilot-served model can echo one back as its
+    /// own output. Detected as closed + non-empty inner, like <c>&lt;tick&gt;</c>.
+    /// Default true. Because its only proof is "closed and non-empty" (no unique
+    /// child/attribute), an <b>unfenced</b> meta-discussion of the wrapper can trip
+    /// it — turn this one switch off to clear that false positive while the other
+    /// signatures stay active.
+    /// </summary>
+    public bool SystemReminder { get; set; } = true;
+
+    /// <summary>
     /// Whether the given signature id (kebab-case, from
     /// <see cref="Pipeline.Response.Detection.LeakSignatures"/>) is enabled. The
     /// single id→flag mapping: callers derive the enabled set by filtering
@@ -121,6 +134,7 @@ internal sealed class ResponseLeakSignaturesOptions
         Pipeline.Response.Detection.LeakSignatures.Channel => Channel,
         Pipeline.Response.Detection.LeakSignatures.CrossSessionMessage => CrossSessionMessage,
         Pipeline.Response.Detection.LeakSignatures.Tick => Tick,
+        Pipeline.Response.Detection.LeakSignatures.SystemReminder => SystemReminder,
         _ => throw new System.ArgumentOutOfRangeException(
             nameof(signatureId), signatureId, "Unknown leak signature id."),
     };

@@ -642,8 +642,10 @@ The same detector also detects a second family of leaks: Claude Code **control /
 event envelopes** emitted as literal text — `<task-notification>` (closed, with a
 closed `<task-id>` and at least one closed `<summary>`/`<status>`/`<output-file>`
 child), `<teammate-message teammate_id="…">`, `<channel source="…">`,
-`<cross-session-message from="…">`, and `<tick>…</tick>` (non-empty). Each is
-**shape-gated** the same way: closed, required child/attribute present and
+`<cross-session-message from="…">`, `<tick>…</tick>` (non-empty), and
+`<system-reminder>…</system-reminder>` (the bare-tag wrapper Claude Code puts
+around every injected attachment/system block; non-empty inner, no attributes).
+Each is **shape-gated** the same way: closed, required child/attribute present and
 non-empty, and not inside a code fence. `<channel>` is distinguished from the
 sibling `<channel-message>` wrapper by its exact close tag, so the latter never
 trips the guard. Both families share one config, one retry path, and one
@@ -675,11 +677,12 @@ empirical basis (~2.2% of responses in a poisoned session, all closed/unfenced).
 
 Each signature can be **disabled independently** under
 `Pipeline:Detectors:ResponseLeakGuard:Signatures` (`Invoke`, `TaskNotification`,
-`TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`; all default true) — a
-false-positive escape hatch. If the model is legitimately echoing this markup (say
-the user is discussing how `<invoke>` tool-use or a `<task-notification>` envelope
-works and a sample reply gets caught), turning off just that one signature omits
-only its matcher and leaves the rest of the guard active. The tripped signature and
+`TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`, `SystemReminder`; all
+default true) — a false-positive escape hatch. If the model is legitimately echoing
+this markup (say the user is discussing how `<invoke>` tool-use or a
+`<task-notification>` envelope works and a sample reply gets caught), turning off
+just that one signature omits only its matcher and leaves the rest of the guard
+active. The tripped signature and
 the exact key to flip are named in both the retry error the client receives and the
 detection-point `Warning`, so a false positive is self-service to fix. Config is
 read at **startup, so a restart is required** after changing a switch. (Hot-reload

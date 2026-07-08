@@ -23,10 +23,11 @@ internal static class LeakSignatures
     public const string Channel = "channel";
     public const string CrossSessionMessage = "cross-session-message";
     public const string Tick = "tick";
+    public const string SystemReminder = "system-reminder";
 
     /// <summary>Every signature id, in the automaton's matcher order.</summary>
     public static readonly string[] All =
     {
-        Invoke, TaskNotification, TeammateMessage, Channel, CrossSessionMessage, Tick,
+        Invoke, TaskNotification, TeammateMessage, Channel, CrossSessionMessage, Tick, SystemReminder,
     };
 }

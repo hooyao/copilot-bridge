@@ -14,8 +14,9 @@ namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 /// <see cref="ResponseLeakGuardOptions.ScanThinking"/> is on, <c>thinking_delta</c>)
 /// into a single per-block <see cref="ResponseLeakAutomaton"/> that detects both
 /// leaked <c>&lt;invoke&gt;</c> tool calls and leaked Claude Code control envelopes
-/// (task notifications, teammate/channel/cross-session messages, ticks). The
-/// automaton is reset at each <c>content_block_start</c>.
+/// (task notifications, teammate/channel/cross-session messages, ticks, and the
+/// system-reminder wrapper). The automaton is reset at each
+/// <c>content_block_start</c>.
 /// </summary>
 /// <remarks>
 /// Scoped DI service. Construction is pure DI (an <c>IOptionsSnapshot</c> + a

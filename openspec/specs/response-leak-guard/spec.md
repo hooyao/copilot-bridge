@@ -16,9 +16,7 @@ detectable (it sees every SSE event) and fixable without polluting history (it c
 force a clean retry before the dirty bytes commit). This capability defines a
 response-pipeline guard that structurally detects each leak signature and forces
 the client to retry the turn.
-
 ## Requirements
-
 ### Requirement: Structural leak detection
 
 The bridge SHALL classify a response content block as a tool-call leak only when
@@ -184,8 +182,7 @@ allocation on the response path.
 #### Scenario: Defaults
 - **WHEN** no `Pipeline:Detectors:ResponseLeakGuard` values are overridden
 - **THEN** the guard is enabled, stream-preserving, uses `OverloadedError`, scans
-  thinking blocks, caps per-block accumulation at 10000 characters, and enables
-  every per-signature toggle
+  thinking blocks, and enables every per-signature toggle
 
 ### Requirement: Control-envelope leak detection
 
@@ -209,6 +206,10 @@ The recognized envelopes and their required shape are:
 4. `<cross-session-message …>` … `</cross-session-message>` closed, with a
    non-empty `from="…"` attribute before the opening `>`.
 5. `<tick>` … `</tick>` closed, with non-empty inner text.
+6. `<system-reminder>` … `</system-reminder>` closed, with non-empty inner text.
+   The wrapper is the bare tag with no attributes (as Claude Code's
+   `wrapInSystemReminder` renders it); its only proof is that it is closed and its
+   inner content is non-empty.
 
 Control-envelope detection SHALL share the single-pass, per-block streaming
 discipline of tool-call leak detection (state reset at each `content_block_start`,
@@ -220,9 +221,10 @@ when the guard is disabled it performs no control-envelope scanning.
 
 Detection SHALL NOT classify a block as a control-envelope leak when the envelope
 is unclosed, is missing its required child or attribute, has an empty value where
-non-empty content is required, or appears inside a code fence (text blocks). The
-distinct `<channel-message>` … `</channel-message>` wrapper SHALL NOT be
-classified as a `<channel>` leak.
+non-empty content is required (including an empty
+`<system-reminder></system-reminder>`), or appears inside a code fence (text
+blocks). The distinct `<channel-message>` … `</channel-message>` wrapper SHALL NOT
+be classified as a `<channel>` leak.
 
 #### Scenario: Closed task-notification is a leak
 - **WHEN** a `text` block contains a closed `<task-notification>` with a closed
@@ -241,10 +243,16 @@ classified as a `<channel>` leak.
   inside a code fence
 - **THEN** the block is classified as a leak
 
+#### Scenario: Closed non-empty system-reminder is a leak
+- **WHEN** a `text` block contains `<system-reminder>…</system-reminder>` with
+  non-empty inner text, not inside a code fence
+- **THEN** the block is classified as a leak and the turn is retried
+
 #### Scenario: Missing required proof is not a leak
 - **WHEN** a control envelope is unclosed, or a `<task-notification>` lacks a
   closed `<task-id>` or any proof child, or `teammate_id`/`source`/`from` is
-  absent or empty, or a `<tick>` has empty inner text
+  absent or empty, or a `<tick>` has empty inner text, or a `<system-reminder>`
+  has empty inner text
 - **THEN** the block is NOT classified as a leak and its content passes through
   unchanged
 
@@ -262,7 +270,8 @@ classified as a `<channel>` leak.
 #### Scenario: Detection invariant across split boundaries and overlapping restart
 - **WHEN** a recognized closed envelope is delivered split at any character
   boundary, or immediately preceded by a false partial start (e.g.
-  `<<task-notification` or `<task<task-notification`)
+  `<<task-notification`, `<task<task-notification`, or
+  `<system<system-reminder>`)
 - **THEN** the leak is detected identically regardless of where the splits fall
   and the valid restart is not dropped
 
@@ -275,14 +284,14 @@ classified as a `<channel>` leak.
 
 The guard SHALL expose an independent enable switch for each leak signature under
 `Pipeline:Detectors:ResponseLeakGuard:Signatures`, with the boolean keys `Invoke`,
-`TaskNotification`, `TeammateMessage`, `Channel`, `CrossSessionMessage`, and
-`Tick`, each defaulting to true. A signature whose switch is false SHALL NOT be
-evaluated — its matcher is not constructed and the corresponding markup passes
-through unchanged — while every still-enabled signature continues to trip the guard
-normally. This is a false-positive escape hatch for a session that legitimately
-echoes the markup (for example a user discussing how `<invoke>` tool-use or a
-`<task-notification>` envelope works, whose faithful sample reply would otherwise
-be caught).
+`TaskNotification`, `TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`,
+and `SystemReminder`, each defaulting to true. A signature whose switch is false
+SHALL NOT be evaluated — its matcher is not constructed and the corresponding
+markup passes through unchanged — while every still-enabled signature continues to
+trip the guard normally. This is a false-positive escape hatch for a session that
+legitimately echoes the markup (for example a user discussing how `<invoke>`
+tool-use, a `<task-notification>` envelope, or the `<system-reminder>` wrapper
+works, whose faithful sample reply would otherwise be caught).
 
 The per-signature switches SHALL be read per request when the detector initializes
 for that request. Because the switches do not reload at runtime, a change to a
@@ -304,10 +313,16 @@ switch.
   while a `<task-notification>` (or any other still-enabled signature) in the same
   configuration is still classified as a leak
 
+#### Scenario: System-reminder signature can be disabled independently
+- **WHEN** `Signatures:SystemReminder` is false and a response contains a closed,
+  non-empty, unfenced `<system-reminder>` envelope
+- **THEN** the block is NOT classified as a leak and passes through unchanged,
+  while every other still-enabled signature in the same configuration still trips
+
 #### Scenario: All signatures default on
 - **WHEN** no `Signatures` values are overridden
-- **THEN** all six signatures are enabled and behave exactly as when the sub-block
-  is absent
+- **THEN** all seven signatures are enabled and behave exactly as when the
+  sub-block is absent
 
 #### Scenario: Retry error names the signature, disable key, and restart
 - **WHEN** a leak is detected for a given signature
