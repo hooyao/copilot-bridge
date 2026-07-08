@@ -183,29 +183,52 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
             return false;
         }
 
-        // Prepend the carried partial token; split on whitespace. The final piece is a
-        // partial token unless the text ended on whitespace — carry it to the next delta.
+        // Prepend any carried partial token so a token split across deltas is treated as
+        // one token. String.Concat returns `text` unchanged when _tokenTail is empty (the
+        // common case — most deltas end on whitespace), so this allocates only when a
+        // token actually spans a delta boundary.
         var combined = _tokenTail + text;
-        var endsOnBoundary = char.IsWhiteSpace(combined[^1]);
-        var pieces = combined.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var span = combined.AsSpan();
+        var n = span.Length;
+        var i = 0;
 
-        var complete = endsOnBoundary ? pieces.Length : pieces.Length - 1;
-        var tail = endsOnBoundary ? "" : (pieces.Length > 0 ? pieces[^1] : combined);
-        // Bound the carried tail: a whitespace-free run (base64/minified/CJK) must not
-        // grow it without limit (quadratic reallocation on the default path). Truncating
-        // a token past the window length cannot change the unique-token ratio.
-        _tokenTail = tail.Length > _tokenTailCap ? tail[.._tokenTailCap] : tail;
+        // Default: this delta leaves no trailing partial token. Overwritten below if it
+        // ends mid-token.
+        _tokenTail = string.Empty;
 
-        for (var i = 0; i < complete; i++)
+        // Span-keyed lookup into the multiset: probe/increment counts WITHOUT allocating a
+        // substring per token. A substring is materialized only for a token that is new to
+        // the window (see PushToken). For a degenerate single-token loop this collapses
+        // ~one allocation per repeated fragment down to ~one for the whole response.
+        var lookup = _ringCounts!.GetAlternateLookup<ReadOnlySpan<char>>();
+
+        while (i < n)
         {
-            PushToken(pieces[i]);
+            while (i < n && char.IsWhiteSpace(span[i])) i++;
+            if (i >= n) break;
+            var start = i;
+            while (i < n && !char.IsWhiteSpace(span[i])) i++;
+
+            if (i == n)
+            {
+                // Reached the end with no terminating whitespace → this token is
+                // incomplete; carry it to the next delta, bounded so a whitespace-free
+                // run (base64/minified/CJK) cannot grow it unboundedly. Truncating a token
+                // past the window length cannot change the unique-token ratio.
+                var tail = span[start..];
+                if (tail.Length > _tokenTailCap) tail = tail[.._tokenTailCap];
+                _tokenTail = tail.ToString();
+                break;
+            }
+
+            PushToken(span[start..i], lookup);
 
             // Only meaningful once the window is full: a short legitimate repetition
             // (fewer than window tokens) must not trip. Uses the clamped _window, which
             // the ring is sized to (NOT the raw config value).
             if (_ringCount >= _window)
             {
-                var distinct = _ringCounts!.Count;
+                var distinct = _ringCounts.Count;
                 if (distinct < _window * _opts.RepetitionMinUniqueRatio)
                 {
                     reason = $"repetition: {distinct} unique of the trailing {_window} tokens "
@@ -217,9 +240,11 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
         return false;
     }
 
-    /// <summary>Push one token into the ring, evicting the oldest when full, keeping
-    /// the multiset of counts in sync so <c>_ringCounts.Count</c> is the distinct count.</summary>
-    private void PushToken(string token)
+    /// <summary>Push one token (as a span) into the ring, evicting the oldest when full,
+    /// keeping the multiset of counts in sync so <c>_ringCounts.Count</c> is the distinct
+    /// count. Reuses the stored key string when the token is already in the window (no
+    /// allocation); materializes the token once only when it is new.</summary>
+    private void PushToken(ReadOnlySpan<char> token, Dictionary<string, int>.AlternateLookup<ReadOnlySpan<char>> lookup)
     {
         var ring = _ring!;
         var counts = _ringCounts!;
@@ -236,8 +261,21 @@ internal sealed class RunawayGuardDetector : AbstractOrderAwareDetector<RunawayG
         {
             _ringCount++;
         }
-        ring[_ringHead] = token;
-        counts[token] = counts.TryGetValue(token, out var c) ? c + 1 : 1;
+
+        string tokenStr;
+        if (lookup.TryGetValue(token, out var existingKey, out var c))
+        {
+            // Already in the window: reuse the stored string, no allocation.
+            tokenStr = existingKey;
+            counts[existingKey] = c + 1;
+        }
+        else
+        {
+            // New to the window: materialize the key once.
+            tokenStr = token.ToString();
+            counts[tokenStr] = 1;
+        }
+        ring[_ringHead] = tokenStr;
         _ringHead = (_ringHead + 1) % ring.Length;
     }
 

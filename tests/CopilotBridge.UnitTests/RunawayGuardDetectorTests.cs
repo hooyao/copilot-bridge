@@ -477,6 +477,48 @@ public class RunawayGuardDetectorTests
     }
 
     [Fact]
+    public void Repetition_RepeatedTokenAllocatesFarLessThanDistinct_SpanLookupReusesKey()
+    {
+        // Contract (allocation): the span-keyed tokenizer materializes a substring only
+        // for a token that is NEW to the window. Packing many tokens into each delta makes
+        // the per-token key cost dominate the fixed per-delta cost (the JSON string +
+        // ExtractDeltaText). A delta full of ONE repeated token then allocates ~one key,
+        // while a delta full of DISTINCT tokens allocates one key each. (The prior
+        // Split-based tokenizer allocated a substring per token in BOTH cases and would
+        // fail this — the test guards the optimization, not just correctness.)
+        const int tokensPerDelta = 2000;
+        const int deltas = 20;
+
+        long Measure(Func<int, string> tokenAt)
+        {
+            var ctx = Ctx();
+            var d = Detector(ctx, RepOpts(window: 100_000, ratio: 0.0001)); // never trips
+            d.InspectEvent(BlockStart(0));
+            var payloads = new string[deltas];
+            for (var k = 0; k < deltas; k++)
+            {
+                var sb = new System.Text.StringBuilder();
+                for (var j = 0; j < tokensPerDelta; j++) sb.Append(tokenAt(k * tokensPerDelta + j)).Append(' ');
+                payloads[k] = sb.ToString();
+            }
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            foreach (var p in payloads) d.InspectEvent(TextDelta(p));
+            return GC.GetAllocatedBytesForCurrentThread() - before;
+        }
+
+        Measure(_ => "warm"); // warm up JIT/first-call paths
+
+        var repeated = Measure(_ => "same");        // 1 distinct token overall, reused
+        var distinct = Measure(i => "t" + i);       // all distinct tokens
+
+        // With the fixed per-delta cost amortized across 2000 tokens, the repeated run must
+        // allocate far below half the distinct run — the difference is the per-token key
+        // substrings the span lookup avoids.
+        Assert.True(repeated * 2 < distinct,
+            $"repeated={repeated} bytes should be far below distinct={distinct} bytes (span lookup must reuse keys)");
+    }
+
+    [Fact]
     public void Repetition_ThinkingDelta_AlsoFeedsWindow()
     {
         // Contract: thinking_delta text feeds the window too (not just text_delta), so a
@@ -598,5 +640,84 @@ public class RunawayGuardDetectorTests
 
         Assert.Equal(DetectionActionKind.Abort, action.Kind);
         Assert.True(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void Repetition_AllWhitespaceDelta_FlushesPendingTailToken()
+    {
+        // Contract (tail carry-over): a token split so that a WHITESPACE-ONLY delta
+        // supplies its terminating boundary must be counted exactly once — the pending
+        // partial ("cou") is completed by the "\n\n" delta, not dropped or doubled. We
+        // assert the same trip timing as if the word had arrived whole: feeding
+        // "cou" then "\n\n" then repeating must trip identically to feeding "court "
+        // repeatedly. Uses a tiny window so the token count to trip is small.
+        static int TripAt(Func<int, string[]> deltasForWord)
+        {
+            var ctx = Ctx();
+            var d = Detector(ctx, RepOpts(window: 10, ratio: 0.15)); // trips at 1 distinct, window full
+            d.InspectEvent(BlockStart(0));
+            var count = 0;
+            for (var w = 0; w < 100; w++)
+            {
+                foreach (var frag in deltasForWord(w))
+                {
+                    count++;
+                    if (d.InspectEvent(TextDelta(frag)).Kind == DetectionActionKind.Abort)
+                    {
+                        return count; // number of deltas fed until the trip
+                    }
+                }
+            }
+            return -1; // never tripped
+        }
+
+        // Whole word (one delta) vs split-with-whitespace-flush ("cou" then "\n\n").
+        var whole = TripAt(_ => new[] { "court " });
+        var splitFlush = TripAt(_ => new[] { "cou", "\n\n" });
+
+        Assert.True(whole > 0, "whole-word feed should trip");
+        Assert.True(splitFlush > 0, "whitespace-flushed split feed should trip (tail flushed, not dropped)");
+        // Both accumulate the SAME "court" tokens; the split feed just uses 2 deltas per
+        // word instead of 1, so it trips after twice as many deltas — proving each word is
+        // counted once (if the tail were dropped it would never trip; if doubled, sooner).
+        Assert.Equal(whole * 2, splitFlush);
+    }
+
+    [Fact]
+    public void Repetition_EmptyDeltaBetweenFragments_PreservesPendingTail()
+    {
+        // Contract (ordering): an empty-text delta arriving mid-token must NOT clear the
+        // carried partial. Feeding "cou", then an empty delta, then "rt " must reassemble
+        // "court" — identical to feeding "court " directly. Guards the FeedRepetition
+        // early-return-before-tail-reset ordering.
+        static int TripAt(Func<string[]> frags)
+        {
+            var ctx = Ctx();
+            var d = Detector(ctx, RepOpts(window: 10, ratio: 0.15));
+            d.InspectEvent(BlockStart(0));
+            var words = 0;
+            for (var w = 0; w < 100; w++)
+            {
+                foreach (var frag in frags())
+                {
+                    if (d.InspectEvent(TextDelta(frag)).Kind == DetectionActionKind.Abort)
+                    {
+                        return words + 1; // words completed at trip
+                    }
+                }
+                words++;
+            }
+            return -1;
+        }
+
+        // An empty delta ("") carries no text (ExtractDeltaText -> empty) and must leave
+        // the pending "cou" tail intact so "rt " completes "court".
+        var withEmpty = TripAt(() => new[] { "cou", "", "rt " });
+        var direct = TripAt(() => new[] { "court " });
+
+        Assert.True(direct > 0, "direct feed should trip");
+        Assert.True(withEmpty > 0, "feed with an interleaved empty delta should still trip (tail preserved)");
+        // Same number of "court" words needed to fill the window and trip either way.
+        Assert.Equal(direct, withEmpty);
     }
 }
