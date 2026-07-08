@@ -477,6 +477,48 @@ public class RunawayGuardDetectorTests
     }
 
     [Fact]
+    public void Repetition_RepeatedTokenAllocatesFarLessThanDistinct_SpanLookupReusesKey()
+    {
+        // Contract (allocation): the span-keyed tokenizer materializes a substring only
+        // for a token that is NEW to the window. Packing many tokens into each delta makes
+        // the per-token key cost dominate the fixed per-delta cost (the JSON string +
+        // ExtractDeltaText). A delta full of ONE repeated token then allocates ~one key,
+        // while a delta full of DISTINCT tokens allocates one key each. (The prior
+        // Split-based tokenizer allocated a substring per token in BOTH cases and would
+        // fail this — the test guards the optimization, not just correctness.)
+        const int tokensPerDelta = 2000;
+        const int deltas = 20;
+
+        long Measure(Func<int, string> tokenAt)
+        {
+            var ctx = Ctx();
+            var d = Detector(ctx, RepOpts(window: 100_000, ratio: 0.0001)); // never trips
+            d.InspectEvent(BlockStart(0));
+            var payloads = new string[deltas];
+            for (var k = 0; k < deltas; k++)
+            {
+                var sb = new System.Text.StringBuilder();
+                for (var j = 0; j < tokensPerDelta; j++) sb.Append(tokenAt(k * tokensPerDelta + j)).Append(' ');
+                payloads[k] = sb.ToString();
+            }
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            foreach (var p in payloads) d.InspectEvent(TextDelta(p));
+            return GC.GetAllocatedBytesForCurrentThread() - before;
+        }
+
+        Measure(_ => "warm"); // warm up JIT/first-call paths
+
+        var repeated = Measure(_ => "same");        // 1 distinct token overall, reused
+        var distinct = Measure(i => "t" + i);       // all distinct tokens
+
+        // With the fixed per-delta cost amortized across 2000 tokens, the repeated run must
+        // allocate far below half the distinct run — the difference is the per-token key
+        // substrings the span lookup avoids.
+        Assert.True(repeated * 2 < distinct,
+            $"repeated={repeated} bytes should be far below distinct={distinct} bytes (span lookup must reuse keys)");
+    }
+
+    [Fact]
     public void Repetition_ThinkingDelta_AlsoFeedsWindow()
     {
         // Contract: thinking_delta text feeds the window too (not just text_delta), so a
