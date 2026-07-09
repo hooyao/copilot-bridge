@@ -72,3 +72,10 @@ Baseline self-check first (per project memory: worktree/agent bases can lag). Co
 - [x] 9.4 Strengthened `/cc` mid-stream assertions: retry test now asserts the injected `error` event is the exact shared envelope prefix, EXACTLY ONCE, AFTER the relayed `text_delta` (order+count, not substring); truncate test now asserts the prior event survived. Closes gap #4.
 - [x] 9.5 Codex "disabled ⇒ byte-identical": `Codex_Disabled_T3StreamByteIdenticalToResponsivePath` (budget=0 vs 30s, full T3 event-sequence equality). Closes gap #5.
 - [x] 9.6 Full `dotnet test --filter "Category!=Integration"` green after follow-ups: 763/763.
+
+## 10. Copilot PR review (PR #32, 3 rounds of findings, all addressed)
+
+- [x] 10.1 Round 1 (4): dispose the first-byte linked CTS via `using` (was a per-request leak — verified safe for the still-streaming body read by `FirstByteCtsLifetimeProbe`); Codex `idleCts` manual Dispose → `using`; XML docs on `UpstreamTimeoutException` + `UpstreamTimeoutOptions` broadened from "/cc-only" to both paths.
+- [x] 10.2 Round 2 (3): `appsettings.json` `_comment` broadened to both paths; the reused-CTS arm/disarm nanosecond poison race (a timer firing between a successful read and the disarm permanently cancels the source → spurious next-read timeout) eliminated by replacing arm/disarm with `StreamIdleReader` (races `MoveNextAsync` against an independent `Task.Delay`; allocation-free fast path when the event is already buffered). New `StreamIdle_PacedUnderBudget_ManyEvents_NeverSpuriouslyAborts` guards it.
+- [x] 10.3 Round 3 (1): updated `docs/pipeline-design.md` §4.4.1 stream-idle description to the `StreamIdleReader` race-free mechanism (the doc still described the replaced arm/disarm shape).
+- [x] 10.4 Round 4: no findings. All 8 review threads resolved; open comments = 0. Final suite: 765/765 non-integration green.
