@@ -669,6 +669,7 @@ ResponseInspectionStage   injected with IEnumerable<IResponseDetector> (each a
     │                              (and the buffered body's top-level `model`)
     ├─ ResponseLeakDetector        Abort on leaked protocol markup (see §6.1)
     ├─ RunawayGuardDetector        Abort on degenerate response volume or token repetition
+    │                              (streaming AND buffered `application/json`; see §6.4)
     └─ ToolInputValidationDetector Observe (default) / Abort invalid tool input
     │
     ▼
@@ -744,6 +745,21 @@ Because retry discards the whole attempt (including already-streamed dirty text)
 the dirty bytes never commit to the transcript — this breaks the self-reinforcing
 poisoning loop. See `docs/copilot-upstream-toolcall-bug-report.md` for the leak's
 empirical basis (~2.2% of responses in a poisoned session, all closed/unfenced).
+
+**Airtight streaming suppression (`BufferScannableBlocks`, default false).** With
+`PreserveStream=true` the guard relays each `text_delta` live and can only inject the
+error *after* the closing tag is scanned — so a detected leak's bytes have already
+reached the client (recent Claude Code may then keep the partial response instead of
+retrying). `BufferScannableBlocks=true` closes this: the stage withholds each
+**scannable** block (`text` and `thinking`, unconditionally) from `content_block_start`
+until `content_block_stop`, feeding detectors live but buffering output, and relays the
+block only if it stayed clean — so a leak is suppressed *before any byte is written*.
+Non-scannable blocks (`tool_use`/`input_json_delta`) still stream live, so only
+scannable blocks pay latency, and only until each block ends — a much smaller TTFT cost
+than whole-response buffering (`PreserveStream=false`). It has no effect when
+`PreserveStream=false` (already buffered) or the guard is off. `thinking` is withheld
+whenever it is scannable regardless of `ScanThinking` (which only gates whether the
+withheld block is *scanned*), keeping the stage free of per-detector scan-config coupling.
 
 Each signature can be **disabled independently** under
 `Pipeline:Detectors:ResponseLeakGuard:Signatures` (`Invoke`, `TaskNotification`,
@@ -839,6 +855,45 @@ private static async IAsyncEnumerable<SseItem<string>> TransformEvents(
 
 This is the standard async-iterator combinator pattern; consumption (the
 endpoint's writer) drives the entire chain lazily.
+
+### 6.4 Runaway guard
+
+`RunawayGuardDetector` is the degeneracy circuit-breaker: it aborts a runaway
+generation — a model stuck emitting an unbounded stream of tiny fragments, or
+repeating the same token — before it hangs the client, with the same retryable
+`overloaded_error`/529 the leak guard uses (setting `runaway=true` on the summary
+line). It trips on any of **four** per-response signals under
+`Pipeline:Detectors:RunawayGuard`:
+
+- **`MaxDeltaBytes`** — cumulative `content_block_delta` payload bytes (streaming only;
+  a buffered body has no deltas).
+- **`MaxDeltaCount`** — per-block ceiling on delta events (streaming only).
+- **`RepetitionWindow` / `RepetitionMinUniqueRatio`** — repetition *density*: a
+  trailing sliding window of whitespace tokens trips when it is **full** and its
+  unique-token ratio falls below the floor. This needs the window to fill, so it
+  targets long floods.
+- **`RepetitionMaxConsecutiveRepeat`** (default 50) — repetition *run length*: trips
+  when the same token repeats this many times **consecutively**, independent of the
+  window filling or total length. This catches a **short** flood the density window
+  can never see (observed: `claude-opus-4.8` repeating one token ~100× in a 108-token
+  body). A legitimate repetitive output that trips it is resolved by **raising** this
+  value, not disabling the guard; `<= 0` disables the signal.
+
+Both delivery paths are covered. On a streaming response the signals run per
+`content_block_delta` via `InspectEvent`; on a **buffered** (`application/json`)
+response — which Copilot returns when it ignores `stream:true` (seen with `tool_use`
+turns) — `InspectBuffered` parses the Anthropic body and feeds each `text`/`thinking`
+block's content through the *same* per-block core, so a runaway is caught whether or
+not Copilot streamed. (Before this, `RunawayGuard` implemented only `InspectEvent`, so
+a buffered runaway was relayed verbatim — the `count`/`court` captures.) The density
+and run-length signals share one whitespace tokenizer with a bounded carried-tail so a
+token split across deltas is counted once; the density ring materializes a key only for
+a token new to the window, and the run-length counter compares against a reused buffer,
+so the degenerate single-token path stays near-zero-allocation. All state resets per
+`content_block_start` (streaming) or per block (buffered). The detection-point `Warning`
+names the tripped reason, the `Signal`, and the delivery mode (`stream`/`buffer`), never
+the runaway content. See `docs/gpt55-runaway-diagnosis.md` for the original volume-runaway
+basis.
 
 ## 7. Routing semantics
 

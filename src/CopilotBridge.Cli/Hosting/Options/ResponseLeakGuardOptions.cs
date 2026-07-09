@@ -41,6 +41,26 @@ internal sealed class ResponseLeakGuardOptions
     /// </summary>
     public bool PreserveStream { get; set; } = true;
 
+    /// <summary>
+    /// Opt-in airtight streaming suppression. When true AND <see cref="PreserveStream"/>
+    /// is true, the guard withholds each <b>scannable</b> content block's
+    /// <c>content_block_delta</c> events (every <c>text</c> and <c>thinking</c> block,
+    /// unconditionally — withholding is not gated on <see cref="ScanThinking"/>; that
+    /// switch only controls whether the withheld <c>thinking</c> block is actually
+    /// <i>scanned</i>) from <c>content_block_start</c> until
+    /// <c>content_block_stop</c>, scans the assembled block, and relays it only if clean —
+    /// so a block classified as a leak is aborted BEFORE any of its leaked bytes reach the
+    /// client. Non-scannable blocks (e.g. <c>tool_use</c>/<c>input_json_delta</c>) still
+    /// stream live, preserving time-to-first-token for content that cannot carry a text
+    /// leak. Default false: streaming stays the pre-existing relay-until-detection
+    /// behaviour (which means a detected leak's bytes may already be on the client — the
+    /// residual gap this option closes when enabled). Has no effect when
+    /// <see cref="PreserveStream"/> is false (that mode already buffers the whole response
+    /// and emits a real status before any byte is written) or when the guard is disabled.
+    /// Read at startup; a restart is required after changing it.
+    /// </summary>
+    public bool BufferScannableBlocks { get; set; } = false;
+
     /// <summary>Which error to raise. Default <see cref="ResponseDetectionSignal.OverloadedError"/>.</summary>
     public ResponseDetectionSignal Signal { get; set; } = ResponseDetectionSignal.OverloadedError;
 

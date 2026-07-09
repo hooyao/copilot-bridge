@@ -80,6 +80,14 @@ internal sealed class ResponseLeakDetector : AbstractOrderAwareDetector<Response
     /// real HTTP status instead of a mid-stream SSE error.</summary>
     public override bool RequiresBuffering => !_opts.PreserveStream;
 
+    /// <summary>On the stream-preserving path, ask the stage to withhold each scannable
+    /// block until it completes so a detected leak is suppressed before any of the
+    /// block's bytes reach the client (opt-in; see
+    /// <see cref="ResponseLeakGuardOptions.BufferScannableBlocks"/>). Only meaningful when
+    /// stream-preserving — when <c>PreserveStream</c> is false the whole response is
+    /// already buffered, so this is moot.</summary>
+    public override bool BuffersScannableBlocks => _opts.PreserveStream && _opts.BufferScannableBlocks;
+
     public override void Begin()
     {
         // Build the automaton from this request's declared tools + the enabled
@@ -208,8 +216,14 @@ internal sealed class ResponseLeakDetector : AbstractOrderAwareDetector<Response
             foreach (var block in content.EnumerateArray())
             {
                 if (block.ValueKind != JsonValueKind.Object
-                    || !block.TryGetProperty("type", out var typeEl))
+                    || !block.TryGetProperty("type", out var typeEl)
+                    || typeEl.ValueKind != JsonValueKind.String)
                 {
+                    // A block with no string `type` is not scannable; skip it. The
+                    // ValueKind gate keeps GetString() from throwing on a non-string
+                    // `type`, which would escape this method's JsonException-scoped
+                    // fail-open (InspectBuffered promises to fail open on non-Anthropic
+                    // JSON, not to crash on it).
                     continue;
                 }
                 var blockType = typeEl.GetString();

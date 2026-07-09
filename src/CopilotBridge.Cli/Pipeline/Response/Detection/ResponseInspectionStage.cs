@@ -85,6 +85,14 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
                 // what makes a real HTTP status possible (PreserveStream=false).
                 await BufferThenDeliverAsync(source, detectors, ctx, ctx.Ct);
             }
+            else if (BuffersScannableBlocks(detectors))
+            {
+                // Per-block withhold-then-relay: keep a real HTTP 200 stream, but
+                // hold each scannable block's events until the block completes so a
+                // leak detected mid-block is suppressed before any of its bytes are
+                // written. Non-scannable blocks still stream live.
+                ctx.Response.EventStream = WrapStreamBufferingScannableBlocks(source, detectors, ctx, _log, ctx.Ct);
+            }
             else
             {
                 ctx.Response.EventStream = WrapStream(source, detectors, ctx, _log, ctx.Ct);
@@ -101,6 +109,15 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
         foreach (var d in detectors)
         {
             if (d.RequiresBuffering) return true;
+        }
+        return false;
+    }
+
+    private static bool BuffersScannableBlocks(IReadOnlyList<IResponseDetector> detectors)
+    {
+        foreach (var d in detectors)
+        {
+            if (d.BuffersScannableBlocks) return true;
         }
         return false;
     }
@@ -251,6 +268,165 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
                     yield return new SseItem<string>(action.ErrorJson!, "error");
                     yield break;
             }
+        }
+    }
+
+    /// <summary>
+    /// Stream-preserving delivery with per-block withholding (opt-in via
+    /// <see cref="ResponseLeakGuardOptions.BufferScannableBlocks"/>). Keeps a real
+    /// HTTP 200 stream, but holds each <b>scannable</b> block's events from
+    /// <c>content_block_start</c> until <c>content_block_stop</c> — feeding EVERY event
+    /// to detectors live (detection is unchanged; only OUTPUT is delayed) — and relays
+    /// the block only if no detector aborted during it. So a leak detected mid-block is
+    /// suppressed BEFORE any of its bytes reach the client, closing the gap where
+    /// <see cref="WrapStream"/> can only inject an error after the leaked bytes have
+    /// already streamed. Non-scannable blocks (<c>tool_use</c>) and all message-level
+    /// framing stream live, preserving time-to-first-token for content that cannot leak.
+    /// </summary>
+    /// <remarks>
+    /// A scannable block is a <c>text</c> or <c>thinking</c> block. <c>thinking</c> is
+    /// withheld regardless of <c>ScanThinking</c>: withholding a block the guard will not
+    /// scan only adds latency (no correctness change — it flushes clean at block end),
+    /// and keeping the stage free of per-detector scan-config coupling is worth that minor
+    /// cost in this opt-in mode. The withheld-block delivery necessarily batches a block's
+    /// text at block end rather than streaming it token-by-token — the inherent trade-off
+    /// of airtight suppression (you cannot show text before verifying it is clean).
+    /// </remarks>
+    private static async IAsyncEnumerable<SseItem<string>> WrapStreamBufferingScannableBlocks(
+        IAsyncEnumerable<SseItem<string>> source,
+        IReadOnlyList<IResponseDetector> detectors,
+        BridgeContext<MessagesRequest> ctx,
+        ILogger log,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        // Events of the current withheld block, in arrival order, flushed at
+        // content_block_stop iff the block stayed clean. Reused across blocks.
+        var blockBuffer = new List<SseItem<string>>();
+        var withholding = false;
+
+        await foreach (var evt in source.WithCancellation(ct))
+        {
+            var action = DetectionAction.None;
+            foreach (var d in detectors)
+            {
+                var a = d.InspectEvent(evt);
+                if (a.Kind != DetectionActionKind.None)
+                {
+                    // First non-None action wins (detector order = precedence).
+                    action = a;
+                    if (a.Kind == DetectionActionKind.Abort)
+                    {
+                        log.LogDebug("stage {Name}: detector {Detector} aborted the stream (block-buffered)", "ResponseInspection", d.Name);
+                    }
+                    break;
+                }
+            }
+
+            if (action.Kind == DetectionActionKind.Abort)
+            {
+                // Suppress: discard any withheld block (its bytes never reach the
+                // client — the whole point of this mode), inject the error, end.
+                blockBuffer.Clear();
+                yield return new SseItem<string>(action.ErrorJson!, "error");
+                yield break;
+            }
+
+            // The event this action renders: the original (None), the replacement
+            // (Rewrite), or nothing (Drop — recorded for the audit).
+            SseItem<string>? effective = action.Kind switch
+            {
+                DetectionActionKind.DropEvent => null,
+                DetectionActionKind.RewriteEvent => action.Event,
+                _ => evt,
+            };
+            if (action.Kind == DetectionActionKind.DropEvent)
+            {
+                ctx.DroppedEvents.Add(new DroppedSseEvent(evt.EventType, evt.Data));
+            }
+
+            if (evt.EventType == "content_block_start")
+            {
+                // Blocks are contiguous; a prior withheld block should have flushed at
+                // its stop. Flush defensively if not, then decide this block.
+                if (withholding)
+                {
+                    foreach (var b in blockBuffer) yield return b;
+                    blockBuffer.Clear();
+                    withholding = false;
+                }
+
+                if (IsScannableBlock(evt.Data))
+                {
+                    withholding = true;
+                    if (effective is { } startEvt) blockBuffer.Add(startEvt);
+                }
+                else if (effective is { } liveStart)
+                {
+                    yield return liveStart; // non-scannable → stream live
+                }
+                continue;
+            }
+
+            if (withholding)
+            {
+                if (effective is { } e) blockBuffer.Add(e);
+                if (evt.EventType == "content_block_stop")
+                {
+                    // Block stayed clean → relay it in full, in arrival order.
+                    foreach (var b in blockBuffer) yield return b;
+                    blockBuffer.Clear();
+                    withholding = false;
+                }
+                continue;
+            }
+
+            if (effective is { } live)
+            {
+                yield return live; // outside any withheld block → stream live
+            }
+        }
+
+        // The source completed GRACEFULLY while still withholding (a block whose
+        // content_block_stop never arrived — e.g. a stream that ended early). No detector
+        // aborted, so relay what was buffered: an unclosed envelope is not a leak under
+        // the guard's closed-shape rule, and dropping presumed-clean content would diverge
+        // from plain streaming. (A *throwing* upstream fault — TCP reset, cancellation —
+        // bypasses this flush entirely; the withheld partial is discarded and the fault is
+        // surfaced by the endpoint's relay loop, matching this mode's "no text before it is
+        // verified clean" trade-off.)
+        if (withholding)
+        {
+            foreach (var e in blockBuffer) yield return e;
+            blockBuffer.Clear();
+        }
+    }
+
+    /// <summary>True when a <c>content_block_start</c> begins a scannable block
+    /// (<c>text</c> or <c>thinking</c>) whose deltas the block-buffering path withholds.
+    /// A start whose data cannot be parsed is treated as non-scannable (streamed live) —
+    /// failing toward lower latency, since an unparseable start is not a block we can scan
+    /// anyway.</summary>
+    private static bool IsScannableBlock(string startData)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(startData);
+            if (!doc.RootElement.TryGetProperty("content_block", out var cb)
+                || !cb.TryGetProperty("type", out var t)
+                || t.ValueKind != System.Text.Json.JsonValueKind.String)
+            {
+                // No string `type` → not a scannable block. The ValueKind gate also keeps
+                // GetString() from throwing InvalidOperationException on a non-string
+                // `type` (which would escape this JsonException-scoped catch and crash the
+                // stream instead of streaming the block live).
+                return false;
+            }
+            var type = t.GetString();
+            return type == "text" || type == "thinking";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
         }
     }
 }
