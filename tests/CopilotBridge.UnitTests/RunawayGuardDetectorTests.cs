@@ -3,6 +3,7 @@ using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Response.Detection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -244,13 +245,17 @@ public class RunawayGuardDetectorTests
         new("{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":"
             + System.Text.Json.JsonSerializer.Serialize(text) + "}}", "content_block_delta");
 
-    // Options that isolate the repetition signal: volume budgets effectively off.
+    // Options that isolate the repetition-DENSITY signal: volume budgets effectively
+    // off, and the consecutive-run signal off (RepetitionMaxConsecutiveRepeat = 0) so a
+    // repeated-token flood exercises ONLY the window/ratio path under test here. The
+    // run-length signal has its own dedicated tests.
     private static RunawayGuardOptions RepOpts(int window = 500, double ratio = 0.05) => new()
     {
         MaxDeltaCount = int.MaxValue,
         MaxDeltaBytes = long.MaxValue,
         RepetitionWindow = window,
         RepetitionMinUniqueRatio = ratio,
+        RepetitionMaxConsecutiveRepeat = 0,
     };
 
     [Fact]
@@ -719,5 +724,446 @@ public class RunawayGuardDetectorTests
         Assert.True(withEmpty > 0, "feed with an interleaved empty delta should still trip (tail preserved)");
         // Same number of "court" words needed to fill the window and trip either way.
         Assert.Equal(direct, withEmpty);
+    }
+
+    // ── Run-length signal (consecutive identical tokens) ─────────────────────────
+
+    // Options that isolate the run-length signal: volume budgets off, density window off
+    // (RepetitionWindow = 0), so only the consecutive-run threshold is live.
+    private static RunawayGuardOptions RunLenOpts(int maxConsecutive = 50) => new()
+    {
+        MaxDeltaCount = int.MaxValue,
+        MaxDeltaBytes = long.MaxValue,
+        RepetitionWindow = 0,               // density signal off
+        RepetitionMaxConsecutiveRepeat = maxConsecutive,
+    };
+
+    [Theory]
+    [InlineData(50, true)]   // exactly the threshold of consecutive repeats -> trips
+    [InlineData(49, false)]  // one short of the threshold -> no trip
+    public void RunLength_TripsAtExactlyThreshold_IndependentOfWindow(int repeats, bool expectTrip)
+    {
+        // Contract: the run-length signal trips when the SAME token repeats
+        // RepetitionMaxConsecutiveRepeat times in a row, with the density window DISABLED
+        // (RepetitionWindow=0) — proving it does not depend on the window filling. A short
+        // flood the 500-window can never see is caught here.
+        var ctx = Ctx();
+        var d = Detector(ctx, RunLenOpts(maxConsecutive: 50));
+        d.InspectEvent(BlockStart(0));
+
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < repeats && action.Kind == DetectionActionKind.None; i++)
+        {
+            action = d.InspectEvent(TextDelta("count "));
+        }
+
+        Assert.Equal(expectTrip ? DetectionActionKind.Abort : DetectionActionKind.None, action.Kind);
+        Assert.Equal(expectTrip, ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void RunLength_ShortFlood_TripsEvenWhenWindowNeverFills()
+    {
+        // Contract (the `count` capture, Bug B): a body of ~100 identical tokens is far
+        // shorter than the default 500-token window, so the density signal is immune. With
+        // BOTH signals at their defaults (window 500, run-length 50), the flood must still
+        // trip — via run-length. Regression for the real 108-token `count` capture.
+        var ctx = Ctx();
+        var d = Detector(ctx, new RunawayGuardOptions
+        {
+            MaxDeltaCount = int.MaxValue,
+            MaxDeltaBytes = long.MaxValue,
+            RepetitionWindow = 500,               // default — cannot fill on a 100-token body
+            RepetitionMinUniqueRatio = 0.05,
+            RepetitionMaxConsecutiveRepeat = 50,  // default
+        });
+        d.InspectEvent(BlockStart(0));
+
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < 100 && action.Kind == DetectionActionKind.None; i++)
+        {
+            action = d.InspectEvent(TextDelta("count "));
+        }
+
+        Assert.Equal(DetectionActionKind.Abort, action.Kind);
+        Assert.True(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void RunLength_InterruptedRun_ResetsAndDoesNotTrip()
+    {
+        // Contract: a different token resets the consecutive run to one, so only an
+        // UNINTERRUPTED run reaching the threshold trips. 40 "a" then one "b" then 40 "a"
+        // is two runs of 40, never 50 in a row -> no trip.
+        var ctx = Ctx();
+        var d = Detector(ctx, RunLenOpts(maxConsecutive: 50));
+        d.InspectEvent(BlockStart(0));
+
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < 40 && action.Kind == DetectionActionKind.None; i++)
+            action = d.InspectEvent(TextDelta("a "));
+        if (action.Kind == DetectionActionKind.None)
+            action = d.InspectEvent(TextDelta("b "));      // interrupts the run
+        for (var i = 0; i < 40 && action.Kind == DetectionActionKind.None; i++)
+            action = d.InspectEvent(TextDelta("a "));
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void RunLength_DiverseOutput_DoesNotTrip()
+    {
+        // Contract: a linguistically diverse stream never repeats a token >2-3 in a row,
+        // so the run-length signal must stay silent across a large output.
+        var ctx = Ctx();
+        var d = Detector(ctx, RunLenOpts(maxConsecutive: 50));
+        d.InspectEvent(BlockStart(0));
+
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < 2000 && action.Kind == DetectionActionKind.None; i++)
+            action = d.InspectEvent(TextDelta($"word{i % 37} "));
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void RunLength_DisabledByNonPositiveThreshold_NeverTrips()
+    {
+        // Contract: RepetitionMaxConsecutiveRepeat <= 0 disables the run-length signal.
+        // With the density window also off, a huge identical-token flood must pass.
+        var ctx = Ctx();
+        var d = Detector(ctx, RunLenOpts(maxConsecutive: 0));
+        d.InspectEvent(BlockStart(0));
+
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < 1000 && action.Kind == DetectionActionKind.None; i++)
+            action = d.InspectEvent(TextDelta("count "));
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void RunLength_RunSplitAcrossDeltas_CountedConsecutive()
+    {
+        // Contract: a run whose tokens are split at their terminating whitespace across
+        // delta boundaries is reassembled (via the carried tail) and counted as one
+        // uninterrupted run. Feed "count" and "\n\n" as separate deltas per repeat — the
+        // token "count" only completes when the whitespace delta lands, yet 50 such
+        // reassembled repeats must trip exactly like 50 whole "count " deltas.
+        var ctx = Ctx();
+        var d = Detector(ctx, RunLenOpts(maxConsecutive: 50));
+        d.InspectEvent(BlockStart(0));
+
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < 50 && action.Kind == DetectionActionKind.None; i++)
+        {
+            action = d.InspectEvent(TextDelta("count"));
+            if (action.Kind == DetectionActionKind.None)
+                action = d.InspectEvent(TextDelta("\n\n"));
+        }
+
+        Assert.Equal(DetectionActionKind.Abort, action.Kind);
+        Assert.True(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void RunLength_ResetsPerContentBlock()
+    {
+        // Contract: the consecutive-run counter resets at each content_block_start, so a
+        // run spanning a block boundary does not accumulate. 40 "a" in block 0 then 40 "a"
+        // in block 1 is two runs of 40, never 50 in a row within one block -> no trip.
+        var ctx = Ctx();
+        var d = Detector(ctx, RunLenOpts(maxConsecutive: 50));
+
+        DetectionAction action = d.InspectEvent(BlockStart(0));
+        for (var i = 0; i < 40 && action.Kind == DetectionActionKind.None; i++)
+            action = d.InspectEvent(TextDelta("a "));
+        if (action.Kind == DetectionActionKind.None)
+            action = d.InspectEvent(BlockStart(1));            // new block resets the run
+        for (var i = 0; i < 40 && action.Kind == DetectionActionKind.None; i++)
+            action = d.InspectEvent(TextDelta("a "));
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.RunawayDetected);
+    }
+
+    // ── Buffered (application/json) delivery path ────────────────────────────────
+
+    private static byte[] Buffered(params (string type, string text)[] blocks)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append("{\"type\":\"message\",\"role\":\"assistant\",\"content\":[");
+        for (var i = 0; i < blocks.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            var (type, text) = blocks[i];
+            if (type == "text")
+                sb.Append("{\"type\":\"text\",\"text\":").Append(System.Text.Json.JsonSerializer.Serialize(text)).Append('}');
+            else if (type == "thinking")
+                sb.Append("{\"type\":\"thinking\",\"thinking\":").Append(System.Text.Json.JsonSerializer.Serialize(text)).Append('}');
+            else if (type == "tool_use")
+                sb.Append("{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"X\",\"input\":{}}");
+        }
+        sb.Append("]}");
+        return System.Text.Encoding.UTF8.GetBytes(sb.ToString());
+    }
+
+    private static string Repeat(string token, int n) =>
+        string.Concat(System.Linq.Enumerable.Repeat(token, n));
+
+    [Fact]
+    public void Buffered_ShortFlood_TripsWithBufferStatus()
+    {
+        // Contract (Bug A + the `count` capture): Copilot returned a one-shot
+        // application/json body — a text block that floods "count" 100x then a valid
+        // tool_use. The buffered path (InspectBuffered) must abort with the configured
+        // status. Before this change RunawayGuard had no InspectBuffered and relayed it.
+        var ctx = Ctx();
+        var d = Detector(ctx, new RunawayGuardOptions
+        {
+            MaxDeltaCount = int.MaxValue,
+            MaxDeltaBytes = long.MaxValue,
+            RepetitionWindow = 500,
+            RepetitionMinUniqueRatio = 0.05,
+            RepetitionMaxConsecutiveRepeat = 50,
+            Signal = ResponseDetectionSignal.OverloadedError,
+        });
+
+        var body = Buffered(("text", "here is the count\n\n" + Repeat("count\n\n", 100)), ("tool_use", ""));
+        var action = d.InspectBuffered(body);
+
+        Assert.Equal(DetectionActionKind.Abort, action.Kind);
+        Assert.Equal(529, action.HttpStatus);   // OverloadedError -> HTTP 529
+        Assert.True(ctx.RunawayDetected);
+        Assert.DoesNotContain("count", action.ErrorJson);  // no leaked content in the error
+    }
+
+    [Fact]
+    public void Buffered_CleanResponse_PassesThrough()
+    {
+        // Contract: a buffered response within all thresholds yields None (delivered
+        // unchanged), and does not set the runaway flag.
+        var ctx = Ctx();
+        var d = Detector(ctx, new RunawayGuardOptions
+        {
+            RepetitionWindow = 500,
+            RepetitionMinUniqueRatio = 0.05,
+            RepetitionMaxConsecutiveRepeat = 50,
+        });
+
+        var body = Buffered(("text", "This is a perfectly ordinary and diverse answer with varied words."), ("tool_use", ""));
+        var action = d.InspectBuffered(body);
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void Buffered_UnparseableBody_FailsOpen()
+    {
+        // Contract: a body that is not parseable Anthropic JSON must fail open (None),
+        // never turning a real response into an error on a parse hiccup.
+        var ctx = Ctx();
+        var d = Detector(ctx, new RunawayGuardOptions { RepetitionMaxConsecutiveRepeat = 50 });
+
+        var action = d.InspectBuffered(System.Text.Encoding.UTF8.GetBytes("not json at all <<<"));
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void Buffered_NoContentArray_FailsOpen()
+    {
+        // Contract: a JSON object without a `content` array is not a scannable Messages
+        // body; fail open rather than throw.
+        var ctx = Ctx();
+        var d = Detector(ctx, new RunawayGuardOptions { RepetitionMaxConsecutiveRepeat = 50 });
+
+        var action = d.InspectBuffered(System.Text.Encoding.UTF8.GetBytes("{\"type\":\"message\"}"));
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void Buffered_FloodInThinkingBlock_Trips()
+    {
+        // Contract: the buffered scan covers thinking blocks like the streaming path
+        // (RunawayGuard has no thinking-scan gate). A flood inside a thinking block trips.
+        var ctx = Ctx();
+        var d = Detector(ctx, new RunawayGuardOptions
+        {
+            RepetitionWindow = 500,
+            RepetitionMinUniqueRatio = 0.05,
+            RepetitionMaxConsecutiveRepeat = 50,
+        });
+
+        var body = Buffered(("thinking", Repeat("hmm\n\n", 80)), ("text", "ok"));
+        var action = d.InspectBuffered(body);
+
+        Assert.Equal(DetectionActionKind.Abort, action.Kind);
+        Assert.True(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void Buffered_PerBlockReset_EarlierBlockDoesNotPoisonLater()
+    {
+        // Contract: each buffered block is its own scope (reset between blocks), mirroring
+        // the streaming per-content_block_start reset. A block ending in 40 "a" followed by
+        // a clean block must NOT trip — the run does not carry across the block boundary.
+        var ctx = Ctx();
+        var d = Detector(ctx, RunLenOpts(maxConsecutive: 50));
+
+        var body = Buffered(
+            ("text", Repeat("a ", 40)),                 // 40 in a row, under threshold
+            ("text", "a diverse and clean second block"));
+        var action = d.InspectBuffered(body);
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void Buffered_LowDiversityNoConsecutiveRepeat_TripsOnDensity()
+    {
+        // Contract (parity — density on the buffered path): the buffered scan must route
+        // through the SAME per-block core as streaming, so the DENSITY signal (not only
+        // run-length) trips on a buffered body. A long 2-token alternation fills the 500
+        // window with 2 distinct tokens (ratio 0.004 < 0.05) but never repeats a token
+        // twice in a row, so run-length (50) CANNOT fire — only density can. This is the
+        // long ~500KB/32000-repeat opus-4.8 shape delivered as one-shot JSON.
+        var ctx = Ctx();
+        var d = Detector(ctx, new RunawayGuardOptions
+        {
+            MaxDeltaBytes = long.MaxValue,
+            MaxDeltaCount = int.MaxValue,
+            RepetitionWindow = 500,
+            RepetitionMinUniqueRatio = 0.05,
+            RepetitionMaxConsecutiveRepeat = 50,   // enabled, but cannot fire (max run = 1)
+        });
+
+        var body = Buffered(("text", Repeat("ping pong ", 300)));  // 600 tokens, max consecutive run = 1
+        var action = d.InspectBuffered(body);
+
+        Assert.Equal(DetectionActionKind.Abort, action.Kind);
+        Assert.True(ctx.RunawayDetected);
+    }
+
+    [Fact]
+    public void RunLength_ShorterTokenAfterLongerPrefixToken_DoesNotFalseMatch()
+    {
+        // Contract (the _prevTokenBuf length guard): equality is
+        // `_prevTokenLen == token.Length && SequenceEqual(...)`. The reused buffer is
+        // never cleared, so the LENGTH check is the only thing stopping a shorter token
+        // from matching the stale prefix of a longer previous token. Alternating
+        // "counter"/"count" (never identical, but "count" is a prefix of "counter") must
+        // reset the run every token → never trips. If the length conjunct were dropped,
+        // "count" would match _prevTokenBuf[0..5]=="count" and the run would grow falsely.
+        var ctx = Ctx();
+        var d = Detector(ctx, RunLenOpts(maxConsecutive: 50));
+        d.InspectEvent(BlockStart(0));
+
+        DetectionAction action = DetectionAction.None;
+        for (var i = 0; i < 200 && action.Kind == DetectionActionKind.None; i++)
+        {
+            action = d.InspectEvent(TextDelta(i % 2 == 0 ? "counter " : "count "));
+        }
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.RunawayDetected);
+    }
+
+    // ── Observability: one Warning naming reason + delivery mode, no content ──────
+
+    private static RunawayGuardDetector Detector(BridgeContext<MessagesRequest> ctx, RunawayGuardOptions opts, ILogger<RunawayGuardDetector> log)
+    {
+        var d = new RunawayGuardDetector(new DetectorOrder<RunawayGuardDetector>(3), TestOptions.Snapshot(opts), ctx, log);
+        d.Begin();
+        return d;
+    }
+
+    [Fact]
+    public void Trip_Streaming_LogsExactlyOneWarning_WithDeliveryStream_NoContent()
+    {
+        // Contract: a streaming runaway trip emits exactly one Warning naming the reason
+        // and delivery=stream, and never the runaway token itself.
+        var log = new CapturingLogger();
+        var ctx = Ctx();
+        var d = Detector(ctx, RunLenOpts(maxConsecutive: 50), log);
+        d.InspectEvent(BlockStart(0));
+        for (var i = 0; i < 50; i++) d.InspectEvent(TextDelta("secrettoken "));
+
+        var warnings = log.Records.Where(r => r.Level == LogLevel.Warning).ToList();
+        Assert.Single(warnings);
+        Assert.Contains("delivery=stream", warnings[0].Rendered);
+        Assert.DoesNotContain("secrettoken", warnings[0].Rendered); // no runaway content
+    }
+
+    [Fact]
+    public void Trip_Buffered_LogsExactlyOneWarning_WithDeliveryBuffer_NoContent()
+    {
+        // Contract: a buffered runaway trip emits exactly one Warning naming delivery=buffer.
+        var log = new CapturingLogger();
+        var ctx = Ctx();
+        var d = Detector(ctx, new RunawayGuardOptions
+        {
+            RepetitionWindow = 500,
+            RepetitionMinUniqueRatio = 0.05,
+            RepetitionMaxConsecutiveRepeat = 50,
+        }, log);
+
+        d.InspectBuffered(Buffered(("text", Repeat("secrettoken\n\n", 60)), ("tool_use", "")));
+
+        var warnings = log.Records.Where(r => r.Level == LogLevel.Warning).ToList();
+        Assert.Single(warnings);
+        Assert.Contains("delivery=buffer", warnings[0].Rendered);
+        Assert.DoesNotContain("secrettoken", warnings[0].Rendered);
+    }
+
+    [Fact]
+    public void Trip_BothSignalsCouldFire_RunLengthWins_AttributedInReason()
+    {
+        // Contract (signal precedence + attribution): when a single repeated token could
+        // trip BOTH density (small window) and run-length, run-length is evaluated first
+        // (before the density push), so it wins and the operator-facing reason names the
+        // consecutive-run cause — not the window ratio. Pins the ordering so a refactor
+        // that moved the density check ahead would flip the attribution and go red.
+        var log = new CapturingLogger();
+        var ctx = Ctx();
+        var d = Detector(ctx, new RunawayGuardOptions
+        {
+            MaxDeltaBytes = long.MaxValue,
+            MaxDeltaCount = int.MaxValue,
+            RepetitionWindow = 50,
+            RepetitionMinUniqueRatio = 0.05,
+            RepetitionMaxConsecutiveRepeat = 50,
+        }, log);
+        d.InspectEvent(BlockStart(0));
+        for (var i = 0; i < 50; i++) d.InspectEvent(TextDelta("x "));
+
+        var warnings = log.Records.Where(r => r.Level == LogLevel.Warning).ToList();
+        Assert.Single(warnings);
+        Assert.Contains("in a row", warnings[0].Rendered);                 // run-length reason
+        Assert.DoesNotContain("unique of the trailing", warnings[0].Rendered); // NOT density
+    }
+
+    private sealed class CapturingLogger : ILogger<RunawayGuardDetector>
+    {
+        public readonly List<(LogLevel Level, string Rendered)> Records = new();
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Records.Add((logLevel, formatter(state, exception)));
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+            public void Dispose() { }
+        }
     }
 }

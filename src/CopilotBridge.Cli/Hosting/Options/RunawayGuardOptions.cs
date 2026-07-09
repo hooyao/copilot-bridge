@@ -76,6 +76,23 @@ internal sealed class RunawayGuardOptions
     /// </summary>
     public double RepetitionMinUniqueRatio { get; set; } = 0.05;
 
+    /// <summary>
+    /// Per-content-block ceiling on the number of <b>consecutive identical</b>
+    /// whitespace-delimited tokens. The guard trips when the same token is emitted
+    /// this many times in a row, independently of <see cref="RepetitionWindow"/>'s
+    /// fullness and of the block's total token count — catching a SHORT degenerate
+    /// flood (observed: <c>claude-opus-4.8</c> repeating one token ~100× in a
+    /// 108-token buffered body) that never fills the sliding window and so is invisible
+    /// to <see cref="RepetitionMinUniqueRatio"/>. Runs on both the streaming and
+    /// buffered delivery paths. Reset per content block. Default 50. A value ≤ 0
+    /// disables the run-length signal (the byte, delta-count, and repetition-density
+    /// signals still apply). The threshold is deliberately low — 50 identical tokens in
+    /// a row is already degenerate output — so a legitimate repetitive response that
+    /// trips it is resolved by RAISING this value, not by disabling the guard. Read at
+    /// startup; a restart is required after changing it.
+    /// </summary>
+    public int RepetitionMaxConsecutiveRepeat { get; set; } = 50;
+
     /// <summary>Which error to raise on a trip. Default
     /// <see cref="ResponseDetectionSignal.OverloadedError"/> (retryable), shared with the
     /// response-leak guard so the wire shape is consistent.</summary>

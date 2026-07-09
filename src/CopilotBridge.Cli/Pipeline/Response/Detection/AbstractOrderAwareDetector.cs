@@ -37,6 +37,8 @@ internal abstract class AbstractOrderAwareDetector<TSelf>(DetectorOrder<TSelf> o
 
     public virtual bool RequiresBuffering => false;
 
+    public virtual bool BuffersScannableBlocks => false;
+
     public virtual void Begin() { }
 
     public abstract DetectionAction InspectEvent(in SseItem<string> evt);

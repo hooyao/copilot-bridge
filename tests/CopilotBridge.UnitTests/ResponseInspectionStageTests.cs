@@ -726,6 +726,286 @@ public class ResponseInspectionStageTests
         Assert.False(ctx.ResponseLeakDetected);
     }
 
+    // ---- Block-buffered streaming suppression (BufferScannableBlocks) ----
+
+    // A streaming text block delivered as MANY deltas, so the difference between
+    // relay-live (start+early deltas reach the client before detection) and
+    // block-buffered (nothing of the block reaches the client until it's proven clean)
+    // is observable. The leak's closing markup lands only in the final delta.
+    private static async IAsyncEnumerable<SseItem<string>> MultiDeltaTextStream(string text, int index = 0)
+    {
+        yield return new SseItem<string>("""{"type":"message_start","message":{"model":"claude-opus-4-8"}}""", "message_start");
+        yield return new SseItem<string>(
+            $"{{\"type\":\"content_block_start\",\"index\":{index},\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}",
+            "content_block_start");
+        foreach (var ch in text)
+        {
+            yield return new SseItem<string>(
+                $"{{\"type\":\"content_block_delta\",\"index\":{index},\"delta\":{{\"type\":\"text_delta\",\"text\":{System.Text.Json.JsonSerializer.Serialize(ch.ToString())}}}}}",
+                "content_block_delta");
+        }
+        yield return new SseItem<string>($"{{\"type\":\"content_block_stop\",\"index\":{index}}}", "content_block_stop");
+        yield return new SseItem<string>("""{"type":"message_delta","delta":{"stop_reason":"end_turn"}}""", "message_delta");
+        yield return new SseItem<string>("""{"type":"message_stop"}""", "message_stop");
+        await Task.CompletedTask;
+    }
+
+    // A tool_use (non-scannable) block streamed as input_json_delta fragments.
+    private static async IAsyncEnumerable<SseItem<string>> ToolUseStream()
+    {
+        yield return new SseItem<string>("""{"type":"message_start","message":{"model":"claude-opus-4-8"}}""", "message_start");
+        yield return new SseItem<string>("""{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Read","input":{}}}""", "content_block_start");
+        yield return new SseItem<string>("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file"}}""", "content_block_delta");
+        yield return new SseItem<string>("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"_path\":\"/x\"}"}}""", "content_block_delta");
+        yield return new SseItem<string>("""{"type":"content_block_stop","index":0}""", "content_block_stop");
+        yield return new SseItem<string>("""{"type":"message_stop"}""", "message_stop");
+        await Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task BlockBuffered_LeakInScannableBlock_EmitsNoBlockBytes_ThenErrors()
+    {
+        // Contract (Class 3 residual): with BufferScannableBlocks on, a text block that
+        // carries a <system-reminder> leak is aborted with NONE of the block's events
+        // (not even content_block_start or any delta) reaching the client — only the
+        // injected error. This is the airtight suppression plain PreserveStream cannot do.
+        var ctx = Ctx(MultiDeltaTextStream(SystemReminderLeak));
+        await Run(ctx, new ResponseLeakGuardOptions
+        {
+            Enabled = true,
+            PreserveStream = true,
+            BufferScannableBlocks = true,
+        });
+
+        var got = await Drain(ctx.Response.EventStream!);
+
+        Assert.Equal("error", got[^1].EventType);
+        Assert.Contains("overloaded_error", got[^1].Data);
+        // The scannable block was withheld and never flushed: no content_block_start,
+        // no content_block_delta, no leaked block CONTENT reached the client. (The error
+        // event legitimately names the tripped signature/disable-key, so we assert on the
+        // leaked inner TEXT, not the signature name.)
+        Assert.DoesNotContain(got, e => e.EventType == "content_block_start");
+        Assert.DoesNotContain(got, e => e.EventType == "content_block_delta");
+        Assert.DoesNotContain(got, e => e.Data.Contains("unrelated to the current"));
+        Assert.True(ctx.ResponseLeakDetected);
+    }
+
+    [Fact]
+    public async Task BlockBuffered_CleanScannableBlock_RelaysAllEventsInOrder()
+    {
+        // Contract: a clean scannable block is relayed IN FULL after it completes —
+        // block-buffering delays a clean block's delivery but never drops or reorders it.
+        var ctx = Ctx(MultiDeltaTextStream("a perfectly clean and diverse answer"));
+        await Run(ctx, new ResponseLeakGuardOptions
+        {
+            Enabled = true,
+            PreserveStream = true,
+            BufferScannableBlocks = true,
+        });
+
+        var got = await Drain(ctx.Response.EventStream!);
+
+        Assert.DoesNotContain(got, e => e.EventType == "error");
+        Assert.Contains(got, e => e.EventType == "content_block_start");
+        Assert.Equal("message_stop", got[^1].EventType);
+        // The reconstructed text equals the original (every delta relayed, in order).
+        var text = string.Concat(got.Where(e => e.EventType == "content_block_delta")
+            .Select(e => System.Text.Json.JsonDocument.Parse(e.Data).RootElement
+                .GetProperty("delta").GetProperty("text").GetString()));
+        Assert.Equal("a perfectly clean and diverse answer", text);
+        Assert.False(ctx.ResponseLeakDetected);
+    }
+
+    [Fact]
+    public async Task BlockBuffered_NonScannableBlock_StreamsLive()
+    {
+        // Contract: a tool_use block (whose input_json_delta cannot carry a text leak) is
+        // NOT withheld — its start and deltas stream live, preserving TTFT for content
+        // that can't leak.
+        var ctx = Ctx(ToolUseStream());
+        await Run(ctx, new ResponseLeakGuardOptions
+        {
+            Enabled = true,
+            PreserveStream = true,
+            BufferScannableBlocks = true,
+        });
+
+        var got = await Drain(ctx.Response.EventStream!);
+
+        // Everything passes through unchanged (no leak, nothing withheld/dropped).
+        Assert.Contains(got, e => e.EventType == "content_block_start");
+        Assert.Equal(2, got.Count(e => e.EventType == "content_block_delta"));
+        Assert.Equal("message_stop", got[^1].EventType);
+        Assert.False(ctx.ResponseLeakDetected);
+    }
+
+    [Fact]
+    public async Task BlockBuffered_DefaultOff_PreservesRelayUntilDetection()
+    {
+        // Contract: with BufferScannableBlocks OFF (default), streaming is the pre-existing
+        // relay-until-detection behaviour — the block's start (and any pre-leak deltas)
+        // reach the client before the error. This is the residual gap the opt-in closes;
+        // proving the default is unchanged guards against silently altering delivery.
+        var ctx = Ctx(MultiDeltaTextStream(SystemReminderLeak));
+        await Run(ctx, new ResponseLeakGuardOptions
+        {
+            Enabled = true,
+            PreserveStream = true,
+            BufferScannableBlocks = false,
+        });
+
+        var got = await Drain(ctx.Response.EventStream!);
+
+        Assert.Equal("error", got[^1].EventType);
+        // Default behaviour: the block's start DID reach the client before detection.
+        Assert.Contains(got, e => e.EventType == "content_block_start");
+        Assert.True(ctx.ResponseLeakDetected);
+    }
+
+    // A stream with TWO text blocks: block 0 clean, block 1 carrying `leak` char-by-char.
+    private static async IAsyncEnumerable<SseItem<string>> TwoTextBlockStream(string cleanText, string leak)
+    {
+        yield return new SseItem<string>("""{"type":"message_start","message":{"model":"claude-opus-4-8"}}""", "message_start");
+        // Block 0 — clean.
+        yield return new SseItem<string>("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""", "content_block_start");
+        foreach (var ch in cleanText)
+            yield return new SseItem<string>(
+                $"{{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{System.Text.Json.JsonSerializer.Serialize(ch.ToString())}}}}}",
+                "content_block_delta");
+        yield return new SseItem<string>("""{"type":"content_block_stop","index":0}""", "content_block_stop");
+        // Block 1 — leaks.
+        yield return new SseItem<string>("""{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}""", "content_block_start");
+        foreach (var ch in leak)
+            yield return new SseItem<string>(
+                $"{{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"text_delta\",\"text\":{System.Text.Json.JsonSerializer.Serialize(ch.ToString())}}}}}",
+                "content_block_delta");
+        yield return new SseItem<string>("""{"type":"content_block_stop","index":1}""", "content_block_stop");
+        yield return new SseItem<string>("""{"type":"message_stop"}""", "message_stop");
+        await Task.CompletedTask;
+    }
+
+    // A scannable text block whose content_block_stop never arrives (stream ends mid-block).
+    private static async IAsyncEnumerable<SseItem<string>> UnclosedTextBlockStream(string text)
+    {
+        yield return new SseItem<string>("""{"type":"message_start","message":{"model":"claude-opus-4-8"}}""", "message_start");
+        yield return new SseItem<string>("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""", "content_block_start");
+        foreach (var ch in text)
+            yield return new SseItem<string>(
+                $"{{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{System.Text.Json.JsonSerializer.Serialize(ch.ToString())}}}}}",
+                "content_block_delta");
+        // No content_block_stop, no message_stop — source just ends.
+        await Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task BlockBuffered_MultipleBlocks_FirstCleanFlushed_SecondLeakSuppressed()
+    {
+        // Contract (per-block flush + reset across blocks — the core state machine): block 0
+        // is clean and must be relayed in full after it closes; the flush must reset
+        // `withholding` and clear the buffer so block 1's leak is then suppressed with none
+        // of block 1's bytes emitted. A stuck-`withholding` or dirty-buffer bug would either
+        // leak block 1 or replay block 0's events.
+        var ctx = Ctx(TwoTextBlockStream("a perfectly clean first block", SystemReminderLeak));
+        await Run(ctx, new ResponseLeakGuardOptions
+        {
+            Enabled = true,
+            PreserveStream = true,
+            BufferScannableBlocks = true,
+        });
+
+        var got = await Drain(ctx.Response.EventStream!);
+
+        Assert.Equal("error", got[^1].EventType);
+        // Block 0 (clean) WAS flushed: its text reconstructs intact.
+        var block0Text = string.Concat(got.Where(e => e.EventType == "content_block_delta")
+            .Select(e => System.Text.Json.JsonDocument.Parse(e.Data).RootElement
+                .GetProperty("delta").GetProperty("text").GetString()));
+        Assert.Equal("a perfectly clean first block", block0Text);
+        // Block 1 (leak) was suppressed: none of its inner leaked text reached the client,
+        // and exactly one content_block_start (block 0's) was emitted — block 1's was withheld.
+        Assert.DoesNotContain(got, e => e.Data.Contains("unrelated to the current"));
+        Assert.Equal(1, got.Count(e => e.EventType == "content_block_start"));
+        Assert.True(ctx.ResponseLeakDetected);
+    }
+
+    [Fact]
+    public async Task BlockBuffered_UnclosedCleanBlockAtStreamEnd_IsFlushed()
+    {
+        // Contract (trailing flush): a clean scannable block whose content_block_stop never
+        // arrives (source ends mid-block) must still be relayed on graceful stream end —
+        // dropping presumed-clean content would silently lose it and diverge from plain
+        // streaming. No leak → no error.
+        var ctx = Ctx(UnclosedTextBlockStream("an unterminated but clean block"));
+        await Run(ctx, new ResponseLeakGuardOptions
+        {
+            Enabled = true,
+            PreserveStream = true,
+            BufferScannableBlocks = true,
+        });
+
+        var got = await Drain(ctx.Response.EventStream!);
+
+        Assert.DoesNotContain(got, e => e.EventType == "error");
+        Assert.Contains(got, e => e.EventType == "content_block_start");
+        var text = string.Concat(got.Where(e => e.EventType == "content_block_delta")
+            .Select(e => System.Text.Json.JsonDocument.Parse(e.Data).RootElement
+                .GetProperty("delta").GetProperty("text").GetString()));
+        Assert.Equal("an unterminated but clean block", text);
+        Assert.False(ctx.ResponseLeakDetected);
+    }
+
+    [Fact]
+    public async Task BlockBuffered_InertWhenPreserveStreamFalse_WholeResponseBufferingWins()
+    {
+        // Contract: BufferScannableBlocks has NO effect when PreserveStream=false — that
+        // mode already buffers the whole response and emits a real HTTP status. The stage
+        // must take the whole-response-buffer branch (real 529), not the block-buffering
+        // branch (a 200 stream). Guards the `_opts.PreserveStream &&` conjunct in
+        // BuffersScannableBlocks.
+        var ctx = Ctx(LeakStream(Leak));
+        await Run(ctx, new ResponseLeakGuardOptions
+        {
+            Enabled = true,
+            PreserveStream = false,            // whole-response buffering
+            BufferScannableBlocks = true,      // must be inert here
+        });
+
+        Assert.Equal(ResponseMode.Buffered, ctx.Response.Mode);
+        Assert.Equal(529, ctx.Response.Status);
+        var body = Encoding.UTF8.GetString(ctx.Response.BufferedBody!);
+        Assert.Contains("overloaded_error", body);
+        Assert.DoesNotContain("<invoke", body);
+        Assert.True(ctx.ResponseLeakDetected);
+    }
+
+    [Theory]
+    [InlineData(true, true, true)]    // stream-preserving + opted in → withholds
+    [InlineData(false, true, false)]  // PreserveStream=false → NOT block-buffering (whole-response wins)
+    [InlineData(true, false, false)]  // opt-out → no withholding
+    [InlineData(false, false, false)]
+    public void BuffersScannableBlocks_RequiresBothPreserveStreamAndOptIn(bool preserveStream, bool bufferBlocks, bool expected)
+    {
+        // Contract (the `_opts.PreserveStream && _opts.BufferScannableBlocks` conjunct):
+        // the detector advertises block-buffering ONLY when stream-preserving AND opted in.
+        // This pins the conjunct directly (the stage's RequiresBuffering-first ordering also
+        // makes PreserveStream=false inert, so this guards the detector's own flag, which is
+        // the redundant defense-in-depth layer).
+        var ctx = Ctx(LeakStream(Leak));
+        var detector = new ResponseLeakDetector(
+            new DetectorOrder<ResponseLeakDetector>(2),
+            TestOptions.Snapshot(new ResponseLeakGuardOptions
+            {
+                Enabled = true,
+                PreserveStream = preserveStream,
+                BufferScannableBlocks = bufferBlocks,
+            }),
+            ctx,
+            NullLogger<ResponseLeakDetector>.Instance);
+
+        Assert.Equal(expected, detector.BuffersScannableBlocks);
+    }
+
     private sealed class CapturingLogger<T> : ILogger<T>
     {
         public readonly List<(LogLevel Level, string Rendered)> Records = new();

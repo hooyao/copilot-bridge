@@ -124,6 +124,21 @@ internal interface IResponseDetector
     bool RequiresBuffering => false;
 
     /// <summary>
+    /// When true, the stage withholds each <b>scannable</b> content block's deltas
+    /// (a <c>text</c> or <c>thinking</c> block) from <c>content_block_start</c> until
+    /// <c>content_block_stop</c>, still feeding every event to detectors live, and
+    /// relays the block only if no detector aborted during it — so a leak detected
+    /// mid-block is suppressed BEFORE any of the block's bytes reach the client.
+    /// Non-scannable blocks (e.g. <c>tool_use</c>) still stream live. This is a
+    /// narrower, per-block cousin of <see cref="RequiresBuffering"/>: it keeps a real
+    /// HTTP 200 stream (only scannable blocks pay latency, and only until each block
+    /// ends) instead of buffering the whole response. Only meaningful on the
+    /// stream-preserving path; a detector that also sets <see cref="RequiresBuffering"/>
+    /// is already whole-response buffered and this is moot. Default false.
+    /// </summary>
+    bool BuffersScannableBlocks => false;
+
+    /// <summary>
     /// Streaming: inspect one fully-framed SSE event and return an action. Return
     /// <see cref="DetectionAction.None"/> to pass through. The event is already
     /// SSE-framed by <c>SseParser</c>, so multi-byte / multi-line data arrives
