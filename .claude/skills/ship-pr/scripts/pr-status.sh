@@ -67,12 +67,18 @@ PR_STATE="$(echo "$VIEW_JSON" | jq -r '.state // "UNKNOWN"')"
 
 # CI: fail if any check concluded non-success; pending if any not COMPLETED; else pass.
 # none if there are no checks at all.
+# CI: fail if any check concluded non-success; pending if any not COMPLETED; else pass.
+# none if there are no checks at all. Two entry shapes coexist in statusCheckRollup:
+# CheckRun (uses .status/.conclusion) and legacy StatusContext (uses .state, e.g.
+# PENDING/EXPECTED/SUCCESS/FAILURE/ERROR). Both must be consulted or a still-pending
+# legacy status context falls through to "pass" and we could merge too early.
 CI="$(echo "$VIEW_JSON" | jq -r '
   (.statusCheckRollup // []) as $c
+  | ($c | map((.conclusion // .state // "") | ascii_upcase)) as $terminal
+  | ($c | map((.status // .state // "") | ascii_upcase)) as $progress
   | if ($c|length)==0 then "none"
-    elif any($c[]; (.conclusion // .state // "") | ascii_upcase | . as $x
-              | ($x=="FAILURE" or $x=="ERROR" or $x=="CANCELLED" or $x=="TIMED_OUT" or $x=="ACTION_REQUIRED")) then "fail"
-    elif any($c[]; (.status // "") | ascii_upcase | (.=="QUEUED" or .=="IN_PROGRESS" or .=="PENDING" or .=="WAITING")) then "pending"
+    elif any($terminal[]; (.=="FAILURE" or .=="ERROR" or .=="CANCELLED" or .=="TIMED_OUT" or .=="ACTION_REQUIRED")) then "fail"
+    elif any($progress[]; (.=="QUEUED" or .=="IN_PROGRESS" or .=="PENDING" or .=="WAITING" or .=="EXPECTED" or .=="")) then "pending"
     else "pass" end')" \
   || fail "could not derive CI state"
 echo "CI=${CI}"
@@ -82,10 +88,15 @@ echo "PR_STATE=${PR_STATE}"
 # --- 3. Copilot review round hint ----------------------------------------------
 # Copilot review submissions show as `reviewed` timeline events. Counting them is
 # the round number; >=5 means we've exhausted Copilot's review budget.
+#
+# `gh api --paginate` applies --jq to EACH page separately, so a page-level
+# `[...]|length` yields one number per page (e.g. "1\n2" across two pages), which
+# corrupts the count on a long timeline. Emit one line per matching event instead
+# and total them with `wc -l`, which sums correctly across pages. `set -o pipefail`
+# still surfaces a gh failure through the pipe.
 REVIEWS="$(gh api "repos/${REPO}/issues/${PR}/timeline" --paginate \
-  --jq '[.[]|select(((.actor.login? // .user.login?)=="Copilot") and .event=="reviewed")]|length' 2>/dev/null)" \
+  --jq '.[]|select(((.actor.login? // .user.login?)=="Copilot") and .event=="reviewed")|.event' 2>/dev/null | wc -l | tr -d '[:space:]')" \
   || fail "timeline query failed — cannot count Copilot review rounds"
-# --paginate on an empty list yields empty string; normalize to 0.
 REVIEWS="${REVIEWS:-0}"
 echo "COPILOT_REVIEWS=${REVIEWS}"
 echo "ROUND_HINT=${REVIEWS}"

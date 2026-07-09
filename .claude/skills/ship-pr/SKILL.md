@@ -143,7 +143,7 @@ it** (it's a false positive — say why). Either way, reply in-thread, then reso
 the thread:
 
 ```bash
-bash .claude/skills/ship-pr/scripts/reply-resolve.sh <owner>/<repo> <comment-id> "<reply>"
+bash .claude/skills/ship-pr/scripts/reply-resolve.sh <owner>/<repo> <pr-number> <comment-id> "<reply>"
 ```
 
 Resolving after every reply is what makes `OPEN_COMMENTS` trustworthy on the next
