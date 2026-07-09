@@ -67,6 +67,7 @@ appsettings.local.json
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/copilot-model-sync/
+!.claude/skills/ship-pr/
 
 # Local-only: MCP server config + Claude Code session-handoff dumps (never commit)
 .mcp.json

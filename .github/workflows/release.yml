@@ -200,11 +200,24 @@ jobs:
           # commit carries TWO tags (the release-* trigger tag and the v* release
           # tag), which confuses it — so --generate-notes lists the ENTIRE history
           # instead of the delta since the last release. This release doesn't exist
-          # yet, so the most recent EXISTING release is the previous one. Use
-          # `release list` (not `release view`, which only surfaces the latest
-          # NON-prerelease, and every build here ships as a prerelease). Empty on
-          # the very first release → omit the flag, where full history is correct.
-          prev_tag=$(gh release list --exclude-drafts -L 1 --json tagName --jq '.[0].tagName // ""')
+          # yet, so the most recent EXISTING release is the previous one.
+          #
+          # Which "previous" depends on what we're cutting:
+          #   - prerelease  → the most recent release of ANY kind (stable or beta),
+          #     so a beta's notes cover just the commits since the last release.
+          #   - stable      → the most recent STABLE release, SKIPPING the betas in
+          #     between. Otherwise a stable cut whose commit matches the last beta
+          #     would diff against that beta and produce EMPTY notes — the stable
+          #     release must instead summarize everything accumulated across the
+          #     betas since the previous stable.
+          # `release view` is not used (it only surfaces the latest non-prerelease
+          # and can't express the prerelease case). Empty on the very first release
+          # of that kind → omit the flag, where full history is correct.
+          if [ "$prerelease" = "true" ]; then
+            prev_tag=$(gh release list --exclude-drafts -L 1 --json tagName --jq '.[0].tagName // ""')
+          else
+            prev_tag=$(gh release list --exclude-drafts --exclude-pre-releases -L 1 --json tagName --jq '.[0].tagName // ""')
+          fi
           echo "Generating notes since previous release: ${prev_tag:-<none>}"
           args=(release create "v$version"
             --title "copilot-bridge $version"
