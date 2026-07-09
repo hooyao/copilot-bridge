@@ -2,10 +2,11 @@ namespace CopilotBridge.Cli.Hosting.Options;
 
 /// <summary>
 /// Bound from <c>appsettings.json</c> section <c>Pipeline:UpstreamTimeout</c>.
-/// Two independent <b>inactivity</b> (idle) budgets on the <c>/cc</c> upstream
-/// forward path — NOT a total-duration cap. As long as Copilot keeps making
-/// progress (headers arrive, or SSE events keep coming) the relevant timer is
-/// reset, so a legitimately slow-but-progressing request is never aborted.
+/// Two independent <b>inactivity</b> (idle) budgets on <b>both</b> upstream forward
+/// paths — <c>/cc</c> (Anthropic passthrough) and Codex (Responses) — NOT a
+/// total-duration cap. As long as Copilot keeps making progress (headers arrive, or
+/// SSE events keep coming) the relevant timer is reset, so a legitimately
+/// slow-but-progressing request is never aborted.
 /// </summary>
 /// <remarks>
 /// <para>The coarse <c>HttpClient.Timeout</c> (10 min) under
@@ -13,9 +14,14 @@ namespace CopilotBridge.Cli.Hosting.Options;
 /// the SSE body reads; these budgets are the fine-grained inactivity bounds that
 /// close both gaps. See <c>docs/pipeline-design.md</c> and the
 /// <c>add-upstream-idle-timeout</c> change for the incident that motivated them.</para>
+/// <para>The budgets themselves are path-agnostic; only the <b>mid-stream
+/// surfacing</b> differs by client protocol (see <see cref="StreamIdleAction"/> /
+/// <see cref="StreamIdleSignal"/>, which apply to the <c>/cc</c> path — the Codex
+/// path flushes a <c>response.failed</c> terminal instead of injecting an Anthropic
+/// error the Responses client could not parse).</para>
 /// <para>Each budget is independently disable-able: a value <c>&lt;= 0</c> means
 /// "no bound on that phase" and arms no timer (zero overhead — the byte-identical
-/// <c>/cc</c> passthrough hot path is unchanged). Read once at startup; RESTART
+/// passthrough / translation hot path is unchanged). Read once at startup; RESTART
 /// copilot-bridge after changing a value.</para>
 /// </remarks>
 internal sealed class UpstreamTimeoutOptions

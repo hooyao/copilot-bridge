@@ -171,7 +171,11 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             // the Codex client still gets a well-formed response.failed terminal
             // rather than a headless stream or an Anthropic overloaded_error it can't
             // parse. Budget <= 0 ⇒ the original loop (parser driven by `ct` only).
-            var idleCts = streamIdleSeconds > 0
+            // `using` so the linked CTS is disposed on EVERY exit (normal, break,
+            // throw) — a null idleCts (disabled) is a using no-op. Declared before the
+            // enumerator so it disposes AFTER it (reverse order), the ordering the
+            // enumerator's token depends on.
+            using var idleCts = streamIdleSeconds > 0
                 ? CancellationTokenSource.CreateLinkedTokenSource(ct)
                 : null;
             var readCt = idleCts?.Token ?? ct;
@@ -197,7 +201,6 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
                 foreach (var irItem in sm.Translate(e.Current))
                     yield return irItem;
             }
-            idleCts?.Dispose();
         }
         finally
         {

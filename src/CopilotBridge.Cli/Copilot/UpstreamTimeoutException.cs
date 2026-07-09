@@ -11,21 +11,27 @@ internal enum UpstreamTimeoutPhase
 }
 
 /// <summary>
-/// Thrown by the <c>/cc</c> forward path when a <see cref="UpstreamTimeoutPhase"/>
-/// inactivity budget (see <c>Hosting.Options.UpstreamTimeoutOptions</c>) elapses
-/// with no upstream progress. This is a bridge-initiated abort of an unresponsive
-/// Copilot, NOT a client cancellation and NOT a network fault.
+/// Thrown by either forward path — <c>/cc</c> (Anthropic passthrough) or Codex
+/// (Responses) — when a <see cref="UpstreamTimeoutPhase"/> inactivity budget (see
+/// <c>Hosting.Options.UpstreamTimeoutOptions</c>) elapses with no upstream
+/// progress. This is a bridge-initiated abort of an unresponsive Copilot, NOT a
+/// client cancellation and NOT a network fault.
 /// </summary>
 /// <remarks>
 /// <para>Deliberately a plain <see cref="Exception"/> — NOT an
 /// <see cref="OperationCanceledException"/> (so it is never confused with a client
 /// cancel) and NOT in the <see cref="TransientUpstreamError"/> family (so the
 /// client's transient-retry loop does not re-send it and the endpoint does not
-/// mislabel it a 502). The endpoint has one dedicated <c>catch</c> that maps it:
-/// <see cref="UpstreamTimeoutPhase.FirstByte"/> → a real 504; a mid-stream
-/// <see cref="UpstreamTimeoutPhase.StreamIdle"/> → a retryable error event or a
-/// truncation, per config.</para>
-/// <para>The distinguishing test at the throw site is: the linked timeout token
+/// mislabel it a 502).</para>
+/// <para>Surfacing differs by path and phase. First-byte (both paths): thrown out
+/// of the client, mapped by the endpoint to a real 504. Mid-stream
+/// <see cref="UpstreamTimeoutPhase.StreamIdle"/>: on <c>/cc</c> the passthrough
+/// strategy throws it and the endpoint injects a retryable Anthropic error event
+/// (or truncates, per config); on Codex the strategy latches it as a stream fault
+/// and flushes a <c>response.failed</c> terminal through its existing fault channel
+/// (the Codex client speaks the Responses protocol and could not parse an Anthropic
+/// error envelope).</para>
+/// <para>The distinguishing test at every throw site is: the linked timeout token
 /// was cancelled AND the caller's own token was not — so a genuine client cancel
 /// always wins the race and propagates as its original
 /// <see cref="OperationCanceledException"/>.</para>

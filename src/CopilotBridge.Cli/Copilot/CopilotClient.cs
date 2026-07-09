@@ -119,11 +119,13 @@ internal sealed class CopilotClient(
     /// own <paramref name="ct"/> did NOT fire (so a client cancel wins the race) —
     /// throws a terminal <see cref="UpstreamTimeoutException"/> the caller's
     /// transient-retry <c>when</c> clause does not catch. Once headers arrive the
-    /// timer is DISARMED (not disposed): under <c>ResponseHeadersRead</c> the token
-    /// stays associated with the still-unread body stream, so disarming — rather
-    /// than disposing — avoids aborting the caller's body read while leaving a
-    /// client cancel on <paramref name="ct"/> still able to abort it. Budget
-    /// <c>&lt;= 0</c> ⇒ the original bare send (no CTS, no timer).
+    /// timer is disarmed (<c>CancelAfter(Infinite)</c>) so it cannot fire during the
+    /// caller's body read; the caller reads the body with its own <paramref name="ct"/>
+    /// (never this method's token), so disposing the linked CTS at method exit does
+    /// NOT abort that read — verified by <c>FirstByteCtsLifetimeProbe</c>. The CTS is
+    /// disposed on every path (a <c>using</c>) to avoid rooting a per-request
+    /// registration on <paramref name="ct"/> for the life of a long-running server.
+    /// Budget <c>&lt;= 0</c> ⇒ the original bare send (no CTS, no timer).
     /// </remarks>
     private async ValueTask<HttpResponseMessage> SendWithFirstByteBudgetAsync(
         HttpRequestMessage req, CancellationToken ct)
@@ -134,7 +136,7 @@ internal sealed class CopilotClient(
             return await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
         }
 
-        var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(firstByteBudget));
         HttpResponseMessage resp;
         try
@@ -147,7 +149,8 @@ internal sealed class CopilotClient(
                 UpstreamTimeoutPhase.FirstByte, TimeSpan.FromSeconds(firstByteBudget));
         }
 
-        // Headers arrived — disarm so the timer can't fire during the body read.
+        // Headers arrived — disarm so the timer can't fire before the CTS is disposed
+        // at method exit; the body read uses the caller's ct, not this token.
         timeoutCts.CancelAfter(Timeout.InfiniteTimeSpan);
         return resp;
     }
