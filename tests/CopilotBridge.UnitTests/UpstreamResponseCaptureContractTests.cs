@@ -109,6 +109,9 @@ public class UpstreamResponseCaptureContractTests
 
     private static CopilotMessagesPassthroughStrategy CcStrategy(ICopilotClient client, bool tracing, BridgeContext<MessagesRequest> ctx) =>
         new(client, ctx, TestAudit.Create(tracing),
+            // Timeouts disabled: these capture/byte-identity tests must exercise the
+            // original no-timer stream path, unperturbed by an inactivity budget.
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
             NullLogger<CopilotMessagesPassthroughStrategy>.Instance);
 
     // ── Case A: tracing ON, streaming → capture == Copilot's raw wire bytes ───
@@ -235,6 +238,7 @@ public class UpstreamResponseCaptureContractTests
             new CodexModelProfileCatalog(),
             ctx,
             TestAudit.Create(true),
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
         await strategy.ForwardAsync();
@@ -260,6 +264,7 @@ public class UpstreamResponseCaptureContractTests
             new CodexModelProfileCatalog(),
             ctx,
             TestAudit.Create(false),
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
         await strategy.ForwardAsync();
@@ -285,6 +290,7 @@ public class UpstreamResponseCaptureContractTests
             new CodexModelProfileCatalog(),
             ctx,
             TestAudit.Create(true),
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
         await strategy.ForwardAsync();
@@ -402,6 +408,7 @@ public class UpstreamResponseCaptureContractTests
             new CodexModelProfileCatalog(),
             ctx,
             TestAudit.Create(true),
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
         await strategy.ForwardAsync();

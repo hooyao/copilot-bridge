@@ -155,6 +155,100 @@ public class CodexEndpointTests
         Assert.Equal(StatusCodes.Status502BadGateway, status);
     }
 
+    // ── upstream inactivity timeout mapping (change: add-upstream-idle-timeout) ──
+
+    /// <summary>
+    /// Contract: a first-byte <see cref="CopilotBridge.Cli.Copilot.UpstreamTimeoutException"/>
+    /// thrown from the pipeline (pre-headers) maps to a real 504 with the phase on
+    /// the wire — distinct from the 502 an unexpected/transient error would give.
+    /// </summary>
+    [Fact]
+    public async Task FirstByteTimeout_Returns504()
+    {
+        var (status, body) = await Invoke(ValidRequest, _ =>
+            throw new CopilotBridge.Cli.Copilot.UpstreamTimeoutException(
+                CopilotBridge.Cli.Copilot.UpstreamTimeoutPhase.FirstByte, TimeSpan.FromSeconds(2)));
+
+        Assert.Equal(StatusCodes.Status504GatewayTimeout, status);
+        Assert.Contains("first byte", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Contract: a mid-stream stream-idle timeout on the Codex path is surfaced by
+    /// the strategy as an <c>UpstreamStreamFault</c> (it flushes a response.failed
+    /// terminal internally, never throws), so the endpoint keeps the already-sent
+    /// 200, does NOT emit an Anthropic overloaded_error, and records the timeout on
+    /// its summary. Asserts the summary field via a captured summary logger.
+    /// </summary>
+    [Fact]
+    public async Task MidStreamTimeout_KeepsStatus_RecordsSummary_NoOverloadedError()
+    {
+        var summaryCapture = new SummaryCapture();
+
+        var http = new DefaultHttpContext();
+        http.Request.Method = "POST";
+        http.Request.Path = "/codex/responses";
+        http.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(ValidRequest));
+        var respStream = new MemoryStream();
+        http.Response.Body = respStream;
+        var bridgeCtx = new BridgeContext<MessagesRequest>();
+
+        await CodexResponsesEndpoint.HandleAsync(
+            http,
+            bridgeCtx,
+            new StubRunner(bridgeCtx, ctx =>
+            {
+                ctx.Target = new RouteTarget(BackendVendor.CopilotResponses, "/responses", "gpt-5.3-codex");
+                ctx.Response.Status = StatusCodes.Status200OK;
+                ctx.Response.Mode = ResponseMode.Streaming;
+                // One real event, then the strategy's fault channel latches the
+                // timeout (as it does after flushing response.failed).
+                ctx.Response.EventStream = ToAsync(new[]
+                {
+                    new SseItem<string>("{\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}", "response.created"),
+                });
+                ctx.Response.UpstreamStreamFault = new CopilotBridge.Cli.Copilot.UpstreamTimeoutException(
+                    CopilotBridge.Cli.Copilot.UpstreamTimeoutPhase.StreamIdle, TimeSpan.FromSeconds(1));
+            }),
+            DummyPipeline,
+            new ResponsesToIrInboundAdapter(NullLogger<ResponsesToIrInboundAdapter>.Instance),
+            new IrToResponsesOutboundAdapter(bridgeCtx, NullLogger<IrToResponsesOutboundAdapter>.Instance),
+            summaryCapture.Logger,
+            TestAudit.Create(false),
+            NullLogger<CodexResponsesEndpointTag>.Instance);
+
+        var body = Encoding.UTF8.GetString(respStream.ToArray());
+        Assert.Equal(StatusCodes.Status200OK, http.Response.StatusCode); // headers already sent
+        Assert.Equal("stream_idle", summaryCapture.UpstreamTimeout);
+        Assert.DoesNotContain("overloaded_error", body);
+    }
+
+    // Captures the RequestSummary the Codex endpoint logs so a test can read the
+    // upstream_timeout field without parsing the rendered line.
+    private sealed class SummaryCapture
+    {
+        public string? UpstreamTimeout { get; private set; }
+        public RequestSummaryLogger Logger { get; }
+        public SummaryCapture() => Logger = new RequestSummaryLogger(new Interceptor(this));
+
+        private sealed class Interceptor(SummaryCapture owner) : ILogger<RequestSummaryLogger>
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                if (state is IReadOnlyList<KeyValuePair<string, object?>> kvs)
+                    foreach (var kv in kvs)
+                        if (kv.Key == "UpstreamTimeout")
+                        {
+                            var v = kv.Value?.ToString();
+                            owner.UpstreamTimeout = v == "(none)" ? null : v;
+                        }
+            }
+        }
+    }
+
     // ── happy buffered path writes the upstream body through ─────────────────
 
     [Fact]

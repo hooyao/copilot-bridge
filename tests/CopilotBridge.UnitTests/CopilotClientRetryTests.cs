@@ -153,7 +153,8 @@ public class CopilotClientRetryTests
     private static ReadOnlyMemory<byte> SomeBody() =>
         System.Text.Encoding.UTF8.GetBytes("""{"model":"claude-opus-4.8","messages":[]}""");
 
-    private static CopilotClient BuildClient(ScriptedHandler handler, int maxRetries)
+    private static CopilotClient BuildClient(
+        ScriptedHandler handler, int maxRetries, UpstreamTimeoutOptions? timeout = null)
     {
         var http = new HttpClient(handler);
         var opts = Options.Create(new UpstreamRetryOptions
@@ -163,8 +164,15 @@ public class CopilotClientRetryTests
             BackoffMultiplier = 1.0,
             MaxDelayMs = 2,
         });
+        // Default: disable the first-byte budget so the existing retry-contract
+        // tests exercise only the retry loop, unperturbed by the timeout timer.
+        var timeoutOpts = Options.Create(timeout ?? new UpstreamTimeoutOptions
+        {
+            FirstByteTimeoutSeconds = 0,
+            StreamIdleTimeoutSeconds = 0,
+        });
         return new CopilotClient(
-            http, new FakeAuth(), new CopilotHeaderFactory(), opts,
+            http, new FakeAuth(), new CopilotHeaderFactory(), opts, timeoutOpts,
             NullLogger<CopilotClient>.Instance);
     }
 

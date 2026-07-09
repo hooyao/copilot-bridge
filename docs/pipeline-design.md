@@ -368,6 +368,76 @@ internal interface IUpstreamStrategy<TBody> where TBody : class
 }
 ```
 
+#### 4.4.1 Upstream inactivity timeout (`Pipeline:UpstreamTimeout`)
+
+The forward paths (both `/cc` and Codex) bound how long they wait on an
+*unresponsive* Copilot with two independent **inactivity** budgets — not a
+total-duration cap. As long as upstream keeps making progress the relevant timer
+resets, so a legitimately slow-but-progressing request (e.g. a near-full-`[1m]`
+prompt whose first byte legitimately takes minutes while Copilot builds a large
+prompt cache) is never aborted.
+
+- **First-byte budget** (`FirstByteTimeoutSeconds`, default 240) bounds the wait
+  for response headers, applied *per send attempt* inside
+  `CopilotClient.PostMessagesAsync` (a linked `CancellationTokenSource` +
+  `CancelAfter`, disarmed the instant headers arrive so it can't fire during the
+  body read). Because it wraps each `SendAsync` individually, retry backoff never
+  eats the budget. On expiry it throws `UpstreamTimeoutException(FirstByte)`,
+  which is terminal (the transient-retry `when` clause does not catch it — a slow
+  upstream just times out again). Fills the gap left by `HttpClient.Timeout`,
+  which under `ResponseHeadersRead` covers only the headers phase and never the
+  SSE body.
+- **Stream-idle budget** (`StreamIdleTimeoutSeconds`, default 60) bounds the gap
+  between consecutive SSE events, reset on every event pulled from upstream. Each
+  read is driven by the shared `StreamIdleReader`, which races `MoveNextAsync`
+  against an independent `Task.Delay(idle)` rather than arming/disarming a
+  `CancelAfter` on the enumerator's own token — an arm/disarm on a reused CTS has a
+  nanosecond poison race (a timer firing between a successful read and the disarm
+  permanently cancels the source and spuriously aborts the next read), whereas an
+  independent delay can never poison the source. A move that completes
+  synchronously (the next event is already buffered) takes an allocation-free fast
+  path; only a real wait on the network allocates the race scaffolding, and on an
+  idle timeout the pending read is cancelled and awaited so it never dangles.
+  Default 60s sits *below* Claude Code's own opt-in stream watchdog
+  (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`, default 90s) so the bridge is the earlier
+  deterministic actor. On expiry `/cc` throws `UpstreamTimeoutException(StreamIdle)`;
+  Codex latches it as a stream fault (see below).
+
+Each budget disables at `<= 0` (no timer armed, no allocation — the byte-identical
+`/cc` passthrough hot path is unchanged). Surfacing, mapped by the endpoint's one
+`catch (UpstreamTimeoutException)`:
+
+- **Before headers** (first-byte): a real `504 Gateway Timeout`.
+- **Mid-stream** (headers already sent, status locked at `200`): by default inject
+  the *same* retryable `overloaded_error` SSE event the response guards use
+  (`ResponseDetectionError.JsonWithMessage`) so Claude Code re-attempts the turn —
+  a whole-turn retry under `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` (which the
+  bridge's `config` command writes), a non-streaming fallback re-request otherwise;
+  `StreamIdleAction=Truncate` instead ends the stream with no error event. Note the
+  detector framework is pull-based (it inspects events that *arrive*), so an idle
+  gap — the absence of an event — cannot be a detector; the injection happens at
+  the read site / endpoint catch, reusing only the shared error builder.
+
+**Both forward paths are covered.** The first-byte budget lives in a shared client
+helper (`CopilotClient.SendWithFirstByteBudgetAsync`) called by both
+`PostMessagesAsync` (`/cc`) and `PostResponsesAsync` (Codex), so a first-byte
+stall on either path throws `UpstreamTimeoutException(FirstByte)` → `504`. The
+stream-idle budget is applied at each strategy's read site, but the **mid-stream
+surface differs by client protocol**: the Codex path (`CopilotResponsesStrategy.
+TranslateStreamAsync`) does **not** inject an Anthropic `overloaded_error` (the
+Codex client speaks Responses and could not parse it). Instead it latches the
+timeout as `fault` and reuses the strategy's existing mid-stream-fault channel —
+flushing a `response.failed` terminal and surfacing `UpstreamStreamFault` — so the
+Codex client sees a well-formed terminated stream. `CodexResponsesEndpoint` reads
+that fault, records `upstream_timeout=stream_idle`, and folds the error into the
+audit.
+
+A client cancellation always wins the race against a timeout: the throw sites only
+convert to `UpstreamTimeoutException` when the linked timer fired **and** the
+caller's own token did not, and the endpoint's client-cancel `catch` is ordered
+first. The summary line carries `upstream_timeout=first_byte|stream_idle` (or
+`(none)`).
+
 ### 4.5 Pipeline
 
 ```csharp

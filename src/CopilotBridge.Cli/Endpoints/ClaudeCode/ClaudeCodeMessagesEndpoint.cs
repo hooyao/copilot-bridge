@@ -1,17 +1,21 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Hosting.Logging;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Errors;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
+using CopilotBridge.Cli.Pipeline.Response.Detection;
 using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 
@@ -41,6 +45,7 @@ internal static class ClaudeCodeMessagesEndpoint
         ModelProfileCatalog profiles,
         RequestSummaryLogger summaryLogger,
         RequestAudit audit,
+        IOptions<UpstreamTimeoutOptions> upstreamTimeout,
         ILogger<ClaudeCodeMessagesEndpointTag> endpointLog)
     {
         var ct = httpCtx.RequestAborted;
@@ -302,6 +307,58 @@ internal static class ClaudeCodeMessagesEndpoint
             endpointLog.LogDebug("endpoint cancelled by client");
             throw;
         }
+        catch (UpstreamTimeoutException ex)
+        {
+            // An upstream inactivity budget fired (see Pipeline:UpstreamTimeout) —
+            // the bridge aborted an unresponsive Copilot. NOT a client cancel (that
+            // catch above already won the race) and NOT a bridge bug: one WARN, no
+            // stack. The phase decides the surface.
+            var phase = UpstreamTimeoutException.PhaseLabel(ex.Phase);
+            summary.UpstreamTimeout = phase;
+            endpointError = ex.Message;
+            summary.Error = ex.Message;
+            endpointLog.LogWarning(
+                "endpoint upstream-timeout: phase={Phase} idle={IdleSeconds:0.#}s (tune Pipeline:UpstreamTimeout)",
+                phase, ex.Elapsed.TotalSeconds);
+
+            if (!httpCtx.Response.HasStarted)
+            {
+                // First-byte: no bytes reached the client, so return a real status.
+                // 504 Gateway Timeout is the honest wire signal — the upstream did
+                // not respond in time.
+                responseStatus = StatusCodes.Status504GatewayTimeout;
+                httpCtx.Response.StatusCode = responseStatus;
+                await httpCtx.Response.WriteAsync(
+                    $"upstream timed out waiting for first byte after {ex.Elapsed.TotalSeconds:0.#}s",
+                    CancellationToken.None);
+            }
+            else
+            {
+                // Mid-stream: headers already sent, status cannot be rewritten. By
+                // default inject the SAME retryable error the response guards use
+                // (byte-identical to a RunawayGuard trip) so Claude Code re-attempts
+                // the turn; or truncate if the operator configured that. Either way
+                // the wire status stays the already-sent 200.
+                responseStatus = httpCtx.Response.StatusCode;
+                if (upstreamTimeout.Value.StreamIdleAction == UpstreamTimeoutAction.Retry)
+                {
+                    var errorJson = ResponseDetectionError.JsonWithMessage(
+                        upstreamTimeout.Value.StreamIdleSignal, StreamIdleRetryMessage);
+                    // Best-effort: the client may already be gone. Don't let a write
+                    // failure here mask the timeout we're reporting.
+                    try
+                    {
+                        await WriteSseEventAsync(httpCtx.Response, "error", errorJson, CancellationToken.None);
+                    }
+                    catch (Exception writeEx)
+                    {
+                        endpointLog.LogDebug(
+                            "endpoint upstream-timeout: could not write retry event ({Type})", writeEx.GetType().Name);
+                    }
+                }
+                // Truncate: nothing more to write — the stream simply ends.
+            }
+        }
         catch (UnknownModelException ex)
         {
             // The bridge refused the model because it has no profile for it
@@ -432,6 +489,15 @@ internal static class ClaudeCodeMessagesEndpoint
                 sw.ElapsedMilliseconds, inboundLen);
         }
     }
+
+    /// <summary>Client-facing message injected as the retryable error when a
+    /// mid-stream idle timeout fires with StreamIdleAction=Retry. No <c>"</c> or
+    /// <c>\</c> (embedded in hand-built JSON without escaping, same constraint as
+    /// the response guards' messages).</summary>
+    private const string StreamIdleRetryMessage =
+        "[copilot-bridge] The upstream model stalled mid-response (no further output within the configured "
+        + "stream-idle budget) and the turn was aborted; forcing a clean retry. If this is a false positive on a "
+        + "legitimately slow stream, raise Pipeline:UpstreamTimeout:StreamIdleTimeoutSeconds in appsettings.json and restart copilot-bridge.";
 
     private static IReadOnlyList<string> ParseOutboundBetas(IReadOnlyDictionary<string, string> headers)
     {

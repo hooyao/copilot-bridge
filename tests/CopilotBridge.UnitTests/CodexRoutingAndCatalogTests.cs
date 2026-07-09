@@ -163,11 +163,23 @@ public class CodexRoutingAndCatalogTests
             copilot: null!,
             ctx: sharedCtx,
             audit: TestAudit.Create(false),
+            timeout: Microsoft.Extensions.Options.Options.Create(
+                new CopilotBridge.Cli.Hosting.Options.UpstreamTimeoutOptions
+                {
+                    FirstByteTimeoutSeconds = 0,
+                    StreamIdleTimeoutSeconds = 0,
+                }),
             log: NullLogger<CopilotBridge.Cli.Pipeline.Strategies.Anthropic.CopilotMessagesPassthroughStrategy>.Instance);
         var codex = new CopilotBridge.Cli.Pipeline.Strategies.Codex.CopilotResponsesStrategy(
             copilot: null!, profiles: new CodexModelProfileCatalog(),
             ctx: sharedCtx,
             audit: TestAudit.Create(false),
+            timeout: Microsoft.Extensions.Options.Options.Create(
+                new CopilotBridge.Cli.Hosting.Options.UpstreamTimeoutOptions
+                {
+                    FirstByteTimeoutSeconds = 0,
+                    StreamIdleTimeoutSeconds = 0,
+                }),
             log: NullLogger<CopilotBridge.Cli.Pipeline.Strategies.Codex.CopilotResponsesStrategy>.Instance);
 
         var registry = new CopilotBridge.Cli.Pipeline.Strategies.StrategyRegistry<MessagesRequest>(

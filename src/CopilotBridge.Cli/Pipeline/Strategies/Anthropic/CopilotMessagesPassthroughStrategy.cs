@@ -2,9 +2,11 @@ using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 
@@ -22,17 +24,20 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
     private readonly ICopilotClient _copilot;
     private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly RequestAudit _audit;
+    private readonly UpstreamTimeoutOptions _timeout;
     private readonly ILogger<CopilotMessagesPassthroughStrategy> _log;
 
     public CopilotMessagesPassthroughStrategy(
         ICopilotClient copilot,
         BridgeContext<MessagesRequest> ctx,
         RequestAudit audit,
+        IOptions<UpstreamTimeoutOptions> timeout,
         ILogger<CopilotMessagesPassthroughStrategy> log)
     {
         _copilot = copilot;
         _ctx = ctx;
         _audit = audit;
+        _timeout = timeout.Value;
         _log = log;
     }
 
@@ -101,7 +106,7 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             ctx.Response.RawUpstreamResponseCapture = capture;
             // Ownership of `resp` transfers to the iterator — disposed when
             // the consumer (the endpoint writer) finishes enumeration.
-            ctx.Response.EventStream = StreamEventsAsync(resp, capture, ctx.Ct);
+            ctx.Response.EventStream = StreamEventsAsync(resp, capture, _timeout.StreamIdleTimeoutSeconds, ctx.Ct);
             _log.LogDebug("strategy {Name}: streaming (content-type={ContentType})", Name, contentType);
         }
         else
@@ -127,6 +132,7 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
     private static async IAsyncEnumerable<SseItem<string>> StreamEventsAsync(
         HttpResponseMessage resp,
         RawResponseCapture? capture,
+        int streamIdleSeconds,
         [EnumeratorCancellation] CancellationToken ct)
     {
         Stream? rawStream = null;
@@ -137,9 +143,34 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             // the parser (no wrapper, no allocation, byte-identical passthrough).
             var readStream = capture is null ? rawStream : new TeeReadStream(rawStream, capture);
             var parser = SseParser.Create(readStream);
-            await foreach (var evt in parser.EnumerateAsync(ct))
+
+            if (streamIdleSeconds <= 0)
             {
-                yield return evt;
+                // Disabled: the original path — byte-identical passthrough, no timer,
+                // no linked CTS. The `await foreach` drives the parser with `ct`.
+                await foreach (var evt in parser.EnumerateAsync(ct))
+                {
+                    yield return evt;
+                }
+                yield break;
+            }
+
+            // Stream-idle inactivity budget. Each event's wait on upstream is bounded
+            // by StreamIdleReader, which races the read against an independent delay
+            // (NOT a CancelAfter armed/disarmed on the enumerator token — that has a
+            // nanosecond poison race). readCts backs the enumerator's read token so
+            // the reader can end a pending read on an idle timeout. The yield sits
+            // OUTSIDE any try/catch (C# forbids yielding inside a try with a catch).
+            var idle = TimeSpan.FromSeconds(streamIdleSeconds);
+            using var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            await using var enumerator = parser.EnumerateAsync(readCts.Token).GetAsyncEnumerator(readCts.Token);
+            while (true)
+            {
+                if (!await StreamIdleReader.MoveNextAsync(enumerator, readCts, idle, ct))
+                {
+                    yield break;
+                }
+                yield return enumerator.Current;
             }
         }
         finally
