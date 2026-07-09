@@ -1,14 +1,26 @@
 # upstream-timeout Specification
 
 ## Purpose
-TBD - created by archiving change add-upstream-idle-timeout. Update Purpose after archive.
+
+Bounds how long the bridge waits on an unresponsive upstream (GitHub Copilot)
+while forwarding a request, using two independent **inactivity** budgets — a
+first-byte budget over the response-headers phase and a stream-idle budget over
+the SSE body — rather than a total-duration cap, so a slow-but-progressing request
+is never aborted. Both budgets apply to **both** forward paths: `/cc` (Anthropic
+passthrough) and Codex (Responses). This capability defines when each budget
+fires, how a fired budget surfaces to the client (a pre-headers `504`; a
+mid-stream retryable error on `/cc` or a `response.failed` terminal on Codex) and
+to the operator (the request summary and log), and that a client cancellation
+always wins the race against a timeout.
 ## Requirements
 ### Requirement: First-byte inactivity budget
 
 The bridge SHALL bound the time it waits for Copilot to return response headers
-(the first byte) when forwarding a `/cc` request. If no response headers arrive
-within the configured **first-byte budget**, the bridge SHALL abort the upstream
-call and surface a timeout, rather than continuing to wait.
+(the first byte) when forwarding a request on either path (`/cc` or Codex). If no
+response headers arrive within the configured **first-byte budget**, the bridge
+SHALL abort the upstream call and surface a timeout, rather than continuing to
+wait. Both paths share one client-layer implementation, so the budget applies
+identically to each.
 
 The budget SHALL be an *inactivity* bound over the response-headers phase only;
 it SHALL be applied from outside the client's transient-retry loop, so that

@@ -19,9 +19,11 @@ however long it legitimately runs.
 ### Requirement: First-byte inactivity budget
 
 The bridge SHALL bound the time it waits for Copilot to return response headers
-(the first byte) when forwarding a `/cc` request. If no response headers arrive
-within the configured **first-byte budget**, the bridge SHALL abort the upstream
-call and surface a timeout, rather than continuing to wait.
+(the first byte) when forwarding a request on either path (`/cc` or Codex). If no
+response headers arrive within the configured **first-byte budget**, the bridge
+SHALL abort the upstream call and surface a timeout, rather than continuing to
+wait. Both paths share one client-layer implementation, so the budget applies
+identically to each.
 
 The budget SHALL be an *inactivity* bound over the response-headers phase only;
 it SHALL be applied from outside the client's transient-retry loop, so that
