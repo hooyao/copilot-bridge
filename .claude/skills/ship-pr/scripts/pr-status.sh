@@ -59,14 +59,13 @@ echo "OPEN_COMMENTS=${OPEN}"
 
 # --- 2. CI + merge + PR state (one call) ---------------------------------------
 VIEW_JSON="$(gh pr view "$PR" --repo "$REPO" \
-  --json mergeable,mergeStateStatus,state,statusCheckRollup 2>/dev/null)" \
+  --json mergeable,mergeStateStatus,state,statusCheckRollup,headRefName 2>/dev/null)" \
   || fail "gh pr view failed — cannot read CI/merge state"
 
 MERGE_STATE="$(echo "$VIEW_JSON" | jq -r '.mergeStateStatus // "UNKNOWN"')"
 PR_STATE="$(echo "$VIEW_JSON" | jq -r '.state // "UNKNOWN"')"
+HEAD_BRANCH="$(echo "$VIEW_JSON" | jq -r '.headRefName // ""')"
 
-# CI: fail if any check concluded non-success; pending if any not COMPLETED; else pass.
-# none if there are no checks at all.
 # CI: fail if any check concluded non-success; pending if any not COMPLETED; else pass.
 # none if there are no checks at all. Two entry shapes coexist in statusCheckRollup:
 # CheckRun (uses .status/.conclusion) and legacy StatusContext (uses .state, e.g.
@@ -100,5 +99,37 @@ REVIEWS="$(gh api "repos/${REPO}/issues/${PR}/timeline" --paginate \
 REVIEWS="${REVIEWS:-0}"
 echo "COPILOT_REVIEWS=${REVIEWS}"
 echo "ROUND_HINT=${REVIEWS}"
+
+# --- 4. Copilot review-workflow health (deadlock guard) -------------------------
+# The review loop otherwise waits on TWO signals: a new open comment, or ROUND_HINT
+# going up. Neither arrives if Copilot's *review workflow run itself* fails/cancels
+# (observed: a run that hung ~15min then went to `cancelled/failure` and produced no
+# `reviewed` event). Without this the loop waits forever on a review that will never
+# land. Surface the latest Copilot review run's conclusion so the caller can tell
+# "still reviewing" from "the reviewer crashed" and re-trigger instead of hanging.
+#   COPILOT_RUN=success   last run finished (a `reviewed` event should exist/appear)
+#   COPILOT_RUN=running   a run is in progress — genuinely wait
+#   COPILOT_RUN=failure   last run failed/cancelled — re-trigger the review
+#   COPILOT_RUN=none      no Copilot run yet for this branch (or workflow named
+#                         differently) — fall back to the timeline signal
+COPILOT_RUN="none"
+if [[ -n "$HEAD_BRANCH" ]]; then
+  RUN_JSON="$(gh run list --workflow=Copilot --branch "$HEAD_BRANCH" -L 1 \
+    --json status,conclusion 2>/dev/null || true)"
+  if [[ -n "${RUN_JSON:-}" && "$RUN_JSON" != "[]" ]]; then
+    RUN_STATUS="$(echo "$RUN_JSON" | jq -r '.[0].status // ""' 2>/dev/null)"
+    RUN_CONCL="$(echo "$RUN_JSON" | jq -r '.[0].conclusion // ""' 2>/dev/null)"
+    if [[ "$RUN_STATUS" != "completed" ]]; then
+      COPILOT_RUN="running"
+    elif [[ "$RUN_CONCL" == "success" ]]; then
+      COPILOT_RUN="success"
+    else
+      # failure, cancelled, timed_out, action_required, ... → the reviewer did not
+      # deliver; treat as needing a re-trigger.
+      COPILOT_RUN="failure"
+    fi
+  fi
+fi
+echo "COPILOT_RUN=${COPILOT_RUN}"
 
 exit 0

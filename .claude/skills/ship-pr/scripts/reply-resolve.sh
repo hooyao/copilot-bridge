@@ -47,7 +47,7 @@ THREAD_ID="$(gh api graphql -f query='
     repository(owner:$owner,name:$name){ pullRequest(number:$pr){
       reviewThreads(first:100){ nodes{ id comments(first:50){ nodes{ databaseId } } } }
     } }
-  }' -F owner="$OWNER" -F name="$NAME" -F pr="$PR" \
+  }' -f owner="$OWNER" -f name="$NAME" -F pr="$PR" \
   --jq ".data.repository.pullRequest.reviewThreads.nodes[] | select(.comments.nodes[].databaseId==${CID}) | .id" 2>/dev/null | head -1)" \
   || { echo "thread lookup failed for comment ${CID} on PR ${PR}" >&2; exit 1; }
 
@@ -57,18 +57,22 @@ if [[ -z "${THREAD_ID:-}" ]]; then
 fi
 
 # --- 2. Reply in-thread via GraphQL (no PR-number-bearing REST route needed) -----
+# Use -f (raw string) for the ID and body vars, NOT -F: `gh api graphql -F` does
+# magic type conversion, so a body that happens to look like a number/true/false/null
+# would be coerced away from String and rejected by body:String!. Only the numeric
+# `pr` var (in the lookup above) uses -F.
 gh api graphql -f query='
   mutation($tid:ID!,$body:String!){
     addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$tid, body:$body}){
       comment{ id }
     }
-  }' -F tid="$THREAD_ID" -F body="$BODY" --jq '.data.addPullRequestReviewThreadReply.comment.id' >/dev/null 2>&1 \
+  }' -f tid="$THREAD_ID" -f body="$BODY" --jq '.data.addPullRequestReviewThreadReply.comment.id' >/dev/null 2>&1 \
   || { echo "reply to thread ${THREAD_ID} (comment ${CID}) failed" >&2; exit 1; }
 
 # --- 3. Resolve the thread ------------------------------------------------------
 RESOLVED="$(gh api graphql -f query='
   mutation($tid:ID!){ resolveReviewThread(input:{threadId:$tid}){ thread{ isResolved } } }' \
-  -F tid="$THREAD_ID" --jq '.data.resolveReviewThread.thread.isResolved' 2>/dev/null)"
+  -f tid="$THREAD_ID" --jq '.data.resolveReviewThread.thread.isResolved' 2>/dev/null)"
 
 if [[ "$RESOLVED" != "true" ]]; then
   echo "replied, but failed to resolve thread ${THREAD_ID}" >&2
