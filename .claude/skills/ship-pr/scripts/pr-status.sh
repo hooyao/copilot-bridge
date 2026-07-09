@@ -36,6 +36,14 @@ fail() {
   exit 1
 }
 
+# Hard dependency check up front. Every signal below parses gh output through jq;
+# if jq (or gh) is missing, an unguarded parse would emit empty/garbage state
+# WITHOUT STATUS_ERROR=1, silently defeating the fail-loud contract. Abort loudly
+# instead so a missing tool can never look like "0 open comments / all clear".
+for tool in gh jq; do
+  command -v "$tool" >/dev/null 2>&1 || fail "required tool '$tool' not found on PATH"
+done
+
 # --- 1. Unresolved review threads (the primary signal) --------------------------
 # GraphQL is the ONLY place isResolved lives; gh pr view can't see it. We resolve
 # every comment after replying, so unresolved == genuinely-open == needs action.
@@ -46,7 +54,7 @@ THREADS_JSON="$(gh api graphql -f query='
         reviewThreads(first:100){ nodes{ isResolved } }
       }
     }
-  }' -F owner="$OWNER" -F name="$NAME" -F pr="$PR" 2>/dev/null)" \
+  }' -f owner="$OWNER" -f name="$NAME" -F pr="$PR" 2>/dev/null)" \
   || fail "graphql reviewThreads query failed (auth/network?) — NOT zero comments"
 
 # Guard against a well-formed-but-empty/error body being read as 0.
@@ -62,9 +70,9 @@ VIEW_JSON="$(gh pr view "$PR" --repo "$REPO" \
   --json mergeable,mergeStateStatus,state,statusCheckRollup,headRefName 2>/dev/null)" \
   || fail "gh pr view failed — cannot read CI/merge state"
 
-MERGE_STATE="$(echo "$VIEW_JSON" | jq -r '.mergeStateStatus // "UNKNOWN"')"
-PR_STATE="$(echo "$VIEW_JSON" | jq -r '.state // "UNKNOWN"')"
-HEAD_BRANCH="$(echo "$VIEW_JSON" | jq -r '.headRefName // ""')"
+MERGE_STATE="$(echo "$VIEW_JSON" | jq -r '.mergeStateStatus // "UNKNOWN"')" || fail "jq parse of mergeStateStatus failed"
+PR_STATE="$(echo "$VIEW_JSON" | jq -r '.state // "UNKNOWN"')" || fail "jq parse of state failed"
+HEAD_BRANCH="$(echo "$VIEW_JSON" | jq -r '.headRefName // ""')" || fail "jq parse of headRefName failed"
 
 # CI: fail if any check concluded non-success; pending if any not COMPLETED; else pass.
 # none if there are no checks at all. Two entry shapes coexist in statusCheckRollup:
@@ -114,20 +122,39 @@ echo "ROUND_HINT=${REVIEWS}"
 #                         differently) — fall back to the timeline signal
 COPILOT_RUN="none"
 if [[ -n "$HEAD_BRANCH" ]]; then
-  RUN_JSON="$(gh run list --workflow=Copilot --branch "$HEAD_BRANCH" -L 1 \
-    --json status,conclusion 2>/dev/null || true)"
-  if [[ -n "${RUN_JSON:-}" && "$RUN_JSON" != "[]" ]]; then
-    RUN_STATUS="$(echo "$RUN_JSON" | jq -r '.[0].status // ""' 2>/dev/null)"
-    RUN_CONCL="$(echo "$RUN_JSON" | jq -r '.[0].conclusion // ""' 2>/dev/null)"
-    if [[ "$RUN_STATUS" != "completed" ]]; then
-      COPILOT_RUN="running"
-    elif [[ "$RUN_CONCL" == "success" ]]; then
-      COPILOT_RUN="success"
-    else
-      # failure, cancelled, timed_out, action_required, ... → the reviewer did not
-      # deliver; treat as needing a re-trigger.
-      COPILOT_RUN="failure"
+  # Capture output and exit code SEPARATELY — do NOT `|| true`, which would make an
+  # auth/network failure indistinguishable from "no run yet" and reintroduce the very
+  # "trust a silently-wrong signal" failure this guard exists to prevent. gh returns
+  # exit 0 with `[]` when the workflow simply has no runs (or isn't found); a non-zero
+  # exit means a real error → fail-loud.
+  RUN_ERR="$(mktemp 2>/dev/null || echo /tmp/prstatus_runerr.$$)"
+  if RUN_JSON="$(gh run list --workflow=Copilot --branch "$HEAD_BRANCH" -L 1 \
+      --json status,conclusion 2>"$RUN_ERR")"; then
+    rm -f "$RUN_ERR" 2>/dev/null || true
+    if [[ -n "${RUN_JSON:-}" && "$RUN_JSON" != "[]" ]]; then
+      RUN_STATUS="$(echo "$RUN_JSON" | jq -r '.[0].status // ""')" || fail "jq parse of run status failed"
+      RUN_CONCL="$(echo "$RUN_JSON" | jq -r '.[0].conclusion // ""')" || fail "jq parse of run conclusion failed"
+      if [[ "$RUN_STATUS" != "completed" ]]; then
+        COPILOT_RUN="running"
+      elif [[ "$RUN_CONCL" == "success" ]]; then
+        COPILOT_RUN="success"
+      else
+        # failure, cancelled, timed_out, action_required, ... → the reviewer did not
+        # deliver; treat as needing a re-trigger.
+        COPILOT_RUN="failure"
+      fi
     fi
+    # else: empty/[] → genuinely no run yet → COPILOT_RUN stays "none" (correct).
+  else
+    # gh itself errored. Only "no such workflow" is a benign none; anything else
+    # (auth, network, rate limit) must NOT masquerade as none.
+    if grep -qiE 'could not find|no workflow|not found' "$RUN_ERR" 2>/dev/null; then
+      COPILOT_RUN="none"
+    else
+      rm -f "$RUN_ERR" 2>/dev/null || true
+      fail "gh run list (Copilot workflow) failed — cannot assess reviewer-run health"
+    fi
+    rm -f "$RUN_ERR" 2>/dev/null || true
   fi
 fi
 echo "COPILOT_RUN=${COPILOT_RUN}"
