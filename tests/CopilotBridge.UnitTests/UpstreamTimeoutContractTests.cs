@@ -354,6 +354,62 @@ public class UpstreamTimeoutContractTests
         Assert.Equal(4, got.Count);
     }
 
+    /// <summary>
+    /// Race guard (Copilot round-2 finding): several events each delivered after a
+    /// real wait that is a large fraction of the budget, so the budget is genuinely
+    /// armed and reset per event. The old arm/disarm-on-a-reused-CTS shape could
+    /// poison the source if a timer fired between a successful read and the disarm,
+    /// spuriously aborting the NEXT read; the WhenAny-race mechanism cannot. With
+    /// per-event gaps well under budget, all events must relay and no timeout fires.
+    /// </summary>
+    [Fact]
+    public async Task StreamIdle_PacedUnderBudget_ManyEvents_NeverSpuriouslyAborts()
+    {
+        // 5 events, each after a ~120ms wait, against a 1s budget (each gap is 12%
+        // of budget — genuinely armed, never exceeded). A cumulative-poisoning bug
+        // would trip on event 2+.
+        var events = new[] { "a", "b", "c", "d", "e" }.Select(OneEvent).ToArray();
+        var ctx = Ctx(stream: true);
+        var strategy = Strategy(
+            new StubClient(StreamingResponse(new PacedStream(events, TimeSpan.FromMilliseconds(120)))),
+            ctx, Timeouts(firstByteSeconds: 0, streamIdleSeconds: 1));
+
+        await strategy.ForwardAsync();
+        var got = await DrainAsync(ctx.Response.EventStream!);
+
+        Assert.Equal(events.Length, got.Count); // every paced event relayed, none aborted
+    }
+
+    // A stream that delivers each chunk only after `gap` elapses (honouring ct), so
+    // consecutive events are separated by a real wait — exercising the armed-budget
+    // path per event, not a synchronous burst from a MemoryStream.
+    private sealed class PacedStream(byte[][] chunks, TimeSpan gap) : Stream
+    {
+        private int _chunk;
+        private int _within;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            if (_chunk >= chunks.Length) return 0; // end of stream
+            if (_within == 0) await Task.Delay(gap, ct); // wait before each new chunk
+            var cur = chunks[_chunk];
+            var n = Math.Min(buffer.Length, cur.Length - _within);
+            cur.AsSpan(_within, n).CopyTo(buffer.Span);
+            _within += n;
+            if (_within >= cur.Length) { _chunk++; _within = 0; }
+            return n;
+        }
+        public override int Read(byte[] b, int o, int c) => ReadAsync(b.AsMemory(o, c)).AsTask().GetAwaiter().GetResult();
+        public override void Flush() { }
+        public override long Seek(long o, SeekOrigin r) => throw new NotSupportedException();
+        public override void SetLength(long v) => throw new NotSupportedException();
+        public override void Write(byte[] b, int o, int c) => throw new NotSupportedException();
+    }
+
     // ── Group 6.7: disabled budgets ⇒ byte-identical to the no-timeout path ────
 
     /// <summary>

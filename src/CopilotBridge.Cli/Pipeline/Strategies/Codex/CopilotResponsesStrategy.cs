@@ -163,41 +163,33 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             // parser requires one, and T4 turns a faulted terminal into
             // response.failed rather than a headless stream.
             //
-            // Stream-idle inactivity budget: when enabled, drive MoveNextAsync with a
-            // linked CTS re-armed before each read and disarmed once an event is in
-            // hand, so only time spent WAITING on upstream counts. A fired idle timer
-            // is latched as `fault` (an UpstreamTimeoutException) exactly like a real
-            // mid-stream disconnect — reusing this path's existing catch-and-flush so
-            // the Codex client still gets a well-formed response.failed terminal
-            // rather than a headless stream or an Anthropic overloaded_error it can't
-            // parse. Budget <= 0 ⇒ the original loop (parser driven by `ct` only).
-            // `using` so the linked CTS is disposed on EVERY exit (normal, break,
-            // throw) — a null idleCts (disabled) is a using no-op. Declared before the
-            // enumerator so it disposes AFTER it (reverse order), the ordering the
-            // enumerator's token depends on.
-            using var idleCts = streamIdleSeconds > 0
+            // Stream-idle inactivity budget: when enabled, each read is bounded by
+            // StreamIdleReader (races the read against an independent delay — no
+            // CancelAfter poison race). A fired idle timer surfaces as an
+            // UpstreamTimeoutException, which we latch as `fault` exactly like a real
+            // mid-stream disconnect — reusing this path's catch-and-flush so the Codex
+            // client gets a well-formed response.failed terminal rather than a
+            // headless stream or an Anthropic overloaded_error it can't parse. Budget
+            // <= 0 ⇒ the original loop (parser driven by `ct` only). readCts backs the
+            // enumerator's read token so the reader can end a pending read on timeout;
+            // `using` disposes it on every exit (a null is a using no-op).
+            using var readCts = streamIdleSeconds > 0
                 ? CancellationTokenSource.CreateLinkedTokenSource(ct)
                 : null;
-            var readCt = idleCts?.Token ?? ct;
+            var readCt = readCts?.Token ?? ct;
             var idle = TimeSpan.FromSeconds(streamIdleSeconds);
             await using var e = parser.EnumerateAsync(readCt).GetAsyncEnumerator(readCt);
             while (true)
             {
-                idleCts?.CancelAfter(idle);
                 bool moved;
-                try { moved = await e.MoveNextAsync(); }
-                catch (OperationCanceledException) when (
-                    idleCts is not null && idleCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                try
                 {
-                    // Our idle timer fired, not the caller's token — upstream went
-                    // silent mid-stream. Latch it as the fault so the terminal flush
-                    // below emits response.failed, same as a real disconnect.
-                    fault = new UpstreamTimeoutException(UpstreamTimeoutPhase.StreamIdle, idle);
-                    break;
+                    moved = readCts is not null
+                        ? await StreamIdleReader.MoveNextAsync(e, readCts, idle, ct)
+                        : await e.MoveNextAsync();
                 }
                 catch (Exception ex) { fault = ex; break; }
                 if (!moved) break;
-                idleCts?.CancelAfter(Timeout.InfiniteTimeSpan); // disarm during translate/yield
                 foreach (var irItem in sm.Translate(e.Current))
                     yield return irItem;
             }

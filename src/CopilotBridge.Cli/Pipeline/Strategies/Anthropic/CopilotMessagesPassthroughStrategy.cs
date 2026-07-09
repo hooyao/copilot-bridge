@@ -155,40 +155,21 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
                 yield break;
             }
 
-            // Stream-idle inactivity budget. One linked CTS is reused across events
-            // (re-armed via CancelAfter) — cheaper than a fresh CTS per event on the
-            // hot path. Arm before each MoveNextAsync (the wait on upstream), disarm
-            // once an event is in hand so the budget measures only time spent waiting
-            // on upstream, not the downstream consumer's write/flush. The yield sits
-            // OUTSIDE the try/catch (C# forbids yielding inside a try with a catch),
-            // which the arm/read/disarm/yield shape satisfies naturally.
+            // Stream-idle inactivity budget. Each event's wait on upstream is bounded
+            // by StreamIdleReader, which races the read against an independent delay
+            // (NOT a CancelAfter armed/disarmed on the enumerator token — that has a
+            // nanosecond poison race). readCts backs the enumerator's read token so
+            // the reader can end a pending read on an idle timeout. The yield sits
+            // OUTSIDE any try/catch (C# forbids yielding inside a try with a catch).
             var idle = TimeSpan.FromSeconds(streamIdleSeconds);
-            using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            await using var enumerator = parser.EnumerateAsync(idleCts.Token).GetAsyncEnumerator(idleCts.Token);
+            using var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            await using var enumerator = parser.EnumerateAsync(readCts.Token).GetAsyncEnumerator(readCts.Token);
             while (true)
             {
-                idleCts.CancelAfter(idle);
-                bool hasNext;
-                try
-                {
-                    hasNext = await enumerator.MoveNextAsync();
-                }
-                catch (OperationCanceledException) when (idleCts.IsCancellationRequested && !ct.IsCancellationRequested)
-                {
-                    // Our idle timer fired, not the caller's token — upstream went
-                    // silent mid-stream. Terminal for this read; the endpoint maps it
-                    // (retryable error event or truncation, per config).
-                    throw new UpstreamTimeoutException(UpstreamTimeoutPhase.StreamIdle, idle);
-                }
-
-                if (!hasNext)
+                if (!await StreamIdleReader.MoveNextAsync(enumerator, readCts, idle, ct))
                 {
                     yield break;
                 }
-
-                // Event in hand — disarm so the budget doesn't count the consumer's
-                // downstream write time against the next upstream wait.
-                idleCts.CancelAfter(Timeout.InfiniteTimeSpan);
                 yield return enumerator.Current;
             }
         }
