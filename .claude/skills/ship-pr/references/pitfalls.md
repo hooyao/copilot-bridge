@@ -64,15 +64,6 @@ ownership is unclear, ask the user before committing.
 all platforms itself. Push the tag; let CI do the rest. Confirm the run started and
 hand the user the URL.
 
-## Meta-lesson
-
-Most of these are the same mistake wearing different hats: **trusting a signal that
-can be silently wrong** (a swallowed `gh` error, an always-empty field, a re-anchored
-timestamp, an early empty review) instead of a signal you actively make trustworthy
-(fail-loud checks + resolve-after-reply so the unresolved count means what it says).
-When designing any new check here, ask: "if this call failed, would I be able to tell,
-or would it look like good news?"
-
 ## 8. The reviewer's own workflow run crashed → loop waits forever
 
 **What happened:** Copilot's review workflow run hung ~15 min, then went to
@@ -87,3 +78,13 @@ after the stuck run is terminal (a re-request during `running` is a no-op). Boun
 the re-triggers (~2) then escalate to the user. Evaluate positive signals (open
 comment, ROUND_HINT) BEFORE run health: a run can post comments and still end
 cancelled, so a `failure` conclusion doesn't mean "no review happened".
+
+## Meta-lesson
+
+Most of these are the same mistake wearing different hats: **trusting a signal that
+can be silently wrong** (a swallowed `gh` error, an always-empty field, a re-anchored
+timestamp, an early empty review, a crashed reviewer run, a `|| true` that hides an
+auth failure) instead of a signal you actively make trustworthy (fail-loud checks +
+resolve-after-reply so the unresolved count means what it says). When designing any
+new check here, ask: "if this call failed, would I be able to tell, or would it look
+like good news?"
