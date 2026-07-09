@@ -388,13 +388,20 @@ prompt cache) is never aborted.
   which under `ResponseHeadersRead` covers only the headers phase and never the
   SSE body.
 - **Stream-idle budget** (`StreamIdleTimeoutSeconds`, default 60) bounds the gap
-  between consecutive SSE events, reset on every event pulled from upstream in
-  `CopilotMessagesPassthroughStrategy.StreamEventsAsync` (one reused linked CTS,
-  re-armed before each `MoveNextAsync`, disarmed before the `yield` so the
-  consumer's write time isn't counted). Default 60s sits *below* Claude Code's own
-  opt-in stream watchdog (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`, default 90s) so the
-  bridge is the earlier deterministic actor. On expiry it throws
-  `UpstreamTimeoutException(StreamIdle)`.
+  between consecutive SSE events, reset on every event pulled from upstream. Each
+  read is driven by the shared `StreamIdleReader`, which races `MoveNextAsync`
+  against an independent `Task.Delay(idle)` rather than arming/disarming a
+  `CancelAfter` on the enumerator's own token — an arm/disarm on a reused CTS has a
+  nanosecond poison race (a timer firing between a successful read and the disarm
+  permanently cancels the source and spuriously aborts the next read), whereas an
+  independent delay can never poison the source. A move that completes
+  synchronously (the next event is already buffered) takes an allocation-free fast
+  path; only a real wait on the network allocates the race scaffolding, and on an
+  idle timeout the pending read is cancelled and awaited so it never dangles.
+  Default 60s sits *below* Claude Code's own opt-in stream watchdog
+  (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`, default 90s) so the bridge is the earlier
+  deterministic actor. On expiry `/cc` throws `UpstreamTimeoutException(StreamIdle)`;
+  Codex latches it as a stream fault (see below).
 
 Each budget disables at `<= 0` (no timer armed, no allocation — the byte-identical
 `/cc` passthrough hot path is unchanged). Surfacing, mapped by the endpoint's one
