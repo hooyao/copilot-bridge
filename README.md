@@ -41,8 +41,8 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   `<channel>`, `<cross-session-message>`, `<tick>`, or the `<system-reminder>`
   wrapper — instead of a real structured block. The bridge detects this and makes
   the client retry the turn cleanly, so it doesn't get stuck. An opt-in airtight
-  mode (`BufferScannableBlocks`) holds each text block back until it's scanned, so
-  a leak is suppressed *before* any leaked byte reaches the client.
+  mode (`BufferScannableBlocks`) holds each text/thinking block back until it's
+  scanned, so a leak is suppressed *before* any leaked byte reaches the client.
 - **Stops degenerate runaways before they hang your client.** A Copilot model can
   get stuck generating — an unbounded stream of tiny fragments, or one token
   repeated tens of thousands of times up to `max_tokens` — which would otherwise
@@ -56,8 +56,9 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   events — cap how long the bridge hangs on a stalled backend. They're idle
   timers, not a total-duration cap, so a legitimately slow-but-progressing request
   (a near-full-1M prompt whose first byte takes minutes) is never cut off. A
-  stall before headers returns a real `504`; a mid-stream stall drives the same
-  clean client retry as the guards above.
+  stall before headers returns a real `504`; a mid-stream stall on Claude Code
+  drives the same clean retry as the guards above (Codex gets a terminal
+  `response.failed`, which its client understands).
 
 ## Install & run
 
@@ -175,7 +176,7 @@ The file next to the executable. A few keys worth knowing:
 - **`Pipeline:Detectors:RunawayGuard`** — the degenerate-generation
   circuit-breaker. On by default; aborts a runaway on any of four signals and
   forces a retryable `overloaded_error`. Tune the thresholds only if a legitimate
-  output trips one: `MaxDeltaBytes` (cumulative delta payload, default 12 MB),
+  output trips one: `MaxDeltaBytes` (cumulative delta payload, default 12 MiB),
   `MaxDeltaCount` (per-block delta events, default 20000), `RepetitionWindow` +
   `RepetitionMinUniqueRatio` (sliding-window unique-token ratio, default 500 /
   0.05), and `RepetitionMaxConsecutiveRepeat` (same token in a row, default 50).
