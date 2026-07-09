@@ -12,7 +12,9 @@ transient. It applies on both the streaming (`text/event-stream`) and buffered
 detection; the pre-existing byte (`MaxDeltaBytes`) and per-block delta-count
 (`MaxDeltaCount`) volume budgets are established context and, being streaming-only,
 are not restated here.
+
 ## Requirements
+
 ### Requirement: Repetition-density runaway detection
 
 The runaway guard SHALL detect a degenerate response that repeats the same token
