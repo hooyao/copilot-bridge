@@ -72,3 +72,18 @@ timestamp, an early empty review) instead of a signal you actively make trustwor
 (fail-loud checks + resolve-after-reply so the unresolved count means what it says).
 When designing any new check here, ask: "if this call failed, would I be able to tell,
 or would it look like good news?"
+
+## 8. The reviewer's own workflow run crashed → loop waits forever
+
+**What happened:** Copilot's review workflow run hung ~15 min, then went to
+`cancelled/failure`. The loop was watching only "new open comment" / "ROUND_HINT
+up" — neither of which a crashed run reliably produces — so it would have waited
+indefinitely. Compounding it: re-requesting review while the stuck run was still
+`running` spawned no new run (the request was absorbed), so the "safety-net
+re-request" did nothing.
+**Fix:** `pr-status.sh` reports `COPILOT_RUN` (latest Copilot run's health). On
+`COPILOT_RUN=failure` with no forward progress, re-trigger the review — but only
+after the stuck run is terminal (a re-request during `running` is a no-op). Bound
+the re-triggers (~2) then escalate to the user. Evaluate positive signals (open
+comment, ROUND_HINT) BEFORE run health: a run can post comments and still end
+cancelled, so a `failure` conclusion doesn't mean "no review happened".

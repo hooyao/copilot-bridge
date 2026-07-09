@@ -119,15 +119,33 @@ Get status with the bundled script — **never** ad-hoc `gh` in a bare loop:
 bash .claude/skills/ship-pr/scripts/pr-status.sh <owner>/<repo> <N>
 ```
 
-It prints `OPEN_COMMENTS=<n>`, `CI=<pending|pass|fail>`, `MERGE_STATE=<...>`, and
-`ROUND_HINT=<n>`. Decision table:
+It prints `OPEN_COMMENTS=<n>`, `CI=<pending|pass|fail>`, `MERGE_STATE=<...>`,
+`ROUND_HINT=<n>`, and `COPILOT_RUN=<success|running|failure|none>` (the health of
+Copilot's review *workflow run*). Decision table — **evaluate positive signals
+first** (a real comment or a completed round always wins over run health):
 
 | pr-status says | do |
 | --- | --- |
-| `OPEN_COMMENTS>0` | there are unresolved review comments → go fix/refute them |
-| `OPEN_COMMENTS=0` and a Copilot review landed after your last push | Copilot is satisfied → proceed to step 5 |
-| `OPEN_COMMENTS=0` but no new review since your push | still waiting → loop again |
+| `OPEN_COMMENTS>0` | there are unresolved review comments → go fix/refute them (regardless of `COPILOT_RUN` — a run can post comments and still end up cancelled) |
+| `OPEN_COMMENTS=0` and `ROUND_HINT` went up since your last push | Copilot reviewed with no new findings → satisfied → proceed to step 5 |
+| `OPEN_COMMENTS=0`, `ROUND_HINT` unchanged, `COPILOT_RUN=running` | genuinely still reviewing → loop again |
+| `OPEN_COMMENTS=0`, `ROUND_HINT` unchanged, `COPILOT_RUN=failure` | **the reviewer crashed, not "still waiting"** → re-trigger (see below), don't hang |
+| `OPEN_COMMENTS=0`, `ROUND_HINT` unchanged, `COPILOT_RUN=none/success` | request may not have produced a run yet → loop again; re-request once if it persists |
 | `STATUS_ERROR=1` | a `gh` call FAILED (not "zero comments") → do NOT treat as done; loop again |
+
+**Deadlock guard — why `COPILOT_RUN` exists.** The loop otherwise waits on two
+signals: a new open comment, or `ROUND_HINT` going up. Neither ever arrives if
+Copilot's review *workflow run itself* fails or is cancelled — observed live: a run
+hung ~15 min, went to `cancelled/failure`, and (in that instance) still managed to
+post comments, but it could equally have produced nothing, leaving the loop waiting
+forever. When `COPILOT_RUN=failure` with no forward progress, **re-trigger the
+review** rather than wait: re-request Copilot review (works only once the stuck run
+has reached a terminal state — a re-request while a run is still `running` is
+absorbed and spawns nothing, which is exactly the trap). Track re-triggers; after
+~2 failed run cycles with no review produced, STOP and report to the user — don't
+spin on a reviewer that won't run. Note a failed `gh run list` degrades to
+`COPILOT_RUN=none` (the timeline signal stays the fallback), so this guard never
+fabricates a false all-clear.
 
 The last row is a real trap: a failed `gh` call must never be silently read as
 "0 open comments / all clear". The script exits non-zero and prints
