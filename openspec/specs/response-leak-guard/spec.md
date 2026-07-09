@@ -339,8 +339,10 @@ The response-leak guard SHALL support an opt-in delivery mode,
 `BufferScannableBlocks`, that closes the residual gap where a leak on a streaming
 response is detected only *after* its bytes have already been relayed to the client.
 When `BufferScannableBlocks` is true and `PreserveStream` is true, the guard SHALL,
-for each **scannable** content block (`text`, and `thinking` when `ScanThinking` is
-enabled), withhold that block's `content_block_delta` events until the block
+for each **scannable** content block (every `text` and `thinking` block,
+unconditionally — withholding is NOT gated on `ScanThinking`; that switch only
+controls whether the withheld `thinking` block is actually *scanned* for a leak),
+withhold that block's `content_block_delta` events until the block
 completes (`content_block_stop`), scan the assembled block, and only then relay the
 block's events — so a block classified as a leak is aborted **before any of its
 leaked bytes reach the client**. Non-scannable blocks (e.g. `tool_use`,

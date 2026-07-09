@@ -26,9 +26,10 @@ framework has gaps against how Copilot actually replies. All three are grounded 
 
 - **RunawayGuard runs on the buffered path.** `RunawayGuardDetector` gains an
   `InspectBuffered` implementation that parses the Anthropic body and scans each `text`
-  (and, per `ScanThinking`, `thinking`) block through the same repetition/run-length logic,
-  so a runaway in a one-shot `application/json` reply is caught with the same retryable
-  abort as the streaming path.
+  and `thinking` block (unconditionally — RunawayGuard has no `ScanThinking` option;
+  it mirrors the streaming path, which feeds both `text_delta` and `thinking_delta`)
+  through the same repetition/run-length logic, so a runaway in a one-shot
+  `application/json` reply is caught with the same retryable abort as the streaming path.
 - **New run-length runaway signal.** Add a per-block **consecutive-identical-token** signal
   that trips at `RepetitionMaxConsecutiveRepeat` identical tokens in a row (default ~50),
   independent of total length and of the sliding window — catching short floods the

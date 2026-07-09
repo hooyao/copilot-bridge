@@ -69,8 +69,10 @@ contract, not by mirroring the implementation.
 Extract the per-block repetition/run-length scan into a private core that consumes a
 sequence of text fragments and signals a trip. `InspectEvent` feeds it each
 `text_delta`/`thinking_delta`; the new `InspectBuffered` parses the Anthropic
-Messages body with `JsonDocument`, and for each `text` block (and `thinking` when
-`ScanThinking`) resets per-block state and feeds the whole block string through the
+Messages body with `JsonDocument`, and for each `text` and `thinking` block
+(unconditionally — RunawayGuard has no `ScanThinking` gate, matching the streaming
+path which feeds both `text_delta` and `thinking_delta`) resets per-block state and
+feeds the whole block string through the
 same core. This mirrors `ResponseLeakDetector`'s existing streaming/buffered split
 (a shared `BuildAutomaton` fed by both paths), so the two paths cannot diverge.
 
@@ -184,9 +186,12 @@ carrying the request trace id via the existing scoped logger.
 ## Open Questions
 
 - Should `BufferScannableBlocks` also withhold `thinking` blocks, or only `text`?
-  Current design: withhold whatever is *scannable* under `ScanThinking` (so `thinking`
-  is withheld iff it is being scanned), keeping "buffered ⇔ scanned" consistent.
-  Flagged for review during apply if the extra `thinking` latency is unwanted.
+  **Resolved:** withhold both `text` and `thinking` **unconditionally** — the stage's
+  `IsScannableBlock` returns true for `text`/`thinking` regardless of `ScanThinking`.
+  `ScanThinking` gates only whether a withheld `thinking` block is *scanned* for a leak,
+  not whether it is withheld; withholding a block the guard won't scan only adds latency
+  (it flushes clean at block end, no correctness change) and keeps the stage free of
+  per-detector scan-config coupling.
 - Default of `RepetitionMaxConsecutiveRepeat`: 50 per the user's steer; confirm during
   apply against any known-legitimate repetitive output (e.g. a long ASCII table or a
   deliberate `"a"*N` test) — if such a case is realistic, document raising the knob
