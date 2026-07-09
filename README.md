@@ -40,7 +40,25 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   control envelope such as `<task-notification>`, `<teammate-message>`,
   `<channel>`, `<cross-session-message>`, `<tick>`, or the `<system-reminder>`
   wrapper — instead of a real structured block. The bridge detects this and makes
-  the client retry the turn cleanly, so it doesn't get stuck (new in 0.2.2-beta).
+  the client retry the turn cleanly, so it doesn't get stuck. An opt-in airtight
+  mode (`BufferScannableBlocks`) holds each text/thinking block back until it's
+  scanned, so a leak is suppressed *before* any leaked byte reaches the client.
+- **Stops degenerate runaways before they hang your client.** A Copilot model can
+  get stuck generating — an unbounded stream of tiny fragments, or one token
+  repeated tens of thousands of times up to `max_tokens` — which would otherwise
+  stream at you for minutes and burn quota for nothing. A circuit-breaker watches
+  every response (streaming *and* one-shot) on four signals — total delta bytes,
+  per-block delta count, a sliding-window repetition-density ratio, and a
+  consecutive-run count — and forces a clean retry the moment output goes
+  degenerate.
+- **Bounds the wait on an unresponsive Copilot.** Two independent *inactivity*
+  budgets — one for the first response byte, one for the gap between streamed
+  events — cap how long the bridge hangs on a stalled backend. They're idle
+  timers, not a total-duration cap, so a legitimately slow-but-progressing request
+  (a near-full-1M prompt whose first byte takes minutes) is never cut off. A
+  stall before headers returns a real `504`; a mid-stream stall on Claude Code
+  drives the same clean retry as the guards above (Codex gets a terminal
+  `response.failed`, which its client understands).
 
 ## Install & run
 
@@ -148,10 +166,31 @@ The file next to the executable. A few keys worth knowing:
   `Enabled`, `Signal`). On by default; leave it unless you want to tune the
   retry signal. Individual leak signatures can be turned off under `Signatures`
   (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`,
-  `CrossSessionMessage`, `Tick` — all on by default) to clear a false positive,
-  e.g. when you're discussing this markup with the model and a sample reply gets
-  caught. The retry error and the log both name the exact switch to flip; a
-  **restart** is required after changing it.
+  `CrossSessionMessage`, `Tick`, `SystemReminder` — all on by default) to clear a
+  false positive, e.g. when you're discussing this markup with the model and a
+  sample reply gets caught. The retry error and the log both name the exact switch
+  to flip. Set `BufferScannableBlocks` to `true` for airtight suppression — each
+  text/thinking block is withheld until scanned and relayed only if clean, so a
+  leak never reaches the client (default `false` relays until detection).
+  A **restart** is required after changing any of these.
+- **`Pipeline:Detectors:RunawayGuard`** — the degenerate-generation
+  circuit-breaker. On by default; aborts a runaway on any of four signals and
+  forces a retryable `overloaded_error`. Tune the thresholds only if a legitimate
+  output trips one: `MaxDeltaBytes` (cumulative delta payload, default 12 MiB),
+  `MaxDeltaCount` (per-block delta events, default 20000), `RepetitionWindow` +
+  `RepetitionMinUniqueRatio` (sliding-window unique-token ratio, default 500 /
+  0.05), and `RepetitionMaxConsecutiveRepeat` (same token in a row, default 50).
+  A repetitive-but-legitimate output is fixed by **raising** the offending
+  threshold, not by disabling the guard. A **restart** is required after changing a
+  value.
+- **`Pipeline:UpstreamTimeout`** — the two inactivity budgets on the upstream
+  forward paths. `FirstByteTimeoutSeconds` (default 240) bounds the wait for
+  response headers per send attempt; `StreamIdleTimeoutSeconds` (default 60)
+  bounds the gap between streamed events (sits just below Claude Code's own 90 s
+  watchdog so the bridge acts first). Each is an *idle* timer, not a total cap, and
+  `<= 0` disables that phase. `StreamIdleAction` (`Retry` / `Truncate`) and
+  `StreamIdleSignal` (`OverloadedError` / `ApiError`) govern the mid-stream
+  surfacing. A **restart** is required after changing a value.
 - **`Pipeline:Detectors:ToolInputValidation`** — validates real `tool_use`
   input JSON against the declared tool schema after the tool block closes and
   records `tool_input_invalid=true` on the summary line. **Observe-only by
@@ -242,10 +281,11 @@ ModelRouter → AssistantThinkingFilter → SystemSanitize → MessagesSanitize
   (effort, thinking shape, mid-conversation `system` handling, beta strips). See
   [`docs/pipeline-design.md §7`](docs/pipeline-design.md).
 - **`ResponseInspection`** runs an ordered set of response detectors in a single
-  pass over the SSE stream: the `[DONE]` filter, the model-id rewrite (restores
-  the client-requested id for downstream accounting), and the response-leak guard.
-  New detectors register into the same stage. See
-  [`docs/pipeline-design.md §6`](docs/pipeline-design.md).
+  pass over the response (streaming SSE *and* one-shot `application/json`): the
+  `[DONE]` filter, the model-id rewrite (restores the client-requested id for
+  downstream accounting), the response-leak guard, the runaway/degeneracy guard,
+  and observe-only tool-input validation. New detectors register into the same
+  stage. See [`docs/pipeline-design.md §6`](docs/pipeline-design.md).
 
 Codex requests are translated into the same Anthropic-shape IR via the T1–T4
 translators and routed to Copilot's `/responses` backend — see
