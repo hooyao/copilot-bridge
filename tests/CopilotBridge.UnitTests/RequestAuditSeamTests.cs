@@ -4,6 +4,7 @@ using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
 using CopilotBridge.Cli.Hosting.Logging;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Models.Copilot;
 using CopilotBridge.Cli.Pipeline;
@@ -15,6 +16,7 @@ using CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace CopilotBridge.UnitTests;
@@ -121,7 +123,9 @@ public class RequestAuditSeamTests
         var bridgeCtx = new BridgeContext<MessagesRequest>();
         var client = new StubClient(copilotResp);
         var strategy = new CopilotMessagesPassthroughStrategy(
-            client, bridgeCtx, audit, NullLogger<CopilotMessagesPassthroughStrategy>.Instance);
+            client, bridgeCtx, audit,
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
+            NullLogger<CopilotMessagesPassthroughStrategy>.Instance);
 
         var http = new DefaultHttpContext();
         http.Request.Method = "POST";
@@ -146,6 +150,7 @@ public class RequestAuditSeamTests
             new ModelProfileCatalog(),
             new RequestSummaryLogger(NullLogger<RequestSummaryLogger>.Instance),
             audit,
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
             NullLogger<ClaudeCodeMessagesEndpointTag>.Instance);
 
         var audits = recorder.Events
@@ -343,6 +348,7 @@ public class RequestAuditSeamTests
         var bridgeCtx = new BridgeContext<MessagesRequest>();
         var strategy = new CopilotMessagesPassthroughStrategy(
             new StubClient(BufferedResponse(Encoding.UTF8.GetBytes("{}"))), bridgeCtx, audit,
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
             NullLogger<CopilotMessagesPassthroughStrategy>.Instance);
 
         var http = new DefaultHttpContext();
@@ -360,7 +366,9 @@ public class RequestAuditSeamTests
             new ClaudeCodeOutboundAdapter(NullLogger<ClaudeCodeOutboundAdapter>.Instance),
             new ModelProfileCatalog(),
             new RequestSummaryLogger(NullLogger<RequestSummaryLogger>.Instance),
-            audit, NullLogger<ClaudeCodeMessagesEndpointTag>.Instance);
+            audit,
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
+            NullLogger<ClaudeCodeMessagesEndpointTag>.Instance);
 
         var inReq = recorder.Events
             .Select(e => e.Properties.TryGetValue("Payload", out var p) ? p as BridgeIoPayload : null)

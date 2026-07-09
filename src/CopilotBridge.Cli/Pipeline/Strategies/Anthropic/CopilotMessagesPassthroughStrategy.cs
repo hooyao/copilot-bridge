@@ -2,9 +2,11 @@ using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 
@@ -22,17 +24,20 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
     private readonly ICopilotClient _copilot;
     private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly RequestAudit _audit;
+    private readonly UpstreamTimeoutOptions _timeout;
     private readonly ILogger<CopilotMessagesPassthroughStrategy> _log;
 
     public CopilotMessagesPassthroughStrategy(
         ICopilotClient copilot,
         BridgeContext<MessagesRequest> ctx,
         RequestAudit audit,
+        IOptions<UpstreamTimeoutOptions> timeout,
         ILogger<CopilotMessagesPassthroughStrategy> log)
     {
         _copilot = copilot;
         _ctx = ctx;
         _audit = audit;
+        _timeout = timeout.Value;
         _log = log;
     }
 
@@ -101,7 +106,7 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             ctx.Response.RawUpstreamResponseCapture = capture;
             // Ownership of `resp` transfers to the iterator — disposed when
             // the consumer (the endpoint writer) finishes enumeration.
-            ctx.Response.EventStream = StreamEventsAsync(resp, capture, ctx.Ct);
+            ctx.Response.EventStream = StreamEventsAsync(resp, capture, _timeout.StreamIdleTimeoutSeconds, ctx.Ct);
             _log.LogDebug("strategy {Name}: streaming (content-type={ContentType})", Name, contentType);
         }
         else
@@ -127,6 +132,7 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
     private static async IAsyncEnumerable<SseItem<string>> StreamEventsAsync(
         HttpResponseMessage resp,
         RawResponseCapture? capture,
+        int streamIdleSeconds,
         [EnumeratorCancellation] CancellationToken ct)
     {
         Stream? rawStream = null;
@@ -137,9 +143,53 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             // the parser (no wrapper, no allocation, byte-identical passthrough).
             var readStream = capture is null ? rawStream : new TeeReadStream(rawStream, capture);
             var parser = SseParser.Create(readStream);
-            await foreach (var evt in parser.EnumerateAsync(ct))
+
+            if (streamIdleSeconds <= 0)
             {
-                yield return evt;
+                // Disabled: the original path — byte-identical passthrough, no timer,
+                // no linked CTS. The `await foreach` drives the parser with `ct`.
+                await foreach (var evt in parser.EnumerateAsync(ct))
+                {
+                    yield return evt;
+                }
+                yield break;
+            }
+
+            // Stream-idle inactivity budget. One linked CTS is reused across events
+            // (re-armed via CancelAfter) — cheaper than a fresh CTS per event on the
+            // hot path. Arm before each MoveNextAsync (the wait on upstream), disarm
+            // once an event is in hand so the budget measures only time spent waiting
+            // on upstream, not the downstream consumer's write/flush. The yield sits
+            // OUTSIDE the try/catch (C# forbids yielding inside a try with a catch),
+            // which the arm/read/disarm/yield shape satisfies naturally.
+            var idle = TimeSpan.FromSeconds(streamIdleSeconds);
+            using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            await using var enumerator = parser.EnumerateAsync(idleCts.Token).GetAsyncEnumerator(idleCts.Token);
+            while (true)
+            {
+                idleCts.CancelAfter(idle);
+                bool hasNext;
+                try
+                {
+                    hasNext = await enumerator.MoveNextAsync();
+                }
+                catch (OperationCanceledException) when (idleCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                {
+                    // Our idle timer fired, not the caller's token — upstream went
+                    // silent mid-stream. Terminal for this read; the endpoint maps it
+                    // (retryable error event or truncation, per config).
+                    throw new UpstreamTimeoutException(UpstreamTimeoutPhase.StreamIdle, idle);
+                }
+
+                if (!hasNext)
+                {
+                    yield break;
+                }
+
+                // Event in hand — disarm so the budget doesn't count the consumer's
+                // downstream write time against the next upstream wait.
+                idleCts.CancelAfter(Timeout.InfiniteTimeSpan);
+                yield return enumerator.Current;
             }
         }
         finally

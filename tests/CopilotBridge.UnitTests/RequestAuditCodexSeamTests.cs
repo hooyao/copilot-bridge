@@ -4,6 +4,7 @@ using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
 using CopilotBridge.Cli.Endpoints.Codex;
 using CopilotBridge.Cli.Hosting.Logging;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Models.Copilot;
 using CopilotBridge.Cli.Pipeline;
@@ -14,6 +15,7 @@ using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace CopilotBridge.UnitTests;
@@ -89,6 +91,7 @@ public class RequestAuditCodexSeamTests
         var client = new StubClient(BufferedResponse(Encoding.UTF8.GetBytes("""{"type":"response","status":"completed"}""")));
         var strategy = new CopilotResponsesStrategy(
             client, new CodexModelProfileCatalog(), bridgeCtx, audit,
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
         var http = new DefaultHttpContext();

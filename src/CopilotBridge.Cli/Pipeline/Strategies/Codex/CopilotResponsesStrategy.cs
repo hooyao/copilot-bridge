@@ -3,11 +3,13 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Pipeline.Strategies.Codex;
 
@@ -26,6 +28,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
     private readonly CodexModelProfileCatalog _profiles;
     private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly RequestAudit _audit;
+    private readonly UpstreamTimeoutOptions _timeout;
     private readonly ILogger<CopilotResponsesStrategy> _log;
 
     public CopilotResponsesStrategy(
@@ -33,12 +36,14 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         CodexModelProfileCatalog profiles,
         BridgeContext<MessagesRequest> ctx,
         RequestAudit audit,
+        IOptions<UpstreamTimeoutOptions> timeout,
         ILogger<CopilotResponsesStrategy> log)
     {
         _copilot = copilot;
         _profiles = profiles;
         _ctx = ctx;
         _audit = audit;
+        _timeout = timeout.Value;
         _log = log;
     }
 
@@ -146,6 +151,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         var sm = new ResponsesToAnthropicStream(model, _log);
         Stream? rawStream = null;
         Exception? fault = null;
+        var streamIdleSeconds = _timeout.StreamIdleTimeoutSeconds;
         try
         {
             rawStream = await resp.Content.ReadAsStreamAsync(ct);
@@ -156,16 +162,42 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             // transient disconnect) still lets us flush a terminal — Codex's
             // parser requires one, and T4 turns a faulted terminal into
             // response.failed rather than a headless stream.
-            await using var e = parser.EnumerateAsync(ct).GetAsyncEnumerator(ct);
+            //
+            // Stream-idle inactivity budget: when enabled, drive MoveNextAsync with a
+            // linked CTS re-armed before each read and disarmed once an event is in
+            // hand, so only time spent WAITING on upstream counts. A fired idle timer
+            // is latched as `fault` (an UpstreamTimeoutException) exactly like a real
+            // mid-stream disconnect — reusing this path's existing catch-and-flush so
+            // the Codex client still gets a well-formed response.failed terminal
+            // rather than a headless stream or an Anthropic overloaded_error it can't
+            // parse. Budget <= 0 ⇒ the original loop (parser driven by `ct` only).
+            var idleCts = streamIdleSeconds > 0
+                ? CancellationTokenSource.CreateLinkedTokenSource(ct)
+                : null;
+            var readCt = idleCts?.Token ?? ct;
+            var idle = TimeSpan.FromSeconds(streamIdleSeconds);
+            await using var e = parser.EnumerateAsync(readCt).GetAsyncEnumerator(readCt);
             while (true)
             {
+                idleCts?.CancelAfter(idle);
                 bool moved;
                 try { moved = await e.MoveNextAsync(); }
+                catch (OperationCanceledException) when (
+                    idleCts is not null && idleCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                {
+                    // Our idle timer fired, not the caller's token — upstream went
+                    // silent mid-stream. Latch it as the fault so the terminal flush
+                    // below emits response.failed, same as a real disconnect.
+                    fault = new UpstreamTimeoutException(UpstreamTimeoutPhase.StreamIdle, idle);
+                    break;
+                }
                 catch (Exception ex) { fault = ex; break; }
                 if (!moved) break;
+                idleCts?.CancelAfter(Timeout.InfiniteTimeSpan); // disarm during translate/yield
                 foreach (var irItem in sm.Translate(e.Current))
                     yield return irItem;
             }
+            idleCts?.Dispose();
         }
         finally
         {

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Hosting.Logging;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Errors;
@@ -198,15 +199,18 @@ internal static class CodexResponsesEndpoint
                     capturedEvents?.Add(new CapturedSseEvent(evt.EventType, evt.Data, Filtered: false));
                     await WriteSseEventAsync(httpCtx.Response, evt.EventType, evt.Data, ct);
                 }
-                // The Codex strategy CATCHES a mid-stream upstream fault internally
-                // (to flush a response.failed terminal) instead of throwing, so it
-                // never reaches the catch blocks below. Surface it here so the
+                // The Codex strategy CATCHES a mid-stream upstream fault (including a
+                // stream-idle timeout) internally to flush a response.failed terminal,
+                // so it never reaches the catch blocks below. Surface it here so the
                 // truncated upstream-resp carries the real error rather than a
-                // misleading clean 200.
+                // misleading clean 200; and when the fault is a stream-idle timeout,
+                // record it on the summary line like the /cc path does.
                 if (bridgeCtx.Response.UpstreamStreamFault is { } streamFault && endpointError is null)
                 {
                     endpointError = streamFault.Message;
                     summary.Error = $"{streamFault.GetType().Name}: {streamFault.Message}";
+                    if (streamFault is UpstreamTimeoutException ute)
+                        summary.UpstreamTimeout = UpstreamTimeoutException.PhaseLabel(ute.Phase);
                 }
             }
             else if (bridgeCtx.Response.BufferedBody is not null)
@@ -234,6 +238,29 @@ internal static class CodexResponsesEndpoint
             summary.Error = "cancelled by client";
             endpointLog.LogDebug("endpoint cancelled by client");
             throw;
+        }
+        catch (UpstreamTimeoutException ex)
+        {
+            // First-byte inactivity timeout from PostResponsesAsync (pre-headers).
+            // A stream-idle timeout never reaches here — the strategy catches it and
+            // flushes response.failed, surfaced via UpstreamStreamFault above. So this
+            // branch is the first-byte case: no bytes sent yet ⇒ a real 504.
+            var phase = UpstreamTimeoutException.PhaseLabel(ex.Phase);
+            summary.UpstreamTimeout = phase;
+            endpointError = ex.Message;
+            summary.Error = ex.Message;
+            endpointLog.LogWarning(
+                "endpoint upstream-timeout: phase={Phase} idle={IdleSeconds:0.#}s (tune Pipeline:UpstreamTimeout)",
+                phase, ex.Elapsed.TotalSeconds);
+            if (!httpCtx.Response.HasStarted)
+            {
+                responseStatus = StatusCodes.Status504GatewayTimeout;
+                httpCtx.Response.StatusCode = responseStatus;
+                await httpCtx.Response.WriteAsync(
+                    $"upstream timed out waiting for first byte after {ex.Elapsed.TotalSeconds:0.#}s",
+                    CancellationToken.None);
+            }
+            else responseStatus = httpCtx.Response.StatusCode;
         }
         catch (UnknownModelException ex)
         {

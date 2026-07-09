@@ -75,6 +75,17 @@ internal sealed class RequestSummary
     public int PoisonedToolResults { get; set; }
 
     /// <summary>
+    /// Set when an upstream inactivity budget fired (see
+    /// <c>Pipeline:UpstreamTimeout</c>): the phase token <c>first_byte</c> (no
+    /// response headers within the budget → the client got a 504) or
+    /// <c>stream_idle</c> (a mid-stream gap between SSE events → a retryable error
+    /// or truncation). Emitted on the summary line as <c>upstream_timeout=</c> so
+    /// stalls are grep-able and distinguishable from a client cancellation. Null
+    /// when no budget fired.
+    /// </summary>
+    public string? UpstreamTimeout { get; set; }
+
+    /// <summary>
     /// When the pipeline / endpoint throws, the exception's type + message
     /// land here so the INFO line surfaces what failed (e.g.
     /// <c>NullReferenceException: Object reference not set</c>) without

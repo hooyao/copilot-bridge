@@ -118,6 +118,7 @@ public class UpstreamResponseAuditEndpointTests
 
         var strategy = new CopilotMessagesPassthroughStrategy(
             new StubClient(copilotResp), bridgeCtx, audit,
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
             NullLogger<CopilotMessagesPassthroughStrategy>.Instance);
 
         var http = new DefaultHttpContext();
@@ -142,6 +143,7 @@ public class UpstreamResponseAuditEndpointTests
             new ModelProfileCatalog(),
             new RequestSummaryLogger(NullLogger<RequestSummaryLogger>.Instance),
             audit,
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
             NullLogger<ClaudeCodeMessagesEndpointTag>.Instance);
 
         return recorder.Events

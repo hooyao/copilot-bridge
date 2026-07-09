@@ -14,9 +14,11 @@ internal sealed class CopilotClient(
     IAuthService auth,
     CopilotHeaderFactory headers,
     IOptions<UpstreamRetryOptions> retryOptions,
+    IOptions<UpstreamTimeoutOptions> timeoutOptions,
     ILogger<CopilotClient> log) : ICopilotClient
 {
     private readonly UpstreamRetryOptions _retry = retryOptions.Value;
+    private readonly UpstreamTimeoutOptions _timeout = timeoutOptions.Value;
 
     public async ValueTask<CopilotModelsResponse> GetModelsAsync(CancellationToken ct = default)
     {
@@ -75,7 +77,9 @@ internal sealed class CopilotClient(
             {
                 // ResponseHeadersRead so the caller can stream the SSE body
                 // without buffering. The caller owns disposal of the result.
-                return await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                // The first-byte inactivity budget is applied per attempt inside
+                // the shared helper (backoff below is outside the armed window).
+                return await SendWithFirstByteBudgetAsync(req, ct);
             }
             catch (Exception ex) when (
                 attempt < _retry.MaxRetries
@@ -100,6 +104,52 @@ internal sealed class CopilotClient(
                 throw;
             }
         }
+    }
+
+    /// <summary>
+    /// Sends <paramref name="req"/> with <c>ResponseHeadersRead</c>, bounding the
+    /// wait for the first byte (response headers) by the first-byte inactivity
+    /// budget. Shared by <see cref="PostMessagesAsync"/> and
+    /// <see cref="PostResponsesAsync"/> so both forward paths get the same bound.
+    /// </summary>
+    /// <remarks>
+    /// Arms a per-call linked <see cref="CancellationTokenSource"/>: called once per
+    /// retry attempt, each fresh send gets the FULL budget (the caller's backoff
+    /// runs outside this method). On our timer firing — and only when the caller's
+    /// own <paramref name="ct"/> did NOT fire (so a client cancel wins the race) —
+    /// throws a terminal <see cref="UpstreamTimeoutException"/> the caller's
+    /// transient-retry <c>when</c> clause does not catch. Once headers arrive the
+    /// timer is DISARMED (not disposed): under <c>ResponseHeadersRead</c> the token
+    /// stays associated with the still-unread body stream, so disarming — rather
+    /// than disposing — avoids aborting the caller's body read while leaving a
+    /// client cancel on <paramref name="ct"/> still able to abort it. Budget
+    /// <c>&lt;= 0</c> ⇒ the original bare send (no CTS, no timer).
+    /// </remarks>
+    private async ValueTask<HttpResponseMessage> SendWithFirstByteBudgetAsync(
+        HttpRequestMessage req, CancellationToken ct)
+    {
+        var firstByteBudget = _timeout.FirstByteTimeoutSeconds;
+        if (firstByteBudget <= 0)
+        {
+            return await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        }
+
+        var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(firstByteBudget));
+        HttpResponseMessage resp;
+        try
+        {
+            resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new UpstreamTimeoutException(
+                UpstreamTimeoutPhase.FirstByte, TimeSpan.FromSeconds(firstByteBudget));
+        }
+
+        // Headers arrived — disarm so the timer can't fire during the body read.
+        timeoutCts.CancelAfter(Timeout.InfiniteTimeSpan);
+        return resp;
     }
 
     /// <summary>Exponential backoff for retry attempt N (1-based), clamped to MaxDelayMs.</summary>
@@ -158,7 +208,11 @@ internal sealed class CopilotClient(
 
             try
             {
-                return await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                // Same first-byte inactivity budget as PostMessagesAsync, applied per
+                // attempt via the shared helper. A first-byte timeout throws a terminal
+                // UpstreamTimeoutException (not transient), so the retry `when` below
+                // does not catch it — the Codex endpoint maps it to a 504.
+                return await SendWithFirstByteBudgetAsync(req, ct);
             }
             catch (Exception ex) when (
                 attempt < _retry.MaxRetries

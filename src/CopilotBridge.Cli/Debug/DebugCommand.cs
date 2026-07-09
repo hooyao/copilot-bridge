@@ -28,6 +28,7 @@ internal static class DebugCommand
         var copilot = new CopilotClient(
             http, auth, new CopilotHeaderFactory(),
             Microsoft.Extensions.Options.Options.Create(new Hosting.Options.UpstreamRetryOptions()),
+            Microsoft.Extensions.Options.Options.Create(new Hosting.Options.UpstreamTimeoutOptions()),
             Microsoft.Extensions.Logging.Abstractions.NullLogger<CopilotClient>.Instance);
 
         try
