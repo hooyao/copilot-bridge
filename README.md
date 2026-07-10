@@ -26,31 +26,37 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 - **The full current Claude model set.** opus-4.6 / opus-4.7 / **opus-4.8**,
   sonnet-4.5 / sonnet-4.6 / **sonnet-5**, haiku-4.5 — with **native 1M context**
   on opus-4.6/4.7/4.8 and sonnet-4.6/sonnet-5 (all but sonnet-4.5 / haiku-4.5).
-  Codex runs on Copilot's gpt-5.x.
+  Codex runs on Copilot's gpt-5.x, including the newest **gpt-5.6** models
+  (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`).
+- **Run Claude Code on a GPT model — including gpt-5.6-sol.** Point Claude Code at
+  one of Copilot's reasoning GPTs instead of a Claude model: a one-line
+  `Routing.Locations` rule routes `claude-opus-4.8` traffic to **`gpt-5.6-sol`**
+  (Copilot's newest Codex model). The bridge translates the full Anthropic
+  tool-use protocol — tool calls, tool results, streaming — to and from the
+  Responses API, so a complete agentic session runs end to end. See the
+  `Routing.Locations` example under [Configuration](#configuration-appsettingsjson).
 - **Works with Claude Code 4.8 out of the box.** Claude Code sends beta headers
   Copilot rejects (e.g. `advisor-tool-2026-03-01`, which 400s on every model).
   The bridge strips the ones Copilot refuses so your session doesn't error.
-- **Per-model behavior is probed, not guessed.** Which reasoning-effort levels,
-  thinking shapes, and context windows each Copilot model actually accepts is
-  measured against the live API and baked into a profile. The bridge reshapes
-  each request to what the target model accepts, and returns a clear error for
-  an unknown model instead of silently forwarding a request that will fail.
+- **Every model's real limits are respected.** Which reasoning-effort levels,
+  thinking shapes, and context windows each Copilot model actually accepts differs
+  from what its docs claim. The bridge reshapes each request to what the target
+  model accepts. A newer *Claude* model with no exact profile yet is still
+  forwarded under the closest known one (real id on the wire), so it works before
+  the bridge is updated; an id it can't relate to any known model gets a clear
+  error. (A brand-new *Codex/GPT* model is the one case that needs a one-line
+  allowlist update first — until then it isn't routed to Copilot's Responses API.)
 - **Auto-repairs tool-call and control-envelope leaks.** Copilot-served models
-  occasionally emit a tool call as literal `<invoke …>` text — or a Claude Code
-  control envelope such as `<task-notification>`, `<teammate-message>`,
-  `<channel>`, `<cross-session-message>`, `<tick>`, or the `<system-reminder>`
-  wrapper — instead of a real structured block. The bridge detects this and makes
-  the client retry the turn cleanly, so it doesn't get stuck. An opt-in airtight
-  mode (`BufferScannableBlocks`) holds each text/thinking block back until it's
-  scanned, so a leak is suppressed *before* any leaked byte reaches the client.
+  occasionally emit a tool call — or one of Claude Code's internal control markers
+  — as literal text instead of a real structured block. The bridge detects this
+  and makes the client retry the turn cleanly, so it doesn't get stuck. An opt-in
+  airtight mode suppresses a leak before any leaked byte reaches the client.
 - **Stops degenerate runaways before they hang your client.** A Copilot model can
   get stuck generating — an unbounded stream of tiny fragments, or one token
   repeated tens of thousands of times up to `max_tokens` — which would otherwise
-  stream at you for minutes and burn quota for nothing. A circuit-breaker watches
-  every response (streaming *and* one-shot) on four signals — total delta bytes,
-  per-block delta count, a sliding-window repetition-density ratio, and a
-  consecutive-run count — and forces a clean retry the moment output goes
-  degenerate.
+  stream at you for minutes and burn quota for nothing. The bridge detects this on
+  both streaming and one-shot responses and forces a clean retry the moment output
+  goes degenerate.
 - **Bounds the wait on an unresponsive Copilot.** Two independent *inactivity*
   budgets — one for the first response byte, one for the gap between streamed
   events — cap how long the bridge hangs on a stalled backend. They're idle
@@ -213,14 +219,16 @@ The file next to the executable. A few keys worth knowing:
   ```jsonc
   {
     "When": { "Model": "claude-opus-4.8" },
-    "Use":  { "Model": "gpt-5.5", "EffortMap": { "max": "xhigh" } }
+    "Use":  { "Model": "gpt-5.6-sol", "EffortMap": { "max": "xhigh" } }
   }
   ```
 
-  which would route Claude Code's `claude-opus-4.8` traffic to Copilot's
-  `gpt-5.5` (with `max` effort mapped to `xhigh`, since gpt-5.5 doesn't accept
-  `max`). See [`docs/routing.md`](docs/routing.md) for the full match/rewrite
-  syntax.
+  which routes Claude Code's `claude-opus-4.8` traffic to Copilot's newest Codex
+  model, **`gpt-5.6-sol`**. The `EffortMap` here is a deliberate down-tier: unlike
+  gpt-5.5, gpt-5.6-sol *does* accept `max`, so without the map Claude Code's `max`
+  effort would pass through unchanged — the map caps it at `xhigh` instead (drop
+  the `EffortMap` to send `max` through). See [`docs/routing.md`](docs/routing.md)
+  for the full match/rewrite syntax.
 
 ## Limitations
 
@@ -235,8 +243,11 @@ native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
 - **`max` / `xhigh` reasoning effort isn't universal.** Support is per-model and
   non-monotonic: opus-4.8 / opus-4.7 / sonnet-5 accept every tier
   (`low`–`max`, including `xhigh`); opus-4.6 / sonnet-4.6 accept `max` but reject
-  `xhigh`; sonnet-4.5 / haiku-4.5 take no effort field. The bridge strips an
-  effort the target rejects instead of letting it fail.
+  `xhigh`; sonnet-4.5 / haiku-4.5 take no effort field. On the Codex side it's
+  also per-model: most gpt-5.x models accept up to `xhigh` and the **gpt-5.6**
+  models (`luna`/`sol`/`terra`) are the first to also accept `max`, while smaller
+  ones like `gpt-5-mini` top out at `high` (no `xhigh`). The bridge strips (or
+  clamps) an effort the target rejects instead of letting it fail.
 - **Resume drops the `[1m]` flag back to 200k.** Claude Code stores the 1M toggle
   in the model string (`opus[1m]`), which isn't persisted across `--resume`. The
   backend still serves the larger window, but Claude Code's own auto-compaction

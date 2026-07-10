@@ -164,13 +164,23 @@ Responses-specific specifics the research nailed down):
 
 ## 5. Per-model effort (research §2.2) — now a translation concern
 
-The two inverted profiles (large models reject `minimal`; small models reject
+The inverted profiles (large models reject `minimal`; small models reject
 `none`+`xhigh`) are applied **inside T2** (IR→Responses request), after the IR
 `thinking`/effort has been mapped to a Responses `reasoning.effort`. The
 `CodexModelProfileCatalog` (table-driven, probe-sourced, never family-name
 guessed) clamps the mapped effort to what the resolved model accepts, and records
 the `mai-code-1-flash-internal` custom-tool 500 quirk. `service_tier` strip +
 `image_generation` drop also live in T2 (uniform across models).
+
+> **2026-07 update — a third "xlarge" profile.** The `gpt-5.6` codename slots
+> (`gpt-5.6-luna`/`-sol`/`-terra`) are the first Codex models to accept the `max`
+> effort tier: `xlarge` = large + `max` (`none/low/medium/high/xhigh/max`, reject
+> `minimal`), live-probed in `ResponsesProbe.Gpt56_Effort_ReProbe`. Because `max`
+> is accepted, Anthropic's top tier passes through verbatim on these instead of
+> being clamped to `xhigh` (which is what the large profile does). Note the
+> probe TRAP the sync skill warns of: the 400 body for `minimal` lists supported
+> = `[none,low,medium,high,xhigh]` — omitting `max` — yet `max` live-probes 200;
+> the advertised list lies, the probe is ground truth.
 
 ---
 
@@ -182,6 +192,13 @@ routes all `gpt-*`/`o3-*`/`o4-*` to `CopilotOpenAi` + `/chat/completions`.
 Change: route the Codex/Responses model ids (`gpt-5.3-codex`, `gpt-5.4`,
 `gpt-5.5`, `gpt-5-mini`, `gpt-5.4-mini`, `mai-code-1-flash-internal`) to
 **`CopilotResponses` + `/responses`**.
+
+> **Current routed set (the id list above is change-3's original set).** The 2026
+> reconciliation retired `mai-code-1-flash-internal` (→ `mai-code-1-flash-picker`)
+> and the 2026-07 reconciliation added the three `gpt-5.6` codenames
+> (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`). The live
+> `CopilotModelRegistry.ResponsesModelIds` allowlist is the source of truth;
+> membership is still an explicit list, never a `gpt-` prefix takeover.
 
 The router runs once, on the IR, in the shared `Pipeline<MessagesRequest>`. It is
 **backend-agnostic by construction** — it keys off the resolved model id, not the

@@ -7,12 +7,13 @@ using Xunit;
 namespace CopilotBridge.UnitTests;
 
 /// <summary>
-/// Codex routing + profile catalog (change 3, tasks 2.1/2.3). Asserts that the
-/// six Codex/Responses model ids resolve to the native <c>/responses</c> backend
-/// (not the legacy <c>/chat/completions</c>), that <c>Normalize</c> no-ops on
-/// them (so the snapshot-keyed lookups hit), and that the
-/// <see cref="CodexModelProfileCatalog"/> rows match the live contract snapshot's
-/// two inverted effort profiles. CI-safe — pure logic, no network.
+/// Codex routing + profile catalog (change 3, tasks 2.1/2.3; extended 2026-07 with
+/// the three gpt-5.6 codename slots). Asserts that the nine Codex/Responses model
+/// ids resolve to the native <c>/responses</c> backend (not the legacy
+/// <c>/chat/completions</c>), that <c>Normalize</c> no-ops on them (so the
+/// snapshot-keyed lookups hit), and that the <see cref="CodexModelProfileCatalog"/>
+/// rows match the live-probed effort profiles (large / small / xlarge). CI-safe —
+/// pure logic, no network.
 /// </summary>
 public class CodexRoutingAndCatalogTests
 {
@@ -24,6 +25,9 @@ public class CodexRoutingAndCatalogTests
         new object[] { "gpt-5.4" },
         new object[] { "gpt-5.4-mini" },
         new object[] { "gpt-5.5" },
+        new object[] { "gpt-5.6-luna" },
+        new object[] { "gpt-5.6-sol" },
+        new object[] { "gpt-5.6-terra" },
         new object[] { "gpt-5-mini" },
         new object[] { "mai-code-1-flash-picker" },
     };
@@ -97,6 +101,10 @@ public class CodexRoutingAndCatalogTests
     [InlineData("gpt-5.4",       "none,low,medium,high,xhigh", false)]
     [InlineData("gpt-5.4-mini",  "none,low,medium,high,xhigh", false)]
     [InlineData("gpt-5.5",       "none,low,medium,high,xhigh", false)]
+    // xlarge = large + max (the gpt-5.6 codenames; Gpt56_Effort_ReProbe: max → 200).
+    [InlineData("gpt-5.6-luna",  "none,low,medium,high,xhigh,max", false)]
+    [InlineData("gpt-5.6-sol",   "none,low,medium,high,xhigh,max", false)]
+    [InlineData("gpt-5.6-terra", "none,low,medium,high,xhigh,max", false)]
     [InlineData("gpt-5-mini",    "minimal,low,medium,high",    false)]
     [InlineData("mai-code-1-flash-picker", "minimal,low,medium,high", true)]
     public void Catalog_EffortProfilesMatchSnapshot(string id, string expectedEfforts, bool rejectsCustom)
@@ -108,11 +116,31 @@ public class CodexRoutingAndCatalogTests
         Assert.Equal(rejectsCustom, profile.RejectsCustomTools);
     }
 
+    /// <summary>
+    /// The gpt-5.6 codenames are the ONLY Codex profiles that accept <c>max</c>
+    /// (<c>Gpt56_Effort_ReProbe</c>). This pins the distinguishing fact: every
+    /// large/small profile rejects <c>max</c>, so a regression that merged the
+    /// codenames into the "large" set (dropping max) would flip an assertion here.
+    /// </summary>
+    [Theory]
+    [InlineData("gpt-5.6-luna", true)]
+    [InlineData("gpt-5.6-sol", true)]
+    [InlineData("gpt-5.6-terra", true)]
+    [InlineData("gpt-5.5", false)]         // large — rejects max
+    [InlineData("gpt-5-mini", false)]      // small — rejects max
+    [InlineData("gpt-5.3-codex", false)]   // large — rejects max
+    public void Catalog_OnlyGpt56_AcceptsMax(string id, bool acceptsMax)
+    {
+        var profile = new CodexModelProfileCatalog().Get(id);
+        Assert.NotNull(profile);
+        Assert.Equal(acceptsMax, profile!.AcceptedEfforts.Contains("max"));
+    }
+
     [Fact]
-    public void Catalog_HasAllSixModels_AndUniformCoercions()
+    public void Catalog_HasAllNineModels_AndUniformCoercions()
     {
         var catalog = new CodexModelProfileCatalog();
-        Assert.Equal(6, catalog.Count);
+        Assert.Equal(9, catalog.Count);
         // The two uniform coercions are catalog-level facts (apply to every model).
         Assert.True(CodexModelProfileCatalog.StripsServiceTier);
         Assert.True(CodexModelProfileCatalog.DropsImageGenerationTool);

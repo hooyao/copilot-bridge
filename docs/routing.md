@@ -167,8 +167,8 @@ something else — exactly one `Locations` key may be active):
 "_Locations_disabled": [
   {
     "When": { "Model": "claude-opus-4.8" },
-    "Use": { "Model": "gpt-5.5", "EffortMap": { "max": "xhigh" } },
-    "Note": "Route Claude Code's claude-opus-4.8 traffic to Copilot gpt-5.5. EffortMap max->xhigh is required: Claude Code sends the Anthropic effort 'max', which gpt-5.5 (a Codex model) does not accept. gpt-5.5 is a lossy fit for the Claude Code tool protocol (see docs/gpt55-runaway-diagnosis.md) — enable only for experimentation."
+    "Use": { "Model": "gpt-5.6-sol", "EffortMap": { "max": "xhigh" } },
+    "Note": "Route Claude Code's claude-opus-4.8 traffic to Copilot gpt-5.6-sol (the newest Codex model). EffortMap max->xhigh is an OPTIONAL down-tier here: unlike gpt-5.5, gpt-5.6-sol accepts 'max' natively, so without the map Claude Code's 'max' passes through verbatim; the map caps it at xhigh instead. Drop the EffortMap to send 'max' through unchanged. Still a cross-model substitution — enable only when you intend Copilot's gpt-5.6-sol to serve Claude Code traffic."
   }
 ]
 ```

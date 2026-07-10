@@ -11,7 +11,8 @@ namespace CopilotBridge.Playground;
 /// from print-only to ASSERTING: one aggregate sweep hits every verified cell
 /// (per-model effort, the field rejections, the tool rejections, and the live
 /// SSE event set), builds a structured facts object, and:
-///   B1 — asserts each of the 6 Responses models answered;
+///   B1 — asserts each Responses model in <see cref="ResponsesProbe.AllModels"/>
+///        answered;
 ///   B2 — diffs the live facts against the committed Responses snapshot and
 ///        FAILS with a readable diff on any drift.
 ///
@@ -25,10 +26,12 @@ public partial class ResponsesProbe
 {
     internal const string ResponsesSnapshotFile = "copilot-responses-contract-snapshot.json";
 
-    // Full Codex effort vocabulary incl. the two boundary values that split the
-    // "large" vs "small" profiles (research §2.2): large reject minimal; small
-    // reject none + xhigh.
-    private static readonly string[] EffortVocabulary = ["minimal", "none", "low", "medium", "high", "xhigh"];
+    // Full Codex effort vocabulary incl. the boundary values that split the
+    // profiles: "large" reject minimal; "small" reject none + xhigh; "xlarge"
+    // (the gpt-5.6 codenames) additionally ACCEPT max — the only distinguishing
+    // capability, so max must be in the swept vocabulary or B2 can't detect a
+    // model gaining/losing it.
+    private static readonly string[] EffortVocabulary = ["minimal", "none", "low", "medium", "high", "xhigh", "max"];
 
     [Fact]
     public async Task B_ResponsesContract_SweepAssertAndDetectDrift()
@@ -130,7 +133,7 @@ public partial class ResponsesProbe
             ["sse_event_types"] = sseEvents,
         };
 
-        // ── B1: all 6 models answered. ──
+        // ── B1: every model in AllModels answered. ──
         Assert.Equal(AllModels.Length, models.Count);
         Assert.True(sseEvents.Count > 0, "captured no SSE event types from the streaming probe");
 

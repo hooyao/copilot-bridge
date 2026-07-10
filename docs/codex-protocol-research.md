@@ -34,6 +34,22 @@ Per-model edge: `mai-code-1-flash-internal` 500s on custom/`apply_patch` tools.
 work-item list: §4.3. This overturns `pipeline-design.md` §3's "Codex needs
 OpenAI-Chat translation" assumption (§4.4).
 
+> **Addendum — 2026-07 model-set update (the tables below are a 2026-06-12 snapshot).**
+> The live `/responses` model set and effort profiles have since moved; the §2.1 /
+> §2.2 / §4 tables reflect the original 2026-06-12 probe and are NOT re-probed here.
+> Current wire-truth (see `codex-implementation-design.md` §5–§6 and the live
+> `CodexModelProfileCatalog` / `CopilotModelRegistry.ResponsesModelIds`):
+> - **Model set:** `mai-code-1-flash-internal` was retired → **`mai-code-1-flash-picker`**;
+>   the three **`gpt-5.6` codenames** (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`)
+>   were added. So it is no longer "6 models".
+> - **Effort profiles: now THREE, not two.** The large/small split still holds, plus
+>   a new **`xlarge`** profile for the gpt-5.6 codenames: they accept
+>   `none/low/medium/high/xhigh/**max**` and reject `minimal` — the **first Codex
+>   models to accept `max`** (`ResponsesProbe.Gpt56_Effort_ReProbe`). The §2.2 table's
+>   effort vocabulary omits `max` precisely because no 2026-06-12 model accepted it.
+>   Probe trap: the 400 body for `minimal` on these ids lists supported values
+>   WITHOUT `max`, yet `max` live-probes 200 — the advertised list lies.
+
 
 
 ## 0. Provenance (stamp every finding against this)

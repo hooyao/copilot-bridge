@@ -24,6 +24,14 @@ internal sealed class CopilotModelRegistry : IModelRegistry
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.5",
+        // gpt-5.6 codename slots (2026-07 reconciliation). All three serve
+        // /responses (endpoints=[/responses,ws:/responses]) and were live-probed
+        // 200 on a minimal request — ResponsesProbe.Gpt56_LivenessProbe. WITHOUT
+        // this allowlist entry they'd fall through to the unimplemented
+        // /chat/completions branch (gpt- prefix) and surface a "no handler" error.
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
         "gpt-5-mini",
         // mai-code-1-flash-internal was RETIRED by Copilot (2026 reconciliation:
         // 400 "not available for integrator"); the live Responses id is now

@@ -21,11 +21,14 @@ public class ModelNameMatcherTests
         "claude-opus-4.6", "claude-opus-4.7", "claude-opus-4.8",
     ];
 
-    // The Codex/Responses catalog's known ids.
+    // The Codex/Responses catalog's known ids. Mirrors
+    // CodexModelProfileCatalog.BuildDefault() so the fuzzy-match cases exercise
+    // the real candidate set (incl. the gpt-5.6 codenames added 2026-07).
     private static readonly string[] Codex =
     [
-        "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5-mini",
-        "mai-code-1-flash-picker",
+        "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
+        "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
+        "gpt-5-mini", "mai-code-1-flash-picker",
     ];
 
     private static string? Nearest(string id, string[] known, out double score) =>
@@ -178,6 +181,21 @@ public class ModelNameMatcherTests
         var match = Nearest("gpt-5.6", Codex, out _);
         Assert.NotNull(match);
         Assert.StartsWith("gpt-", match);
+    }
+
+    [Fact]
+    public void UnknownGpt56Variant_MatchesAGpt56Sibling()
+    {
+        // An unknown gpt-5.6 variant (a new codename Copilot might ship) must land
+        // on one of the real gpt-5.6 profiles — NOT on gpt-5.5 (large) — so it
+        // borrows the xlarge contract (accepts `max`) rather than clamping max to
+        // xhigh. This is the load-bearing contract; WHICH sibling wins the tie is
+        // an implementation detail (family-then-version-then-ordinal), so we assert
+        // the family prefix, not a specific id.
+        var match = Nearest("gpt-5.6-nova", Codex, out var score);
+        Assert.NotNull(match);
+        Assert.StartsWith("gpt-5.6-", match);
+        Assert.True(score >= ModelNameMatcher.DefaultMinSimilarity, $"score {score} below floor");
     }
 
     [Fact]

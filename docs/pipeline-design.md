@@ -1170,16 +1170,16 @@ Today's `appsettings.json` ships an **empty** active location list
 
 | `When` model | `Use.Model` | `Use.EffortMap` |
 | --- | --- | --- |
-| `claude-opus-4.8` | `gpt-5.5` | `max` → `xhigh` |
+| `claude-opus-4.8` | `gpt-5.6-sol` | `max` → `xhigh` |
 
 Note:
-- The example routes Claude Code's `claude-opus-4.8` to Copilot's `gpt-5.5`. The
-  `EffortMap max→xhigh` is required because Claude Code sends the Anthropic effort
-  `max`, which gpt-5.5 (a Codex model) does not accept; mapping it at the routing
-  layer is the operator's explicit intent (versus T2's per-model `DefaultEffort`
-  fallback, which also lands on `xhigh` but emits a "not accepted" WARNING). It
-  ships disabled because gpt-5.5 is a lossy fit for the Claude Code tool protocol
-  (see `docs/gpt55-runaway-diagnosis.md`).
+- The example routes Claude Code's `claude-opus-4.8` to Copilot's newest Codex
+  model `gpt-5.6-sol`. The `EffortMap max→xhigh` is an **optional down-tier**:
+  unlike gpt-5.5, gpt-5.6-sol (the "xlarge" effort profile) accepts `max`
+  natively, so without the map Claude Code's `max` passes through verbatim — the
+  map caps it at `xhigh` instead (drop the `EffortMap` to send `max` through). It
+  ships disabled because it's a cross-model substitution, not because the target
+  is a poor fit.
 - Earlier releases shipped an active `gpt-5.5-1m → gpt-5.5` Codex context-window
   alias here (naming the model `gpt-5.5-1m` with `model_context_window=1000000`
   sidesteps a client-side context cap Codex applies to the literal `gpt-5.5`; the
