@@ -64,6 +64,11 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
 
         // ── messages: input[] items → MessageParam[] ──
         var messages = new List<MessageParam>();
+        // ── additional_tools items: not conversation content — a Codex harness
+        // tool-registration preamble (gpt-5.6+). Collected here and carried
+        // verbatim in the openai bag (T2 re-emits them into input[]); never
+        // folded into messages/system. ──
+        var additionalTools = new List<ResponsesAdditionalToolsItem>();
         foreach (var item in clientBody.Input)
         {
             switch (item)
@@ -135,6 +140,13 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                         });
                     }
                     break;
+
+                case ResponsesAdditionalToolsItem addTools:
+                    // Harness tool-registration preamble — carried verbatim in the
+                    // openai bag, NOT added to messages/system (it isn't conversation
+                    // content, and Copilot re-ingests it as an input[] item as-is).
+                    additionalTools.Add(addTools);
+                    break;
             }
         }
 
@@ -144,7 +156,7 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
             : null;
 
         // ── un-modeled knobs → ProviderExtensions["openai"] verbatim ──
-        var bag = BuildOpenAiBag(clientBody);
+        var bag = BuildOpenAiBag(clientBody, additionalTools);
 
         var ir = new MessagesRequest
         {
@@ -262,7 +274,9 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
     /// Written with <see cref="Utf8JsonWriter"/> (no <c>JsonNode</c> generic
     /// <c>Add</c>, which trips IL2026/IL3050) so it stays AOT-clean.
     /// </summary>
-    private static ProviderExtensions? BuildOpenAiBag(ResponsesRequest req)
+    private static ProviderExtensions? BuildOpenAiBag(
+        ResponsesRequest req,
+        IReadOnlyList<ResponsesAdditionalToolsItem> additionalTools)
     {
         var hasAny =
             req.Tools is not null
@@ -274,7 +288,8 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
             || !string.IsNullOrEmpty(req.ServiceTier)
             || req.Text is not null
             || req.Reasoning?.Summary is { Length: > 0 }
-            || req.ClientMetadata is not null;
+            || req.ClientMetadata is not null
+            || additionalTools.Count > 0;
         if (!hasAny) return null;
 
         using var buffer = new MemoryStream();
@@ -316,6 +331,30 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
             {
                 w.WritePropertyName("client_metadata");
                 cm.WriteTo(w);
+            }
+            // additional_tools items → an array carrying each item's {role, tools}
+            // VERBATIM. `tools` is written with WriteRawValue(GetRawText()) — NOT
+            // WriteTo — so the ORIGINAL lexical bytes survive (whitespace, string
+            // escaping, numeric spelling). WriteTo would reserialize the DOM and
+            // could re-escape/renumber; Copilot's reserved schemas (collaboration.*)
+            // are validated by value so that wouldn't functionally break, but raw
+            // preservation is stronger and lets the round-trip test assert true
+            // byte-identity. T2 re-emits these into the outbound input[]. Written as
+            // an array so N items round-trip (every capture shows exactly one, but
+            // the Responses schema doesn't forbid more).
+            if (additionalTools.Count > 0)
+            {
+                w.WriteStartArray("additional_tools");
+                foreach (var at in additionalTools)
+                {
+                    w.WriteStartObject();
+                    if (at.Role is { } role)
+                        w.WriteString("role", role);
+                    w.WritePropertyName("tools");
+                    w.WriteRawValue(at.Tools.GetRawText());
+                    w.WriteEndObject();
+                }
+                w.WriteEndArray();
             }
             w.WriteEndObject();
         }

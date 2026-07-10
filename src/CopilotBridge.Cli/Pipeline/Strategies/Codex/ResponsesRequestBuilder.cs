@@ -69,6 +69,12 @@ internal static class ResponsesRequestBuilder
             // messages → input[]
             w.WritePropertyName("input");
             w.WriteStartArray();
+            // Harness tool-registration preamble (gpt-5.6+): T1 stashed each
+            // additional_tools item in the bag verbatim; re-emit them FIRST, ahead
+            // of the conversation messages, matching every observed capture (and the
+            // only order live-probed 200). Byte-faithful — the nested tools carry
+            // Copilot's reserved schemas and must not be altered.
+            WriteAdditionalToolsItems(w, bag);
             foreach (var msg in ir.Messages)
                 WriteInputItem(w, msg, ref vision);
             w.WriteEndArray();
@@ -139,6 +145,50 @@ internal static class ResponsesRequestBuilder
         }
 
         return (buffer.ToArray(), vision, effort);
+    }
+
+    /// <summary>
+    /// Re-emit the carried <c>additional_tools</c> items (gpt-5.6 harness
+    /// tool-registration preamble) from the openai bag into <c>input[]</c>,
+    /// byte-faithfully. T1 stashed each as <c>{role, tools}</c> under the bag's
+    /// <c>additional_tools</c> array; here each becomes an
+    /// <c>{type:"additional_tools", role, tools}</c> input item. The <c>tools</c>
+    /// payload is written with <see cref="Utf8JsonWriter.WriteRawValue(string,bool)"/>
+    /// over <see cref="JsonElement.GetRawText"/> — NOT <c>WriteTo</c> — so the
+    /// ORIGINAL lexical bytes T1 preserved survive this second hop unchanged (no
+    /// DOM reserialization, no re-escaping/renumbering). No drops, no coercion —
+    /// the nested tools carry Copilot's reserved built-in schemas (e.g.
+    /// <c>collaboration.*</c>) that Copilot 400s on if altered. No-op when the bag
+    /// is absent or carries no such items (every Claude Code request).
+    /// </summary>
+    private static void WriteAdditionalToolsItems(Utf8JsonWriter w, JsonElement? bag)
+    {
+        if (bag is not { ValueKind: JsonValueKind.Object } obj
+            || !obj.TryGetProperty("additional_tools", out var items)
+            || items.ValueKind != JsonValueKind.Array)
+            return;
+
+        foreach (var item in items.EnumerateArray())
+        {
+            // Defensive: T1 (BuildOpenAiBag) only ever writes object elements here,
+            // but a non-object element would make TryGetProperty below throw
+            // InvalidOperationException → a 502 mid-relay. Skip anything that isn't an
+            // object so a malformed bag can't crash the strategy.
+            if (item.ValueKind != JsonValueKind.Object)
+                continue;
+            w.WriteStartObject();
+            w.WriteString("type", "additional_tools");
+            if (item.TryGetProperty("role", out var role) && role.ValueKind == JsonValueKind.String)
+                w.WriteString("role", role.GetString());
+            if (item.TryGetProperty("tools", out var tools))
+            {
+                w.WritePropertyName("tools");
+                // Raw-value, not WriteTo — preserve the exact bytes carried through
+                // the bag (see BuildOpenAiBag; keeps the reserved schemas byte-identical).
+                w.WriteRawValue(tools.GetRawText());
+            }
+            w.WriteEndObject();
+        }
     }
 
     private static void WriteInputItem(Utf8JsonWriter w, MessageParam msg, ref bool vision)
@@ -533,6 +583,12 @@ internal static class ResponsesRequestBuilder
                     // This was reasoning.summary — re-emitted INSIDE the reasoning
                     // object (see Build), not at the top level. Skip here so it isn't
                     // also written as a stray top-level key.
+                    continue;
+                case "additional_tools":
+                    // These were input[] items (gpt-5.6 harness preamble) — re-emitted
+                    // INTO input[] by WriteAdditionalToolsItems (see Build), not as a
+                    // top-level request field. Skip here so they aren't also written as
+                    // a stray sibling of input/tools.
                     continue;
                 default:
                     // tool_choice, parallel_tool_calls, include, prompt_cache_key,

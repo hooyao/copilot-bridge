@@ -106,7 +106,34 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    `CodexRoutingAndCatalogTests`) and **mutation-check** each new assertion:
    break the product value, confirm the test goes red. A new test that passes on
    the first run guards nothing.
-6. **Docs + memory.** Update `docs/pipeline-design.md` (§7 catalog),
+6. **Load-task smoke — MANDATORY for a Codex (`gpt-*` / `mai-code-*`) model.** A
+   liveness/effort probe and a plain one-word turn do **not** exercise a real Codex
+   client tool loop — multi-call `function_call`/`function_call_output` round-trips
+   and reasoning echoes only appear when the real `codex.exe` runs an actual
+   multi-step **task**. That loop (plus model routing) is what this smoke guards.
+   So for every added Codex id, run the real-client load-task smoke against **that
+   id**. The repo's default shell is PowerShell (set the env var inline, then run):
+   ```powershell
+   $env:CODEX_SMOKE_MODEL="<new-id>"; dotnet test tests/CopilotBridge.Playground `
+     --filter "FullyQualifiedName~CodexLoadTaskSmoke" --logger "console;verbosity=detailed"
+   ```
+   (bash/CI equivalent: `CODEX_SMOKE_MODEL=<new-id> dotnet test … --filter "FullyQualifiedName~CodexLoadTaskSmoke"`.)
+   It must exit 0 with the canary in stdout AND the bridge audit must show the
+   model on the wire plus a real `function_call`/`function_call_output` round-trip
+   (the test asserts all of these, so a prompt-echo can't pass it). If it 400s on
+   an unmodeled inbound shape (`Polymorphism_UnrecognizedTypeDiscriminator`, a new
+   `input[]`/tool `type`), that shape is a NEW change: probe whether Copilot
+   accepts it natively (`ResponsesProbe`), then model + carry it — the
+   `add-codex-additional-tools-item` change under `openspec/changes/` (or
+   `openspec/changes/archive/` if later archived) is the worked example.
+   Caveat: this smoke exercises only what the `codex exec` CLI emits, which is a
+   subset of the full client wire — notably it does NOT send the desktop app's
+   `input[0]` `additional_tools` preamble. Shapes the CLI doesn't emit need a
+   direct HTTP-edge replay of a real capture through `/codex/responses` (see
+   `CodexAdditionalToolsHeadlessTests`), so add one whenever you model a new
+   desktop-only inbound shape. For a Claude model the `claude.exe` headless smoke
+   (`CcOnGpt5*HeadlessTests`/`HeadlessSmokeTests`) is the equivalent load task.
+7. **Docs + memory.** Update `docs/pipeline-design.md` (§7 catalog),
    `docs/context-window.md`, and the model-count references; add a dated entry to
    `docs/design.md`. Update the user-account memory if the available set changed.
 
@@ -146,15 +173,29 @@ Full worked example (opus-4.6-1m, the -internal/-high/-xhigh variants):
   `[Trait("Category","Integration")]`).
 - CI-safe unit suite (no network):
   `dotnet test tests/CopilotBridge.UnitTests --filter "Category!=Integration"`.
-- End-to-end sanity: the headless smoke (`HeadlessSmokeTests`) can drive
-  `claude.exe` against the bridge with the new/changed model and assert a 2xx
-  reaches Copilot.
+- End-to-end sanity: the headless smoke drives a REAL client against the bridge
+  with the new/changed model and asserts a 2xx reaches Copilot.
+  - **Claude (`claude-*`)** → `claude.exe` (`HeadlessSmokeTests`,
+    `CcOnGpt5*HeadlessTests`).
+  - **Codex (`gpt-*` / `mai-code-*`)** → `codex.exe` load task
+    (`CodexLoadTaskSmokeTests`, model via `CODEX_SMOKE_MODEL`). Exercises a real
+    Codex client tool loop (multi-call `function_call`/`function_call_output`
+    round-trips + model routing) — a probe or plain turn does not. Required for
+    every added/reconciled Codex id (step 6). It does NOT cover the desktop app's
+    `additional_tools` preamble (the `codex exec` CLI doesn't emit it) — that shape
+    is checked by the HTTP-edge replay `CodexAdditionalToolsHeadlessTests`.
 
 ## Guardrails
 
 - **Probe before you edit.** No catalog change without a cited probe result.
 - **Never delete on `/models` absence alone** — require a live 400.
 - **Match the nearest model by CONTRACT, not by name** — probe every axis.
+- **A Codex model isn't done until a real `codex.exe` load task passes on it.**
+  Probes and plain turns don't exercise a real client tool loop; the load-task
+  smoke (`CodexLoadTaskSmokeTests`, `CODEX_SMOKE_MODEL=<id>`) catches tool-loop and
+  routing regressions the CLI actually drives. Inbound shapes the `codex exec` CLI
+  doesn't emit (e.g. the desktop `additional_tools` preamble) need a direct
+  HTTP-edge replay instead (`CodexAdditionalToolsHeadlessTests`).
 - **Repo files are English** (code, comments, docs, commit messages); chat replies
   follow the user's language.
 - This repo tracks work with OpenSpec for larger changes — a one-model

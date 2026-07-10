@@ -21,8 +21,14 @@ internal sealed record CodexResult(int ExitCode, string Stdout, string Stderr, T
 internal static class CodexProcess
 {
     private const string CodexExeEnv = "CODEX_EXE";
-    private const string DefaultCodexExe =
-        @"C:\Users\yahu2\AppData\Local\OpenAI\Codex\bin\f1c7ee7a13db5fed\codex.exe";
+    // Codex installs under %LOCALAPPDATA%\OpenAI\Codex\bin\<version-hash>\codex.exe
+    // and self-updates into a fresh hash dir, so the ONLY stable parts are the
+    // LocalApplicationData root and the "OpenAI\Codex\bin" suffix — never the user
+    // name or the hash. ResolveCodexExe prefers CODEX_EXE, then the newest
+    // codex.exe under this derived bin root.
+    private static readonly string CodexBinRoot = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "OpenAI", "Codex", "bin");
 
     public static async Task<CodexResult> RunAsync(CodexInvocation inv, CancellationToken ct = default)
     {
@@ -83,7 +89,17 @@ internal static class CodexProcess
     {
         var fromEnv = Environment.GetEnvironmentVariable(CodexExeEnv);
         if (!string.IsNullOrEmpty(fromEnv) && File.Exists(fromEnv)) return fromEnv;
-        if (File.Exists(DefaultCodexExe)) return DefaultCodexExe;
+        // Prefer the NEWEST codex.exe under the versioned bin root — Codex
+        // self-updates into a fresh hash dir, so "newest by write time" tracks the
+        // active install without a hardcoded hash (or user name) going stale.
+        if (Directory.Exists(CodexBinRoot))
+        {
+            var newest = Directory.EnumerateFiles(CodexBinRoot, "codex.exe", SearchOption.AllDirectories)
+                .Select(p => new FileInfo(p))
+                .OrderByDescending(fi => fi.LastWriteTimeUtc)
+                .FirstOrDefault();
+            if (newest is not null) return newest.FullName;
+        }
         // Walk PATH.
         foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
         {
