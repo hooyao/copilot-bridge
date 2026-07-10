@@ -10,8 +10,9 @@ description: >-
   model's wire shape, so every add/remove MUST be grounded in a live probe — do
   NOT edit ModelProfileCatalog.cs from family-name intuition. Follow this skill.
 compatibility: >-
-  Requires a working Copilot login (`cc-copilot-bridge auth login` done) and the
-  ability to run the Playground integration probes (Windows + DPAPI, live Copilot).
+  Requires a working Copilot credential (`auth login` or
+  `COPILOT_BRIDGE_GITHUB_TOKEN`) and the ability to run the Playground integration
+  probes against live Copilot.
 metadata:
   author: cc-copilot-bridge
   version: "1.0"
@@ -141,8 +142,8 @@ Full worked example (opus-4.6-1m, the -internal/-high/-xhigh variants):
 
 ## Build & test reference
 
-- Discovery / probes need a live Copilot login and run under
-  `tests/CopilotBridge.Playground` (Windows + DPAPI; tagged
+- Discovery / probes need a live Copilot credential and run under
+  `tests/CopilotBridge.Playground` (tagged
   `[Trait("Category","Integration")]`).
 - CI-safe unit suite (no network):
   `dotnet test tests/CopilotBridge.UnitTests --filter "Category!=Integration"`.

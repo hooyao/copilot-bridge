@@ -4,7 +4,7 @@ namespace CopilotBridge.Cli.Auth;
 /// Self-contained authentication service. Owns:
 /// <list type="bullet">
 ///   <item>GitHub device-code flow + GitHub OAuth token</item>
-///   <item>DPAPI-encrypted token persistence next to the .exe</item>
+///   <item>Ephemeral environment token or encrypted token persistence next to the .exe</item>
 ///   <item>Copilot bearer token (in-memory, auto-refreshed on a background timer)</item>
 /// </list>
 /// Callers only need <see cref="IAuthService.GetCopilotTokenAsync"/>.
@@ -32,9 +32,9 @@ public sealed class AuthService : IAuthService, IDisposable
         _onDeviceCodeIssued = onDeviceCodeIssued ?? (_ => { });
     }
 
-    public bool IsAuthenticated => TokenStore.TryLoad() is not null;
+    public bool IsAuthenticated => GitHubTokenSource.TryLoad() is not null;
 
-    public string TokenLocation => TokenStore.FilePath;
+    public string TokenLocation => GitHubTokenSource.Location;
 
     public string? CopilotApiBaseUrl => Volatile.Read(ref _copilotCache)?.ApiBaseUrl;
 
@@ -42,7 +42,7 @@ public sealed class AuthService : IAuthService, IDisposable
 
     public async ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default)
     {
-        var existing = TokenStore.TryLoad();
+        var existing = GitHubTokenSource.TryLoad();
         if (existing is not null) return existing;
 
         var deviceCode = await _gitHubClient.RequestDeviceCodeAsync(ct);
@@ -68,7 +68,7 @@ public sealed class AuthService : IAuthService, IDisposable
             snapshot = Volatile.Read(ref _copilotCache);
             if (IsFresh(snapshot)) return snapshot!.Token;
 
-            var githubToken = TokenStore.TryLoad()
+            var githubToken = GitHubTokenSource.TryLoad()
                 ?? throw new InvalidOperationException(
                     "Not logged in to GitHub. Run the device-code flow first (e.g. `auth login`).");
 
@@ -134,7 +134,7 @@ public sealed class AuthService : IAuthService, IDisposable
         if (_disposed) return;
         try
         {
-            var githubToken = TokenStore.TryLoad();
+            var githubToken = GitHubTokenSource.TryLoad();
             if (githubToken is null)
             {
                 // Signed out between schedule and tick — stop the loop.

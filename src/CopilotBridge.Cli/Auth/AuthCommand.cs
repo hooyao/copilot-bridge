@@ -23,7 +23,7 @@ internal static class AuthCommand
         {
             await auth.EnsureGitHubTokenAsync();
             Console.WriteLine();
-            Console.WriteLine("Login complete. Encrypted token saved to:");
+            Console.WriteLine("Login complete. Credential available from:");
             Console.WriteLine($"  {auth.TokenLocation}");
             return 0;
         }
@@ -41,7 +41,7 @@ internal static class AuthCommand
 
     public static async Task<int> WhoAmIAsync()
     {
-        var token = TokenStore.TryLoad();
+        var token = GitHubTokenSource.TryLoad();
         if (token is null)
         {
             Console.Error.WriteLine("Not logged in. Run `auth login`.");
@@ -78,9 +78,10 @@ internal static class AuthCommand
 
     public static int Logout()
     {
+        var environmentTokenActive = GitHubTokenSource.UsesEnvironment;
         var primaryExisted = File.Exists(TokenStore.FilePath);
         var fallbackExisted = File.Exists(TokenStore.FallbackPath);
-        if (!primaryExisted && !fallbackExisted)
+        if (!primaryExisted && !fallbackExisted && !environmentTokenActive)
         {
             Console.WriteLine("Not logged in.");
             return 0;
@@ -88,6 +89,9 @@ internal static class AuthCommand
         TokenStore.Delete();
         if (primaryExisted) Console.WriteLine($"Deleted: {TokenStore.FilePath}");
         if (fallbackExisted) Console.WriteLine($"Deleted: {TokenStore.FallbackPath}");
+        if (environmentTokenActive)
+            Console.WriteLine(
+                $"{GitHubTokenSource.EnvironmentVariableName} remains active; unset it in the current environment to sign out.");
         return 0;
     }
 
@@ -95,14 +99,16 @@ internal static class AuthCommand
     {
         var primaryExists = File.Exists(TokenStore.FilePath);
         var fallbackExists = File.Exists(TokenStore.FallbackPath);
-        if (TokenStore.TryLoad() is null)
+        if (GitHubTokenSource.TryLoad() is null)
         {
             Console.WriteLine("Not logged in.");
             Console.WriteLine($"  primary:  {TokenStore.FilePath}  (exists: {primaryExists})");
             Console.WriteLine($"  fallback: {TokenStore.FallbackPath}  (exists: {fallbackExists})");
             return 0;
         }
-        var loadedFrom = primaryExists ? TokenStore.FilePath : TokenStore.FallbackPath;
+        var loadedFrom = GitHubTokenSource.UsesEnvironment
+            ? $"environment variable {GitHubTokenSource.EnvironmentVariableName}"
+            : primaryExists ? TokenStore.FilePath : TokenStore.FallbackPath;
         Console.WriteLine("Logged in.");
         Console.WriteLine($"  loaded from: {loadedFrom}");
         if (primaryExists && fallbackExists)
@@ -112,7 +118,7 @@ internal static class AuthCommand
 
     public static async Task<int> CopilotStatusAsync()
     {
-        if (TokenStore.TryLoad() is null)
+        if (GitHubTokenSource.TryLoad() is null)
         {
             Console.Error.WriteLine("Not logged in. Run `auth login` first.");
             return 1;

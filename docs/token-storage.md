@@ -1,6 +1,11 @@
 # Token storage security model
 
-The bridge persists one secret at rest: the long-lived **GitHub OAuth token**
+The bridge can consume a GitHub token ephemerally from
+`COPILOT_BRIDGE_GITHUB_TOKEN`. When set to a non-empty value, it takes precedence
+over disk and is never encrypted, copied, or persisted by the bridge. This is
+the intended path for short-lived GitHub Actions credentials.
+
+Without that environment variable, the bridge persists one secret at rest: the long-lived **GitHub OAuth token**
 (obtained via the device-code flow). It is always encrypted on disk — never
 plaintext — but the encryption scheme is chosen per platform at runtime, because
 the strong OS-native facility we use on Windows (DPAPI) has no portable

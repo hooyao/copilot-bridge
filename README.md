@@ -86,6 +86,12 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
    — no login prompt. (On Windows, double-clicking opens a console window that
    shows the URL and the live log.)
 
+   For headless automation, set `COPILOT_BRIDGE_GITHUB_TOKEN` instead. The
+   environment credential is used only in memory, takes precedence over any
+   token file, and is never persisted. GitHub Actions can map its short-lived
+   `${{ github.token }}` to this variable when the workflow grants
+   `copilot-requests: write`.
+
 3. Leave it running. Now point your CLI at it.
 
 ## Point Claude Code at the bridge

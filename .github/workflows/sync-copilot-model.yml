@@ -1,0 +1,108 @@
+name: Sync Copilot model
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Exact Copilot model ID to add, remove, or re-probe
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  copilot-requests: write
+
+concurrency:
+  group: sync-copilot-model
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install Copilot CLI
+        run: npm install --global @github/copilot@1.0.69
+
+      - name: Create working branch
+        id: branch
+        shell: bash
+        env:
+          TARGET_MODEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TARGET_MODEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "Model ID may contain only letters, digits, dots, underscores, and hyphens." >&2
+            exit 2
+          fi
+          slug="$(printf '%s' "$TARGET_MODEL" | tr '[:upper:]' '[:lower:]')"
+          branch="copilot-model-sync/${slug}-${GITHUB_RUN_ID}"
+          git switch -c "$branch"
+          echo "name=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Run model-sync skill
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COPILOT_BRIDGE_GITHUB_TOKEN: ${{ github.token }}
+          TARGET_MODEL: ${{ inputs.model }}
+        run: |
+          copilot --yolo --no-ask-user \
+            -p "Use the /copilot-model-sync skill to reconcile the exact model ID ${TARGET_MODEL} with the bridge catalog. Run every required live discovery and endpoint probe, derive behavior only from probe results, update contract tests and documentation, mutation-check new assertions, and run the CI-safe validation. Do not commit, push, or create a pull request; leave the complete validated changes in the working tree for the workflow to publish."
+
+      - name: Validate generated changes
+        run: |
+          git diff --check
+          dotnet test CopilotBridge.slnx --filter "Category!=Integration"
+
+      - name: Commit and push changes
+        id: publish
+        shell: bash
+        env:
+          BRANCH: ${{ steps.branch.outputs.name }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "Copilot completed without producing repository changes." >> "$GITHUB_STEP_SUMMARY"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Support Copilot model ${{ inputs.model }}"
+          git push --set-upstream origin "$BRANCH"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        if: steps.publish.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.branch.outputs.name }}
+          TARGET_MODEL: ${{ inputs.model }}
+        run: |
+          gh pr create \
+            --base "${{ github.event.repository.default_branch }}" \
+            --head "$BRANCH" \
+            --title "Support Copilot model ${TARGET_MODEL}" \
+            --body "Automated by the Copilot model-sync skill after live endpoint discovery and probes.
+
+          Source workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"

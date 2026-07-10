@@ -15,9 +15,10 @@ internal static class DebugCommand
 
     public static async Task<int> ListModelsAsync(bool showAll)
     {
-        if (TokenStore.TryLoad() is null)
+        if (GitHubTokenSource.TryLoad() is null)
         {
-            Console.Error.WriteLine("Not logged in. Run `auth login` first.");
+            Console.Error.WriteLine(
+                $"No GitHub credential. Run `auth login` or set {GitHubTokenSource.EnvironmentVariableName}.");
             return 1;
         }
 
