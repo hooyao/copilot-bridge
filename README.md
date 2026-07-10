@@ -41,8 +41,10 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 - **Every model's real limits are respected.** Which reasoning-effort levels,
   thinking shapes, and context windows each Copilot model actually accepts differs
   from what its docs claim. The bridge reshapes each request to what the target
-  model accepts, and returns a clear error for an unknown model instead of
-  silently forwarding a request that will fail.
+  model accepts. A model newer than the bridge's built-in catalog is still
+  forwarded — under the closest known model's wire contract, with the real id on
+  the wire — so a fresh Copilot model works before the bridge is updated; only an
+  id it can't relate to any known model is rejected with a clear error.
 - **Auto-repairs tool-call and control-envelope leaks.** Copilot-served models
   occasionally emit a tool call — or one of Claude Code's internal control markers
   — as literal text instead of a real structured block. The bridge detects this
