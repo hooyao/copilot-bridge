@@ -193,6 +193,13 @@ Change: route the Codex/Responses model ids (`gpt-5.3-codex`, `gpt-5.4`,
 `gpt-5.5`, `gpt-5-mini`, `gpt-5.4-mini`, `mai-code-1-flash-internal`) to
 **`CopilotResponses` + `/responses`**.
 
+> **Current routed set (the id list above is change-3's original set).** The 2026
+> reconciliation retired `mai-code-1-flash-internal` (→ `mai-code-1-flash-picker`)
+> and the 2026-07 reconciliation added the three `gpt-5.6` codenames
+> (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`). The live
+> `CopilotModelRegistry.ResponsesModelIds` allowlist is the source of truth;
+> membership is still an explicit list, never a `gpt-` prefix takeover.
+
 The router runs once, on the IR, in the shared `Pipeline<MessagesRequest>`. It is
 **backend-agnostic by construction** — it keys off the resolved model id, not the
 client. That's *why* CC→GPT5 and Codex→Opus become free later: the router already

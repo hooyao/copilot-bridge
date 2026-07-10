@@ -28,41 +28,32 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   on opus-4.6/4.7/4.8 and sonnet-4.6/sonnet-5 (all but sonnet-4.5 / haiku-4.5).
   Codex runs on Copilot's gpt-5.x, including the newest **gpt-5.6** models
   (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`).
-- **Run Claude Code on a GPT model — including gpt-5.6-sol.** Routing happens on a
-  backend-agnostic request shape, so you can point Claude Code at one of Copilot's
-  reasoning GPTs instead of a Claude model. A one-line `Routing.Locations` rule
-  routes `claude-opus-4.8` traffic to **`gpt-5.6-sol`** (Copilot's newest Codex
-  model, the first to accept `max` reasoning effort); the bridge translates the
-  whole Anthropic tool-use protocol — tool calls, tool results, streaming — to and
-  from the Responses API, so a full agentic session with multiple tool
-  round-trips runs end to end. Verified live against gpt-5.6-sol with a complex
-  multi-tool Claude Code task (every upstream call 2xx, tools intact on the wire,
-  no runaway). See the `Routing.Locations` example under
-  [Configuration](#configuration-appsettingsjson).
+- **Run Claude Code on a GPT model — including gpt-5.6-sol.** Point Claude Code at
+  one of Copilot's reasoning GPTs instead of a Claude model: a one-line
+  `Routing.Locations` rule routes `claude-opus-4.8` traffic to **`gpt-5.6-sol`**
+  (Copilot's newest Codex model). The bridge translates the full Anthropic
+  tool-use protocol — tool calls, tool results, streaming — to and from the
+  Responses API, so a complete agentic session runs end to end. See the
+  `Routing.Locations` example under [Configuration](#configuration-appsettingsjson).
 - **Works with Claude Code 4.8 out of the box.** Claude Code sends beta headers
   Copilot rejects (e.g. `advisor-tool-2026-03-01`, which 400s on every model).
   The bridge strips the ones Copilot refuses so your session doesn't error.
-- **Per-model behavior is probed, not guessed.** Which reasoning-effort levels,
-  thinking shapes, and context windows each Copilot model actually accepts is
-  measured against the live API and baked into a profile. The bridge reshapes
-  each request to what the target model accepts, and returns a clear error for
-  an unknown model instead of silently forwarding a request that will fail.
+- **Every model's real limits are respected.** Which reasoning-effort levels,
+  thinking shapes, and context windows each Copilot model actually accepts differs
+  from what its docs claim. The bridge reshapes each request to what the target
+  model accepts, and returns a clear error for an unknown model instead of
+  silently forwarding a request that will fail.
 - **Auto-repairs tool-call and control-envelope leaks.** Copilot-served models
-  occasionally emit a tool call as literal `<invoke …>` text — or a Claude Code
-  control envelope such as `<task-notification>`, `<teammate-message>`,
-  `<channel>`, `<cross-session-message>`, `<tick>`, or the `<system-reminder>`
-  wrapper — instead of a real structured block. The bridge detects this and makes
-  the client retry the turn cleanly, so it doesn't get stuck. An opt-in airtight
-  mode (`BufferScannableBlocks`) holds each text/thinking block back until it's
-  scanned, so a leak is suppressed *before* any leaked byte reaches the client.
+  occasionally emit a tool call — or one of Claude Code's internal control markers
+  — as literal text instead of a real structured block. The bridge detects this
+  and makes the client retry the turn cleanly, so it doesn't get stuck. An opt-in
+  airtight mode suppresses a leak before any leaked byte reaches the client.
 - **Stops degenerate runaways before they hang your client.** A Copilot model can
   get stuck generating — an unbounded stream of tiny fragments, or one token
   repeated tens of thousands of times up to `max_tokens` — which would otherwise
-  stream at you for minutes and burn quota for nothing. A circuit-breaker watches
-  every response (streaming *and* one-shot) on four signals — total delta bytes,
-  per-block delta count, a sliding-window repetition-density ratio, and a
-  consecutive-run count — and forces a clean retry the moment output goes
-  degenerate.
+  stream at you for minutes and burn quota for nothing. The bridge detects this on
+  both streaming and one-shot responses and forces a clean retry the moment output
+  goes degenerate.
 - **Bounds the wait on an unresponsive Copilot.** Two independent *inactivity*
   budgets — one for the first response byte, one for the gap between streamed
   events — cap how long the bridge hangs on a stalled backend. They're idle
