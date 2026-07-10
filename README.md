@@ -26,7 +26,19 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 - **The full current Claude model set.** opus-4.6 / opus-4.7 / **opus-4.8**,
   sonnet-4.5 / sonnet-4.6 / **sonnet-5**, haiku-4.5 — with **native 1M context**
   on opus-4.6/4.7/4.8 and sonnet-4.6/sonnet-5 (all but sonnet-4.5 / haiku-4.5).
-  Codex runs on Copilot's gpt-5.x.
+  Codex runs on Copilot's gpt-5.x, including the newest **gpt-5.6** models
+  (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`).
+- **Run Claude Code on a GPT model — including gpt-5.6-sol.** Routing happens on a
+  backend-agnostic request shape, so you can point Claude Code at one of Copilot's
+  reasoning GPTs instead of a Claude model. A one-line `Routing.Locations` rule
+  routes `claude-opus-4.8` traffic to **`gpt-5.6-sol`** (Copilot's newest Codex
+  model, the first to accept `max` reasoning effort); the bridge translates the
+  whole Anthropic tool-use protocol — tool calls, tool results, streaming — to and
+  from the Responses API, so a full agentic session with multiple tool
+  round-trips runs end to end. Verified live against gpt-5.6-sol with a complex
+  multi-tool Claude Code task (every upstream call 2xx, tools intact on the wire,
+  no runaway). See the `Routing.Locations` example under
+  [Configuration](#configuration-appsettingsjson).
 - **Works with Claude Code 4.8 out of the box.** Claude Code sends beta headers
   Copilot rejects (e.g. `advisor-tool-2026-03-01`, which 400s on every model).
   The bridge strips the ones Copilot refuses so your session doesn't error.
@@ -213,14 +225,16 @@ The file next to the executable. A few keys worth knowing:
   ```jsonc
   {
     "When": { "Model": "claude-opus-4.8" },
-    "Use":  { "Model": "gpt-5.5", "EffortMap": { "max": "xhigh" } }
+    "Use":  { "Model": "gpt-5.6-sol", "EffortMap": { "max": "xhigh" } }
   }
   ```
 
-  which would route Claude Code's `claude-opus-4.8` traffic to Copilot's
-  `gpt-5.5` (with `max` effort mapped to `xhigh`, since gpt-5.5 doesn't accept
-  `max`). See [`docs/routing.md`](docs/routing.md) for the full match/rewrite
-  syntax.
+  which routes Claude Code's `claude-opus-4.8` traffic to Copilot's newest Codex
+  model, **`gpt-5.6-sol`**. The `EffortMap` here is a deliberate down-tier: unlike
+  gpt-5.5, gpt-5.6-sol *does* accept `max`, so without the map Claude Code's `max`
+  effort would pass through unchanged — the map caps it at `xhigh` instead (drop
+  the `EffortMap` to send `max` through). See [`docs/routing.md`](docs/routing.md)
+  for the full match/rewrite syntax.
 
 ## Limitations
 
@@ -235,8 +249,10 @@ native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
 - **`max` / `xhigh` reasoning effort isn't universal.** Support is per-model and
   non-monotonic: opus-4.8 / opus-4.7 / sonnet-5 accept every tier
   (`low`–`max`, including `xhigh`); opus-4.6 / sonnet-4.6 accept `max` but reject
-  `xhigh`; sonnet-4.5 / haiku-4.5 take no effort field. The bridge strips an
-  effort the target rejects instead of letting it fail.
+  `xhigh`; sonnet-4.5 / haiku-4.5 take no effort field. On the Codex side the
+  gpt-5.x models top out at `xhigh`, except the **gpt-5.6** models
+  (`luna`/`sol`/`terra`), which are the first to also accept `max`. The bridge
+  strips (or clamps) an effort the target rejects instead of letting it fail.
 - **Resume drops the `[1m]` flag back to 200k.** Claude Code stores the 1M toggle
   in the model string (`opus[1m]`), which isn't persisted across `--resume`. The
   backend still serves the larger window, but Claude Code's own auto-compaction

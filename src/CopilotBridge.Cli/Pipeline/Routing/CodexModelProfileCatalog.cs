@@ -92,11 +92,17 @@ internal sealed class CodexModelProfileCatalog
     /// The baseline profile set, row-by-row from
     /// <c>docs/copilot-responses-contract-snapshot.json</c> (seeded 2026-06-15,
     /// Enterprise), with <c>mai-code-1-flash-picker</c> re-probed directly 2026-07
-    /// (see its row). Two effort profiles:
+    /// (see its row) and the <c>gpt-5.6</c> codename slots probed directly 2026-07
+    /// (see their rows). Three effort profiles:
     /// <list type="bullet">
     ///   <item><b>large</b> — <c>gpt-5.3-codex</c>, <c>gpt-5.4</c>,
     ///         <c>gpt-5.4-mini</c>, <c>gpt-5.5</c>: accept
     ///         <c>none/low/medium/high/xhigh</c>, reject <c>minimal</c>.</item>
+    ///   <item><b>xlarge</b> — <c>gpt-5.6-luna</c>, <c>gpt-5.6-sol</c>,
+    ///         <c>gpt-5.6-terra</c>: <b>large + <c>max</c></b> — the first Codex
+    ///         models to accept <c>max</c> (<c>Gpt56_Effort_ReProbe</c>: max → 200,
+    ///         minimal → 400). So Anthropic's top tier passes through instead of
+    ///         being clamped to <c>xhigh</c>.</item>
     ///   <item><b>small</b> — <c>gpt-5-mini</c>,
     ///         <c>mai-code-1-flash-picker</c>: accept
     ///         <c>minimal/low/medium/high</c>, reject <c>none</c> AND <c>xhigh</c>
@@ -116,6 +122,28 @@ internal sealed class CodexModelProfileCatalog
         yield return new CodexModelProfile { CanonicalId = "gpt-5.4",       AcceptedEfforts = large, DefaultEffort = "xhigh" };
         yield return new CodexModelProfile { CanonicalId = "gpt-5.4-mini",  AcceptedEfforts = large, DefaultEffort = "xhigh" };
         yield return new CodexModelProfile { CanonicalId = "gpt-5.5",       AcceptedEfforts = large, DefaultEffort = "xhigh" };
+
+        // ── "xlarge" effort profile: accept none/low/medium/high/xhigh/MAX, reject minimal ──
+        // The gpt-5.6 codename slots (luna/sol/terra) are the first Codex models to
+        // accept 'max' — every effort axis RE-PROBED directly 2026-07
+        // (ResponsesProbe.Gpt56_Effort_ReProbe): null/none/low/medium/high/xhigh/max
+        // → 200, minimal → 400. This EXTENDS "large" with max, so Anthropic's top
+        // tier (which large clamps to xhigh) now passes through verbatim on these.
+        // TRAP the sync skill warns of: the 400 body for 'minimal' lists supported
+        // = [none,low,medium,high,xhigh] — OMITTING max — yet max live-probes 200.
+        // The advertised list lies; the probe is ground truth. So AcceptedEfforts
+        // includes max even though Copilot's own error message doesn't.
+        // DefaultEffort=xhigh (NOT max): the only inbound value not in the set is
+        // Codex's 'minimal'; clamping an unrecognized effort to the costliest tier
+        // is a footgun, so fall back to xhigh (large's top) — max is reserved for
+        // an explicit request, which now passes through as-is.
+        // Custom tools ACCEPTED (Gpt56_Tool_ReProbe: function / custom apply_patch /
+        // web_search → 200; image_generation → 400 but that's the catalog-level
+        // uniform drop, not a per-model flag) → RejectsCustomTools stays false.
+        string[] xlarge = ["none", "low", "medium", "high", "xhigh", "max"];
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-luna",  AcceptedEfforts = xlarge, DefaultEffort = "xhigh" };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-sol",   AcceptedEfforts = xlarge, DefaultEffort = "xhigh" };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-terra", AcceptedEfforts = xlarge, DefaultEffort = "xhigh" };
 
         // ── "small" effort profile: accept minimal/low/medium/high, reject none+xhigh ──
         // DefaultEffort=high: small rejects xhigh, so its fallback is 'high' (its

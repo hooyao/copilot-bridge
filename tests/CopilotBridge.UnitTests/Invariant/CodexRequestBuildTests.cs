@@ -79,6 +79,19 @@ public class CodexRequestBuildTests
     [InlineData("gpt-5.3-codex", "xhigh", "xhigh")]   // accepted by large → kept
     // gpt-5.5 specifically — the model from the runaway incident. max → xhigh, never medium.
     [InlineData("gpt-5.5", "max", "xhigh")]
+    // xlarge profile (gpt-5.6 codenames): accept none/low/medium/high/xhigh/MAX,
+    // reject minimal; DefaultEffort=xhigh. The distinguishing contract vs large:
+    // 'max' is ACCEPTED, so Anthropic's top tier passes through VERBATIM instead of
+    // being clamped to xhigh (Gpt56_Effort_ReProbe: max → 200). Only 'minimal' —
+    // the one value the set rejects — falls back to the xhigh default.
+    [InlineData("gpt-5.6-sol",   "max", "max")]         // ACCEPTED → verbatim (NOT clamped to xhigh like gpt-5.5)
+    [InlineData("gpt-5.6-luna",  "max", "max")]
+    [InlineData("gpt-5.6-terra", "max", "max")]
+    [InlineData("gpt-5.6-sol",   "xhigh", "xhigh")]     // accepted → kept
+    [InlineData("gpt-5.6-sol",   "minimal", "xhigh")]   // the only rejected value → profile default xhigh
+    [InlineData("gpt-5.6-luna",  "minimal", "xhigh")]   // per-row DefaultEffort guard: NOT max (the documented footgun)
+    [InlineData("gpt-5.6-terra", "minimal", "xhigh")]   // per-row DefaultEffort guard: NOT max
+    [InlineData("gpt-5.6-sol",   "none", "none")]       // accepted → kept
     // small profile (gpt-5-mini): accepts minimal/low/medium/high; DefaultEffort=high.
     [InlineData("gpt-5-mini", "max", "high")]         // unaccepted → small default high
     [InlineData("gpt-5-mini", "xhigh", "high")]       // unaccepted (small rejects xhigh) → default high

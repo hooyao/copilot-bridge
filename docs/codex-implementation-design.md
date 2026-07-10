@@ -164,13 +164,23 @@ Responses-specific specifics the research nailed down):
 
 ## 5. Per-model effort (research §2.2) — now a translation concern
 
-The two inverted profiles (large models reject `minimal`; small models reject
+The inverted profiles (large models reject `minimal`; small models reject
 `none`+`xhigh`) are applied **inside T2** (IR→Responses request), after the IR
 `thinking`/effort has been mapped to a Responses `reasoning.effort`. The
 `CodexModelProfileCatalog` (table-driven, probe-sourced, never family-name
 guessed) clamps the mapped effort to what the resolved model accepts, and records
 the `mai-code-1-flash-internal` custom-tool 500 quirk. `service_tier` strip +
 `image_generation` drop also live in T2 (uniform across models).
+
+> **2026-07 update — a third "xlarge" profile.** The `gpt-5.6` codename slots
+> (`gpt-5.6-luna`/`-sol`/`-terra`) are the first Codex models to accept the `max`
+> effort tier: `xlarge` = large + `max` (`none/low/medium/high/xhigh/max`, reject
+> `minimal`), live-probed in `ResponsesProbe.Gpt56_Effort_ReProbe`. Because `max`
+> is accepted, Anthropic's top tier passes through verbatim on these instead of
+> being clamped to `xhigh` (which is what the large profile does). Note the
+> probe TRAP the sync skill warns of: the 400 body for `minimal` lists supported
+> = `[none,low,medium,high,xhigh]` — omitting `max` — yet `max` live-probes 200;
+> the advertised list lies, the probe is ground truth.
 
 ---
 
