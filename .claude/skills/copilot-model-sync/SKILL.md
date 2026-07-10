@@ -114,18 +114,23 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    the real `codex.exe` runs an actual multi-step **task**. Skipping this is
    exactly how the gpt-5.6 `additional_tools` item shipped a silent 400 (the model
    was probed and added; no load task ever drove the preamble). So for every added
-   Codex id, run the real-client load-task smoke against **that id**:
-   ```bash
-   CODEX_SMOKE_MODEL=<new-id> dotnet test tests/CopilotBridge.Playground \
+   Codex id, run the real-client load-task smoke against **that id**. The repo's
+   default shell is PowerShell (set the env var inline, then run):
+   ```powershell
+   $env:CODEX_SMOKE_MODEL="<new-id>"; dotnet test tests/CopilotBridge.Playground `
      --filter "FullyQualifiedName~CodexLoadTaskSmoke" --logger "console;verbosity=detailed"
    ```
-   It must exit 0 with the canary in stdout. If it 400s on an unmodeled inbound
-   shape (`Polymorphism_UnrecognizedTypeDiscriminator`, a new `input[]`/tool
-   `type`), that shape is a NEW change: probe whether Copilot accepts it natively
-   (`ResponsesProbe`), then model + carry it (see
-   `openspec/changes/archive/*add-codex-additional-tools-item*`). For a Claude
-   model the `claude.exe` headless smoke (step 6's Anthropic analogue below /
-   `CcOnGpt5*HeadlessTests`) is the equivalent load task.
+   (bash/CI equivalent: `CODEX_SMOKE_MODEL=<new-id> dotnet test … --filter "FullyQualifiedName~CodexLoadTaskSmoke"`.)
+   It must exit 0 with the canary in stdout AND the bridge audit must show the
+   model on the wire plus a real `function_call`/`function_call_output` round-trip
+   (the test asserts all of these, so a prompt-echo can't pass it). If it 400s on
+   an unmodeled inbound shape (`Polymorphism_UnrecognizedTypeDiscriminator`, a new
+   `input[]`/tool `type`), that shape is a NEW change: probe whether Copilot
+   accepts it natively (`ResponsesProbe`), then model + carry it — the
+   `add-codex-additional-tools-item` change under `openspec/changes/` (or
+   `openspec/changes/archive/` if later archived) is the worked example. For a
+   Claude model the `claude.exe` headless smoke
+   (`CcOnGpt5*HeadlessTests`/`HeadlessSmokeTests`) is the equivalent load task.
 7. **Docs + memory.** Update `docs/pipeline-design.md` (§7 catalog),
    `docs/context-window.md`, and the model-count references; add a dated entry to
    `docs/design.md`. Update the user-account memory if the available set changed.

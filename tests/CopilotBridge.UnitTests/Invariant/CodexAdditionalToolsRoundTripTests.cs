@@ -71,10 +71,14 @@ public class CodexAdditionalToolsRoundTripTests
 
         // (c) the tools payload is BYTE-IDENTICAL — Copilot's reserved schemas
         // (grammar definition, collaboration.* namespace, encrypted flags) must not
-        // be altered. Compare canonical JSON text of the tools array.
-        Assert.Equal(
-            origItem["tools"]!.ToJsonString(),
-            emittedItem["tools"]!.ToJsonString());
+        // be altered. Compare the RAW JSON TEXT (GetRawText) of the tools array from
+        // the original body bytes vs the emitted wire bytes — NOT JsonNode canonical
+        // text, which would normalize whitespace/escaping/number spelling on BOTH
+        // sides and hide exactly the lexical drift WriteRawValue is there to prevent.
+        var origToolsRaw = ExtractAdditionalToolsToolsRaw(System.Text.Encoding.UTF8.GetBytes(body));
+        var emittedToolsRaw = ExtractAdditionalToolsToolsRaw(wire);
+        Assert.NotNull(origToolsRaw);
+        Assert.Equal(origToolsRaw, emittedToolsRaw);
 
         // (d) it must NOT also leak as a stray TOP-LEVEL request field (sibling of
         // input/tools). The item rides the openai bag, and WriteBagFields must skip
@@ -144,6 +148,35 @@ public class CodexAdditionalToolsRoundTripTests
         foreach (var n in input)
             if (n is JsonObject o && o["type"]?.GetValue<string>() == "additional_tools")
                 return o;
+        return null;
+    }
+
+    /// <summary>
+    /// Pull the RAW JSON text of the first <c>additional_tools</c> item's
+    /// <c>tools</c> value straight from the given UTF-8 JSON bytes, via
+    /// <see cref="JsonDocument"/> + <see cref="JsonElement.GetRawText"/>. This
+    /// preserves the ORIGINAL lexical form (whitespace, escaping, number spelling)
+    /// — unlike a <c>JsonNode</c> round trip, which canonicalizes. Used to assert
+    /// the carriage is byte-faithful, not merely value-equal. Returns null if no
+    /// such item/tools is found.
+    /// </summary>
+    private static string? ExtractAdditionalToolsToolsRaw(byte[] utf8Json)
+    {
+        using var doc = JsonDocument.Parse(utf8Json);
+        if (!doc.RootElement.TryGetProperty("input", out var input)
+            || input.ValueKind != JsonValueKind.Array)
+            return null;
+        foreach (var item in input.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.Object
+                && item.TryGetProperty("type", out var t)
+                && t.ValueKind == JsonValueKind.String
+                && t.GetString() == "additional_tools"
+                && item.TryGetProperty("tools", out var tools))
+            {
+                return tools.GetRawText();
+            }
+        }
         return null;
     }
 }

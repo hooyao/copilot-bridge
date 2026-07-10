@@ -333,10 +333,15 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                 cm.WriteTo(w);
             }
             // additional_tools items → an array carrying each item's {role, tools}
-            // VERBATIM (tools is opaque — Copilot's reserved schemas must not be
-            // altered). T2 re-emits these into the outbound input[]. Written as an
-            // array so N items round-trip (every capture shows exactly one, but the
-            // Responses schema doesn't forbid more).
+            // VERBATIM. `tools` is written with WriteRawValue(GetRawText()) — NOT
+            // WriteTo — so the ORIGINAL lexical bytes survive (whitespace, string
+            // escaping, numeric spelling). WriteTo would reserialize the DOM and
+            // could re-escape/renumber; Copilot's reserved schemas (collaboration.*)
+            // are validated by value so that wouldn't functionally break, but raw
+            // preservation is stronger and lets the round-trip test assert true
+            // byte-identity. T2 re-emits these into the outbound input[]. Written as
+            // an array so N items round-trip (every capture shows exactly one, but
+            // the Responses schema doesn't forbid more).
             if (additionalTools.Count > 0)
             {
                 w.WriteStartArray("additional_tools");
@@ -346,7 +351,7 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                     if (at.Role is { } role)
                         w.WriteString("role", role);
                     w.WritePropertyName("tools");
-                    at.Tools.WriteTo(w);
+                    w.WriteRawValue(at.Tools.GetRawText());
                     w.WriteEndObject();
                 }
                 w.WriteEndArray();

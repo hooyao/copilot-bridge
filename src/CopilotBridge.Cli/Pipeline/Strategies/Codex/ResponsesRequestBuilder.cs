@@ -153,10 +153,13 @@ internal static class ResponsesRequestBuilder
     /// byte-faithfully. T1 stashed each as <c>{role, tools}</c> under the bag's
     /// <c>additional_tools</c> array; here each becomes an
     /// <c>{type:"additional_tools", role, tools}</c> input item. The <c>tools</c>
-    /// payload is written verbatim (<see cref="JsonElement.WriteTo"/>) — no drops,
-    /// no coercion — because it carries Copilot's reserved built-in schemas
-    /// (e.g. <c>collaboration.*</c>) that Copilot 400s on if altered. No-op when the
-    /// bag is absent or carries no such items (every Claude Code request).
+    /// payload is written with <see cref="Utf8JsonWriter.WriteRawValue(string,bool)"/>
+    /// over <see cref="JsonElement.GetRawText"/> — NOT <c>WriteTo</c> — so the
+    /// ORIGINAL lexical bytes T1 preserved survive this second hop unchanged (no
+    /// DOM reserialization, no re-escaping/renumbering). No drops, no coercion —
+    /// the nested tools carry Copilot's reserved built-in schemas (e.g.
+    /// <c>collaboration.*</c>) that Copilot 400s on if altered. No-op when the bag
+    /// is absent or carries no such items (every Claude Code request).
     /// </summary>
     private static void WriteAdditionalToolsItems(Utf8JsonWriter w, JsonElement? bag)
     {
@@ -180,7 +183,9 @@ internal static class ResponsesRequestBuilder
             if (item.TryGetProperty("tools", out var tools))
             {
                 w.WritePropertyName("tools");
-                tools.WriteTo(w);
+                // Raw-value, not WriteTo — preserve the exact bytes carried through
+                // the bag (see BuildOpenAiBag; keeps the reserved schemas byte-identical).
+                w.WriteRawValue(tools.GetRawText());
             }
             w.WriteEndObject();
         }
