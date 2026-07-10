@@ -240,10 +240,11 @@ native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
 - **`max` / `xhigh` reasoning effort isn't universal.** Support is per-model and
   non-monotonic: opus-4.8 / opus-4.7 / sonnet-5 accept every tier
   (`low`–`max`, including `xhigh`); opus-4.6 / sonnet-4.6 accept `max` but reject
-  `xhigh`; sonnet-4.5 / haiku-4.5 take no effort field. On the Codex side the
-  gpt-5.x models top out at `xhigh`, except the **gpt-5.6** models
-  (`luna`/`sol`/`terra`), which are the first to also accept `max`. The bridge
-  strips (or clamps) an effort the target rejects instead of letting it fail.
+  `xhigh`; sonnet-4.5 / haiku-4.5 take no effort field. On the Codex side it's
+  also per-model: most gpt-5.x models accept up to `xhigh` and the **gpt-5.6**
+  models (`luna`/`sol`/`terra`) are the first to also accept `max`, while smaller
+  ones like `gpt-5-mini` top out at `high` (no `xhigh`). The bridge strips (or
+  clamps) an effort the target rejects instead of letting it fail.
 - **Resume drops the `[1m]` flag back to 200k.** Claude Code stores the 1M toggle
   in the model string (`opus[1m]`), which isn't persisted across `--resume`. The
   backend still serves the larger window, but Claude Code's own auto-compaction

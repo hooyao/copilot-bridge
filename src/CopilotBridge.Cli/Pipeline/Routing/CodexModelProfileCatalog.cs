@@ -114,9 +114,11 @@ internal sealed class CodexModelProfileCatalog
     private static IEnumerable<CodexModelProfile> BuildDefault()
     {
         // ── "large" effort profile: accept none/low/medium/high/xhigh, reject minimal ──
-        // DefaultEffort=xhigh: an unaccepted inbound effort (notably Anthropic's
-        // 'max', which Codex has no equivalent for) falls back to xhigh — the
-        // large profile's top accepted tier — with a WARNING in CoerceEffort.
+        // DefaultEffort=xhigh: an unaccepted inbound effort falls back to xhigh —
+        // the large profile's top accepted tier — with a WARNING in CoerceEffort.
+        // For THIS profile Anthropic's 'max' has no equivalent (large tops out at
+        // xhigh), so 'max' lands on the fallback; the "xlarge" profile below DOES
+        // accept 'max', so there it passes through instead.
         string[] large = ["none", "low", "medium", "high", "xhigh"];
         yield return new CodexModelProfile { CanonicalId = "gpt-5.3-codex", AcceptedEfforts = large, DefaultEffort = "xhigh" };
         yield return new CodexModelProfile { CanonicalId = "gpt-5.4",       AcceptedEfforts = large, DefaultEffort = "xhigh" };

@@ -574,7 +574,10 @@ internal static class ResponsesRequestBuilder
     ///   <item>null → null (no effort set; nothing to write).</item>
     ///   <item>accepted (case-insensitive) → returned as-is.</item>
     ///   <item>not accepted → the model's <see cref="CodexModelProfile.DefaultEffort"/>.
-    ///         Notably Anthropic's <c>max</c> (no Codex equivalent) lands here.</item>
+    ///         E.g. Anthropic's <c>max</c> lands here for the "large"/"small"
+    ///         profiles that don't accept it — but the "xlarge" profile (gpt-5.6)
+    ///         DOES accept <c>max</c>, so there it's returned as-is by the case
+    ///         above, not coerced.</item>
     /// </list>
     /// No nearest-neighbor guessing — the fallback is a deliberate per-model choice
     /// on the profile. This is the FACT layer; an operator can override per location
