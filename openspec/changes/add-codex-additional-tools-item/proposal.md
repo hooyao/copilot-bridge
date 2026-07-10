@@ -24,7 +24,9 @@ verbatim, re-emit byte-faithfully. Purely additive (gpt-5.5-era Codex never sent
   variant (`ResponsesAdditionalToolsItem`) with `role` (string) and `tools` (an
   opaque `JsonElement` — the bridge never reads a tool's internals, same rationale
   as the request-level `Tools` field being opaque). Register it on the polymorphic
-  union and in `JsonContext`.
+  union via `[JsonDerivedType]` — the source generator then discovers it from the
+  already-registered `ResponsesInputItem` base, so no new `JsonContext` entry is
+  needed (same as the four existing variants).
 - **T1 carriage**: `ResponsesToIrInboundAdapter` folds the `additional_tools`
   item into the request-level `ProviderExtensions["openai"]` bag verbatim — NOT
   into the messages array (it is not conversation content; it is a Codex harness
@@ -56,8 +58,7 @@ verbatim, re-emit byte-faithfully. Purely additive (gpt-5.5-era Codex never sent
 ## Impact
 
 - **Modified production code**:
-  - `Models/Responses/ResponsesInput.cs` — add the `additional_tools` derived type + discriminator.
-  - `Models/JsonContext.cs` — register the new DTO.
+  - `Models/Responses/ResponsesInput.cs` — add the `additional_tools` derived type + discriminator (auto-discovered by the source generator; no `JsonContext.cs` edit needed).
   - `Pipeline/Adapters/Codex/ResponsesToIrInboundAdapter.cs` — carry the item into the openai bag (T1).
   - `Pipeline/Strategies/Codex/ResponsesRequestBuilder.cs` — re-emit it into `input[]` (T2).
 - **Tests**: an IR round-trip invariant (T1→T2 preserves the `additional_tools`

@@ -21,17 +21,14 @@ internal sealed record CodexResult(int ExitCode, string Stdout, string Stderr, T
 internal static class CodexProcess
 {
     private const string CodexExeEnv = "CODEX_EXE";
-    // Codex updates itself into a versioned bin dir, so any hardcoded hash goes
-    // stale on the next Codex update. These are last-known-good fallbacks only —
-    // ResolveCodexExe prefers CODEX_EXE, then the newest codex.exe under the
-    // Codex bin root, before falling back to these.
-    private static readonly string[] DefaultCodexExes =
-    [
-        @"C:\Users\yahu2\AppData\Local\OpenAI\Codex\bin\ea1c60319a1dcb19\codex.exe",
-        @"C:\Users\yahu2\AppData\Local\OpenAI\Codex\bin\f1c7ee7a13db5fed\codex.exe",
-    ];
-    private static readonly string CodexBinRoot =
-        @"C:\Users\yahu2\AppData\Local\OpenAI\Codex\bin";
+    // Codex installs under %LOCALAPPDATA%\OpenAI\Codex\bin\<version-hash>\codex.exe
+    // and self-updates into a fresh hash dir, so the ONLY stable parts are the
+    // LocalApplicationData root and the "OpenAI\Codex\bin" suffix — never the user
+    // name or the hash. ResolveCodexExe prefers CODEX_EXE, then the newest
+    // codex.exe under this derived bin root.
+    private static readonly string CodexBinRoot = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "OpenAI", "Codex", "bin");
 
     public static async Task<CodexResult> RunAsync(CodexInvocation inv, CancellationToken ct = default)
     {
@@ -94,8 +91,7 @@ internal static class CodexProcess
         if (!string.IsNullOrEmpty(fromEnv) && File.Exists(fromEnv)) return fromEnv;
         // Prefer the NEWEST codex.exe under the versioned bin root — Codex
         // self-updates into a fresh hash dir, so "newest by write time" tracks the
-        // active install without a hardcoded hash going stale (the f1c7… default
-        // did exactly that).
+        // active install without a hardcoded hash (or user name) going stale.
         if (Directory.Exists(CodexBinRoot))
         {
             var newest = Directory.EnumerateFiles(CodexBinRoot, "codex.exe", SearchOption.AllDirectories)
@@ -104,8 +100,6 @@ internal static class CodexProcess
                 .FirstOrDefault();
             if (newest is not null) return newest.FullName;
         }
-        foreach (var candidate in DefaultCodexExes)
-            if (File.Exists(candidate)) return candidate;
         // Walk PATH.
         foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
         {
