@@ -27,16 +27,20 @@ verbatim, re-emit byte-faithfully. Purely additive (gpt-5.5-era Codex never sent
   union via `[JsonDerivedType]` — the source generator then discovers it from the
   already-registered `ResponsesInputItem` base, so no new `JsonContext` entry is
   needed (same as the four existing variants).
-- **T1 carriage**: `ResponsesToIrInboundAdapter` folds the `additional_tools`
-  item into the request-level `ProviderExtensions["openai"]` bag verbatim — NOT
-  into the messages array (it is not conversation content; it is a Codex harness
-  tool-registration preamble that Copilot re-ingests as-is). The item's original
-  `input[0]` position and full byte content are preserved in the bag.
+- **T1 carriage**: `ResponsesToIrInboundAdapter` stashes each `additional_tools`
+  item into the request-level `ProviderExtensions["openai"].additional_tools` bag
+  — NOT into the messages array (it is not conversation content; it is a Codex
+  harness tool-registration preamble that Copilot re-ingests as-is). Carried as
+  `{role, tools}`, with the `tools` value written raw (`WriteRawValue(GetRawText())`)
+  so its exact bytes survive; the item's outer-object formatting and any fields
+  beyond `role`/`tools` are not modeled (none observed), and its position is not
+  encoded (T2 re-emits it first — see below).
 - **T2 re-emit**: `ResponsesRequestBuilder` writes the carried `additional_tools`
-  item back into the outbound `input[]` at the position the bag records
-  (first, matching every observed capture), so the wire bytes Copilot receives
-  match what Codex sent. No coercion, no tool drops applied to it (it round-trips
-  200 as-is; the `image_generation`/`custom` drops that apply to the request-level
+  item(s) back into the outbound `input[]` **first** (ahead of the conversation
+  messages — matching every observed capture and the only order live-probed 200),
+  again with the `tools` value written raw so the reserved schemas reach Copilot
+  byte-identical. No coercion, no tool drops applied to it (it round-trips 200
+  as-is; the `image_generation`/`custom` drops that apply to the request-level
   `tools[]` are a separate, already-implemented path).
 - **Grounding artifacts**: the live probe file
   `tests/CopilotBridge.Playground/ResponsesProbe.AdditionalTools.cs` (isolates

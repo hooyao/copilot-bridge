@@ -21,9 +21,15 @@ public class CodexAdditionalToolsRoundTripTests
 
     private static string LoadBody()
     {
+        // Return the fixture's `body` as its ORIGINAL raw text (JsonDocument +
+        // GetRawText), NOT via JsonNode.ToJsonString() — the latter canonicalizes
+        // (strips the fixture's pretty-print whitespace and can normalize escaping/
+        // number spelling), which would pre-flatten both sides of the byte-fidelity
+        // assertion and let a WriteRawValue→WriteTo regression stay green. Keeping
+        // the raw lexical payload is what gives that test teeth.
         var path = Path.Combine(FixturesDir, "codex-additional-tools-req.json");
-        var env = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
-        return env["body"]!.ToJsonString();
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        return doc.RootElement.GetProperty("body").GetRawText();
     }
 
     // ── Contract 3: the new discriminator deserializes instead of throwing ──────
@@ -112,6 +118,17 @@ public class CodexAdditionalToolsRoundTripTests
         var count = emitted["input"]!.AsArray()
             .Count(n => n?["type"]?.GetValue<string>() == "additional_tools");
         Assert.Equal(1, count);
+
+        // Stronger: the distinctive token must not appear in ANY non-additional_tools
+        // input item either. Counting == 1 alone would still pass a mutation that
+        // BOTH carries the item AND appends its schema JSON to a message; scanning
+        // the other items' serialized text closes that hole.
+        foreach (var n in emitted["input"]!.AsArray())
+        {
+            if (n is JsonObject o && o["type"]?.GetValue<string>() == "additional_tools")
+                continue;
+            Assert.DoesNotContain("pragma_source", n!.ToJsonString());
+        }
     }
 
     // ── Negative / no-op case: a Codex request WITHOUT additional_tools ─────────

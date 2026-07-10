@@ -31,7 +31,12 @@
   bytes and emits the item before conversation messages
   (`AdditionalToolsItem_RoundTrips_ByteFaithful_AheadOfMessages` +
   `AdditionalToolsItem_NotFoldedIntoSystemOrMessages`, contract 1/1b).
-  Mutation-checked: disabling T2 re-emit → both red.
+  Mutation-checked: disabling T2 re-emit / dropping the derived type / dropping the
+  leak-skip each turn the right test red. Byte fidelity is TRUE lexical fidelity:
+  both hops use `WriteRawValue(GetRawText())` (not `WriteTo`, which would
+  reserialize/re-escape/renumber), and the test compares raw `GetRawText()` from
+  the original body bytes vs the emitted wire bytes — not canonicalized JsonNode
+  text (PR #38 review round 2).
 - [x] 4.2 `/cc` hot-path byte-equality: already fully guarded by the existing
   `HotPathByteEqualityTests` (H1a/H1b/H1c). This change touches only the Codex
   T1/T2 (Responses adapters), never the `/cc` Anthropic path or `MessagesRequest`
@@ -42,13 +47,23 @@
 - [x] 5.1 `ResponsesProbe.AdditionalTools*` probes + committed
   `Fixtures/codex-additional-tools-verbatim.json`; verbatim capture → 200 OK
   (cache_write 4116 tokens).
-- [x] 5.2 End-to-end: real `codex.exe` (gpt-5.6-sol) drove a multi-step tool task
-  through the bridge and completed clean — 4× `/codex/responses` all `200`
-  (the `additional_tools` preamble no longer 400s), tool round-trips succeeded,
-  `exit=0`, canary in stdout. Also proven at the HTTP edge by
-  `CodexAdditionalToolsHeadlessTests` (verbatim capture → 200 + `response.completed`).
-  Reusable harness added: `CodexLoadTaskSmokeTests` (model via `CODEX_SMOKE_MODEL`),
-  and the copilot-model-sync skill now mandates this load-task smoke per Codex id.
+- [x] 5.2 End-to-end, TWO independent proofs (kept separate on purpose):
+  - **`additional_tools` shape** — proven at the HTTP edge by
+    `CodexAdditionalToolsHeadlessTests`: the verbatim desktop capture (with the
+    `additional_tools` preamble) replayed through the bridge's `/codex/responses`
+    → 200 + `response.completed`. THIS is the regression check for the fixed shape.
+  - **Real client tool loop** — `CodexLoadTaskSmokeTests` drove real `codex.exe`
+    (gpt-5.6-sol) on a multi-step tool task: `exit=0`, 4× `/codex/responses` all
+    `200`, real `function_call`/`function_call_output` round-trips, canary in
+    stdout. It asserts the bridge AUDIT (model on the wire, ≥2 successful rounds,
+    `function_call` + `function_call_output`), not just stdout, so a prompt-echo
+    can't pass (PR #38 review rounds 2–3). It does NOT prove `additional_tools`:
+    the installed `codex exec` CLI does not emit that preamble (only the desktop
+    app does), so the smoke observes+logs it rather than requiring it — the
+    HTTP-edge test above is the authority for that shape.
+  The copilot-model-sync skill mandates the load-task smoke per Codex id (for the
+  tool-loop/routing coverage), directing `additional_tools` verification to the
+  HTTP-edge test.
 
 ## 6. Docs
 - [x] 6.1 Folded into `docs/ir-definition-design.md` §3: the openai bag now carries

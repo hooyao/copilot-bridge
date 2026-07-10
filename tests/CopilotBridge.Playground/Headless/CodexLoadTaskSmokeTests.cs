@@ -8,27 +8,31 @@ namespace CopilotBridge.Playground.Headless;
 /// <summary>
 /// Codex <b>load-task</b> smoke for the copilot-model-sync skill: drives the real
 /// <c>codex.exe</c> through the bridge on a genuinely multi-step tool task (not a
-/// plain one-word turn) so the FULL Codex client wire shape — including the
-/// harness tool-registration preamble (<c>input[0]</c> <c>additional_tools</c>),
-/// multi-call <c>function_call</c>/<c>function_call_output</c> round-trips, and
-/// reasoning echoes — actually crosses the bridge for the model under test, and
-/// asserts that from the bridge's own audit (not just stdout).
+/// plain one-word turn) so a real Codex client tool loop —
+/// <c>function_call</c>/<c>function_call_output</c> round-trips (and reasoning
+/// echoes) — actually crosses the bridge for the model under test, asserted from
+/// the bridge's own audit (not just stdout).
 /// </summary>
 /// <remarks>
 /// <para><b>Why this exists.</b> A plain "reply pong" turn (see
 /// <see cref="CodexE2EHeadlessTests.Codex_PlainTurn_CompletesThroughBridge"/>) does
-/// NOT make Codex emit its full tool suite, so it cannot catch a new inbound wire
-/// shape. That is exactly how the gpt-5.6 <c>additional_tools</c> item shipped a
-/// 400: the model was added to the catalog and the plain/tool turns passed, but no
-/// load task ever exercised the harness preamble the newer client sends. This
-/// smoke closes that gap — the skill requires it for every added/reconciled Codex
-/// model.</para>
-/// <para>The assertions read the bridge's four-file IO audit via
-/// <see cref="BridgeLogReader"/> and require the model under test, the
-/// <c>additional_tools</c> preamble, ≥2 successful upstream rounds, and a real
+/// NOT make Codex emit tool items, so it cannot catch a wire-shape regression in
+/// the tool loop or model routing. This load task does — the skill requires it for
+/// every added/reconciled Codex model as the check that a real multi-call client
+/// loop survives end-to-end on that id.</para>
+/// <para><b>Scope — what this does and does NOT cover.</b> The assertions read the
+/// bridge's four-file IO audit via <see cref="BridgeLogReader"/> and REQUIRE the
+/// model under test on the wire, ≥2 successful upstream rounds, and a real
 /// <c>function_call</c>/<c>function_call_output</c> pair on the <c>/responses</c>
 /// wire — NOT merely the canary in stdout (a model could echo a prompt-embedded
-/// canary without ever calling a tool).</para>
+/// canary without ever calling a tool). The gpt-5.6 <c>additional_tools</c> harness
+/// preamble is <b>observed-and-logged, NOT required</b>: the <c>codex exec</c> CLI
+/// invoked here does not emit it (only the desktop Codex app does — verified against
+/// live traces), so requiring it would false-fail the real client. That specific
+/// input-item shape has dedicated coverage in
+/// <see cref="CodexAdditionalToolsHeadlessTests"/> (which replays the exact desktop
+/// capture through <c>/codex/responses</c>). Rely on THAT test — not this smoke —
+/// for the <c>additional_tools</c> regression.</para>
 /// <para>The model is taken from <c>CODEX_SMOKE_MODEL</c> (default
 /// <c>gpt-5.3-codex</c>) so a model-sync run can target the id it just added.
 /// Integration-tagged: needs live Copilot + <c>codex.exe</c>; skipped in CI. Uses
