@@ -123,7 +123,7 @@ internal sealed class CodexModelProfileCatalog
         yield return new CodexModelProfile { CanonicalId = "gpt-5.4-mini",  AcceptedEfforts = large, DefaultEffort = "xhigh" };
         yield return new CodexModelProfile { CanonicalId = "gpt-5.5",       AcceptedEfforts = large, DefaultEffort = "xhigh" };
 
-        // ── "xlarge" effort profile: accept none/low/medium/high/xhigh/MAX, reject minimal ──
+        // ── "xlarge" effort profile: accept none/low/medium/high/xhigh/max, reject minimal ──
         // The gpt-5.6 codename slots (luna/sol/terra) are the first Codex models to
         // accept 'max' — every effort axis RE-PROBED directly 2026-07
         // (ResponsesProbe.Gpt56_Effort_ReProbe): null/none/low/medium/high/xhigh/max

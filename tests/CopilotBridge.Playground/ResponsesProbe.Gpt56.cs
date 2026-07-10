@@ -13,7 +13,7 @@ namespace CopilotBridge.Playground;
 /// </summary>
 /// <remarks>
 /// <para>The load-bearing question these answer: <c>/models</c> advertises
-/// <c>effort=[none,low,medium,high,xhigh,MAX]</c> for all three — a <c>max</c>
+/// <c>effort=[none,low,medium,high,xhigh,max]</c> for all three — a <c>max</c>
 /// tier NO existing Codex profile accepts (the "large" set tops out at
 /// <c>xhigh</c>). Per the sync skill's one rule, <c>/models</c> lies in both
 /// directions, so whether <c>max</c> is really accepted decides whether these get
