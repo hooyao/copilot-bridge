@@ -79,7 +79,7 @@ public class CodexRequestBuildTests
     [InlineData("gpt-5.3-codex", "xhigh", "xhigh")]   // accepted by large → kept
     // gpt-5.5 specifically — the model from the runaway incident. max → xhigh, never medium.
     [InlineData("gpt-5.5", "max", "xhigh")]
-    // xlarge profile (gpt-5.6 codenames): accept none/low/medium/high/xhigh/MAX,
+    // xlarge profile (gpt-5.6 codenames): accept none/low/medium/high/xhigh/max,
     // reject minimal; DefaultEffort=xhigh. The distinguishing contract vs large:
     // 'max' is ACCEPTED, so Anthropic's top tier passes through VERBATIM instead of
     // being clamped to xhigh (Gpt56_Effort_ReProbe: max → 200). Only 'minimal' —
