@@ -41,6 +41,11 @@ jobs:
       - name: Install Copilot CLI
         run: npm install --global @github/copilot@1.0.69
 
+      - name: Verify bridge credential
+        env:
+          COPILOT_BRIDGE_GITHUB_TOKEN: ${{ github.token }}
+        run: dotnet run --project src/CopilotBridge.Cli -- debug list-models --all
+
       - name: Create working branch
         id: branch
         shell: bash
