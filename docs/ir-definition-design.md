@@ -71,7 +71,7 @@ internal sealed record ProviderExtensions
 
 | Level | Carries | Example |
 | --- | --- | --- |
-| **Request** (`MessagesRequest`) | request-wide provider knobs | `openai`: `{store, service_tier, include, prompt_cache_key, text.verbosity, reasoning.summary}` |
+| **Request** (`MessagesRequest`) | request-wide provider knobs | `openai`: `{store, service_tier, include, prompt_cache_key, text.verbosity, reasoning.summary, additional_tools}` |
 | **Message** (`MessageParam`) | per-message provider data | rarely needed; reserved |
 | **Content part** (`ContentBlockParam`) | per-part provider data | `openai`: a Responses item's `id`/`encrypted_content` when not expressible as a thinking block |
 | **Tool def** (`Tool`) | per-tool provider extras | future |
@@ -108,6 +108,7 @@ The four translators from `docs/codex-implementation-design.md` (T1 inbound, T2/
 | `reasoning.effort` | `OutputConfig.Effort` (existing) |
 | `reasoning` item + `encrypted_content` | `ThinkingBlockParam`/`RedactedThinkingBlockParam` where it maps; else part-level bag |
 | `tools[]` (function/custom/web_search/…) | `Tools[]`; un-Anthropic tool shapes → preserved in bag |
+| `input[]` `additional_tools` item (gpt-5.6 harness preamble) | **`ProviderExtensions["openai"].additional_tools`** (verbatim; T2 re-emits it into `input[]`, ahead of messages) |
 | **`store`, `service_tier`, `include`, `prompt_cache_key`, `text.verbosity`, `parallel_tool_calls`** | **`ProviderExtensions["openai"]`** (verbatim) |
 
 **T2 — IR → Responses wire (inside the strategy):** rebuild a `ResponsesRequest` from the IR, then **re-apply `ProviderExtensions["openai"]`** verbatim, then apply the probe-derived coercions (per-model effort clamp, strip `service_tier`, drop `image_generation` — `docs/codex-protocol-research.md` §4). The bag is what makes `store=false`/`include`/`prompt_cache_key` survive the Anthropic round-trip.

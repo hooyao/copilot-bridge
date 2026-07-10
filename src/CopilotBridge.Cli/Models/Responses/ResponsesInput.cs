@@ -16,6 +16,7 @@ namespace CopilotBridge.Cli.Models.Responses;
 [JsonDerivedType(typeof(ResponsesFunctionCallItem), "function_call")]
 [JsonDerivedType(typeof(ResponsesFunctionCallOutputItem), "function_call_output")]
 [JsonDerivedType(typeof(ResponsesReasoningItem), "reasoning")]
+[JsonDerivedType(typeof(ResponsesAdditionalToolsItem), "additional_tools")]
 internal abstract record ResponsesInputItem;
 
 /// <summary>
@@ -72,6 +73,34 @@ internal sealed record ResponsesReasoningItem : ResponsesInputItem
     /// <summary>Summary parts, if present — held opaque.</summary>
     public JsonElement? Summary { get; init; }
     public JsonElement? Content { get; init; }
+}
+
+/// <summary>
+/// A Codex harness <b>tool-registration preamble</b> — first observed from the
+/// gpt-5.6 family (2026-07 captures, always <c>input[0]</c> with
+/// <c>role:"developer"</c>). It registers "additional" tools the harness makes
+/// available for the turn (an <c>exec</c> JS sandbox with a Lark grammar, <c>wait</c>,
+/// <c>request_user_input</c>, and a <c>collaboration</c> sub-agent namespace)
+/// SEPARATELY from the request-level <c>tools[]</c>. Copilot's native
+/// <c>/responses</c> accepts it as an <c>input[]</c> element verbatim (live-probed
+/// 200 — <c>ResponsesProbe.AdditionalToolsVerbatim</c>).
+/// </summary>
+/// <remarks>
+/// The bridge does NOT interpret this item: it is carried through the IR verbatim
+/// (T1 → <c>ProviderExtensions["openai"]</c> bag, T2 → re-emitted into
+/// <c>input[]</c>). <c>Tools</c> is therefore an opaque <see cref="JsonElement"/>,
+/// not a typed union — and it MUST stay byte-faithful because the nested
+/// <c>collaboration.*</c> tools carry Copilot's reserved built-in schemas, which
+/// Copilot validates and 400s on if altered. Modeling this variant is what stops
+/// the inbound deserializer from throwing
+/// <c>Polymorphism_UnrecognizedTypeDiscriminator</c> on a shape Copilot accepts.
+/// </remarks>
+internal sealed record ResponsesAdditionalToolsItem : ResponsesInputItem
+{
+    /// <summary>Codex sends <c>"developer"</c> (the harness preamble role).</summary>
+    public string? Role { get; init; }
+    /// <summary>The registered tools array — opaque, carried and re-emitted verbatim.</summary>
+    public required JsonElement Tools { get; init; }
 }
 
 /// <summary>

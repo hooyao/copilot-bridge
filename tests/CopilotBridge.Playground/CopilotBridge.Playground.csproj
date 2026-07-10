@@ -29,6 +29,12 @@
     <None Update="Headless\mcp-echo-server.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <!-- Verbatim gpt-5.6 additional_tools capture (real reserved schemas intact),
+         replayed by ResponsesProbe.AdditionalToolsVerbatim to prove faithful
+         passthrough 200s. Grounding for the add-codex-additional-tools-item change. -->
+    <None Update="Fixtures\codex-additional-tools-verbatim.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>
