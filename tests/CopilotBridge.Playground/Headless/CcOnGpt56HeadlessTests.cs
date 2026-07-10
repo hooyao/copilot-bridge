@@ -178,15 +178,20 @@ public class CcOnGpt56HeadlessTests : IClassFixture<BridgeFixture>
             var (types, target, model) = InspectUpstream(e.UpstreamBody);
             var inboundTools = CountInboundTools(e.InboundBody);
             var upstreamTools = CountTools(e.UpstreamBody);
+            // Is this a request that actually went to gpt-5.6-sol on the /responses
+            // wire? All the sol-specific evidence below is gated on this so a tool
+            // round-trip on some OTHER Responses model in the same run can't satisfy
+            // the "tools reached gpt-5.6-sol" claim.
+            var isSol = target && model == Model;
             _output.WriteLine(
                 $"  [{i}] upstreamStatus={e.UpstreamStatus} model={model} inboundTools={inboundTools} "
                 + $"upstreamTools={upstreamTools} inputItemTypes={string.Join(",", types)}");
-            if (types.Contains("function_call")) sawFunctionCall = true;
-            if (types.Contains("function_call_output")) sawFunctionCallOutput = true;
+            if (isSol && types.Contains("function_call")) sawFunctionCall = true;
+            if (isSol && types.Contains("function_call_output")) sawFunctionCallOutput = true;
             // The request must actually have gone to gpt-5.6-sol on the /responses
             // wire — proves the new id routed to the Responses backend, not that a
             // fallback model silently served the task.
-            if (target && model == Model) sawSolUpstream = true;
+            if (isSol) sawSolUpstream = true;
             // Any non-2xx upstream on this path is the failure we're hunting.
             if (e.UpstreamStatus is not (>= 200 and < 300) && e.UpstreamStatus != 0)
                 badUpstream.Add($"[{i}] status={e.UpstreamStatus} body={Trunc(e.InboundResponseBody?.ToJsonString() ?? "", 300)}");
@@ -195,7 +200,8 @@ public class CcOnGpt56HeadlessTests : IClassFixture<BridgeFixture>
             // the /responses wire. A request that sent no tools (Claude Code's
             // title/quota preflight) legitimately has none upstream — do NOT
             // require tools on every request, only that they're never DROPPED.
-            if (target && inboundTools > 0)
+            // Gated on isSol so this proves tools reached gpt-5.6-sol specifically.
+            if (isSol && inboundTools > 0)
             {
                 if (upstreamTools > 0) sawToolsReachWire = true;
                 else droppedTools.Add($"[{i}] inbound had {inboundTools} tools but /responses body had 0");
