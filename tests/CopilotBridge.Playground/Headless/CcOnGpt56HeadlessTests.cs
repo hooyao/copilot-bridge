@@ -201,16 +201,20 @@ public class CcOnGpt56HeadlessTests : IClassFixture<BridgeFixture>
                 else droppedTools.Add($"[{i}] inbound had {inboundTools} tools but /responses body had 0");
             }
 
-            // Stream integrity: the client-facing (T3-translated) SSE for each
-            // streamed response must carry EXACTLY ONE message_start. A second,
-            // dangling message_start (the FlushTerminal double-terminal bug)
-            // corrupts Claude Code's parse — the "replies look weird" symptom.
+            // Stream integrity: a client-facing (T3-translated) SSE response must
+            // carry EXACTLY ONE message_start and EXACTLY ONE message_stop. A
+            // second dangling message_start (the FlushTerminal double-terminal bug)
+            // corrupts Claude Code's parse ("replies look weird"); a MISSING
+            // terminal (zero) is just as malformed. We only assert this on a
+            // response that actually streamed events (starts >= 1 identifies a
+            // T3 SSE response — a non-streaming preflight has no captured events
+            // and is legitimately skipped, not forced to have a terminal pair).
             if (e.InboundStatus is >= 200 and < 300)
             {
                 var starts = CountClientEvents(e.Events, "message_start");
                 var stops = CountClientEvents(e.Events, "message_stop");
-                if (starts > 1 || stops > 1)
-                    badStream.Add($"[{i}] client SSE had message_start={starts} message_stop={stops} (expected 1/1)");
+                if (starts >= 1 && (starts != 1 || stops != 1))
+                    badStream.Add($"[{i}] client SSE had message_start={starts} message_stop={stops} (expected exactly 1/1)");
             }
         }
 
