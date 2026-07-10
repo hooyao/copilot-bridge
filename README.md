@@ -41,10 +41,11 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 - **Every model's real limits are respected.** Which reasoning-effort levels,
   thinking shapes, and context windows each Copilot model actually accepts differs
   from what its docs claim. The bridge reshapes each request to what the target
-  model accepts. A model newer than the bridge's built-in catalog is still
-  forwarded — under the closest known model's wire contract, with the real id on
-  the wire — so a fresh Copilot model works before the bridge is updated; only an
-  id it can't relate to any known model is rejected with a clear error.
+  model accepts. A newer *Claude* model with no exact profile yet is still
+  forwarded under the closest known one (real id on the wire), so it works before
+  the bridge is updated; an id it can't relate to any known model gets a clear
+  error. (A brand-new *Codex/GPT* model is the one case that needs a one-line
+  allowlist update first — until then it isn't routed to Copilot's Responses API.)
 - **Auto-repairs tool-call and control-envelope leaks.** Copilot-served models
   occasionally emit a tool call — or one of Claude Code's internal control markers
   — as literal text instead of a real structured block. The bridge detects this
