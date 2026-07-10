@@ -54,13 +54,18 @@ public class CodexAdditionalToolsHeadlessTests : IClassFixture<BridgeFixture>
         Assert.Contains("\"stream\": true", payload.Replace("\"stream\":true", "\"stream\": true"),
             StringComparison.Ordinal);
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        // Explicit deadline for BOTH the send AND the body read: with
+        // ResponseHeadersRead, HttpClient.Timeout stops applying once the SSE
+        // headers arrive, so a stalled stream would make ReadAsStringAsync() hang
+        // forever. A linked CTS bounds the whole exchange at 2 minutes.
+        using var http = new HttpClient();
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/codex/responses");
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
 
-        using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
-        var body = await resp.Content.ReadAsStringAsync();
+        using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+        var body = await resp.Content.ReadAsStringAsync(cts.Token);
 
         _output.WriteLine($"/codex/responses → {(int)resp.StatusCode} {resp.StatusCode}");
         _output.WriteLine($"  first 400 chars: {(body.Length <= 400 ? body : body[..400])}");

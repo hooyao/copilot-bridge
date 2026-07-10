@@ -82,9 +82,14 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
             Model: model,
             Timeout: TimeSpan.FromMinutes(6)));
 
-        var entries = reader.ReadNew()
-            .Where(e => e.InboundPath.EndsWith("/responses", StringComparison.Ordinal))
-            .ToList();
+        // BridgeIoSink.Emit enqueues audit files to an async worker, and
+        // BridgeLogReader.ReadNew returns only what has been flushed — so a single
+        // read right after codex.exe exits can race the sink and observe partial
+        // bodies on a slow filesystem. Poll (bounded) until the /responses entries
+        // settle: stop once the tool-loop signal we assert on (function_call +
+        // function_call_output) is present, or the deadline passes. The reader is
+        // constructed BEFORE the run so it only reports this test's requests.
+        var entries = await PollUntilSettledAsync(reader, TimeSpan.FromSeconds(15));
 
         _output.WriteLine($"[{model}] codex.exe exit={result.ExitCode} duration={result.Duration}");
         _output.WriteLine($"bridge /responses entries: {entries.Count}");
@@ -142,6 +147,41 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
         // tools reaches its output.
         Assert.Contains(canary, result.Stdout, StringComparison.OrdinalIgnoreCase);
         _output.WriteLine($"[audit] four-file IO traces under {_bridge.LogDirectory}");
+    }
+
+    /// <summary>
+    /// Poll the bridge audit until the <c>/responses</c> entries settle, tolerating
+    /// the async <see cref="BridgeIoSink"/> flush. Returns as soon as the tool-loop
+    /// signal the test asserts on (a <c>function_call</c> AND a
+    /// <c>function_call_output</c> on some upstream body) is present, or when the
+    /// deadline passes — then the assertions run against a stable snapshot instead
+    /// of racing a half-written audit. Bounded so a genuinely tool-less run still
+    /// terminates (and fails loudly on the missing signal) rather than hanging.
+    /// </summary>
+    private static async Task<List<BridgeLogEntry>> PollUntilSettledAsync(
+        BridgeLogReader reader, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        List<BridgeLogEntry> entries;
+        while (true)
+        {
+            entries = reader.ReadNew()
+                .Where(e => e.InboundPath.EndsWith("/responses", StringComparison.Ordinal))
+                .ToList();
+
+            var haveCall = false;
+            var haveOutput = false;
+            foreach (var e in entries)
+            {
+                var types = ExtractInputItemTypes(e.UpstreamBody);
+                if (types.Contains("function_call")) haveCall = true;
+                if (types.Contains("function_call_output")) haveOutput = true;
+            }
+            if ((haveCall && haveOutput) || DateTime.UtcNow >= deadline)
+                return entries;
+
+            await Task.Delay(250);
+        }
     }
 
     /// <summary>
