@@ -300,14 +300,30 @@ internal sealed class ResponsesToAnthropicStream
             // must NOT try to JSON-parse it — otherwise every valid exec call trips
             // "malformed JSON" (and an Abort-configured deployment would kill it).
             // Mark the block so that detector skips JSON validation. This is a
-            // bridge-internal IR marker: it never reaches a Codex client (T4 rebuilds
-            // the Responses output item and ignores unknown content_block fields) and
-            // never appears on the /cc path (only T3 emits it, for Codex custom tools).
+            // bridge-internal IR marker that must never reach a client. It is removed
+            // at BOTH client edges: on the Codex route T4 (AnthropicToResponsesStream)
+            // rebuilds the output item from typed fields and never copies the marker;
+            // on the CC→gpt route (no T4) ClaudeCodeOutboundAdapter scrubs it from the
+            // content_block before the event reaches claude.exe.
             var customMarker = itemType == "custom_tool_call"
                 ? ",\"bridge_input_is_grammar_text\":true"
                 : "";
+            // A NON-default `namespace` (gpt-5.6 collaboration/MCP tool — Copilot puts
+            // it on the function_call/custom_tool_call output item, e.g.
+            // "namespace":"collaboration" for list_agents) MUST reach T4 so Codex
+            // learns it and echoes it back next turn; dropping it 400s the follow-up
+            // ("Missing namespace for function_call", live-replayed). Carry it on the
+            // tool_use content_block as a bridge-internal marker. Like the grammar
+            // marker it is removed at both client edges (T4 lifts it back onto the
+            // Codex-facing function_call item; ClaudeCodeOutboundAdapter scrubs it on
+            // the CC→gpt route) so it never reaches a client.
+            var nsMarker = item.TryGetProperty("namespace", out var nsEl)
+                && nsEl.ValueKind == JsonValueKind.String
+                && nsEl.GetString() is { Length: > 0 } ns
+                ? $",\"bridge_tool_namespace\":{JsonEncode(ns)}"
+                : "";
             yield return Sse("content_block_start",
-                $"{{\"type\":\"content_block_start\",\"index\":{_blockIndex},\"content_block\":{{\"type\":\"tool_use\",\"id\":{JsonEncode(callId)},\"name\":{JsonEncode(name)},\"input\":{{}}{customMarker}}}}}");
+                $"{{\"type\":\"content_block_start\",\"index\":{_blockIndex},\"content_block\":{{\"type\":\"tool_use\",\"id\":{JsonEncode(callId)},\"name\":{JsonEncode(name)},\"input\":{{}}{customMarker}{nsMarker}}}}}");
         }
         else
         {

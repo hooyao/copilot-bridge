@@ -69,6 +69,13 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
         // verbatim in the openai bag (T2 re-emits them into input[]); never
         // folded into messages/system. ──
         var additionalTools = new List<ResponsesAdditionalToolsItem>();
+        // ── passthrough items: agent_message (gpt-5.6 inter-agent messages) and any
+        // UNKNOWN input[] type the bridge doesn't model. The bridge does not interpret
+        // these — it forwards them VERBATIM. They must keep their ORDER relative to the
+        // conversation messages (an agent_message's NEW_TASK/FINAL_ANSWER sits at a
+        // specific point in the flow), so each records the count of IR messages emitted
+        // BEFORE it (afterMessageIndex); T2 re-inserts it at that position. ──
+        var passthroughItems = new List<(int AfterMessageIndex, JsonElement Raw)>();
         foreach (var item in clientBody.Input)
         {
             switch (item)
@@ -101,6 +108,9 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                     // wrapped as a JSON string element + a block marker so T2 re-emits
                     // it as the raw `arguments` string (Copilot accepts a function_call
                     // with raw-text arguments — live-probed 200, CustomToolEchoProbe).
+                    // A NON-default `namespace` (gpt-5.6 collaboration/MCP tool) rides
+                    // the same part bag so T2 re-emits it on echo — dropping it 400s
+                    // the next turn (live-replayed, NamespaceRealReplayProbe).
                     var (fcInput, fcGrammarText) = ParseArgumentsToElement(fc.Arguments);
                     messages.Add(new MessageParam
                     {
@@ -110,7 +120,7 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                             Id = fc.CallId,
                             Name = fc.Name,
                             Input = fcInput,
-                            ProviderExtensions = fcGrammarText ? BuildGrammarArgsPartBag() : null,
+                            ProviderExtensions = BuildFunctionCallPartBag(fcGrammarText, fc.Namespace),
                         }],
                     });
                     break;
@@ -156,6 +166,16 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                     // content, and Copilot re-ingests it as an input[] item as-is).
                     additionalTools.Add(addTools);
                     break;
+
+                case ResponsesUnknownItem unknown:
+                    // An input[] type the bridge doesn't model — a gpt-5.6 inter-agent
+                    // `agent_message`, or a future feature (tool_search_call, compaction,
+                    // …). Forward it VERBATIM, in order — never reject it, never lose a
+                    // field (the whole item rides as unknown.Raw, encrypted_content and
+                    // all). This is the universal escape hatch that ends the per-type
+                    // whack-a-mole.
+                    passthroughItems.Add((messages.Count, unknown.Raw));
+                    break;
             }
         }
 
@@ -165,7 +185,7 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
             : null;
 
         // ── un-modeled knobs → ProviderExtensions["openai"] verbatim ──
-        var bag = BuildOpenAiBag(clientBody, additionalTools);
+        var bag = BuildOpenAiBag(clientBody, additionalTools, passthroughItems);
 
         var ir = new MessagesRequest
         {
@@ -295,18 +315,34 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
     }
 
     /// <summary>
-    /// Part-level <c>openai</c> bag marking a tool_use block whose <c>input</c> is
-    /// grammar text (raw, non-JSON) — so T2 re-emits <c>arguments</c> as the raw
-    /// string, not a JSON-serialized string. Same AOT-clean writer style as the
-    /// reasoning-id bag; null everywhere else so H1 stays byte-identical.
+    /// Part-level <c>openai</c> bag for a tool_use block echoed from a Codex
+    /// <c>function_call</c>, carrying the two markers T2 needs to re-emit it faithfully:
+    /// <list type="bullet">
+    ///   <item><c>grammar_text_arguments:true</c> when the block's <c>input</c> is
+    ///   grammar text (raw, non-JSON) — so T2 writes <c>arguments</c> as the raw string,
+    ///   not a JSON-serialized string (Codex's <c>exec</c>).</item>
+    ///   <item><c>namespace:"&lt;ns&gt;"</c> when the tool belongs to a NON-default
+    ///   namespace (gpt-5.6 collaboration/MCP) — so T2 re-emits <c>"namespace"</c> on the
+    ///   echoed function_call, without which the next turn 400s
+    ///   (<c>Missing namespace for function_call</c>).</item>
+    /// </list>
+    /// Returns <c>null</c> when NEITHER applies (every plain Claude Code / default-namespace
+    /// JSON function tool) so the block's bag stays null and H1 remains byte-identical.
+    /// Same AOT-clean <see cref="Utf8JsonWriter"/> style as the reasoning-id bag.
     /// </summary>
-    private static ProviderExtensions BuildGrammarArgsPartBag()
+    private static ProviderExtensions? BuildFunctionCallPartBag(bool grammarText, string? ns)
     {
+        var hasNamespace = !string.IsNullOrEmpty(ns);
+        if (!grammarText && !hasNamespace) return null;
+
         using var buffer = new MemoryStream();
         using (var w = new Utf8JsonWriter(buffer))
         {
             w.WriteStartObject();
-            w.WriteBoolean("grammar_text_arguments", true);
+            if (grammarText)
+                w.WriteBoolean("grammar_text_arguments", true);
+            if (hasNamespace)
+                w.WriteString("namespace", ns);
             w.WriteEndObject();
         }
         using var doc = JsonDocument.Parse(buffer.ToArray());
@@ -325,7 +361,8 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
     /// </summary>
     private static ProviderExtensions? BuildOpenAiBag(
         ResponsesRequest req,
-        IReadOnlyList<ResponsesAdditionalToolsItem> additionalTools)
+        IReadOnlyList<ResponsesAdditionalToolsItem> additionalTools,
+        IReadOnlyList<(int AfterMessageIndex, JsonElement Raw)> passthroughItems)
     {
         var hasAny =
             req.Tools is not null
@@ -338,7 +375,8 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
             || req.Text is not null
             || req.Reasoning?.Summary is { Length: > 0 }
             || req.ClientMetadata is not null
-            || additionalTools.Count > 0;
+            || additionalTools.Count > 0
+            || passthroughItems.Count > 0;
         if (!hasAny) return null;
 
         using var buffer = new MemoryStream();
@@ -401,6 +439,26 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                         w.WriteString("role", role);
                     w.WritePropertyName("tools");
                     w.WriteRawValue(at.Tools.GetRawText());
+                    w.WriteEndObject();
+                }
+                w.WriteEndArray();
+            }
+            // passthrough_items → an ORDERED array of {after, raw}: each is an
+            // agent_message (gpt-5.6 inter-agent) or an UNKNOWN input[] item the bridge
+            // doesn't model, carried VERBATIM (raw bytes via WriteRawValue, so an
+            // encrypted_content blob is byte-faithful). `after` is the count of IR
+            // messages that preceded it, so T2 re-inserts it at the right point in the
+            // conversation flow. This + the unknown-item converter is the universal
+            // escape hatch that ends the per-type 400 whack-a-mole.
+            if (passthroughItems.Count > 0)
+            {
+                w.WriteStartArray("passthrough_items");
+                foreach (var (after, raw) in passthroughItems)
+                {
+                    w.WriteStartObject();
+                    w.WriteNumber("after", after);
+                    w.WritePropertyName("raw");
+                    w.WriteRawValue(raw.GetRawText());
                     w.WriteEndObject();
                 }
                 w.WriteEndArray();
