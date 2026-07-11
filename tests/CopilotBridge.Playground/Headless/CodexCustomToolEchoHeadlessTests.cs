@@ -76,15 +76,30 @@ public class CodexCustomToolEchoHeadlessTests : IClassFixture<BridgeFixture>
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
         Assert.Contains("response.completed", body, StringComparison.Ordinal);
 
-        // The audit must show the raw-JS arguments reached Copilot verbatim (not "{}"
-        // and not a double-encoded string). Read the upstream /responses body.
+        // The audit must show the raw-JS arguments reached Copilot VERBATIM (not "{}",
+        // not truncated, not double-encoded). Select the echoed function_call by its
+        // call_id and compare its arguments string EXACTLY to execJs.
         var entry = reader.ReadNew()
             .FirstOrDefault(e => e.InboundPath.EndsWith("/responses", StringComparison.Ordinal));
         Assert.NotNull(entry);
-        var upstream = entry!.UpstreamBody?.ToJsonString() ?? "";
-        // The distinctive exec token must be present as the function_call arguments.
-        Assert.Contains("tools.shell_command", upstream, StringComparison.Ordinal);
-        _output.WriteLine("[audit] upstream carried the raw exec arguments verbatim.");
+
+        var input = (entry!.UpstreamBody as System.Text.Json.Nodes.JsonObject)?["input"]
+            as System.Text.Json.Nodes.JsonArray;
+        Assert.NotNull(input);
+        System.Text.Json.Nodes.JsonObject? echoed = null;
+        foreach (var n in input!)
+        {
+            if (n is System.Text.Json.Nodes.JsonObject o
+                && o["type"]?.GetValue<string>() == "function_call"
+                && o["call_id"]?.GetValue<string>() == "call_echo_1")
+            {
+                echoed = o;
+                break;
+            }
+        }
+        Assert.NotNull(echoed);
+        Assert.Equal(execJs, echoed!["arguments"]!.GetValue<string>());
+        _output.WriteLine("[audit] upstream function_call arguments == execJs (verbatim).");
     }
 
     private static string Json(string s) => System.Text.Json.JsonSerializer.Serialize(s);

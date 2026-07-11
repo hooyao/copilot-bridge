@@ -51,9 +51,16 @@ round-trips it fine (live-probed 200 for all echo shapes, `CustomToolEchoProbe`)
   unchanged; empty→`{}`), the `A9`/`A9b` contract update, `CustomToolEchoProbe`
   (live: all echo shapes 200), and `CodexCustomToolEchoHeadlessTests` (the exact
   failing wire shape through the real bridge → 200 + verbatim args). All
-  mutation-checked. **Real-wire verified**: the actual captured 400-ing request
-  (256-char raw-JS exec call) replayed through the fixed bridge → 200 +
-  `response.completed`; real `codex.exe` multi-turn task → 4 rounds, all 200.
+  mutation-checked.
+- **Real-wire verification (what WAS run):** the actual captured 400-ing request
+  (256-char raw-JS exec call `call_upVNOaJ5MGfhtORZu44MMRef`) replayed through the
+  fixed bridge → HTTP 200 + `response.completed`, 0 malformed signatures; real
+  `codex.exe` multi-turn task → 4 rounds, all 200. **Still UNVERIFIED (needs the
+  user):** a live DESKTOP-Codex `exec` second-turn session — the `codex exec` CLI
+  does not emit the custom grammar tool (only the desktop app does), so the only
+  headless proof of the exact custom-tool path is the captured-bytes replay above,
+  not a live desktop loop. Per the new directive, this fix is verified against the
+  exact failing bytes but NOT against a live desktop custom-`exec` turn.
 - **Docs**: `CLAUDE.md`/`AGENTS.md` gain a mandatory "verify with a real client on
   a complex multi-step task" directive (this class of bug — multi-turn echo — is
   invisible to unit tests + first-turn smokes, which is how it shipped twice).

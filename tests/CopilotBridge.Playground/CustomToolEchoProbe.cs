@@ -17,10 +17,11 @@ namespace CopilotBridge.Playground;
 /// <code>dotnet test tests/CopilotBridge.Playground --filter "FullyQualifiedName~CustomToolEcho" --logger "console;verbosity=detailed"</code>
 /// Read the "→ HTTP N" lines. We test three candidate echo shapes for a prior exec
 /// call whose input was raw JS:
-///   (A) function_call + arguments = raw JS string
-///   (B) function_call + arguments = the JS wrapped as a JSON string value
-///   (C) custom_tool_call + input = raw JS  (the native custom shape, symmetric to output)
-/// Whichever 200s is how the bridge must re-emit an echoed custom-tool call.
+///   (A)  function_call   + arguments = raw JS string
+///   (C)  custom_tool_call + input = raw JS  (the native custom shape, symmetric to output)
+///   (C2) custom_tool_call + custom_tool_call_output  (C with the paired result shape)
+/// Whichever 200s is how the bridge could re-emit an echoed custom-tool call — in
+/// practice all three do, so the bridge keeps the simplest (A: function_call + raw args).
 /// </remarks>
 [SupportedOSPlatform("windows")]
 [Trait("Category", "Integration")]
