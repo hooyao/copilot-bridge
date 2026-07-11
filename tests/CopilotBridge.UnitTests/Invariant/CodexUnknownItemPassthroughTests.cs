@@ -85,6 +85,37 @@ public class CodexUnknownItemPassthroughTests
     }
 
     [Fact]
+    public void UnknownItem_BeforeAdditionalTools_PreservesInputOrder()
+    {
+        // Regression for the ordering bug: additional_tools used to be hoisted to the
+        // front of input[] unconditionally, so an unknown item that PRECEDED an
+        // additional_tools item in the inbound array got reordered behind it. Both are
+        // opaque passthrough items now and must keep their true relative order.
+        var body = """
+          {
+            "model":"gpt-5.6-sol","instructions":"x",
+            "input":[
+              {"type":"tool_search_call","call_id":"c_first","execution":"client"},
+              {"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"t"}]}
+            ],
+            "stream":true,"store":false
+          }
+          """;
+        var input = CodexRoundTrip.RoundTrip(body).AsObject()["input"]!.AsArray();
+
+        int firstIdx = -1, atIdx = -1;
+        for (var i = 0; i < input.Count; i++)
+        {
+            var type = input[i]!["type"]?.GetValue<string>();
+            if (type == "tool_search_call") firstIdx = i;
+            else if (type == "additional_tools") atIdx = i;
+        }
+        Assert.True(firstIdx >= 0 && atIdx >= 0, "both items present");
+        Assert.True(firstIdx < atIdx,
+            $"the unknown item ({firstIdx}) must stay BEFORE additional_tools ({atIdx}) — input order preserved");
+    }
+
+    [Fact]
     public void UnknownItemType_DoesNotThrow_AndIsCarriedThrough()
     {
         // A type the bridge does NOT model at all (a future gpt-5.6 feature). Before

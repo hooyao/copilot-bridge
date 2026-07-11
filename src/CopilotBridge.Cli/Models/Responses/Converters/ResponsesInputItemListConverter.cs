@@ -95,7 +95,10 @@ internal sealed class ResponsesInputItemListConverter : JsonConverter<IReadOnlyL
         foreach (var item in value)
         {
             if (item is ResponsesUnknownItem unknown)
-                unknown.Raw.WriteTo(writer);
+                // Raw-value, NOT WriteTo — WriteTo reserializes the DOM and can normalize
+                // string escaping, breaking the byte-faithful contract. GetRawText keeps
+                // the original lexical bytes (same choice T2 makes for passthrough items).
+                writer.WriteRawValue(unknown.Raw.GetRawText());
             else
                 JsonSerializer.Serialize(writer, item, typeInfo);
         }

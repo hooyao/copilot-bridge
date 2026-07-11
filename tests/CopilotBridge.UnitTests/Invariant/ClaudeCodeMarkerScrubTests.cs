@@ -91,6 +91,24 @@ public class ClaudeCodeMarkerScrubTests
     }
 
     [Fact]
+    public async Task ContentBlockWhoseValueMentionsAMarkerName_IsNotRewritten()
+    {
+        // Byte-identity contract: a content_block_start whose tool input VALUE happens
+        // to contain a marker NAME (e.g. an exec arg mentioning "bridge_tool_namespace")
+        // — but has no marker PROPERTY — must pass through unchanged. The substring
+        // fast-filter matches, but the rewrite must be gated on an actual marker key.
+        var evt = new SseItem<string>(
+            "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\","
+            + "\"id\":\"c3\",\"name\":\"exec\",\"input\":{\"note\":\"the bridge_tool_namespace field\"}}}",
+            "content_block_start");
+
+        var outEvt = (await Run(evt))[0];
+        // No marker property → returned unchanged (same instance), value preserved.
+        Assert.Same(evt.Data, outEvt.Data);
+        Assert.Contains("bridge_tool_namespace field", outEvt.Data, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task OnlyTheContentBlockMarkers_AreRemoved_NotSimilarlyNamedContent()
     {
         // Defensive: a text delta that happens to mention the marker name in its text

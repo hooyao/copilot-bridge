@@ -81,6 +81,14 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                 || cb.ValueKind != JsonValueKind.Object)
                 return evt;
 
+            // The substring match above is only a fast filter; it also fires when a
+            // marker NAME appears as a VALUE (e.g. a tool input mentioning
+            // "bridge_tool_namespace" in prose). Only rewrite when the content_block
+            // actually has one of the markers as a PROPERTY — otherwise return the
+            // original event so the byte-identical pass-through contract holds.
+            if (!cb.TryGetProperty(GrammarMarker, out _) && !cb.TryGetProperty(NamespaceMarker, out _))
+                return evt;
+
             using var buffer = new MemoryStream();
             using (var w = new Utf8JsonWriter(buffer))
             {

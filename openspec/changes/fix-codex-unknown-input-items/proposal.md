@@ -28,11 +28,15 @@ and a verification gate that replays the whole real corpus.
   a KNOWN type binds through the source-generated polymorphic metadata (unchanged); an
   UNKNOWN type is captured whole as a new `ResponsesUnknownItem` (opaque, byte-faithful)
   and re-emitted VERBATIM by T2 — never rejected. Array ORDER is preserved.
-- **`agent_message` modeled explicitly (belt-and-suspenders).** It's in live traffic and
-  carries an `encrypted_content` blob, so it gets a typed `ResponsesAgentMessageItem`
-  (`author`/`recipient`/opaque `content`), carried and re-emitted byte-faithfully
-  (`WriteRawValue(GetRawText())` — the encrypted bytes are never mutated). Authoritative
-  schema: openai/codex `ResponseItem.ts` + `AgentMessageInputContent.ts`.
+- **`agent_message` rides the universal passthrough (NOT modeled).** It's in live
+  traffic and carries an `encrypted_content` blob, but the bridge only forwards it — it
+  never reads author/recipient/content for logic. An initial version modeled it as a
+  typed `ResponsesAgentMessageItem` with `required` fields; the pre-ship review correctly
+  flagged that this re-introduces the 400-on-shape-evolution the passthrough exists to end
+  (a future variant omitting `recipient` would throw at deserialize), for zero behavioral
+  gain. **Final decision: `agent_message` is unmodeled** and rides `ResponsesUnknownItem`,
+  which is strictly more byte-faithful (whole `Raw` element incl. `encrypted_content` and
+  any future sibling fields).
 - **Order-preserving re-emission.** T1 records each passthrough item's position (the
   count of IR messages before it) in a `passthrough_items` bag array; T2 re-inserts each
   at that point in the outbound `input[]`, so an `agent_message` between two messages

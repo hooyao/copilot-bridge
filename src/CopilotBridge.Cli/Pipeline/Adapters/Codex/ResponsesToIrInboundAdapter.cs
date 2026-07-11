@@ -64,17 +64,12 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
 
         // ── messages: input[] items → MessageParam[] ──
         var messages = new List<MessageParam>();
-        // ── additional_tools items: not conversation content — a Codex harness
-        // tool-registration preamble (gpt-5.6+). Collected here and carried
-        // verbatim in the openai bag (T2 re-emits them into input[]); never
-        // folded into messages/system. ──
-        var additionalTools = new List<ResponsesAdditionalToolsItem>();
-        // ── passthrough items: agent_message (gpt-5.6 inter-agent messages) and any
-        // UNKNOWN input[] type the bridge doesn't model. The bridge does not interpret
-        // these — it forwards them VERBATIM. They must keep their ORDER relative to the
-        // conversation messages (an agent_message's NEW_TASK/FINAL_ANSWER sits at a
-        // specific point in the flow), so each records the count of IR messages emitted
-        // BEFORE it (afterMessageIndex); T2 re-inserts it at that position. ──
+        // ── passthrough items: opaque input[] items the bridge forwards verbatim,
+        // never interprets — additional_tools (gpt-5.6 harness tool-registration
+        // preamble), agent_message (inter-agent messages), and any UNKNOWN type. They
+        // must keep their ORDER relative to the conversation messages (and each other),
+        // so each records the count of IR messages emitted BEFORE it (afterMessageIndex);
+        // T2 re-inserts each at that position via a single ordered mechanism. ──
         var passthroughItems = new List<(int AfterMessageIndex, JsonElement Raw)>();
         foreach (var item in clientBody.Input)
         {
@@ -161,10 +156,14 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                     break;
 
                 case ResponsesAdditionalToolsItem addTools:
-                    // Harness tool-registration preamble — carried verbatim in the
-                    // openai bag, NOT added to messages/system (it isn't conversation
-                    // content, and Copilot re-ingests it as an input[] item as-is).
-                    additionalTools.Add(addTools);
+                    // Harness tool-registration preamble (gpt-5.6+) — opaque, not
+                    // conversation content, re-emitted verbatim. It rides the SAME
+                    // ordered passthrough mechanism as unknown items (recording its input
+                    // position via messages.Count) so true input order is preserved even
+                    // if it is not input[0] — every capture shows it first, but the
+                    // Responses schema doesn't guarantee that, and hoisting it ahead of a
+                    // preceding unknown item would reorder the array.
+                    passthroughItems.Add((messages.Count, SerializeAdditionalTools(addTools)));
                     break;
 
                 case ResponsesUnknownItem unknown:
@@ -185,7 +184,7 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
             : null;
 
         // ── un-modeled knobs → ProviderExtensions["openai"] verbatim ──
-        var bag = BuildOpenAiBag(clientBody, additionalTools, passthroughItems);
+        var bag = BuildOpenAiBag(clientBody, passthroughItems);
 
         var ir = new MessagesRequest
         {
@@ -361,7 +360,6 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
     /// </summary>
     private static ProviderExtensions? BuildOpenAiBag(
         ResponsesRequest req,
-        IReadOnlyList<ResponsesAdditionalToolsItem> additionalTools,
         IReadOnlyList<(int AfterMessageIndex, JsonElement Raw)> passthroughItems)
     {
         var hasAny =
@@ -375,7 +373,6 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
             || req.Text is not null
             || req.Reasoning?.Summary is { Length: > 0 }
             || req.ClientMetadata is not null
-            || additionalTools.Count > 0
             || passthroughItems.Count > 0;
         if (!hasAny) return null;
 
@@ -419,30 +416,6 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                 w.WritePropertyName("client_metadata");
                 cm.WriteTo(w);
             }
-            // additional_tools items → an array carrying each item's {role, tools}
-            // VERBATIM. `tools` is written with WriteRawValue(GetRawText()) — NOT
-            // WriteTo — so the ORIGINAL lexical bytes survive (whitespace, string
-            // escaping, numeric spelling). WriteTo would reserialize the DOM and
-            // could re-escape/renumber; Copilot's reserved schemas (collaboration.*)
-            // are validated by value so that wouldn't functionally break, but raw
-            // preservation is stronger and lets the round-trip test assert true
-            // byte-identity. T2 re-emits these into the outbound input[]. Written as
-            // an array so N items round-trip (every capture shows exactly one, but
-            // the Responses schema doesn't forbid more).
-            if (additionalTools.Count > 0)
-            {
-                w.WriteStartArray("additional_tools");
-                foreach (var at in additionalTools)
-                {
-                    w.WriteStartObject();
-                    if (at.Role is { } role)
-                        w.WriteString("role", role);
-                    w.WritePropertyName("tools");
-                    w.WriteRawValue(at.Tools.GetRawText());
-                    w.WriteEndObject();
-                }
-                w.WriteEndArray();
-            }
             // passthrough_items → an ORDERED array of {after, raw}: each is an
             // agent_message (gpt-5.6 inter-agent) or an UNKNOWN input[] item the bridge
             // doesn't model, carried VERBATIM (raw bytes via WriteRawValue, so an
@@ -471,6 +444,31 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
         {
             ByProvider = new Dictionary<string, JsonElement> { [OpenAiProviderKey] = doc.RootElement.Clone() },
         };
+    }
+
+    /// <summary>
+    /// Re-serialize an <see cref="ResponsesAdditionalToolsItem"/> to a byte-faithful
+    /// <c>{type:"additional_tools", role?, tools}</c> element for the ordered passthrough.
+    /// <c>tools</c> is written with <c>WriteRawValue(GetRawText())</c> — NOT
+    /// <c>WriteTo</c> — so the original lexical bytes survive (Copilot's reserved
+    /// <c>collaboration.*</c> schemas ride here). T2 re-emits it into <c>input[]</c> at
+    /// its recorded position.
+    /// </summary>
+    private static JsonElement SerializeAdditionalTools(ResponsesAdditionalToolsItem addTools)
+    {
+        using var buffer = new MemoryStream();
+        using (var w = new Utf8JsonWriter(buffer))
+        {
+            w.WriteStartObject();
+            w.WriteString("type", "additional_tools");
+            if (addTools.Role is { } role)
+                w.WriteString("role", role);
+            w.WritePropertyName("tools");
+            w.WriteRawValue(addTools.Tools.GetRawText());
+            w.WriteEndObject();
+        }
+        using var doc = JsonDocument.Parse(buffer.ToArray());
+        return doc.RootElement.Clone();
     }
 
     /// <summary>

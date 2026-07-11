@@ -15,22 +15,26 @@
 - [x] 2.1 `ResponsesInputItemListConverter`: custom converter on `ResponsesRequest.Input`
   — known type → source-gen polymorphic bind; unknown → `ResponsesUnknownItem` (opaque).
   Order preserved. AOT-clean (no reflection).
-- [x] 2.2 Model `ResponsesAgentMessageItem` (author/recipient/opaque content) +
-  register the `agent_message` discriminator.
+- [x] 2.2 `agent_message` is UNMODELED (final decision after review): it rides
+  `ResponsesUnknownItem` like every other opaque type. An initial version modeled it as a
+  typed record with `required` fields; that was removed because it re-introduced
+  400-on-shape-evolution for zero behavioral gain (the bridge only forwards it).
 - [x] 2.3 `ResponsesUnknownItem` record (Type + Raw JsonElement); register in JsonContext.
-- [x] 2.4 T1: collect agent_message + unknown items into an ordered `passthrough_items`
-  bag array recording each one's position (IR-message count before it). encrypted_content
-  carried via `WriteRawValue(GetRawText())`.
+- [x] 2.4 T1: collect agent_message + unknown items (and the additional_tools preamble)
+  into an ordered `passthrough_items` bag array recording each one's position (IR-message
+  count before it). encrypted_content carried via `WriteRawValue(GetRawText())`.
 - [x] 2.5 T2: re-insert passthrough items IN ORDER at their recorded positions in the
   outbound `input[]`; skip `passthrough_items` as a top-level bag field.
 
 ## 3. Tests (from contract, mutation-checked)
-- [x] 3.1 `CodexUnknownItemPassthroughTests` (4): agent_message verbatim + encrypted blob
-  intact; unknown type (tool_search_call) doesn't throw + carried; order preserved
-  (agent_message between messages); trailing unknown (compaction) emitted at end.
-- [x] 3.2 Mutation-check: converter unknown-branch throw reddens the unknown-type tests;
-  the agent_message/order tests (modeled type) correctly stay green.
-- [x] 3.3 Full unit suite green (847).
+- [x] 3.1 `CodexUnknownItemPassthroughTests`: agent_message verbatim + encrypted blob
+  (value fidelity, re-parsed from wire bytes); unknown type (tool_search_call) doesn't
+  throw + carried; order preserved (agent_message between messages; unknown before
+  additional_tools); trailing unknown (compaction) emitted at end.
+- [x] 3.2 Mutation-check: converter unknown-branch throw reddens the unknown-type AND the
+  agent_message tests (agent_message now rides the unknown branch — disabling it reddens
+  both).
+- [x] 3.3 Full unit suite green.
 
 ## 4. Verification gate (the process fix — no more single-sample "done")
 - [x] 4.1 `CodexInboundCorpusReplayTests`: replayed 1213 real `/codex/responses` inbound

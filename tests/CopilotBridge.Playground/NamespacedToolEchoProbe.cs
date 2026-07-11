@@ -68,14 +68,20 @@ public class NamespacedToolEchoProbe
             {{NamespacedToolsBlock}}
           }
           """;
-        await Probe("N1 function_call WITH namespace (expect 200)", body);
+        await Probe("N1 function_call WITH namespace", body, expected: System.Net.HttpStatusCode.OK);
     }
 
     [Fact]
-    public async Task N0_FunctionCallEcho_WithoutNamespace_Reproduces400()
+    public async Task N0_FunctionCallEcho_WithoutNamespace_ViaTopLevelToolsAlsoAccepted()
     {
-        // Same turn, namespace field REMOVED — this is exactly what the bridge
-        // currently forwards (namespace dropped in T3/T4). Expect the production 400.
+        // The SAME turn with the namespace field REMOVED. IMPORTANT FINDING: when the
+        // namespaced tool is registered via the TOP-LEVEL tools[] (as here), Copilot does
+        // NOT enforce the namespace round-trip — this echo is accepted (200) too. The
+        // production 400 ("Missing namespace") only occurs when the tool is registered via
+        // the `additional_tools` developer preamble; that path is covered by
+        // NamespaceRealReplayProbe (real bytes: verbatim → 400, +namespace → 200). This
+        // probe documents the top-level-tools path so the difference is explicit, not
+        // assumed.
         var body = $$"""
           {
             "model":"gpt-5.6-sol",
@@ -90,14 +96,16 @@ public class NamespacedToolEchoProbe
             {{NamespacedToolsBlock}}
           }
           """;
-        await Probe("N0 function_call WITHOUT namespace (expect 400 Missing namespace)", body);
+        await Probe("N0 function_call WITHOUT namespace (top-level tools → accepted)", body,
+            expected: System.Net.HttpStatusCode.OK);
     }
 
-    private async Task Probe(string label, string body)
+    private async Task Probe(string label, string body, System.Net.HttpStatusCode expected)
     {
         using var client = new PlaygroundClient();
         var (status, resp) = await client.TryPostResponsesAsync(body);
         _output.WriteLine($"[{label}] → {(int)status} {status}");
         _output.WriteLine($"  body: {(resp.Length <= 500 ? resp : resp[..500])}");
+        Assert.Equal(expected, status);
     }
 }
