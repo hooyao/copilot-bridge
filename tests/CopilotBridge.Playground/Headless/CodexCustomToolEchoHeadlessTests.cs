@@ -79,8 +79,10 @@ public class CodexCustomToolEchoHeadlessTests : IClassFixture<BridgeFixture>
         // The audit must show the raw-JS arguments reached Copilot VERBATIM (not "{}",
         // not truncated, not double-encoded). Select the echoed function_call by its
         // call_id and compare its arguments string EXACTLY to execJs.
-        var entry = reader.ReadNew()
-            .FirstOrDefault(e => e.InboundPath.EndsWith("/responses", StringComparison.Ordinal));
+        // BridgeIoSink writes audit files on a background worker, so completing the
+        // HTTP response does not guarantee ReadNew() sees the upstream request yet —
+        // poll (bounded) until the /responses entry with an upstream body appears.
+        var entry = await PollForUpstreamEntryAsync(reader, TimeSpan.FromSeconds(15));
         Assert.NotNull(entry);
 
         var input = (entry!.UpstreamBody as System.Text.Json.Nodes.JsonObject)?["input"]
@@ -100,6 +102,26 @@ public class CodexCustomToolEchoHeadlessTests : IClassFixture<BridgeFixture>
         Assert.NotNull(echoed);
         Assert.Equal(execJs, echoed!["arguments"]!.GetValue<string>());
         _output.WriteLine("[audit] upstream function_call arguments == execJs (verbatim).");
+    }
+
+    /// <summary>
+    /// Poll the audit (bounded) until a <c>/responses</c> entry with a non-null
+    /// upstream body appears — tolerating the async <see cref="BridgeLogReader"/>
+    /// sink flush, which is not guaranteed complete when the HTTP response ends.
+    /// Returns null if none arrives before the deadline (the assertion then fails).
+    /// </summary>
+    private static async Task<BridgeLogEntry?> PollForUpstreamEntryAsync(BridgeLogReader reader, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            var entry = reader.ReadNew()
+                .FirstOrDefault(e => e.InboundPath.EndsWith("/responses", StringComparison.Ordinal)
+                                     && e.UpstreamBody is not null);
+            if (entry is not null || DateTime.UtcNow >= deadline)
+                return entry;
+            await Task.Delay(250);
+        }
     }
 
     private static string Json(string s) => System.Text.Json.JsonSerializer.Serialize(s);
