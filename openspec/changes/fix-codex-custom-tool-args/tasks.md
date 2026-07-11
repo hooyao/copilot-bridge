@@ -21,6 +21,12 @@
   `arguments`) — inert today, closes the identical latent gap (review follow-up).
 - [x] 2.5 T4 unchanged (custom deltas normalize to `input_json_delta` → existing
   `function_call_arguments` emit).
+- [x] 2.6 T3 stamps the custom `tool_use` content_block with a bridge-internal
+  marker `bridge_input_is_grammar_text:true`; `ToolInputValidationDetector` skips
+  JSON/schema validation for a marked block (streaming `StopBlock` + buffered
+  `InspectBuffered`, + the `_currentBlockIsGrammarText` flag/reset). Without this a
+  valid exec call (raw JS) trips "malformed JSON" and an `Abort*` config kills it
+  before T4 (review round 2). Marker is IR-internal — T4 drops it, `/cc` untouched.
 
 ## 3. Tests (from contract, mutation-checked)
 - [x] 3.1 `CustomTool_T3_TranslatesInputDeltasToInputJsonDelta`: 2 fragments → 2
