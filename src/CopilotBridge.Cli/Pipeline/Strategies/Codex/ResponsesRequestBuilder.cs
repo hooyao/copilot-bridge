@@ -69,14 +69,31 @@ internal static class ResponsesRequestBuilder
             // messages → input[]
             w.WritePropertyName("input");
             w.WriteStartArray();
-            // Harness tool-registration preamble (gpt-5.6+): T1 stashed each
-            // additional_tools item in the bag verbatim; re-emit them FIRST, ahead
-            // of the conversation messages, matching every observed capture (and the
-            // only order live-probed 200). Byte-faithful — the nested tools carry
-            // Copilot's reserved schemas and must not be altered.
-            WriteAdditionalToolsItems(w, bag);
+            // Opaque passthrough items (additional_tools harness preamble, agent_message,
+            // and any unknown type) are re-inserted IN ORDER, each at the point in the
+            // message flow T1 recorded (`after` = the number of IR messages that preceded
+            // it). Emit any with after==0 first (they preceded every message — e.g. the
+            // additional_tools preamble at input[0]), then interleave the rest as messages
+            // emit. One ordered mechanism for all opaque kinds preserves true input order.
+            var passthrough = ReadPassthroughItems(bag);
+            var ptIdx = 0;
+            var emittedMsgs = 0;
+            ptIdx = WritePassthroughUpTo(w, passthrough, ptIdx, emittedMsgs);
             foreach (var msg in ir.Messages)
+            {
                 WriteInputItem(w, msg, ref vision);
+                emittedMsgs++;
+                ptIdx = WritePassthroughUpTo(w, passthrough, ptIdx, emittedMsgs);
+            }
+            // Any remaining passthrough items whose `after` exceeds the message count
+            // (e.g. trailing agent_message) — emit them at the end. Raw-value, not
+            // WriteTo — preserve the exact bytes (WriteTo reserializes the DOM and can
+            // re-escape, e.g. an encrypted_content blob; GetRawText keeps them verbatim).
+            while (ptIdx < passthrough.Count)
+            {
+                w.WriteRawValue(passthrough[ptIdx].Raw.GetRawText());
+                ptIdx++;
+            }
             w.WriteEndArray();
 
             // effort: from IR OutputConfig, clamped to what the model accepts.
@@ -148,47 +165,56 @@ internal static class ResponsesRequestBuilder
     }
 
     /// <summary>
-    /// Re-emit the carried <c>additional_tools</c> items (gpt-5.6 harness
-    /// tool-registration preamble) from the openai bag into <c>input[]</c>,
-    /// byte-faithfully. T1 stashed each as <c>{role, tools}</c> under the bag's
-    /// <c>additional_tools</c> array; here each becomes an
-    /// <c>{type:"additional_tools", role, tools}</c> input item. The <c>tools</c>
-    /// payload is written with <see cref="Utf8JsonWriter.WriteRawValue(string,bool)"/>
-    /// over <see cref="JsonElement.GetRawText"/> — NOT <c>WriteTo</c> — so the
-    /// ORIGINAL lexical bytes T1 preserved survive this second hop unchanged (no
-    /// DOM reserialization, no re-escaping/renumbering). No drops, no coercion —
-    /// the nested tools carry Copilot's reserved built-in schemas (e.g.
-    /// <c>collaboration.*</c>) that Copilot 400s on if altered. No-op when the bag
-    /// is absent or carries no such items (every Claude Code request).
+    /// Read the ordered passthrough items T1 stashed in the bag (agent_message +
+    /// unknown input[] types). Each is <c>{after:int, raw:object}</c> where <c>after</c>
+    /// is the number of IR messages that preceded it. Returns an empty list when the
+    /// bag has none (every Claude Code / plain Codex request).
     /// </summary>
-    private static void WriteAdditionalToolsItems(Utf8JsonWriter w, JsonElement? bag)
+    private static IReadOnlyList<(int After, JsonElement Raw)> ReadPassthroughItems(JsonElement? bag)
     {
         if (bag is not { ValueKind: JsonValueKind.Object } obj
-            || !obj.TryGetProperty("additional_tools", out var items)
+            || !obj.TryGetProperty("passthrough_items", out var items)
             || items.ValueKind != JsonValueKind.Array)
-            return;
+            return [];
 
+        var list = new List<(int, JsonElement)>();
         foreach (var item in items.EnumerateArray())
         {
-            // Defensive: T1 (BuildOpenAiBag) only ever writes object elements here,
-            // but a non-object element would make TryGetProperty below throw
-            // InvalidOperationException → a 502 mid-relay. Skip anything that isn't an
-            // object so a malformed bag can't crash the strategy.
-            if (item.ValueKind != JsonValueKind.Object)
+            // T1 always writes {after:int, raw:object}. These guards are purely
+            // defensive against a corrupted bag (which can't happen in the normal
+            // in-process flow). Rather than fail silently in a WRONG direction, they
+            // degrade to the least-surprising behavior:
+            //  - a malformed entry (not an object, or no `raw`) is skipped — it carries
+            //    no forwardable payload, so there's nothing to preserve;
+            //  - a missing/non-int `after` defaults to int.MaxValue (append at the END),
+            //    NOT 0 (which would silently HOIST the item to the front of the turn and
+            //    reorder the conversation). Appending is the safer failure mode.
+            if (item.ValueKind != JsonValueKind.Object
+                || !item.TryGetProperty("raw", out var raw))
                 continue;
-            w.WriteStartObject();
-            w.WriteString("type", "additional_tools");
-            if (item.TryGetProperty("role", out var role) && role.ValueKind == JsonValueKind.String)
-                w.WriteString("role", role.GetString());
-            if (item.TryGetProperty("tools", out var tools))
-            {
-                w.WritePropertyName("tools");
-                // Raw-value, not WriteTo — preserve the exact bytes carried through
-                // the bag (see BuildOpenAiBag; keeps the reserved schemas byte-identical).
-                w.WriteRawValue(tools.GetRawText());
-            }
-            w.WriteEndObject();
+            var after = item.TryGetProperty("after", out var a) && a.TryGetInt32(out var n) ? n : int.MaxValue;
+            list.Add((after, raw));
         }
+        return list;
+    }
+
+    /// <summary>
+    /// Emit every passthrough item whose <c>after</c> ≤ <paramref name="emittedMsgs"/>
+    /// and not yet written, starting at <paramref name="ptIdx"/>. VERBATIM via
+    /// <c>WriteRawValue(GetRawText())</c> — NOT <c>WriteTo</c>, which reserializes the
+    /// DOM and can re-escape the bytes (e.g. an <c>encrypted_content</c> blob). Returns
+    /// the advanced index. The list is in inbound order, so a simple forward walk
+    /// preserves ordering among passthrough items too.
+    /// </summary>
+    private static int WritePassthroughUpTo(
+        Utf8JsonWriter w, IReadOnlyList<(int After, JsonElement Raw)> passthrough, int ptIdx, int emittedMsgs)
+    {
+        while (ptIdx < passthrough.Count && passthrough[ptIdx].After <= emittedMsgs)
+        {
+            w.WriteRawValue(passthrough[ptIdx].Raw.GetRawText());
+            ptIdx++;
+        }
+        return ptIdx;
     }
 
     private static void WriteInputItem(Utf8JsonWriter w, MessageParam msg, ref bool vision)
@@ -207,6 +233,14 @@ internal static class ResponsesRequestBuilder
                     w.WriteStartObject();
                     w.WriteString("type", "function_call");
                     w.WriteString("call_id", tu.Id);
+                    // namespace: a NON-default-namespace tool (gpt-5.6 collaboration/MCP,
+                    // e.g. collaboration.list_agents) MUST round-trip its namespace on
+                    // echo, or Copilot 400s the next turn with "Missing namespace for
+                    // function_call" (live-replayed, NamespaceRealReplayProbe). T1 stashed
+                    // it in the part bag; re-emit it here. Absent for plain default-
+                    // namespace tools → field omitted, byte-identical to before.
+                    if (TryGetToolNamespace(tu.ProviderExtensions, out var toolNs))
+                        w.WriteString("namespace", toolNs);
                     w.WriteString("name", tu.Name);
                     // arguments: a plain function tool's input is a JSON object →
                     // GetRawText() (byte-faithful). A CUSTOM (grammar) tool's input is
@@ -581,6 +615,28 @@ internal static class ResponsesRequestBuilder
         && g.ValueKind == JsonValueKind.True;
 
     /// <summary>
+    /// Pull a tool_use block's <c>namespace</c> back out of its part-level
+    /// <c>openai</c> bag (where T1 stashed a NON-default namespace off an echoed
+    /// gpt-5.6 collaboration/MCP <c>function_call</c>). Returns false when the block
+    /// carries no bag or no namespace — every Claude Code / default-namespace block
+    /// has none, so the <c>function_call</c> emit stays byte-identical there.
+    /// </summary>
+    private static bool TryGetToolNamespace(Models.Common.ProviderExtensions? ext, out string ns)
+    {
+        ns = "";
+        if (ext?.ByProvider.TryGetValue(
+                ResponsesToIrInboundAdapter.OpenAiProviderKey, out var bag) == true
+            && bag.ValueKind == JsonValueKind.Object
+            && bag.TryGetProperty("namespace", out var n)
+            && n.ValueKind == JsonValueKind.String)
+        {
+            ns = n.GetString() ?? "";
+            return ns.Length > 0;
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Re-emit the bag's un-modeled knobs, applying the two uniform coercions:
     /// strip <c>service_tier</c> (Copilot 400s it), drop the
     /// <c>image_generation</c> tool (Copilot 400s it). <c>store</c> is only
@@ -609,11 +665,10 @@ internal static class ResponsesRequestBuilder
                     // object (see Build), not at the top level. Skip here so it isn't
                     // also written as a stray top-level key.
                     continue;
-                case "additional_tools":
-                    // These were input[] items (gpt-5.6 harness preamble) — re-emitted
-                    // INTO input[] by WriteAdditionalToolsItems (see Build), not as a
-                    // top-level request field. Skip here so they aren't also written as
-                    // a stray sibling of input/tools.
+                case "passthrough_items":
+                    // Opaque input[] items (additional_tools preamble, agent_message,
+                    // unknown types) — re-emitted INTO input[] in order (see Build), not
+                    // as a top-level field. Skip here.
                     continue;
                 default:
                     // tool_choice, parallel_tool_calls, include, prompt_cache_key,

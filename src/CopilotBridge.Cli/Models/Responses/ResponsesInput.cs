@@ -7,16 +7,41 @@ namespace CopilotBridge.Cli.Models.Responses;
 /// One item in the Responses <c>input[]</c> array. Polymorphic by <c>type</c>:
 /// a conversation <c>message</c>, a <c>function_call</c> (assistant tool call), a
 /// <c>function_call_output</c> (tool result), or a <c>reasoning</c> item (carries
-/// <c>encrypted_content</c> for multi-turn). Mirrors the OpenAI SDK
-/// <c>ResponseInputItem</c> union, modeling only the variants Codex emits
-/// (research §3.2 / the real captures).
+/// <c>encrypted_content</c> for multi-turn). Every OTHER type — the
+/// <c>additional_tools</c> harness preamble, <c>agent_message</c> (gpt-5.6 inter-agent),
+/// <c>tool_search_call</c>, <c>custom_tool_call</c>, <c>compaction</c>, … — is carried
+/// opaquely as a <see cref="ResponsesUnknownItem"/> and re-emitted verbatim (see the
+/// remarks). Mirrors the OpenAI SDK <c>ResponseInputItem</c> union (research §3.2 / the
+/// real captures + openai/codex <c>ResponseItem.ts</c>).
 /// </summary>
+/// <remarks>
+/// The Responses <c>input[]</c> union is OPEN-ENDED — the gpt-5.6 multi-agent /
+/// tool-search / compaction features keep adding item types (openai/codex
+/// <c>ResponseItem.ts</c> lists <c>agent_message</c>, <c>tool_search_call</c>,
+/// <c>custom_tool_call</c>, <c>custom_tool_call_output</c>, <c>web_search_call</c>,
+/// <c>image_generation_call</c>, <c>compaction</c>, <c>context_compaction</c>,
+/// <c>local_shell_call</c>, … beyond what the bridge models). A closed
+/// <c>[JsonPolymorphic]</c> whitelist 400s (<c>Polymorphism_UnrecognizedTypeDiscriminator</c>)
+/// on ANY unmodeled type BEFORE T1 even runs — the whack-a-mole that shipped four
+/// gpt-5.6 tool bugs. So deserialization goes through
+/// <see cref="Converters.ResponsesInputItemListConverter"/>: known <c>type</c>s bind
+/// to their records via the source generator; an UNKNOWN <c>type</c> is captured
+/// whole as a <see cref="ResponsesUnknownItem"/> (opaque, byte-faithful) and re-emitted
+/// verbatim by T2 — so a new item type is carried through, never rejected.
+/// <para>Only types the bridge actually INTERPRETS are modeled here. Opaque items the
+/// bridge merely FORWARDS — <c>additional_tools</c> (harness tool-registration preamble)
+/// and <c>agent_message</c> (inter-agent) — are deliberately NOT modeled: a typed record
+/// would be write-only ceremony that also re-introduces the 400-on-shape-evolution this
+/// converter exists to end (a <c>required</c> field missing, or an unmodeled sibling
+/// field silently dropped, on an evolved variant). They ride the
+/// <see cref="ResponsesUnknownItem"/> path, which is strictly more byte-faithful (whole
+/// <c>Raw</c> element incl. every sibling field, in input order).</para>
+/// </remarks>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
 [JsonDerivedType(typeof(ResponsesMessageItem), "message")]
 [JsonDerivedType(typeof(ResponsesFunctionCallItem), "function_call")]
 [JsonDerivedType(typeof(ResponsesFunctionCallOutputItem), "function_call_output")]
 [JsonDerivedType(typeof(ResponsesReasoningItem), "reasoning")]
-[JsonDerivedType(typeof(ResponsesAdditionalToolsItem), "additional_tools")]
 internal abstract record ResponsesInputItem;
 
 /// <summary>
@@ -36,6 +61,18 @@ internal sealed record ResponsesMessageItem : ResponsesInputItem
 /// JSON object). T1/T2 convert between the string and object forms; the bytes of
 /// the underlying JSON are preserved.
 /// </summary>
+/// <remarks>
+/// KNOWN RESIDUAL (field-granular loss): the universal unknown-item passthrough cures
+/// unmodeled <c>type</c>s, but a MODELED type like this is bound field-by-field, and STJ
+/// silently skips any wire field not modeled here (no <c>JsonUnmappedMemberHandling.Disallow</c>).
+/// That is the mechanism that produced the <c>namespace</c> bug (a new field that had to
+/// round-trip was dropped, 400ing the echo turn). Every field Copilot currently sends on a
+/// <c>function_call</c> IS modeled (corpus replay of 1213 real inbounds is clean), but a
+/// FUTURE new field would recur the bug. A full fix (carry unmapped members through the IR
+/// tool_use block) is a separate change — this record doesn't round-trip as itself, it
+/// becomes an IR <c>tool_use</c>, so <c>[JsonExtensionData]</c> here wouldn't survive to T2.
+/// Tracked in docs; if a new field appears, model it here AND re-emit it in T2.
+/// </remarks>
 internal sealed record ResponsesFunctionCallItem : ResponsesInputItem
 {
     public required string CallId { get; init; }
@@ -44,6 +81,19 @@ internal sealed record ResponsesFunctionCallItem : ResponsesInputItem
     public required string Arguments { get; init; }
     public string? Id { get; init; }
     public string? Status { get; init; }
+    /// <summary>
+    /// The tool's namespace, when it belongs to a NON-default namespace (a gpt-5.6
+    /// collaboration/MCP tool registered under a <c>{"type":"namespace",...}</c>
+    /// wrapper — e.g. <c>collaboration</c> for <c>list_agents</c>/<c>spawn_agent</c>).
+    /// Copilot streams it on the <c>function_call</c> output item and REQUIRES the
+    /// client to round-trip it back on echo, else the next turn 400s with
+    /// <c>Missing namespace for function_call '&lt;name&gt;'. ... Round-trip the model's
+    /// function_call item with its namespace field included.</c> Null for a plain
+    /// default-namespace function tool (the field is then absent on the wire). Source
+    /// of truth: openai/codex <c>ev_function_call_with_namespace</c> fixture +
+    /// vercel/ai SDK (<c>providerMetadata.openai.namespace</c>).
+    /// </summary>
+    public string? Namespace { get; init; }
 }
 
 /// <summary>
@@ -76,31 +126,21 @@ internal sealed record ResponsesReasoningItem : ResponsesInputItem
 }
 
 /// <summary>
-/// A Codex harness <b>tool-registration preamble</b> — first observed from the
-/// gpt-5.6 family (2026-07 captures, always <c>input[0]</c> with
-/// <c>role:"developer"</c>). It registers "additional" tools the harness makes
-/// available for the turn (an <c>exec</c> JS sandbox with a Lark grammar, <c>wait</c>,
-/// <c>request_user_input</c>, and a <c>collaboration</c> sub-agent namespace)
-/// SEPARATELY from the request-level <c>tools[]</c>. Copilot's native
-/// <c>/responses</c> accepts it as an <c>input[]</c> element verbatim (live-probed
-/// 200 — <c>ResponsesProbe.AdditionalToolsVerbatim</c>).
+/// Catch-all for an <c>input[]</c> item whose <c>type</c> the bridge does NOT model
+/// (a future gpt-5.6 feature: <c>tool_search_call</c>, <c>compaction</c>,
+/// <c>web_search_call</c>, …). Captured WHOLE as an opaque <see cref="JsonElement"/>
+/// by <see cref="Converters.ResponsesInputItemListConverter"/> and re-emitted VERBATIM
+/// by T2 — so an unmodeled item is carried through losslessly instead of 400'ing the
+/// request. This is the universal escape hatch that ends the per-type whack-a-mole.
+/// Never constructed by the source generator (it has no <c>[JsonDerivedType]</c>
+/// discriminator); the converter builds it for any unknown <c>type</c>.
 /// </summary>
-/// <remarks>
-/// The bridge does NOT interpret this item: it is carried through the IR verbatim
-/// (T1 → <c>ProviderExtensions["openai"]</c> bag, T2 → re-emitted into
-/// <c>input[]</c>). <c>Tools</c> is therefore an opaque <see cref="JsonElement"/>,
-/// not a typed union — and it MUST stay byte-faithful because the nested
-/// <c>collaboration.*</c> tools carry Copilot's reserved built-in schemas, which
-/// Copilot validates and 400s on if altered. Modeling this variant is what stops
-/// the inbound deserializer from throwing
-/// <c>Polymorphism_UnrecognizedTypeDiscriminator</c> on a shape Copilot accepts.
-/// </remarks>
-internal sealed record ResponsesAdditionalToolsItem : ResponsesInputItem
+internal sealed record ResponsesUnknownItem : ResponsesInputItem
 {
-    /// <summary>Codex sends <c>"developer"</c> (the harness preamble role).</summary>
-    public string? Role { get; init; }
-    /// <summary>The registered tools array — opaque, carried and re-emitted verbatim.</summary>
-    public required JsonElement Tools { get; init; }
+    /// <summary>The item's <c>type</c> value (for logging/diagnostics), or "" if absent.</summary>
+    public required string Type { get; init; }
+    /// <summary>The entire original item object, byte-faithful, re-emitted as-is by T2.</summary>
+    public required JsonElement Raw { get; init; }
 }
 
 /// <summary>

@@ -56,6 +56,11 @@ namespace CopilotBridge.Cli.Models;
 // bases need explicit registration. Fully typed (no JsonElement envelope) per Q2.
 [JsonSerializable(typeof(ResponsesRequest))]
 [JsonSerializable(typeof(ResponsesInputItem))]
+// ResponsesUnknownItem carries no [JsonDerivedType] discriminator (it's built by
+// ResponsesInputItemListConverter for any unmodeled input[] type, and re-emitted via
+// its Raw JsonElement, not source-gen metadata) — but register it so the generator
+// emits its TypeInfo for the rare direct-serialize path (tests / the converter's Write).
+[JsonSerializable(typeof(ResponsesUnknownItem))]
 [JsonSerializable(typeof(ResponsesContentPart))]
 [JsonSerializable(typeof(TextControls))]
 [JsonSerializable(typeof(ResponsesStreamEvent))]

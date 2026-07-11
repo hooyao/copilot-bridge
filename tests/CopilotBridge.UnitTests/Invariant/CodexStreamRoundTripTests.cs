@@ -128,29 +128,36 @@ public class CodexStreamRoundTripTests
     }
 
     [Fact]
-    public void CustomTool_FullRoundTrip_ArgumentsReachCodexNonEmpty()
+    public void CustomTool_FullRoundTrip_ReachesCodexAsCustomToolCall()
     {
-        // The end-to-end regression: T3→T4 must put the custom tool's full input on
-        // the Codex-facing function_call_arguments.done AND the function_call output
-        // item — NOT an empty string (which caused `aborted`).
+        // CONTRACT (codex-source-confirmed): exec is a CUSTOM (grammar) tool. codex
+        // 0.144.1's exec handler ONLY accepts ToolPayload::Custom{input} — i.e. a
+        // `custom_tool_call` item + `custom_tool_call_input.*` events. If T4 emits a
+        // `function_call` (arguments) instead, codex builds ToolPayload::Function and
+        // fatals: "tool exec invoked with incompatible payload" → every exec aborts.
+        // So T3→T4 must re-emit the custom tool as its NATIVE custom_tool_call shape,
+        // carrying the full input non-empty.
         const string fullInput = "const r = await tools.shell({cmd:\"ls\"});";
         var roundTripped = RunT3ThenT4(SyntheticCustomToolStream(
             callId: "call_abc", name: "exec",
             inputFragments: ["const r = ", "await tools.shell({cmd:\"ls\"});"]));
 
-        var doneArgs = ExtractFunctionCallArgumentsDone(roundTripped);
-        Assert.Equal(fullInput, doneArgs);
-        Assert.NotEqual("", doneArgs);
+        // The input is carried on custom_tool_call_input.done (field `input`), NOT
+        // function_call_arguments.done, and equals the upstream input verbatim.
+        var doneInput = ExtractCustomToolInputDone(roundTripped);
+        Assert.Equal(fullInput, doneInput);
+        Assert.NotEqual("", doneInput);
 
-        // And the function_call output item (output_item.done) carries the same
-        // non-empty arguments — this is what Codex reads to execute the tool.
-        var itemArgs = ExtractFunctionCallOutputItemArguments(roundTripped);
-        Assert.Equal(fullInput, itemArgs);
+        // The output item is a custom_tool_call (type + input), the shape codex's exec
+        // handler requires — NOT a function_call.
+        var (itemType, itemInput) = ExtractCustomToolOutputItem(roundTripped);
+        Assert.Equal("custom_tool_call", itemType);
+        Assert.Equal(fullInput, itemInput);
 
-        // The bridge-internal grammar-text marker T3 stamps on the tool_use block
-        // (so the response-stage validator skips JSON-parsing raw JS) must NEVER
-        // reach the Codex-facing wire — T4 rebuilds the Responses output item from
-        // type/id/name only. Assert it appears nowhere in the emitted stream.
+        // T4 must NOT emit a function_call for a custom tool (that's the abort bug).
+        Assert.DoesNotContain(roundTripped, e =>
+            e.Data.Contains("\"type\":\"function_call\"", StringComparison.Ordinal));
+        // The bridge-internal grammar-text marker must NEVER reach the Codex wire.
         foreach (var e in roundTripped)
             Assert.DoesNotContain("bridge_input_is_grammar_text", e.Data, StringComparison.Ordinal);
     }
@@ -166,6 +173,41 @@ public class CodexStreamRoundTripTests
 
         Assert.Contains(ir, e => e.Data.Contains("input_json_delta", StringComparison.Ordinal));
         Assert.Equal(fullInput, ConcatIrInputJson(ir));
+    }
+
+    [Fact]
+    public void MixedCustomThenFunctionTool_EachEmitsItsOwnShape_ProvesToolIsCustomReset()
+    {
+        // CONTRACT: in ONE response, a custom (grammar) tool block followed by a plain
+        // function tool block must each emit its OWN Codex shape — block 1 a
+        // custom_tool_call (+ custom_tool_call_input.*), block 2 a function_call (+
+        // function_call_arguments.*). This guards T4's per-block reset of _toolIsCustom:
+        // without it, block 2 would inherit block 1's custom flag and be mis-emitted as
+        // a custom_tool_call (its JSON args streamed as custom_tool_call_input) → codex
+        // mishandles it. This is the exact reset the mutation-check targets.
+        var stream = MixedCustomThenFunctionStream(
+            custom: ("call_c", "exec", "const r = await tools.shell({cmd:\"ls\"});"),
+            function: ("call_f", "read_file", "{\"path\":\"/tmp/x\"}"));
+
+        var roundTripped = RunT3ThenT4(stream, model: "gpt-5.6-sol");
+
+        // Block 1: exactly one custom_tool_call output item, carrying the grammar input.
+        var customItems = roundTripped.Count(e => EventType(e) == "response.output_item.done"
+            && e.Data.Contains("\"type\":\"custom_tool_call\"", StringComparison.Ordinal));
+        Assert.Equal(1, customItems);
+        Assert.Contains(roundTripped, e => EventType(e) == "response.custom_tool_call_input.done");
+
+        // Block 2: exactly one function_call output item, carrying the JSON args — NOT a
+        // second custom_tool_call (which is what a leaked _toolIsCustom=true would produce).
+        var functionItems = roundTripped.Count(e => EventType(e) == "response.output_item.done"
+            && e.Data.Contains("\"type\":\"function_call\"", StringComparison.Ordinal));
+        Assert.Equal(1, functionItems);
+        Assert.Contains(roundTripped, e => EventType(e) == "response.function_call_arguments.done");
+
+        // The function tool's block must NOT have been streamed as custom input.
+        // (If _toolIsCustom leaked true, block 2's args would ride custom_tool_call_input.)
+        var customInputDones = roundTripped.Count(e => EventType(e) == "response.custom_tool_call_input.done");
+        Assert.Equal(1, customInputDones); // only block 1
     }
 
     [Fact]
@@ -186,10 +228,15 @@ public class CodexStreamRoundTripTests
         Assert.False(string.IsNullOrEmpty(upstreamInput), "fixture carried no custom-tool input");
 
         var roundTripped = RunT3ThenT4(responses, model: "gpt-5.6-sol");
-        var codexArgs = ExtractFunctionCallArgumentsDone(roundTripped);
+        // exec is a custom tool → codex must receive the input on
+        // custom_tool_call_input.done (field `input`), byte-equal to upstream.
+        var codexInput = ExtractCustomToolInputDone(roundTripped);
 
-        Assert.Equal(upstreamInput, codexArgs);
-        Assert.NotEqual("", codexArgs);
+        Assert.Equal(upstreamInput, codexInput);
+        Assert.NotEqual("", codexInput);
+        // And it must be a custom_tool_call item, never a function_call (the abort bug).
+        Assert.DoesNotContain(roundTripped, e =>
+            e.Data.Contains("\"type\":\"function_call\"", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -561,6 +608,42 @@ public class CodexStreamRoundTripTests
         return items;
     }
 
+    /// <summary>
+    /// A single Responses stream with a CUSTOM tool call (custom_tool_call events)
+    /// followed by a PLAIN function tool call (function_call events), each on its own
+    /// output_index — so T4's per-block _toolIsCustom reset is exercised.
+    /// </summary>
+    private static List<SseItem<string>> MixedCustomThenFunctionStream(
+        (string callId, string name, string input) custom,
+        (string callId, string name, string args) function)
+    {
+        var items = new List<SseItem<string>>
+        {
+            new("{\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}", "response.created"),
+        };
+        // Block 0 — custom tool (grammar/exec).
+        items.Add(new($"{{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{{\"type\":\"custom_tool_call\",\"id\":\"item_0\",\"call_id\":{JsonEncode(custom.callId)},\"name\":{JsonEncode(custom.name)},\"input\":\"\",\"status\":\"in_progress\"}}}}",
+            "response.output_item.added"));
+        items.Add(new($"{{\"type\":\"response.custom_tool_call_input.delta\",\"item_id\":\"item_0\",\"output_index\":0,\"delta\":{JsonEncode(custom.input)}}}",
+            "response.custom_tool_call_input.delta"));
+        items.Add(new($"{{\"type\":\"response.custom_tool_call_input.done\",\"item_id\":\"item_0\",\"output_index\":0,\"input\":{JsonEncode(custom.input)}}}",
+            "response.custom_tool_call_input.done"));
+        items.Add(new($"{{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{{\"type\":\"custom_tool_call\",\"id\":\"item_0\",\"call_id\":{JsonEncode(custom.callId)},\"name\":{JsonEncode(custom.name)},\"input\":{JsonEncode(custom.input)},\"status\":\"completed\"}}}}",
+            "response.output_item.done"));
+        // Block 1 — plain function tool (JSON args).
+        items.Add(new($"{{\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{{\"type\":\"function_call\",\"id\":\"item_1\",\"call_id\":{JsonEncode(function.callId)},\"name\":{JsonEncode(function.name)},\"arguments\":\"\",\"status\":\"in_progress\"}}}}",
+            "response.output_item.added"));
+        items.Add(new($"{{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"item_1\",\"output_index\":1,\"delta\":{JsonEncode(function.args)}}}",
+            "response.function_call_arguments.delta"));
+        items.Add(new($"{{\"type\":\"response.function_call_arguments.done\",\"item_id\":\"item_1\",\"output_index\":1,\"arguments\":{JsonEncode(function.args)}}}",
+            "response.function_call_arguments.done"));
+        items.Add(new($"{{\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{{\"type\":\"function_call\",\"id\":\"item_1\",\"call_id\":{JsonEncode(function.callId)},\"name\":{JsonEncode(function.name)},\"arguments\":{JsonEncode(function.args)},\"status\":\"completed\"}}}}",
+            "response.output_item.done"));
+        items.Add(new("{\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
+            "response.completed"));
+        return items;
+    }
+
     /// <summary>Concatenate every input_json_delta partial_json fragment in an IR stream.</summary>
     private static string ConcatIrInputJson(List<SseItem<string>> ir)
     {
@@ -600,32 +683,35 @@ public class CodexStreamRoundTripTests
         return byIndex.Values.Select(sb => sb.ToString()).ToList();
     }
 
-    /// <summary>Read the arguments off a Responses function_call_arguments.done event.</summary>
-    private static string ExtractFunctionCallArgumentsDone(List<SseItem<string>> stream)
+    /// <summary>Read the input off a Responses custom_tool_call_input.done event (field `input`).</summary>
+    private static string ExtractCustomToolInputDone(List<SseItem<string>> stream)
     {
         foreach (var e in stream)
         {
-            if (EventType(e) != "response.function_call_arguments.done") continue;
+            if (EventType(e) != "response.custom_tool_call_input.done") continue;
             using var doc = JsonDocument.Parse(e.Data);
-            if (doc.RootElement.TryGetProperty("arguments", out var a) && a.ValueKind == JsonValueKind.String)
+            if (doc.RootElement.TryGetProperty("input", out var a) && a.ValueKind == JsonValueKind.String)
                 return a.GetString() ?? "";
         }
-        throw new Xunit.Sdk.XunitException("no response.function_call_arguments.done event found");
+        throw new Xunit.Sdk.XunitException("no response.custom_tool_call_input.done event found");
     }
 
-    /// <summary>Read the arguments off the function_call output_item.done item.</summary>
-    private static string ExtractFunctionCallOutputItemArguments(List<SseItem<string>> stream)
+    /// <summary>Read (type, input) off the tool-call output_item.done for a custom_tool_call.</summary>
+    private static (string Type, string Input) ExtractCustomToolOutputItem(List<SseItem<string>> stream)
     {
         foreach (var e in stream)
         {
             if (EventType(e) != "response.output_item.done") continue;
             using var doc = JsonDocument.Parse(e.Data);
             if (doc.RootElement.TryGetProperty("item", out var item)
-                && item.TryGetProperty("type", out var it) && it.GetString() == "function_call"
-                && item.TryGetProperty("arguments", out var a) && a.ValueKind == JsonValueKind.String)
-                return a.GetString() ?? "";
+                && item.TryGetProperty("type", out var it) && it.GetString() == "custom_tool_call")
+            {
+                var input = item.TryGetProperty("input", out var inp) && inp.ValueKind == JsonValueKind.String
+                    ? inp.GetString() ?? "" : "";
+                return ("custom_tool_call", input);
+            }
         }
-        throw new Xunit.Sdk.XunitException("no function_call output_item.done event found");
+        throw new Xunit.Sdk.XunitException("no custom_tool_call output_item.done event found");
     }
 
     /// <summary>Concatenate the FIRST custom-tool call's input from its deltas (up to its .done).</summary>

@@ -234,23 +234,44 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
   fast, no deps). Anything needing live Copilot or `claude.exe` →
   `tests/CopilotBridge.Playground`, tagged `[Trait("Category", "Integration")]`
   so CI skips it. Forgetting the trait makes CI try to run it (and fail).
-- **🔴 A FIX IS NOT DONE UNTIL A REAL CLIENT RAN A COMPLEX TASK THROUGH IT.**
-  Unit tests + offline round-trips are necessary but NOT sufficient — they missed
-  two production bugs in a row (`additional_tools` 400, then custom-tool `exec`
-  argument loss AND its request-side echo 400) because no real multi-turn client
-  task exercised the full wire. Before claiming any bridge fix works, drive a
-  **real headless client through the bridge on a genuinely complex, multi-step,
-  multi-tool task** and confirm the whole turn completes AND the audit
-  (`request-traces/`) shows the expected wire shapes — not just HTTP 200:
-  - **Codex (`/codex/responses`, `gpt-*`)** → real `codex.exe` (desktop app path
-    exercises custom `exec`/grammar tools). The nasty failures show up on the
-    SECOND turn when the client echoes a prior tool call back — reproduce that.
+- **🔴 A FIX IS NOT DONE UNTIL A REAL HEADLESS CLIENT EXECUTED A COMPLEX TASK
+  THROUGH IT — THIS STEP IS NEVER OPTIONAL AND NEVER SKIPPABLE.** Unit tests,
+  offline round-trips, and "the bridge returned HTTP 200" are necessary but NOT
+  sufficient, and treating any of them as proof is forbidden. They missed *four*
+  production bugs in a row (`additional_tools` 400; custom-tool `exec` response-side
+  arg loss; its request-side echo 400; and exec being sent as `function_call` when
+  codex 0.144.1 requires `custom_tool_call`, so **every exec fataled with
+  "incompatible payload" while every bridge response was still 200**). That last one
+  is the cautionary tale: the fix was "verified" for weeks by bridge-side 200s and
+  green unit tests while real exec was 100% broken — because **a bridge 200 only
+  means the UPSTREAM accepted the request; it says NOTHING about whether the
+  DOWNSTREAM client could parse and execute what the bridge sent back.**
+  - **The acceptance standard is the CLIENT'S OWN EXECUTION RESULT, not the
+    bridge's status code or your own tests.** Drive a **real headless client**
+    (`codex.exe` / `claude.exe`) through the running bridge on a genuinely complex,
+    multi-step, multi-tool task, and confirm success from *the client's* evidence:
+    - **Codex** writes structured logs to `~/.codex/logs_2.sqlite` (table `logs`;
+      no `sqlite3` here — use a tiny `Microsoft.Data.Sqlite` reader, `Mode=ReadOnly`).
+      Success = the tool actually executed (output present, not `aborted`) AND **no**
+      `ERROR codex_core::tools::router` / `incompatible payload` / dispatch fatal.
+      A green bridge audit is not enough — read the client's log.
+    - **Claude Code** → confirm the real `claude.exe` turn completed and tool calls
+      executed, not just that the bridge streamed 200.
+  - **You may NOT substitute** a unit test, an in-process fixture, a synthetic SSE
+    replay, or a bridge-side 200 for this step. If the user asked for a
+    headless-client test, run the headless client. Doing otherwise once already
+    cost the user days of a silently-broken exec loop.
+  - **Codex (`/codex/responses`, `gpt-*`)** → real `codex.exe` (`codex exec
+    "<prompt>"` runs headless; the desktop app path exercises custom `exec`/grammar
+    tools). One turn is not enough — failures show on the SECOND turn (client echoes
+    a prior call back) or only when the client EXECUTES a call (payload-shape
+    mismatch). Reproduce execution, not just acceptance.
   - **Claude Code (`/cc`, `claude-*`)** → real `claude.exe`, multi-tool task.
   - **Claude Code → gpt** → point `claude.exe` at the bridge with the route
     mapping `claude-*` → a `gpt-*` backend (`docs/routing.md`) and run a complex
     task so the CC→gpt translation is exercised end-to-end.
-  - If you can't run the real client, say so and mark the fix UNVERIFIED — never
-    report it as working off unit tests alone.
+  - If you genuinely cannot run the real client, STOP, say so, and mark the fix
+    **UNVERIFIED** — never dress up unit-test or 200 evidence as a real-client pass.
 - **Logging/tracing:** the text log at `<exe-dir>/log/bridge-<stamp>.log` is
   always on (startup banner, stage debug, errors); per-request JSON audit is
   **opt-in** via `"Tracing": { "Enabled": true }` in `appsettings.json` (off by

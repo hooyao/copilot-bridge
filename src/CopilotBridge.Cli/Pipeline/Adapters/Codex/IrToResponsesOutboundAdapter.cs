@@ -108,6 +108,21 @@ internal sealed class AnthropicToResponsesStream
     private string _itemId = "";
     private string _toolCallId = "";
     private string _toolName = "";
+    // The tool's non-default namespace (gpt-5.6 collaboration/MCP), lifted off the
+    // tool_use content_block's bridge-internal marker (bridge_tool_namespace) that
+    // T3 stamped from Copilot's function_call item. Re-emitted on the Codex-facing
+    // function_call output item so Codex can round-trip it next turn. "" for a plain
+    // default-namespace tool → the namespace field is omitted (byte-identical).
+    private string _toolNamespace = "";
+    // True when the current tool_use block is a CUSTOM (grammar) tool — carried on
+    // T3's bridge_input_is_grammar_text marker. gpt-5.6's `exec` is a custom tool, and
+    // codex 0.144.1's exec handler ONLY accepts ToolPayload::Custom{input} (a
+    // custom_tool_call item + custom_tool_call_input.* events). Emitting it as a
+    // function_call (arguments) makes codex construct ToolPayload::Function and fatal
+    // with "tool exec invoked with incompatible payload" — every exec aborts at
+    // dispatch. So a marked block must re-emit the native custom_tool_call shape, NOT
+    // function_call. Reset per block in OnBlockStart/OnBlockStop.
+    private bool _toolIsCustom;
     private string _argsBuffer = "";
     private string _textBuffer = "";
     private string _stopReason = "end_turn";
@@ -237,9 +252,31 @@ internal sealed class AnthropicToResponsesStream
         {
             _toolCallId = cb.TryGetProperty("id", out var i) ? i.GetString() ?? "" : "";
             _toolName = cb.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+            // Lift the tool namespace off T3's bridge-internal marker (present only
+            // for a non-default-namespace gpt-5.6 collaboration/MCP tool) so the
+            // Codex-facing function_call carries it — required for the echo round-trip.
+            _toolNamespace = cb.TryGetProperty("bridge_tool_namespace", out var ns)
+                && ns.ValueKind == JsonValueKind.String
+                ? ns.GetString() ?? "" : "";
+            // A CUSTOM (grammar) tool — exec — must be re-emitted as a custom_tool_call
+            // item (codex 0.144.1's exec handler rejects a function_call as an
+            // "incompatible payload"). T3 stamped bridge_input_is_grammar_text on the block.
+            _toolIsCustom = cb.TryGetProperty("bridge_input_is_grammar_text", out var gt)
+                && gt.ValueKind == JsonValueKind.True;
+            // Observability tripwire: `exec` is a custom (grammar) tool and MUST be
+            // emitted as a custom_tool_call. If it ever arrives WITHOUT the grammar
+            // marker, T4 would emit a function_call → codex fatals "incompatible payload"
+            // and aborts every exec — a failure invisible in HTTP status (bridge stays
+            // 200). This warning surfaces that mis-shape at the bridge instead of only at
+            // the downstream codex abort. (The original exec bug had no such signal.)
+            if (!_toolIsCustom && string.Equals(_toolName, "exec", StringComparison.Ordinal))
+                _log?.LogWarning(
+                    "T4: tool 'exec' arrived WITHOUT the grammar marker — emitting it as a "
+                    + "function_call, which codex rejects as an incompatible payload. Upstream "
+                    + "may have changed the exec item shape (call_id={CallId}).", _toolCallId);
             _itemId = "item_" + _outputIndex;
             yield return Ev("response.output_item.added",
-                $"{{\"type\":\"response.output_item.added\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{FunctionCallItem(status: "in_progress")}}}");
+                $"{{\"type\":\"response.output_item.added\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{ToolCallItem(status: "in_progress")}}}");
         }
         else
         {
@@ -267,8 +304,14 @@ internal sealed class AnthropicToResponsesStream
             case "input_json_delta":
                 var pj = delta.TryGetProperty("partial_json", out var p) ? p.GetString() ?? "" : "";
                 _argsBuffer += pj;
-                yield return Ev("response.function_call_arguments.delta",
-                    $"{{\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":{_seq++},\"item_id\":{Enc(_itemId)},\"output_index\":{_outputIndex},\"delta\":{Enc(pj)}}}");
+                // Custom (grammar) tool → stream via custom_tool_call_input.delta (field
+                // `delta`); a plain function tool → function_call_arguments.delta. codex
+                // routes the input by the event family, so exec MUST use the custom one.
+                yield return _toolIsCustom
+                    ? Ev("response.custom_tool_call_input.delta",
+                        $"{{\"type\":\"response.custom_tool_call_input.delta\",\"sequence_number\":{_seq++},\"item_id\":{Enc(_itemId)},\"output_index\":{_outputIndex},\"delta\":{Enc(pj)}}}")
+                    : Ev("response.function_call_arguments.delta",
+                        $"{{\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":{_seq++},\"item_id\":{Enc(_itemId)},\"output_index\":{_outputIndex},\"delta\":{Enc(pj)}}}");
                 break;
         }
     }
@@ -278,12 +321,23 @@ internal sealed class AnthropicToResponsesStream
         if (_currentBlockType is null) yield break;
         if (_currentBlockType == "tool_use")
         {
-            yield return Ev("response.function_call_arguments.done",
-                $"{{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":{_seq++},\"item_id\":{Enc(_itemId)},\"output_index\":{_outputIndex},\"arguments\":{Enc(_argsBuffer)}}}");
-            var fnItem = FunctionCallItem(status: "completed");
-            _completedItems.Add(fnItem);
+            if (_toolIsCustom)
+            {
+                // Custom (grammar) tool — exec: close with custom_tool_call_input.done
+                // (field `input`) + a custom_tool_call output item (codex requires the
+                // Custom payload shape, else "incompatible payload").
+                yield return Ev("response.custom_tool_call_input.done",
+                    $"{{\"type\":\"response.custom_tool_call_input.done\",\"sequence_number\":{_seq++},\"item_id\":{Enc(_itemId)},\"output_index\":{_outputIndex},\"input\":{Enc(_argsBuffer)}}}");
+            }
+            else
+            {
+                yield return Ev("response.function_call_arguments.done",
+                    $"{{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":{_seq++},\"item_id\":{Enc(_itemId)},\"output_index\":{_outputIndex},\"arguments\":{Enc(_argsBuffer)}}}");
+            }
+            var toolItem = ToolCallItem(status: "completed");
+            _completedItems.Add(toolItem);
             yield return Ev("response.output_item.done",
-                $"{{\"type\":\"response.output_item.done\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{fnItem}}}");
+                $"{{\"type\":\"response.output_item.done\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{toolItem}}}");
         }
         else
         {
@@ -300,6 +354,8 @@ internal sealed class AnthropicToResponsesStream
         _currentBlockType = null;
         _argsBuffer = "";
         _textBuffer = "";
+        _toolNamespace = "";
+        _toolIsCustom = false;
     }
 
     private string MessageItem(string status, string? text)
@@ -310,8 +366,25 @@ internal sealed class AnthropicToResponsesStream
         return $"{{\"type\":\"message\",\"id\":{Enc(_itemId)},\"role\":\"assistant\",\"status\":{Enc(status)},\"content\":{content}}}";
     }
 
-    private string FunctionCallItem(string status) =>
-        $"{{\"type\":\"function_call\",\"id\":{Enc(_itemId)},\"call_id\":{Enc(_toolCallId)},\"name\":{Enc(_toolName)},\"arguments\":{Enc(_argsBuffer)},\"status\":{Enc(status)}}}";
+    /// <summary>
+    /// Build the Codex-facing tool-call output item. A CUSTOM (grammar) tool — exec —
+    /// is emitted as <c>{type:"custom_tool_call", call_id, [namespace,] name, input}</c>
+    /// (codex 0.144.1's exec handler requires the Custom payload; a function_call is
+    /// rejected as an "incompatible payload"). A plain function tool is
+    /// <c>{type:"function_call", call_id, [namespace,] name, arguments}</c>. Both forms
+    /// carry <c>namespace</c> when the block has one — per openai/codex
+    /// <c>ResponseItem.ts</c>, <c>custom_tool_call</c> also has a <c>namespace?</c> field.
+    /// Today exec is never namespaced, so the custom+namespace combination doesn't arise;
+    /// but emitting it on both forms means a future namespaced custom tool round-trips its
+    /// namespace instead of silently dropping it (which would 400 the echo turn).
+    /// </summary>
+    private string ToolCallItem(string status)
+    {
+        var nsField = _toolNamespace.Length > 0 ? $"\"namespace\":{Enc(_toolNamespace)}," : "";
+        return _toolIsCustom
+            ? $"{{\"type\":\"custom_tool_call\",\"id\":{Enc(_itemId)},\"call_id\":{Enc(_toolCallId)},{nsField}\"name\":{Enc(_toolName)},\"input\":{Enc(_argsBuffer)},\"status\":{Enc(status)}}}"
+            : $"{{\"type\":\"function_call\",\"id\":{Enc(_itemId)},\"call_id\":{Enc(_toolCallId)},{nsField}\"name\":{Enc(_toolName)},\"arguments\":{Enc(_argsBuffer)},\"status\":{Enc(status)}}}";
+    }
 
     private string ResponseEnvelope(string eventType, string status) =>
         $"{{\"type\":{Enc(eventType)},\"sequence_number\":{_seq++},\"response\":{{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":{Enc(status)},\"model\":{Enc(_model)},\"output\":[]}}}}";

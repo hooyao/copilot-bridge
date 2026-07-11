@@ -30,6 +30,7 @@ internal sealed record ResponsesRequest
     public string? Instructions { get; init; }
 
     /// <summary>The conversation items (maps to IR <c>messages</c>).</summary>
+    [JsonConverter(typeof(Converters.ResponsesInputItemListConverter))]
     public required IReadOnlyList<ResponsesInputItem> Input { get; init; }
 
     /// <summary>
