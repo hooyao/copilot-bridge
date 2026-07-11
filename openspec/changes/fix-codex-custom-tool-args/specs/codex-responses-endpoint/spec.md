@@ -16,7 +16,7 @@ The response-side streaming translator (T3, Responses SSE → IR) SHALL carry a 
 - **WHEN** a tool-call stream delivers the complete arguments only on its `.done` event with zero preceding deltas (custom tool `input`, or function tool `arguments`)
 - **THEN** T3 emits that full string once as an `input_json_delta` so the call is non-empty, and does NOT double-emit when deltas were present
 
-#### Scenario: Streaming SSE preserved with tool events
+#### Scenario: Streaming tool arguments normalized regardless of upstream shape
 
-- **WHEN** Copilot returns a streaming `/responses` result with tool calls
-- **THEN** the bridge forwards the event sequence — including the tool-argument events for both function and custom tools — and the terminal `response.completed`, with no `[DONE]` inserted
+- **WHEN** Copilot returns a streaming `/responses` result with tool calls, whose arguments arrive as either `function_call_arguments.*` (function tools) or `custom_tool_call_input.*` (custom/grammar tools)
+- **THEN** the bridge carries the arguments from EITHER upstream shape through the IR (as `input_json_delta`) and re-emits them to Codex as `response.function_call_arguments.*` (T4's single Codex-facing shape — the custom event types are NOT preserved on the wire), preserving the overall event order and the terminal `response.completed`, with no `[DONE]` inserted

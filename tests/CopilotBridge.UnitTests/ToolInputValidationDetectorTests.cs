@@ -94,7 +94,44 @@ public class ToolInputValidationDetectorTests
         Assert.False(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests: the BUFFERED (non-streaming) path also skips a custom-grammar tool.
+    /// A whole-response body with a marked tool_use whose <c>input</c> is a raw
+    /// string (not a JSON object) must NOT abort or flag under
+    /// <c>MalformedJsonAction/SchemaViolationAction=AbortOverloaded</c>. Mirrors the
+    /// streaming skip so the InspectBuffered branch is regression-covered (the
+    /// OpenSpec requires both paths).
+    /// </summary>
+    [Fact]
+    public void BufferedCustomGrammarTool_RawTextInput_NotValidated_EvenUnderAbort()
+    {
+        // A marked tool_use whose input is a raw string (exec JS), not a JSON object.
+        var body = System.Text.Encoding.UTF8.GetBytes("""
+        {"content":[{"type":"tool_use","id":"toolu_1","name":"exec","bridge_input_is_grammar_text":true,"input":"const r = await tools.shell_command({ command: \"ls\" });"}]}
+        """);
+        var ctx = Context(ToolSchema(), AsyncEnumerable(Array.Empty<SseItem<string>>()));
+        ctx.Response.Mode = ResponseMode.Buffered;
+        ctx.Response.BufferedBody = body;
+        var detector = new ToolInputValidationDetector(
+            new DetectorOrder<ToolInputValidationDetector>(4),
+            TestOptions.Snapshot(new ToolInputValidationOptions
+            {
+                Enabled = true,
+                PreserveStream = false,
+                MalformedJsonAction = ToolInputAction.AbortOverloaded,
+                SchemaViolationAction = ToolInputAction.AbortOverloaded,
+            }),
+            ctx,
+            NullLogger<ToolInputValidationDetector>.Instance);
+        detector.Begin();
 
+        var action = detector.InspectBuffered(body);
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.ToolInputInvalidDetected);
+    }
+
+    // --- Observe-by-default contract: the shipped default (both actions Observe) must
     // NOT abort an invalid tool call, because Claude Code self-heals it. It still
     // records tool_input_invalid=true for observability. This is the crux of the fix
     // for the AskUserQuestion "Server error mid-response" regression.

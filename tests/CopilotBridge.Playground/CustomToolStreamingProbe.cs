@@ -69,17 +69,21 @@ public class CustomToolStreamingProbe
         _output.WriteLine($"  item.type custom_tool_call present: {raw.Contains("\"custom_tool_call\"", StringComparison.Ordinal)}");
 
         // Print the first .done payload so we can read the field name (input vs arguments).
+        // The type string appears first in the `event:` line; the payload is the NEXT
+        // `data:` line AFTER it — search forward, not backward (a backward search from
+        // the event line lands on the PRECEDING delta's data line).
         var doneIdx = raw.IndexOf("custom_tool_call_input.done", StringComparison.Ordinal);
         if (doneIdx >= 0)
         {
-            var lineStart = raw.LastIndexOf("data:", doneIdx, StringComparison.Ordinal);
-            var lineEnd = raw.IndexOf('\n', doneIdx);
-            if (lineStart >= 0 && lineEnd > lineStart)
+            var lineStart = raw.IndexOf("data:", doneIdx, StringComparison.Ordinal);
+            if (lineStart >= 0)
             {
+                var nl = raw.IndexOf('\n', lineStart);
+                var lineEnd = nl >= 0 ? nl : raw.Length;
                 // Trim FIRST, then bound against the trimmed string's own length —
                 // Trim() drops the SSE line's trailing \r (and any padding), so the
-                // pre-trim segment length (lineEnd - lineStart) can exceed the
-                // trimmed length and index out of range for a short .done payload.
+                // pre-trim segment length can exceed the trimmed length and index out
+                // of range for a short .done payload.
                 var doneLine = raw[lineStart..lineEnd].Trim();
                 _output.WriteLine($"  .done payload: {doneLine[..Math.Min(500, doneLine.Length)]}");
             }
