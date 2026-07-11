@@ -1,0 +1,36 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_test"}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "output_index": 0, "item": {"type": "custom_tool_call", "id": "item_1", "call_id": "call_test123", "name": "exec", "input": "", "status": "in_progress"}}
+
+event: response.custom_tool_call_input.delta
+data: {"type": "response.custom_tool_call_input.delta", "item_id": "item_1", "output_index": 0, "delta": "const files ", "sequence_number": 10}
+
+event: response.custom_tool_call_input.delta
+data: {"type": "response.custom_tool_call_input.delta", "item_id": "item_1", "output_index": 0, "delta": "= await tool", "sequence_number": 11}
+
+event: response.custom_tool_call_input.delta
+data: {"type": "response.custom_tool_call_input.delta", "item_id": "item_1", "output_index": 0, "delta": "s.shell_comm", "sequence_number": 12}
+
+event: response.custom_tool_call_input.delta
+data: {"type": "response.custom_tool_call_input.delta", "item_id": "item_1", "output_index": 0, "delta": "and({ comman", "sequence_number": 13}
+
+event: response.custom_tool_call_input.delta
+data: {"type": "response.custom_tool_call_input.delta", "item_id": "item_1", "output_index": 0, "delta": "d: \"ls -la\",", "sequence_number": 14}
+
+event: response.custom_tool_call_input.delta
+data: {"type": "response.custom_tool_call_input.delta", "item_id": "item_1", "output_index": 0, "delta": " timeout_ms:", "sequence_number": 15}
+
+event: response.custom_tool_call_input.delta
+data: {"type": "response.custom_tool_call_input.delta", "item_id": "item_1", "output_index": 0, "delta": " 30000 });", "sequence_number": 16}
+
+event: response.custom_tool_call_input.done
+data: {"type": "response.custom_tool_call_input.done", "item_id": "item_1", "output_index": 0, "input": "const files = await tools.shell_command({ command: \"ls -la\", timeout_ms: 30000 });"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "output_index": 0, "item": {"type": "custom_tool_call", "id": "item_1", "call_id": "call_test123", "name": "exec", "input": "const files = await tools.shell_command({ command: \"ls -la\", timeout_ms: 30000 });", "status": "completed"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_test","status":"completed","usage":{"input_tokens":100,"output_tokens":50,"total_tokens":150}}}
+

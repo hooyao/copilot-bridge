@@ -92,6 +92,98 @@ public class CodexStreamRoundTripTests
         Assert.Contains("tool_use", delta.Data);
     }
 
+    // ── Custom-tool (grammar/exec) argument streaming ─────────────────────────
+    // CONTRACT: gpt-5.6's custom tools (Codex's `exec`) stream their input via
+    // response.custom_tool_call_input.delta/.done — NOT function_call_arguments.*.
+    // T3 must translate those to input_json_delta so the arguments reach the IR;
+    // otherwise Codex receives arguments:"" and ABORTS every exec call (the live
+    // bug: 239/242 custom-tool calls lost their arguments). Grounded in the live
+    // trace shape (request-traces custom_tool_call_input events) + the
+    // CustomToolStreamingProbe live probe.
+
+    [Fact]
+    public void CustomTool_T3_TranslatesInputDeltasToInputJsonDelta()
+    {
+        var ir = RunT3(SyntheticCustomToolStream(
+            callId: "call_abc", name: "exec",
+            inputFragments: ["const r = ", "await tools.shell({cmd:\"ls\"});"]));
+
+        // Opens a tool_use block for the custom tool...
+        Assert.Contains(ir, e => e.Data.Contains("\"type\":\"tool_use\"", StringComparison.Ordinal)
+            && e.Data.Contains("\"name\":\"exec\"", StringComparison.Ordinal)
+            && e.Data.Contains("\"id\":\"call_abc\"", StringComparison.Ordinal));
+        // ...and STREAMS the input as PER-FRAGMENT input_json_delta events — one per
+        // upstream delta, not a single done-fallback blob. Two fragments in ⇒ two
+        // input_json_delta out; this distinguishes the delta path from the .done
+        // fallback (so disabling the delta handler is caught even though .done would
+        // otherwise mask it).
+        var deltaCount = ir.Count(e => e.Data.Contains("input_json_delta", StringComparison.Ordinal));
+        Assert.Equal(2, deltaCount);
+        // Terminal stop is tool_use.
+        var delta = ir.First(e => EventType(e) == "message_delta");
+        Assert.Contains("tool_use", delta.Data);
+
+        // The concatenated input_json_delta partial_json equals the original input.
+        Assert.Equal("const r = await tools.shell({cmd:\"ls\"});", ConcatIrInputJson(ir));
+    }
+
+    [Fact]
+    public void CustomTool_FullRoundTrip_ArgumentsReachCodexNonEmpty()
+    {
+        // The end-to-end regression: T3→T4 must put the custom tool's full input on
+        // the Codex-facing function_call_arguments.done AND the function_call output
+        // item — NOT an empty string (which caused `aborted`).
+        const string fullInput = "const r = await tools.shell({cmd:\"ls\"});";
+        var roundTripped = RunT3ThenT4(SyntheticCustomToolStream(
+            callId: "call_abc", name: "exec",
+            inputFragments: ["const r = ", "await tools.shell({cmd:\"ls\"});"]));
+
+        var doneArgs = ExtractFunctionCallArgumentsDone(roundTripped);
+        Assert.Equal(fullInput, doneArgs);
+        Assert.NotEqual("", doneArgs);
+
+        // And the function_call output item (output_item.done) carries the same
+        // non-empty arguments — this is what Codex reads to execute the tool.
+        var itemArgs = ExtractFunctionCallOutputItemArguments(roundTripped);
+        Assert.Equal(fullInput, itemArgs);
+    }
+
+    [Fact]
+    public void CustomTool_DoneOnly_NoDeltas_StillCarriesInput()
+    {
+        // Robustness: if a stream sends the full input only on .done (no deltas),
+        // T3's .done fallback must still emit it so the call isn't empty.
+        const string fullInput = "print('hi')";
+        var ir = RunT3(SyntheticCustomToolStream(
+            callId: "call_z", name: "exec", inputFragments: [], doneInput: fullInput));
+
+        Assert.Contains(ir, e => e.Data.Contains("input_json_delta", StringComparison.Ordinal));
+        Assert.Equal(fullInput, ConcatIrInputJson(ir));
+    }
+
+    [Fact]
+    public void CustomTool_RealCapture_ArgumentsRoundTripEqualUpstream()
+    {
+        // Strongest guard: a REAL captured gpt-5.6-sol /responses SSE carrying a
+        // custom `exec` tool call (232 custom_tool_call_input.delta + the .done with
+        // the full 386-char input). Before the fix, T3 swallowed these and Codex got
+        // arguments:"" → aborted. Assert the arguments the round trip re-emits to
+        // Codex equal the upstream custom-tool input exactly.
+        var fixture = Path.Combine(FixturesDir, "responses-sse-customtool.txt");
+        var responses = ParseSse(fixture);
+
+        // Upstream custom-tool input = concatenated custom_tool_call_input.delta
+        // fragments (equivalently the .done `input`).
+        var upstreamInput = ConcatCustomToolInput(responses);
+        Assert.False(string.IsNullOrEmpty(upstreamInput), "fixture carried no custom-tool input");
+
+        var roundTripped = RunT3ThenT4(responses, model: "gpt-5.6-sol");
+        var codexArgs = ExtractFunctionCallArgumentsDone(roundTripped);
+
+        Assert.Equal(upstreamInput, codexArgs);
+        Assert.NotEqual("", codexArgs);
+    }
+
     [Theory]
     [InlineData("responses-sse-text.txt")]
     [InlineData("responses-sse-toolcall.txt")]
@@ -323,4 +415,104 @@ public class CodexStreamRoundTripTests
         catch (JsonException) { }
         return e.EventType ?? "";
     }
+
+    /// <summary>
+    /// Build a minimal Responses SSE for a CUSTOM tool call, mirroring the live
+    /// shape (request-traces + CustomToolStreamingProbe): response.created →
+    /// output_item.added (item.type=custom_tool_call, with call_id/name) →
+    /// custom_tool_call_input.delta × N → custom_tool_call_input.done (field
+    /// <c>input</c>) → output_item.done → response.completed. When
+    /// <paramref name="inputFragments"/> is empty, only the <c>.done</c> carries the
+    /// input (<paramref name="doneInput"/>) — the no-delta fallback case.
+    /// </summary>
+    private static List<SseItem<string>> SyntheticCustomToolStream(
+        string callId, string name, string[] inputFragments, string? doneInput = null)
+    {
+        var full = doneInput ?? string.Concat(inputFragments);
+        var items = new List<SseItem<string>>
+        {
+            new("{\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}", "response.created"),
+            new($"{{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{{\"type\":\"custom_tool_call\",\"id\":\"item_1\",\"call_id\":{JsonEncode(callId)},\"name\":{JsonEncode(name)},\"input\":\"\",\"status\":\"in_progress\"}}}}",
+                "response.output_item.added"),
+        };
+        foreach (var frag in inputFragments)
+            items.Add(new($"{{\"type\":\"response.custom_tool_call_input.delta\",\"item_id\":\"item_1\",\"output_index\":0,\"delta\":{JsonEncode(frag)}}}",
+                "response.custom_tool_call_input.delta"));
+        items.Add(new($"{{\"type\":\"response.custom_tool_call_input.done\",\"item_id\":\"item_1\",\"output_index\":0,\"input\":{JsonEncode(full)}}}",
+            "response.custom_tool_call_input.done"));
+        items.Add(new($"{{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{{\"type\":\"custom_tool_call\",\"id\":\"item_1\",\"call_id\":{JsonEncode(callId)},\"name\":{JsonEncode(name)},\"input\":{JsonEncode(full)},\"status\":\"completed\"}}}}",
+            "response.output_item.done"));
+        items.Add(new("{\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
+            "response.completed"));
+        return items;
+    }
+
+    /// <summary>Concatenate every input_json_delta partial_json fragment in an IR stream.</summary>
+    private static string ConcatIrInputJson(List<SseItem<string>> ir)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var e in ir)
+        {
+            if (EventType(e) != "content_block_delta") continue;
+            using var doc = JsonDocument.Parse(e.Data);
+            if (doc.RootElement.TryGetProperty("delta", out var d)
+                && d.TryGetProperty("type", out var dt) && dt.GetString() == "input_json_delta"
+                && d.TryGetProperty("partial_json", out var pj))
+                sb.Append(pj.GetString());
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>Read the arguments off a Responses function_call_arguments.done event.</summary>
+    private static string ExtractFunctionCallArgumentsDone(List<SseItem<string>> stream)
+    {
+        foreach (var e in stream)
+        {
+            if (EventType(e) != "response.function_call_arguments.done") continue;
+            using var doc = JsonDocument.Parse(e.Data);
+            if (doc.RootElement.TryGetProperty("arguments", out var a) && a.ValueKind == JsonValueKind.String)
+                return a.GetString() ?? "";
+        }
+        throw new Xunit.Sdk.XunitException("no response.function_call_arguments.done event found");
+    }
+
+    /// <summary>Read the arguments off the function_call output_item.done item.</summary>
+    private static string ExtractFunctionCallOutputItemArguments(List<SseItem<string>> stream)
+    {
+        foreach (var e in stream)
+        {
+            if (EventType(e) != "response.output_item.done") continue;
+            using var doc = JsonDocument.Parse(e.Data);
+            if (doc.RootElement.TryGetProperty("item", out var item)
+                && item.TryGetProperty("type", out var it) && it.GetString() == "function_call"
+                && item.TryGetProperty("arguments", out var a) && a.ValueKind == JsonValueKind.String)
+                return a.GetString() ?? "";
+        }
+        throw new Xunit.Sdk.XunitException("no function_call output_item.done event found");
+    }
+
+    /// <summary>Concatenate the FIRST custom-tool call's input from its deltas (up to its .done).</summary>
+    private static string ConcatCustomToolInput(List<SseItem<string>> stream)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var e in stream)
+        {
+            var et = EventType(e);
+            if (et == "response.custom_tool_call_input.delta")
+            {
+                using var doc = JsonDocument.Parse(e.Data);
+                if (doc.RootElement.TryGetProperty("delta", out var d) && d.ValueKind == JsonValueKind.String)
+                    sb.Append(d.GetString());
+            }
+            else if (et == "response.custom_tool_call_input.done")
+            {
+                // Stop at the first call's .done — ExtractFunctionCallArgumentsDone
+                // reads the first function_call_arguments.done symmetrically.
+                break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static string JsonEncode(string s) => JsonSerializer.Serialize(s);
 }
