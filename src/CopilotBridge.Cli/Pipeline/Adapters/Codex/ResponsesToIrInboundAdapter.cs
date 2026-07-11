@@ -94,6 +94,14 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
 
                 case ResponsesFunctionCallItem fc:
                     // Assistant tool call → an assistant message carrying a tool_use block.
+                    // A plain function tool's arguments are a JSON object; a CUSTOM
+                    // (grammar) tool's — Codex's `exec` echoed back — are raw TEXT
+                    // (JavaScript), which is not a JSON object. Carry either: JSON
+                    // objects become the tool_use.input element directly; raw text is
+                    // wrapped as a JSON string element + a block marker so T2 re-emits
+                    // it as the raw `arguments` string (Copilot accepts a function_call
+                    // with raw-text arguments — live-probed 200, CustomToolEchoProbe).
+                    var (fcInput, fcGrammarText) = ParseArgumentsToElement(fc.Arguments);
                     messages.Add(new MessageParam
                     {
                         Role = Role.Assistant,
@@ -101,7 +109,8 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                         {
                             Id = fc.CallId,
                             Name = fc.Name,
-                            Input = ParseArgumentsToElement(fc.Arguments, fc.CallId),
+                            Input = fcInput,
+                            ProviderExtensions = fcGrammarText ? BuildGrammarArgsPartBag() : null,
                         }],
                     });
                     break;
@@ -228,43 +237,83 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
         string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase) ? Role.Assistant : Role.User;
 
     /// <summary>
-    /// Parse the Responses <c>arguments</c> STRING into a JSON object element
-    /// (the IR <c>tool_use.input</c> is a JsonElement object). Byte-faithful: the
-    /// underlying JSON text is parsed once; T2 reserializes it back to a string.
+    /// Turn the Responses <c>arguments</c> STRING into the IR <c>tool_use.input</c>
+    /// element, returning whether it is <b>grammar text</b> (raw, non-JSON) rather
+    /// than a JSON object. Two shapes reach here:
+    /// <list type="bullet">
+    ///   <item>A plain FUNCTION tool's arguments — a JSON object. Parsed to that
+    ///         object element; <c>grammarText=false</c>. T2 re-emits via
+    ///         <c>GetRawText()</c>, byte-faithful.</item>
+    ///   <item>A CUSTOM (grammar) tool's arguments — raw text (Codex's `exec`
+    ///         echoing back JavaScript). NOT a JSON object; parsing it as JSON is the
+    ///         old bug (<c>ExpectedStartOfValueNotFound</c> → 400). Wrapped as a JSON
+    ///         STRING element and returned with <c>grammarText=true</c> so T2 re-emits
+    ///         the raw string as <c>arguments</c> (Copilot accepts a function_call with
+    ///         raw-text arguments — live-probed 200).</item>
+    /// </list>
+    /// Empty/whitespace → <c>{}</c> (a valid empty-input tool call), not grammar text.
     /// </summary>
     /// <remarks>
-    /// <c>arguments</c> is client data — prior tool calls the MODEL produced and
-    /// Codex echoed back — so a malformed value is a client fault, not an upstream
-    /// one (upstream is never contacted at T1). Surface it as
-    /// <see cref="CodexBadRequestException"/> → HTTP 400, naming the offending
-    /// <c>call_id</c>; letting the raw <see cref="JsonException"/> escape would hit
-    /// the endpoint's generic catch and mis-report a 502. A non-object value (a
-    /// JSON scalar or array) parses fine but violates the IR contract that
-    /// <c>tool_use.input</c> is an object, so it is rejected the same way. Empty or
-    /// whitespace arguments → <c>{}</c> (a valid empty-input tool call).
+    /// The old contract "<c>tool_use.input</c> MUST be a JSON object, else 400" was
+    /// wrong for custom tools: their input is legitimately non-JSON, and Copilot round-
+    /// trips it fine. We no longer reject a non-JSON / non-object value — we carry it
+    /// as grammar text. A JSON <em>scalar/array</em> (rare; a malformed function tool)
+    /// also lands in the grammar-text path rather than 400ing — carried through as its
+    /// raw text, which is the least-surprising, lossless behavior.
     /// </remarks>
-    private static JsonElement ParseArgumentsToElement(string arguments, string callId)
+    private static (JsonElement Input, bool GrammarText) ParseArgumentsToElement(string arguments)
     {
         if (string.IsNullOrWhiteSpace(arguments))
         {
             using var empty = JsonDocument.Parse("{}");
-            return empty.RootElement.Clone();
+            return (empty.RootElement.Clone(), false);
         }
-        JsonElement root;
         try
         {
             using var doc = JsonDocument.Parse(arguments);
-            root = doc.RootElement.Clone();
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                return (doc.RootElement.Clone(), false);
+            // Valid JSON but not an object (scalar/array) — treat as grammar text so
+            // it round-trips losslessly rather than being rejected.
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            throw new CodexBadRequestException(
-                $"function_call '{callId}' has malformed JSON arguments: {ex.Message}");
+            // Not JSON at all — a custom (grammar) tool's raw-text arguments.
         }
-        if (root.ValueKind != JsonValueKind.Object)
-            throw new CodexBadRequestException(
-                $"function_call '{callId}' arguments must be a JSON object, got {root.ValueKind}.");
-        return root;
+        // Wrap the raw arguments as a JSON string element; mark the block grammar-text.
+        return (WrapAsStringElement(arguments), true);
+    }
+
+    /// <summary>Wrap a raw string as a JSON string <see cref="JsonElement"/>.</summary>
+    private static JsonElement WrapAsStringElement(string raw)
+    {
+        using var buffer = new MemoryStream();
+        using (var w = new Utf8JsonWriter(buffer))
+            w.WriteStringValue(raw);
+        using var doc = JsonDocument.Parse(buffer.ToArray());
+        return doc.RootElement.Clone();
+    }
+
+    /// <summary>
+    /// Part-level <c>openai</c> bag marking a tool_use block whose <c>input</c> is
+    /// grammar text (raw, non-JSON) — so T2 re-emits <c>arguments</c> as the raw
+    /// string, not a JSON-serialized string. Same AOT-clean writer style as the
+    /// reasoning-id bag; null everywhere else so H1 stays byte-identical.
+    /// </summary>
+    private static ProviderExtensions BuildGrammarArgsPartBag()
+    {
+        using var buffer = new MemoryStream();
+        using (var w = new Utf8JsonWriter(buffer))
+        {
+            w.WriteStartObject();
+            w.WriteBoolean("grammar_text_arguments", true);
+            w.WriteEndObject();
+        }
+        using var doc = JsonDocument.Parse(buffer.ToArray());
+        return new ProviderExtensions
+        {
+            ByProvider = new Dictionary<string, JsonElement> { [OpenAiProviderKey] = doc.RootElement.Clone() },
+        };
     }
 
     /// <summary>

@@ -234,6 +234,23 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
   fast, no deps). Anything needing live Copilot or `claude.exe` →
   `tests/CopilotBridge.Playground`, tagged `[Trait("Category", "Integration")]`
   so CI skips it. Forgetting the trait makes CI try to run it (and fail).
+- **🔴 A FIX IS NOT DONE UNTIL A REAL CLIENT RAN A COMPLEX TASK THROUGH IT.**
+  Unit tests + offline round-trips are necessary but NOT sufficient — they missed
+  two production bugs in a row (`additional_tools` 400, then custom-tool `exec`
+  argument loss AND its request-side echo 400) because no real multi-turn client
+  task exercised the full wire. Before claiming any bridge fix works, drive a
+  **real headless client through the bridge on a genuinely complex, multi-step,
+  multi-tool task** and confirm the whole turn completes AND the audit
+  (`request-traces/`) shows the expected wire shapes — not just HTTP 200:
+  - **Codex (`/codex/responses`, `gpt-*`)** → real `codex.exe` (desktop app path
+    exercises custom `exec`/grammar tools). The nasty failures show up on the
+    SECOND turn when the client echoes a prior tool call back — reproduce that.
+  - **Claude Code (`/cc`, `claude-*`)** → real `claude.exe`, multi-tool task.
+  - **Claude Code → gpt** → point `claude.exe` at the bridge with the route
+    mapping `claude-*` → a `gpt-*` backend (`docs/routing.md`) and run a complex
+    task so the CC→gpt translation is exercised end-to-end.
+  - If you can't run the real client, say so and mark the fix UNVERIFIED — never
+    report it as working off unit tests alone.
 - **Logging/tracing:** the text log at `<exe-dir>/log/bridge-<stamp>.log` is
   always on (startup banner, stage debug, errors); per-request JSON audit is
   **opt-in** via `"Tracing": { "Enabled": true }` in `appsettings.json` (off by
