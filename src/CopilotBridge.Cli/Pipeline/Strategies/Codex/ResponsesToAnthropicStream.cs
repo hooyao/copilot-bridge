@@ -15,9 +15,14 @@ namespace CopilotBridge.Cli.Pipeline.Strategies.Codex;
 ///  output_text.delta               → content_block_delta (text_delta)
 ///  output_item.added (function_call)→ content_block_start (tool_use, index n)
 ///  function_call_arguments.delta   → content_block_delta (input_json_delta)
+///  output_item.added (custom_tool_call)→ content_block_start (tool_use, index n)
+///  custom_tool_call_input.delta    → content_block_delta (input_json_delta)
 ///  output_item.done                → content_block_stop (index n)
 ///  response.completed              → message_delta (stop_reason) + message_stop
 /// </code>
+/// Custom tools (Codex's grammar-constrained `exec`) stream their input under the
+/// <c>custom_tool_call_input.*</c> events, distinct from a plain function tool's
+/// <c>function_call_arguments.*</c>; both map to the same IR <c>input_json_delta</c>.
 /// Stateful: tracks the current content-block index and which output items are
 /// open. Emits raw <see cref="SseItem{T}"/> with the Anthropic event name + JSON
 /// data, exactly like the Anthropic passthrough path produces.
@@ -45,6 +50,12 @@ internal sealed class ResponsesToAnthropicStream
     private bool _terminated;
     private int _blockIndex = -1;
     private bool _blockOpen;
+    // True once the current tool-call block has received at least one argument
+    // delta (function_call_arguments.delta OR custom_tool_call_input.delta). Lets
+    // the matching `.done` event emit the full argument string as a fallback ONLY
+    // when the stream sent no deltas — avoiding a double-emit when it did. Reset
+    // each time a new output item opens.
+    private bool _blockSawArgsDelta;
     private string _stopReason = "end_turn";
     // Usage carried off the upstream terminal (response.completed/incomplete), so
     // the IR message_delta reports Copilot's real counts instead of zeros.
@@ -112,8 +123,60 @@ internal sealed class ResponsesToAnthropicStream
 
                 case "response.function_call_arguments.delta":
                     if (root.TryGetProperty("delta", out var fd) && fd.ValueKind == JsonValueKind.String)
+                    {
+                        _blockSawArgsDelta = true;
                         yield return Sse("content_block_delta", BlockDeltaJson(_blockIndex,
                             $"{{\"type\":\"input_json_delta\",\"partial_json\":{JsonEncode(fd.GetString()!)}}}"));
+                    }
+                    break;
+
+                // Symmetric no-delta fallback for FUNCTION tools (mirrors the custom
+                // tool `.done` case below). Real Copilot function tools stream via
+                // deltas, so this is normally a no-op; but if a stream ever delivered
+                // a function call's arguments only on `.done` (zero deltas), emit them
+                // once so the call isn't empty — the same abort symptom custom tools
+                // hit. function_call_arguments.done carries the full string under
+                // `arguments` (custom tools use `input`). Guarded by _blockSawArgsDelta.
+                case "response.function_call_arguments.done":
+                    if (!_blockSawArgsDelta && _blockOpen
+                        && root.TryGetProperty("arguments", out var fda) && fda.ValueKind == JsonValueKind.String
+                        && fda.GetString() is { Length: > 0 } fullArgs)
+                    {
+                        yield return Sse("content_block_delta", BlockDeltaJson(_blockIndex,
+                            $"{{\"type\":\"input_json_delta\",\"partial_json\":{JsonEncode(fullArgs)}}}"));
+                    }
+                    break;
+
+                // Custom tools (Codex's `exec`/grammar tools — item.type
+                // `custom_tool_call`, opened as a tool_use block in OnOutputItemAdded)
+                // stream their input via custom_tool_call_input.* events, NOT
+                // function_call_arguments.*. Same IR mapping: each delta is an
+                // input_json_delta fragment. Without this, gpt-5.6 exec-tool arguments
+                // are dropped and Codex receives arguments:"" → aborts every call.
+                // The delta field is "delta" (same as function_call_arguments.delta).
+                case "response.custom_tool_call_input.delta":
+                    if (root.TryGetProperty("delta", out var cd) && cd.ValueKind == JsonValueKind.String)
+                    {
+                        _blockSawArgsDelta = true;
+                        yield return Sse("content_block_delta", BlockDeltaJson(_blockIndex,
+                            $"{{\"type\":\"input_json_delta\",\"partial_json\":{JsonEncode(cd.GetString()!)}}}"));
+                    }
+                    break;
+
+                // custom_tool_call_input.done carries the COMPLETE input under the
+                // field `input` (NOT `arguments`). Normally the deltas above already
+                // streamed it, so this is a no-op; but if a stream sent the full input
+                // only on `.done` (no deltas), emit it once as a single fragment so the
+                // tool call is never empty. Guard on _blockSawArgsDelta to avoid a
+                // double-emit on the normal delta path.
+                case "response.custom_tool_call_input.done":
+                    if (!_blockSawArgsDelta && _blockOpen
+                        && root.TryGetProperty("input", out var ci) && ci.ValueKind == JsonValueKind.String
+                        && ci.GetString() is { Length: > 0 } fullInput)
+                    {
+                        yield return Sse("content_block_delta", BlockDeltaJson(_blockIndex,
+                            $"{{\"type\":\"input_json_delta\",\"partial_json\":{JsonEncode(fullInput)}}}"));
+                    }
                     break;
 
                 case "response.output_item.done":
@@ -219,6 +282,7 @@ internal sealed class ResponsesToAnthropicStream
         }
 
         _blockIndex++;
+        _blockSawArgsDelta = false;   // fresh block: no argument deltas seen yet
         if (itemType is "function_call" or "custom_tool_call")
         {
             _stopReason = "tool_use";
@@ -226,11 +290,24 @@ internal sealed class ResponsesToAnthropicStream
             var name = item.TryGetProperty("name", out var nm) ? nm.GetString() ?? "" : "";
             if (string.IsNullOrEmpty(callId) || string.IsNullOrEmpty(name))
                 _log?.LogWarning(
-                    "T3: function_call item missing required field(s) (call_id='{CallId}', name='{Name}') — "
-                    + "the tool call will be unmatchable downstream", callId, name);
+                    "T3: {ItemType} item missing required field(s) (call_id='{CallId}', name='{Name}') — "
+                    + "the tool call will be unmatchable downstream", itemType, callId, name);
             _blockOpen = true;
+            // A custom_tool_call's "input" is arbitrary grammar-constrained text
+            // (Codex's `exec` streams raw JavaScript), NOT a JSON object. It still
+            // rides the IR as input_json_delta (T4 re-emits it as the tool's
+            // arguments verbatim), but the response-side ToolInputValidationDetector
+            // must NOT try to JSON-parse it — otherwise every valid exec call trips
+            // "malformed JSON" (and an Abort-configured deployment would kill it).
+            // Mark the block so that detector skips JSON validation. This is a
+            // bridge-internal IR marker: it never reaches a Codex client (T4 rebuilds
+            // the Responses output item and ignores unknown content_block fields) and
+            // never appears on the /cc path (only T3 emits it, for Codex custom tools).
+            var customMarker = itemType == "custom_tool_call"
+                ? ",\"bridge_input_is_grammar_text\":true"
+                : "";
             yield return Sse("content_block_start",
-                $"{{\"type\":\"content_block_start\",\"index\":{_blockIndex},\"content_block\":{{\"type\":\"tool_use\",\"id\":{JsonEncode(callId)},\"name\":{JsonEncode(name)},\"input\":{{}}}}}}");
+                $"{{\"type\":\"content_block_start\",\"index\":{_blockIndex},\"content_block\":{{\"type\":\"tool_use\",\"id\":{JsonEncode(callId)},\"name\":{JsonEncode(name)},\"input\":{{}}{customMarker}}}}}");
         }
         else
         {

@@ -54,6 +54,11 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
     // and streamed deltas can never be concatenated into corrupt JSON — deltas win
     // when both are present (see StopBlock).
     private string? _currentStartInput;
+    // True when the current tool_use block's input is grammar-constrained TEXT, not
+    // a JSON object (a Codex custom tool like `exec` — T3 marks the content_block
+    // with bridge_input_is_grammar_text). Such input must NOT be JSON-validated:
+    // parsing raw JavaScript as JSON would falsely trip "malformed JSON".
+    private bool _currentBlockIsGrammarText;
 
     public ToolInputValidationDetector(
         DetectorOrder<ToolInputValidationDetector> order,
@@ -145,6 +150,14 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
                     continue;
                 }
 
+                // Skip a custom-grammar tool (Codex `exec`): its input is raw text,
+                // not a JSON object to validate (mirrors the streaming StopBlock skip).
+                if (block.TryGetProperty("bridge_input_is_grammar_text", out var g)
+                    && g.ValueKind == JsonValueKind.True)
+                {
+                    continue;
+                }
+
                 var toolName = block.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : null;
                 if (!ValidateToolInput(toolName, input, out var reason))
                 {
@@ -187,6 +200,11 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
             _currentIndex = root.TryGetProperty("index", out var index) && index.TryGetInt32(out var i) ? i : -1;
             _currentToolName = block.TryGetProperty("name", out var name) ? name.GetString() : null;
             _currentInput = new StringBuilder();
+            // A custom-grammar tool (Codex `exec`) marks its block: its input is raw
+            // text, so skip JSON validation for it (see StopBlock).
+            _currentBlockIsGrammarText =
+                block.TryGetProperty("bridge_input_is_grammar_text", out var g)
+                && g.ValueKind == JsonValueKind.True;
 
             if (block.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object)
             {
@@ -289,12 +307,20 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
         }
 
         var toolName = _currentToolName;
+        var isGrammarText = _currentBlockIsGrammarText;
         // Deltas are authoritative; fall back to the start-carried input only when no
         // delta fragments arrived (so start-seed and deltas can never concatenate).
         var raw = _currentInput.Length > 0
             ? _currentInput.ToString()
             : _currentStartInput ?? "";
         ResetCurrentBlock();
+
+        // A custom-grammar tool's input is raw text (JS for `exec`), not JSON — it
+        // has no JSON shape to validate and no InputSchema. Skip validation entirely
+        // so a valid exec call is never flagged "malformed JSON" (which, under an
+        // Abort* action, would kill every exec call before T4).
+        if (isGrammarText)
+            return DetectionAction.None;
 
         JsonDocument inputDoc;
         try
@@ -382,6 +408,7 @@ internal sealed class ToolInputValidationDetector : AbstractOrderAwareDetector<T
         _currentToolName = null;
         _currentBlockIsTool = false;
         _currentStartInput = null;
+        _currentBlockIsGrammarText = false;
     }
 
     private static bool TryGetObject(JsonElement root, string name, out JsonElement value)

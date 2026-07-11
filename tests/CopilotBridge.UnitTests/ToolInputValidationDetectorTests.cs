@@ -58,6 +58,79 @@ public class ToolInputValidationDetectorTests
         Assert.False(ctx.ToolInputInvalidDetected);
     }
 
+    /// <summary>
+    /// Tests: a custom-GRAMMAR tool (Codex `exec`) whose input is raw JavaScript —
+    /// NOT a JSON object — is NOT validated as JSON, even under the most aggressive
+    /// config (MalformedJsonAction=AbortOverloaded). Its content_block carries the
+    /// bridge_input_is_grammar_text marker T3 sets, so the detector skips it entirely.
+    /// This is the regression guard for the gpt-5.6 exec-tool argument fix: without
+    /// the skip, every valid exec call would parse as malformed JSON and, under an
+    /// Abort action, be killed before reaching T4.
+    /// Expects: no abort, and ToolInputInvalidDetected stays false (it's valid, just
+    /// not JSON).
+    /// </summary>
+    [Fact]
+    public async Task CustomGrammarTool_RawTextInput_NotJsonValidated_EvenUnderAbort()
+    {
+        // Raw JS — deliberately NOT valid JSON. Under the old path this would trip
+        // "malformed JSON" and abort.
+        const string execJs = "const r = await tools.shell_command({ command: \"ls -la\" });";
+        var ctx = Context(ToolSchema(), CustomGrammarToolStream("exec", execJs));
+        var detector = new ToolInputValidationDetector(
+            new DetectorOrder<ToolInputValidationDetector>(4),
+            TestOptions.Snapshot(new ToolInputValidationOptions
+            {
+                Enabled = true,
+                MalformedJsonAction = ToolInputAction.AbortOverloaded,
+                SchemaViolationAction = ToolInputAction.AbortOverloaded,
+            }),
+            ctx,
+            NullLogger<ToolInputValidationDetector>.Instance);
+        detector.Begin();
+
+        var actions = await Feed(detector, ctx.Response.EventStream!);
+
+        Assert.All(actions, a => Assert.Equal(DetectionActionKind.None, a.Kind));
+        Assert.False(ctx.ToolInputInvalidDetected);
+    }
+
+    /// <summary>
+    /// Tests: the BUFFERED (non-streaming) path also skips a custom-grammar tool.
+    /// A whole-response body with a marked tool_use whose <c>input</c> is a raw
+    /// string (not a JSON object) must NOT abort or flag under
+    /// <c>MalformedJsonAction/SchemaViolationAction=AbortOverloaded</c>. Mirrors the
+    /// streaming skip so the InspectBuffered branch is regression-covered (the
+    /// OpenSpec requires both paths).
+    /// </summary>
+    [Fact]
+    public void BufferedCustomGrammarTool_RawTextInput_NotValidated_EvenUnderAbort()
+    {
+        // A marked tool_use whose input is a raw string (exec JS), not a JSON object.
+        var body = System.Text.Encoding.UTF8.GetBytes("""
+        {"content":[{"type":"tool_use","id":"toolu_1","name":"exec","bridge_input_is_grammar_text":true,"input":"const r = await tools.shell_command({ command: \"ls\" });"}]}
+        """);
+        var ctx = Context(ToolSchema(), AsyncEnumerable(Array.Empty<SseItem<string>>()));
+        ctx.Response.Mode = ResponseMode.Buffered;
+        ctx.Response.BufferedBody = body;
+        var detector = new ToolInputValidationDetector(
+            new DetectorOrder<ToolInputValidationDetector>(4),
+            TestOptions.Snapshot(new ToolInputValidationOptions
+            {
+                Enabled = true,
+                PreserveStream = false,
+                MalformedJsonAction = ToolInputAction.AbortOverloaded,
+                SchemaViolationAction = ToolInputAction.AbortOverloaded,
+            }),
+            ctx,
+            NullLogger<ToolInputValidationDetector>.Instance);
+        detector.Begin();
+
+        var action = detector.InspectBuffered(body);
+
+        Assert.Equal(DetectionActionKind.None, action.Kind);
+        Assert.False(ctx.ToolInputInvalidDetected);
+    }
+
     // --- Observe-by-default contract: the shipped default (both actions Observe) must
     // NOT abort an invalid tool call, because Claude Code self-heals it. It still
     // records tool_input_invalid=true for observability. This is the crux of the fix
@@ -787,6 +860,27 @@ public class ToolInputValidationDetectorTests
             "{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":" + JsonSerializer.Serialize(toolName) + ",\"input\":{}}}",
             "content_block_start");
         foreach (var fragment in Split(inputJson, 12))
+        {
+            yield return new SseItem<string>(
+                "{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":" + JsonSerializer.Serialize(fragment) + "}}",
+                "content_block_delta");
+        }
+        yield return new SseItem<string>("""{"type":"content_block_stop","index":1}""", "content_block_stop");
+        await Task.CompletedTask;
+    }
+
+    // A custom-GRAMMAR tool_use block (Codex `exec`): the content_block_start carries
+    // the bridge_input_is_grammar_text marker (exactly what T3 emits), and the input
+    // is arbitrary TEXT (raw JavaScript), NOT a JSON object. The detector must skip
+    // JSON validation for it. inputText is streamed as input_json_delta fragments,
+    // mirroring how T3 forwards custom_tool_call_input deltas.
+    private static async IAsyncEnumerable<SseItem<string>> CustomGrammarToolStream(string toolName, string inputText)
+    {
+        yield return new SseItem<string>(
+            "{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":"
+            + JsonSerializer.Serialize(toolName) + ",\"input\":{},\"bridge_input_is_grammar_text\":true}}",
+            "content_block_start");
+        foreach (var fragment in Split(inputText, 12))
         {
             yield return new SseItem<string>(
                 "{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":" + JsonSerializer.Serialize(fragment) + "}}",
