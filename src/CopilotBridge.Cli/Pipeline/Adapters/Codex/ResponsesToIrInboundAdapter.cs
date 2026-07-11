@@ -155,24 +155,17 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                     }
                     break;
 
-                case ResponsesAdditionalToolsItem addTools:
-                    // Harness tool-registration preamble (gpt-5.6+) — opaque, not
-                    // conversation content, re-emitted verbatim. It rides the SAME
-                    // ordered passthrough mechanism as unknown items (recording its input
-                    // position via messages.Count) so true input order is preserved even
-                    // if it is not input[0] — every capture shows it first, but the
-                    // Responses schema doesn't guarantee that, and hoisting it ahead of a
-                    // preceding unknown item would reorder the array.
-                    passthroughItems.Add((messages.Count, SerializeAdditionalTools(addTools)));
-                    break;
-
                 case ResponsesUnknownItem unknown:
-                    // An input[] type the bridge doesn't model — a gpt-5.6 inter-agent
+                    // An input[] type the bridge doesn't model — the gpt-5.6 harness
+                    // `additional_tools` tool-registration preamble, an inter-agent
                     // `agent_message`, or a future feature (tool_search_call, compaction,
                     // …). Forward it VERBATIM, in order — never reject it, never lose a
-                    // field (the whole item rides as unknown.Raw, encrypted_content and
-                    // all). This is the universal escape hatch that ends the per-type
-                    // whack-a-mole.
+                    // field (the WHOLE item rides as unknown.Raw, every sibling field and
+                    // the encrypted_content blob included). This is the universal escape
+                    // hatch that ends the per-type whack-a-mole. Order is preserved via
+                    // the recorded IR-message count, so an item that precedes another opaque
+                    // item (e.g. an unknown before the additional_tools preamble) keeps its
+                    // place.
                     passthroughItems.Add((messages.Count, unknown.Raw));
                     break;
             }
@@ -444,31 +437,6 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
         {
             ByProvider = new Dictionary<string, JsonElement> { [OpenAiProviderKey] = doc.RootElement.Clone() },
         };
-    }
-
-    /// <summary>
-    /// Re-serialize an <see cref="ResponsesAdditionalToolsItem"/> to a byte-faithful
-    /// <c>{type:"additional_tools", role?, tools}</c> element for the ordered passthrough.
-    /// <c>tools</c> is written with <c>WriteRawValue(GetRawText())</c> — NOT
-    /// <c>WriteTo</c> — so the original lexical bytes survive (Copilot's reserved
-    /// <c>collaboration.*</c> schemas ride here). T2 re-emits it into <c>input[]</c> at
-    /// its recorded position.
-    /// </summary>
-    private static JsonElement SerializeAdditionalTools(ResponsesAdditionalToolsItem addTools)
-    {
-        using var buffer = new MemoryStream();
-        using (var w = new Utf8JsonWriter(buffer))
-        {
-            w.WriteStartObject();
-            w.WriteString("type", "additional_tools");
-            if (addTools.Role is { } role)
-                w.WriteString("role", role);
-            w.WritePropertyName("tools");
-            w.WriteRawValue(addTools.Tools.GetRawText());
-            w.WriteEndObject();
-        }
-        using var doc = JsonDocument.Parse(buffer.ToArray());
-        return doc.RootElement.Clone();
     }
 
     /// <summary>

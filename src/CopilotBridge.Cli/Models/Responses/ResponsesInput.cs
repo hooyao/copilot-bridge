@@ -6,9 +6,9 @@ namespace CopilotBridge.Cli.Models.Responses;
 /// <summary>
 /// One item in the Responses <c>input[]</c> array. Polymorphic by <c>type</c>:
 /// a conversation <c>message</c>, a <c>function_call</c> (assistant tool call), a
-/// <c>function_call_output</c> (tool result), a <c>reasoning</c> item (carries
-/// <c>encrypted_content</c> for multi-turn), or an <c>additional_tools</c> harness
-/// preamble. Every OTHER type — <c>agent_message</c> (gpt-5.6 inter-agent),
+/// <c>function_call_output</c> (tool result), or a <c>reasoning</c> item (carries
+/// <c>encrypted_content</c> for multi-turn). Every OTHER type — the
+/// <c>additional_tools</c> harness preamble, <c>agent_message</c> (gpt-5.6 inter-agent),
 /// <c>tool_search_call</c>, <c>custom_tool_call</c>, <c>compaction</c>, … — is carried
 /// opaquely as a <see cref="ResponsesUnknownItem"/> and re-emitted verbatim (see the
 /// remarks). Mirrors the OpenAI SDK <c>ResponseInputItem</c> union (research §3.2 / the
@@ -28,20 +28,20 @@ namespace CopilotBridge.Cli.Models.Responses;
 /// to their records via the source generator; an UNKNOWN <c>type</c> is captured
 /// whole as a <see cref="ResponsesUnknownItem"/> (opaque, byte-faithful) and re-emitted
 /// verbatim by T2 — so a new item type is carried through, never rejected.
-/// <para>Only types the bridge actually INTERPRETS are modeled here. <c>agent_message</c>
-/// is deliberately NOT modeled: the bridge only forwards it, so a typed record would be
-/// write-only ceremony that also re-introduces the very 400-on-shape-evolution this
-/// converter exists to end (a <c>required</c> field missing on an evolved variant would
-/// throw). It rides the <see cref="ResponsesUnknownItem"/> path, which is strictly more
-/// byte-faithful (whole <c>Raw</c> element incl. <c>encrypted_content</c> and any future
-/// sibling fields).</para>
+/// <para>Only types the bridge actually INTERPRETS are modeled here. Opaque items the
+/// bridge merely FORWARDS — <c>additional_tools</c> (harness tool-registration preamble)
+/// and <c>agent_message</c> (inter-agent) — are deliberately NOT modeled: a typed record
+/// would be write-only ceremony that also re-introduces the 400-on-shape-evolution this
+/// converter exists to end (a <c>required</c> field missing, or an unmodeled sibling
+/// field silently dropped, on an evolved variant). They ride the
+/// <see cref="ResponsesUnknownItem"/> path, which is strictly more byte-faithful (whole
+/// <c>Raw</c> element incl. every sibling field, in input order).</para>
 /// </remarks>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
 [JsonDerivedType(typeof(ResponsesMessageItem), "message")]
 [JsonDerivedType(typeof(ResponsesFunctionCallItem), "function_call")]
 [JsonDerivedType(typeof(ResponsesFunctionCallOutputItem), "function_call_output")]
 [JsonDerivedType(typeof(ResponsesReasoningItem), "reasoning")]
-[JsonDerivedType(typeof(ResponsesAdditionalToolsItem), "additional_tools")]
 internal abstract record ResponsesInputItem;
 
 /// <summary>
@@ -123,34 +123,6 @@ internal sealed record ResponsesReasoningItem : ResponsesInputItem
     /// <summary>Summary parts, if present — held opaque.</summary>
     public JsonElement? Summary { get; init; }
     public JsonElement? Content { get; init; }
-}
-
-/// <summary>
-/// A Codex harness <b>tool-registration preamble</b> — first observed from the
-/// gpt-5.6 family (2026-07 captures, always <c>input[0]</c> with
-/// <c>role:"developer"</c>). It registers "additional" tools the harness makes
-/// available for the turn (an <c>exec</c> JS sandbox with a Lark grammar, <c>wait</c>,
-/// <c>request_user_input</c>, and a <c>collaboration</c> sub-agent namespace)
-/// SEPARATELY from the request-level <c>tools[]</c>. Copilot's native
-/// <c>/responses</c> accepts it as an <c>input[]</c> element verbatim (live-probed
-/// 200 — <c>ResponsesProbe.AdditionalToolsVerbatim</c>).
-/// </summary>
-/// <remarks>
-/// The bridge does NOT interpret this item: it is carried through the IR verbatim
-/// (T1 → <c>ProviderExtensions["openai"]</c> bag, T2 → re-emitted into
-/// <c>input[]</c>). <c>Tools</c> is therefore an opaque <see cref="JsonElement"/>,
-/// not a typed union — and it MUST stay byte-faithful because the nested
-/// <c>collaboration.*</c> tools carry Copilot's reserved built-in schemas, which
-/// Copilot validates and 400s on if altered. Modeling this variant is what stops
-/// the inbound deserializer from throwing
-/// <c>Polymorphism_UnrecognizedTypeDiscriminator</c> on a shape Copilot accepts.
-/// </remarks>
-internal sealed record ResponsesAdditionalToolsItem : ResponsesInputItem
-{
-    /// <summary>Codex sends <c>"developer"</c> (the harness preamble role).</summary>
-    public string? Role { get; init; }
-    /// <summary>The registered tools array — opaque, carried and re-emitted verbatim.</summary>
-    public required JsonElement Tools { get; init; }
 }
 
 /// <summary>

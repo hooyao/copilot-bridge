@@ -29,20 +29,22 @@ namespace CopilotBridge.Cli.Models.Responses.Converters;
 /// </remarks>
 internal sealed class ResponsesInputItemListConverter : JsonConverter<IReadOnlyList<ResponsesInputItem>>
 {
-    // The item `type` discriminators the bridge models. Kept in sync with the
-    // [JsonDerivedType] attributes on ResponsesInputItem BY A TEST
-    // (KnownTypesMatchesDerivedTypesTests) — not just by hope: if the two drift, a
-    // modeled type would silently route to the unknown passthrough. Anything not here
-    // → ResponsesUnknownItem (opaque, byte-faithful). Ordinal: the wire uses lowercase
-    // snake_case types.
-    private static readonly HashSet<string> KnownTypes = new(StringComparer.Ordinal)
-    {
-        "message",
-        "function_call",
-        "function_call_output",
-        "reasoning",
-        "additional_tools",
-    };
+    // The set of modeled item `type` discriminators, DERIVED from the source-generated
+    // polymorphism metadata ([JsonDerivedType] attributes on ResponsesInputItem) rather
+    // than hand-maintained. This makes drift unrepresentable in BOTH directions: adding
+    // or removing a [JsonDerivedType] automatically moves the type between the known
+    // (typed bind) and unknown (opaque passthrough) branches — no parallel list to forget,
+    // and no stale entry that would send the known branch into a throw on a now-unmodeled
+    // discriminator. Computed once, lazily, from the typeInfo the converter is handed
+    // (AOT-clean; the generator populates PolymorphismOptions.DerivedTypes). Ordinal: the
+    // wire uses lowercase snake_case types.
+    private HashSet<string>? _knownTypes;
+
+    private HashSet<string> KnownTypesFrom(JsonTypeInfo<ResponsesInputItem> typeInfo) =>
+        _knownTypes ??= (typeInfo.PolymorphismOptions?.DerivedTypes ?? [])
+            .Select(d => d.TypeDiscriminator as string)
+            .Where(s => s is { Length: > 0 })
+            .ToHashSet(StringComparer.Ordinal)!;
 
     public override IReadOnlyList<ResponsesInputItem> Read(
         ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
@@ -51,6 +53,7 @@ internal sealed class ResponsesInputItemListConverter : JsonConverter<IReadOnlyL
             throw new JsonException($"Expected array for input[]; got {reader.TokenType}.");
 
         var typeInfo = (JsonTypeInfo<ResponsesInputItem>)options.GetTypeInfo(typeof(ResponsesInputItem));
+        var knownTypes = KnownTypesFrom(typeInfo);
         var list = new List<ResponsesInputItem>();
 
         reader.Read();
@@ -64,7 +67,7 @@ internal sealed class ResponsesInputItemListConverter : JsonConverter<IReadOnlyL
                 ? t.GetString() ?? ""
                 : "";
 
-            if (type.Length > 0 && KnownTypes.Contains(type))
+            if (type.Length > 0 && knownTypes.Contains(type))
             {
                 // Known type → bind through the source-generated polymorphic metadata,
                 // exactly as the default path would (no behavior change).

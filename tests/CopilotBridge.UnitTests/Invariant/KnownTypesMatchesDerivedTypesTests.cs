@@ -7,19 +7,15 @@ using Xunit;
 namespace CopilotBridge.UnitTests.Invariant;
 
 /// <summary>
-/// Guards the drift hazard the converter comment warns about: the converter's
-/// <c>KnownTypes</c> set must stay in sync with the <c>[JsonDerivedType]</c>
-/// discriminators on <see cref="ResponsesInputItem"/>. If they drift, a modeled type
-/// silently routes through the unknown-item passthrough instead of binding to its
-/// typed record — losing whatever T1 interpretation that type needs, with no error.
+/// Guards the converter's known-vs-unknown routing against drift. The converter derives
+/// its known-type set from the source-generated <c>[JsonDerivedType]</c> metadata (not a
+/// hand-maintained list), so drift is unrepresentable BY CONSTRUCTION in both directions
+/// — adding/removing a <c>[JsonDerivedType]</c> automatically moves the type between the
+/// typed-bind and opaque-passthrough branches. This test locks in the OBSERVABLE
+/// consequence: every attributed type binds to its record (not
+/// <see cref="ResponsesUnknownItem"/>), and a type WITHOUT an attribute routes to
+/// unknown. If the derivation ever regressed to a stale hand-list, one of these reddens.
 /// </summary>
-/// <remarks>
-/// Rather than reflect into the converter's private set, this asserts the OBSERVABLE
-/// contract: every type carrying a <c>[JsonDerivedType]</c> attribute must deserialize
-/// to its typed record (NOT <see cref="ResponsesUnknownItem"/>) when fed through the
-/// real converter. A discriminator missing from <c>KnownTypes</c> would make its item
-/// come back as <c>ResponsesUnknownItem</c> and redden this test.
-/// </remarks>
 public class KnownTypesMatchesDerivedTypesTests
 {
     [Fact]
@@ -48,17 +44,21 @@ public class KnownTypesMatchesDerivedTypesTests
             var item = Assert.Single(req!.Input);
             Assert.False(item is ResponsesUnknownItem,
                 $"type '{type}' has a [JsonDerivedType] but the converter routed it to " +
-                $"ResponsesUnknownItem — KnownTypes is out of sync (drift).");
+                $"ResponsesUnknownItem — the derived known-type set is wrong.");
         }
     }
 
-    [Fact]
-    public void AnUnmodeledType_DoesRouteToUnknown_ConfirmingTheTestDiscriminates()
+    [Theory]
+    // Opaque items the bridge deliberately does NOT model (no [JsonDerivedType]) — they
+    // must route to the unknown passthrough so every sibling field survives verbatim.
+    [InlineData("tool_search_call")]
+    [InlineData("agent_message")]
+    [InlineData("additional_tools")]
+    [InlineData("compaction")]
+    public void AnUnmodeledType_RoutesToUnknown_ConfirmingTheTestDiscriminates(string type)
     {
-        // Control: a type with NO [JsonDerivedType] must land in ResponsesUnknownItem.
-        // (If this failed, the test above would be vacuous.)
-        var body = """
-          {"model":"gpt-5.6-sol","input":[{"type":"tool_search_call","call_id":"c","execution":"client"}],"stream":true,"store":false}
+        var body = $$"""
+          {"model":"gpt-5.6-sol","input":[{"type":"{{type}}","x":1}],"stream":true,"store":false}
           """;
         var req = JsonSerializer.Deserialize(body, JsonContext.Default.ResponsesRequest);
         var item = Assert.Single(req!.Input);
@@ -71,7 +71,6 @@ public class KnownTypesMatchesDerivedTypesTests
         "function_call" => """{"type":"function_call","call_id":"c","name":"f","arguments":"{}"}""",
         "function_call_output" => """{"type":"function_call_output","call_id":"c","output":"ok"}""",
         "reasoning" => """{"type":"reasoning","encrypted_content":"blob"}""",
-        "additional_tools" => """{"type":"additional_tools","role":"developer","tools":[]}""",
         _ => throw new Xunit.Sdk.XunitException(
             $"MinimalItemJson has no sample for modeled type '{type}' — add one so the drift " +
             $"guard covers it (a new [JsonDerivedType] was added without updating this test)."),
