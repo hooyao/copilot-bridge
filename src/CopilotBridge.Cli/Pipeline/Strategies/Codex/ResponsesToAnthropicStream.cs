@@ -293,8 +293,21 @@ internal sealed class ResponsesToAnthropicStream
                     "T3: function_call item missing required field(s) (call_id='{CallId}', name='{Name}') — "
                     + "the tool call will be unmatchable downstream", callId, name);
             _blockOpen = true;
+            // A custom_tool_call's "input" is arbitrary grammar-constrained text
+            // (Codex's `exec` streams raw JavaScript), NOT a JSON object. It still
+            // rides the IR as input_json_delta (T4 re-emits it as the tool's
+            // arguments verbatim), but the response-side ToolInputValidationDetector
+            // must NOT try to JSON-parse it — otherwise every valid exec call trips
+            // "malformed JSON" (and an Abort-configured deployment would kill it).
+            // Mark the block so that detector skips JSON validation. This is a
+            // bridge-internal IR marker: it never reaches a Codex client (T4 rebuilds
+            // the Responses output item and ignores unknown content_block fields) and
+            // never appears on the /cc path (only T3 emits it, for Codex custom tools).
+            var customMarker = itemType == "custom_tool_call"
+                ? ",\"bridge_input_is_grammar_text\":true"
+                : "";
             yield return Sse("content_block_start",
-                $"{{\"type\":\"content_block_start\",\"index\":{_blockIndex},\"content_block\":{{\"type\":\"tool_use\",\"id\":{JsonEncode(callId)},\"name\":{JsonEncode(name)},\"input\":{{}}}}}}");
+                $"{{\"type\":\"content_block_start\",\"index\":{_blockIndex},\"content_block\":{{\"type\":\"tool_use\",\"id\":{JsonEncode(callId)},\"name\":{JsonEncode(name)},\"input\":{{}}{customMarker}}}}}");
         }
         else
         {

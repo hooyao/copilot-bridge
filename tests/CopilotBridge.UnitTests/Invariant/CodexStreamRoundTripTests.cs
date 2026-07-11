@@ -146,6 +146,13 @@ public class CodexStreamRoundTripTests
         // non-empty arguments — this is what Codex reads to execute the tool.
         var itemArgs = ExtractFunctionCallOutputItemArguments(roundTripped);
         Assert.Equal(fullInput, itemArgs);
+
+        // The bridge-internal grammar-text marker T3 stamps on the tool_use block
+        // (so the response-stage validator skips JSON-parsing raw JS) must NEVER
+        // reach the Codex-facing wire — T4 rebuilds the Responses output item from
+        // type/id/name only. Assert it appears nowhere in the emitted stream.
+        foreach (var e in roundTripped)
+            Assert.DoesNotContain("bridge_input_is_grammar_text", e.Data, StringComparison.Ordinal);
     }
 
     [Fact]
