@@ -164,9 +164,10 @@ public class CodexStreamRoundTripTests
     [Fact]
     public void CustomTool_RealCapture_ArgumentsRoundTripEqualUpstream()
     {
-        // Strongest guard: a REAL captured gpt-5.6-sol /responses SSE carrying a
-        // custom `exec` tool call (232 custom_tool_call_input.delta + the .done with
-        // the full 386-char input). Before the fix, T3 swallowed these and Codex got
+        // A minimized, de-identified capture of a gpt-5.6-sol /responses SSE carrying
+        // a custom `exec` tool call (the committed fixture trims the real 232-delta /
+        // 386-char session to a handful of neutral-JS fragments — same event grammar,
+        // no session content). Before the fix, T3 swallowed these and Codex got
         // arguments:"" → aborted. Assert the arguments the round trip re-emits to
         // Codex equal the upstream custom-tool input exactly.
         var fixture = Path.Combine(FixturesDir, "responses-sse-customtool.txt");
@@ -182,6 +183,49 @@ public class CodexStreamRoundTripTests
 
         Assert.Equal(upstreamInput, codexArgs);
         Assert.NotEqual("", codexArgs);
+    }
+
+    [Fact]
+    public void FunctionTool_DoneOnly_NoDeltas_StillCarriesArguments()
+    {
+        // Mirror of the custom-tool .done fallback, for a FUNCTION tool: a stream
+        // that delivers the arguments only on function_call_arguments.done (zero
+        // deltas) must still emit them once — guards the symmetric fallback so
+        // removing it reddens the suite (it otherwise stays green, as every other
+        // function-tool test supplies deltas).
+        const string fullArgs = "{\"path\":\"/tmp/x\"}";
+        var ir = RunT3(SyntheticFunctionToolStream(
+            callId: "call_fn", name: "read", argFragments: [], doneArgs: fullArgs));
+
+        // Exactly one input_json_delta (the fallback), carrying the full arguments.
+        var deltaCount = ir.Count(e => e.Data.Contains("input_json_delta", StringComparison.Ordinal));
+        Assert.Equal(1, deltaCount);
+        Assert.Equal(fullArgs, ConcatIrInputJson(ir));
+    }
+
+    [Fact]
+    public void TwoToolCalls_FirstDeltas_SecondDoneOnly_BothArgsSurviveOnce()
+    {
+        // Back-to-back tool calls in ONE response: the first streams via deltas, the
+        // second sends its input only on .done. This guards the _blockSawArgsDelta
+        // RESET on each new output item — without the reset, the first call's
+        // "saw deltas" state would leak and suppress the second call's .done
+        // fallback, silently dropping its arguments. Assert both survive exactly once.
+        const string firstArgs = "const a = 1;";
+        const string secondArgs = "print('two')";
+        var stream = TwoCustomToolStream(
+            first: ("call_1", "exec", ["const a = ", "1;"]),
+            second: ("call_2", "exec", secondArgs));   // second: done-only
+
+        var ir = RunT3(stream);
+
+        // Two tool_use blocks opened.
+        Assert.Equal(2, ir.Count(e => e.Data.Contains("\"type\":\"tool_use\"", StringComparison.Ordinal)));
+        // Each call's input survives EXACTLY once (concatenated per block).
+        var perBlock = ConcatIrInputJsonPerBlock(ir);
+        Assert.Equal(2, perBlock.Count);
+        Assert.Equal(firstArgs, perBlock[0]);
+        Assert.Equal(secondArgs, perBlock[1]);
     }
 
     [Theory]
@@ -447,6 +491,69 @@ public class CodexStreamRoundTripTests
         return items;
     }
 
+    /// <summary>
+    /// Minimal Responses SSE for a FUNCTION tool call (item.type=function_call,
+    /// events function_call_arguments.delta/.done, field <c>arguments</c>). Empty
+    /// <paramref name="argFragments"/> ⇒ only the <c>.done</c> carries the arguments
+    /// (<paramref name="doneArgs"/>) — the no-delta fallback case.
+    /// </summary>
+    private static List<SseItem<string>> SyntheticFunctionToolStream(
+        string callId, string name, string[] argFragments, string? doneArgs = null)
+    {
+        var full = doneArgs ?? string.Concat(argFragments);
+        var items = new List<SseItem<string>>
+        {
+            new("{\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}", "response.created"),
+            new($"{{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{{\"type\":\"function_call\",\"id\":\"item_1\",\"call_id\":{JsonEncode(callId)},\"name\":{JsonEncode(name)},\"arguments\":\"\",\"status\":\"in_progress\"}}}}",
+                "response.output_item.added"),
+        };
+        foreach (var frag in argFragments)
+            items.Add(new($"{{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"item_1\",\"output_index\":0,\"delta\":{JsonEncode(frag)}}}",
+                "response.function_call_arguments.delta"));
+        items.Add(new($"{{\"type\":\"response.function_call_arguments.done\",\"item_id\":\"item_1\",\"output_index\":0,\"arguments\":{JsonEncode(full)}}}",
+            "response.function_call_arguments.done"));
+        items.Add(new($"{{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{{\"type\":\"function_call\",\"id\":\"item_1\",\"call_id\":{JsonEncode(callId)},\"name\":{JsonEncode(name)},\"arguments\":{JsonEncode(full)},\"status\":\"completed\"}}}}",
+            "response.output_item.done"));
+        items.Add(new("{\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
+            "response.completed"));
+        return items;
+    }
+
+    /// <summary>
+    /// A single Responses stream with TWO custom-tool calls: the first streams via
+    /// deltas, the second sends its input only on <c>.done</c> (no deltas). Each item
+    /// uses a distinct output_index/id so T3 opens two separate blocks.
+    /// </summary>
+    private static List<SseItem<string>> TwoCustomToolStream(
+        (string callId, string name, string[] fragments) first,
+        (string callId, string name, string doneOnlyInput) second)
+    {
+        var items = new List<SseItem<string>>
+        {
+            new("{\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}", "response.created"),
+        };
+        // First call — deltas.
+        items.Add(new($"{{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{{\"type\":\"custom_tool_call\",\"id\":\"item_1\",\"call_id\":{JsonEncode(first.callId)},\"name\":{JsonEncode(first.name)},\"input\":\"\",\"status\":\"in_progress\"}}}}",
+            "response.output_item.added"));
+        foreach (var frag in first.fragments)
+            items.Add(new($"{{\"type\":\"response.custom_tool_call_input.delta\",\"item_id\":\"item_1\",\"output_index\":0,\"delta\":{JsonEncode(frag)}}}",
+                "response.custom_tool_call_input.delta"));
+        items.Add(new($"{{\"type\":\"response.custom_tool_call_input.done\",\"item_id\":\"item_1\",\"output_index\":0,\"input\":{JsonEncode(string.Concat(first.fragments))}}}",
+            "response.custom_tool_call_input.done"));
+        items.Add(new($"{{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{{\"type\":\"custom_tool_call\",\"id\":\"item_1\",\"call_id\":{JsonEncode(first.callId)},\"name\":{JsonEncode(first.name)},\"input\":{JsonEncode(string.Concat(first.fragments))},\"status\":\"completed\"}}}}",
+            "response.output_item.done"));
+        // Second call — done-only (no deltas).
+        items.Add(new($"{{\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{{\"type\":\"custom_tool_call\",\"id\":\"item_2\",\"call_id\":{JsonEncode(second.callId)},\"name\":{JsonEncode(second.name)},\"input\":\"\",\"status\":\"in_progress\"}}}}",
+            "response.output_item.added"));
+        items.Add(new($"{{\"type\":\"response.custom_tool_call_input.done\",\"item_id\":\"item_2\",\"output_index\":1,\"input\":{JsonEncode(second.doneOnlyInput)}}}",
+            "response.custom_tool_call_input.done"));
+        items.Add(new($"{{\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{{\"type\":\"custom_tool_call\",\"id\":\"item_2\",\"call_id\":{JsonEncode(second.callId)},\"name\":{JsonEncode(second.name)},\"input\":{JsonEncode(second.doneOnlyInput)},\"status\":\"completed\"}}}}",
+            "response.output_item.done"));
+        items.Add(new("{\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
+            "response.completed"));
+        return items;
+    }
+
     /// <summary>Concatenate every input_json_delta partial_json fragment in an IR stream.</summary>
     private static string ConcatIrInputJson(List<SseItem<string>> ir)
     {
@@ -461,6 +568,29 @@ public class CodexStreamRoundTripTests
                 sb.Append(pj.GetString());
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Concatenate input_json_delta fragments PER tool_use block (keyed by the block
+    /// index the content_block_start/_delta carry), returned in block order — so a
+    /// multi-tool-call stream can be checked call-by-call.
+    /// </summary>
+    private static List<string> ConcatIrInputJsonPerBlock(List<SseItem<string>> ir)
+    {
+        var byIndex = new SortedDictionary<int, System.Text.StringBuilder>();
+        foreach (var e in ir)
+        {
+            if (EventType(e) != "content_block_delta") continue;
+            using var doc = JsonDocument.Parse(e.Data);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("delta", out var d)
+                || !d.TryGetProperty("type", out var dt) || dt.GetString() != "input_json_delta"
+                || !d.TryGetProperty("partial_json", out var pj)) continue;
+            var idx = root.TryGetProperty("index", out var ix) && ix.TryGetInt32(out var n) ? n : 0;
+            if (!byIndex.TryGetValue(idx, out var sb)) { sb = new System.Text.StringBuilder(); byIndex[idx] = sb; }
+            sb.Append(pj.GetString());
+        }
+        return byIndex.Values.Select(sb => sb.ToString()).ToList();
     }
 
     /// <summary>Read the arguments off a Responses function_call_arguments.done event.</summary>

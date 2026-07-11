@@ -75,7 +75,14 @@ public class CustomToolStreamingProbe
             var lineStart = raw.LastIndexOf("data:", doneIdx, StringComparison.Ordinal);
             var lineEnd = raw.IndexOf('\n', doneIdx);
             if (lineStart >= 0 && lineEnd > lineStart)
-                _output.WriteLine($"  .done payload: {raw[lineStart..lineEnd].Trim()[..Math.Min(500, lineEnd - lineStart)]}");
+            {
+                // Trim FIRST, then bound against the trimmed string's own length —
+                // Trim() drops the SSE line's trailing \r (and any padding), so the
+                // pre-trim segment length (lineEnd - lineStart) can exceed the
+                // trimmed length and index out of range for a short .done payload.
+                var doneLine = raw[lineStart..lineEnd].Trim();
+                _output.WriteLine($"  .done payload: {doneLine[..Math.Min(500, doneLine.Length)]}");
+            }
         }
     }
 }
