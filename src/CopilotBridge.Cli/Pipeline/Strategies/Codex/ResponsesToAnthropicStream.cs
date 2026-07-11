@@ -290,8 +290,8 @@ internal sealed class ResponsesToAnthropicStream
             var name = item.TryGetProperty("name", out var nm) ? nm.GetString() ?? "" : "";
             if (string.IsNullOrEmpty(callId) || string.IsNullOrEmpty(name))
                 _log?.LogWarning(
-                    "T3: function_call item missing required field(s) (call_id='{CallId}', name='{Name}') — "
-                    + "the tool call will be unmatchable downstream", callId, name);
+                    "T3: {ItemType} item missing required field(s) (call_id='{CallId}', name='{Name}') — "
+                    + "the tool call will be unmatchable downstream", itemType, callId, name);
             _blockOpen = true;
             // A custom_tool_call's "input" is arbitrary grammar-constrained text
             // (Codex's `exec` streams raw JavaScript), NOT a JSON object. It still
