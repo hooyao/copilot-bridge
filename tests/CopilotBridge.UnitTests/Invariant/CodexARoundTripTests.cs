@@ -288,32 +288,44 @@ public class CodexARoundTripTests
                  && i["role"]?.GetValue<string>() == "developer");
     }
 
-    // ── A9: malformed tool arguments → CodexBadRequestException (400, not 502) ─
+    // ── A9: non-JSON tool arguments → carried as grammar text, NOT rejected ────
+    // A custom (grammar) tool — Codex's `exec` — echoes its call back with
+    // arguments = raw text (JavaScript), which is not JSON. The old contract 400'd
+    // on it (ExpectedStartOfValueNotFound), which broke the real gpt-5.6 exec loop
+    // on the second turn. The correct behavior (Copilot round-trips it fine —
+    // live-probed 200) is to carry it through the IR and re-emit it verbatim.
 
     [Fact]
-    public void A9_MalformedToolArguments_ThrowsTypedBadRequest()
+    public void A9_NonJsonToolArguments_CarriedAsGrammarText_NotRejected()
     {
-        var requestJson = """
+        const string rawJs = "const r = await tools.shell_command({ command: \"ls\" });";
+        var requestJson = $$"""
           {
             "model": "gpt-5.3-codex",
             "instructions": "x",
             "input": [
-              {"type":"function_call","call_id":"call_1","name":"shell","arguments":"{not valid json"}
+              {"type":"function_call","call_id":"call_1","name":"exec","arguments":{{System.Text.Json.JsonSerializer.Serialize(rawJs)}}}
             ],
             "stream": true, "store": false
           }
           """;
+        // T1 must NOT throw (was CodexBadRequestException / 400).
         var req = CodexRoundTrip.ParseRequest(requestJson);
-        var ex = Assert.Throws<CopilotBridge.Cli.Pipeline.Adapters.Codex.CodexBadRequestException>(
-            () => CodexRoundTrip.ToIr(req));
-        Assert.Contains("call_1", ex.Message);   // names the offending call
+        var ex = Record.Exception(() => CodexRoundTrip.ToIr(req));
+        Assert.Null(ex);
+
+        // And T2 re-emits the raw arguments verbatim.
+        var emitted = CodexRoundTrip.RoundTrip(requestJson).AsObject();
+        var fc = emitted["input"]!.AsArray()
+            .First(i => i!["type"]?.GetValue<string>() == "function_call");
+        Assert.Equal(rawJs, fc!["arguments"]!.GetValue<string>());
     }
 
     [Fact]
-    public void A9b_NonObjectToolArguments_ThrowsTypedBadRequest()
+    public void A9b_NonObjectJsonToolArguments_CarriedAsRawText_NotRejected()
     {
-        // arguments that parse as valid JSON but are a scalar/array violate the
-        // tool_use.input-is-an-object contract.
+        // arguments that parse as valid JSON but are a scalar/array are no longer an
+        // error — they're carried through as their raw text (lossless), not 400'd.
         var requestJson = """
           {
             "model": "gpt-5.3-codex",
@@ -325,8 +337,13 @@ public class CodexARoundTripTests
           }
           """;
         var req = CodexRoundTrip.ParseRequest(requestJson);
-        Assert.Throws<CopilotBridge.Cli.Pipeline.Adapters.Codex.CodexBadRequestException>(
-            () => CodexRoundTrip.ToIr(req));
+        var ex = Record.Exception(() => CodexRoundTrip.ToIr(req));
+        Assert.Null(ex);
+
+        var emitted = CodexRoundTrip.RoundTrip(requestJson).AsObject();
+        var fc = emitted["input"]!.AsArray()
+            .First(i => i!["type"]?.GetValue<string>() == "function_call");
+        Assert.Equal("[1,2,3]", fc!["arguments"]!.GetValue<string>());
     }
 
     // ── A5b: tool pairing on a REAL captured tool turn (not synthetic) ───────

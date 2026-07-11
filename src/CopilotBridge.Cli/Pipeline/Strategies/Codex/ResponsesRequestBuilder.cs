@@ -208,7 +208,17 @@ internal static class ResponsesRequestBuilder
                     w.WriteString("type", "function_call");
                     w.WriteString("call_id", tu.Id);
                     w.WriteString("name", tu.Name);
-                    w.WriteString("arguments", tu.Input.GetRawText());
+                    // arguments: a plain function tool's input is a JSON object →
+                    // GetRawText() (byte-faithful). A CUSTOM (grammar) tool's input is
+                    // raw text T1 wrapped as a JSON string + marked grammar_text_arguments
+                    // (Codex's `exec` echoed back). Re-emit THAT as the raw string value
+                    // (GetString()), not GetRawText() — the latter would double-encode
+                    // the already-quoted string. Copilot accepts a function_call with
+                    // raw-text arguments (live-probed 200, CustomToolEchoProbe).
+                    w.WriteString("arguments",
+                        IsGrammarTextArgs(tu.ProviderExtensions) && tu.Input.ValueKind == JsonValueKind.String
+                            ? tu.Input.GetString()
+                            : tu.Input.GetRawText());
                     w.WriteEndObject();
                     break;
                 case ToolResultBlockParam tr:
@@ -554,6 +564,21 @@ internal static class ResponsesRequestBuilder
         }
         return false;
     }
+
+    /// <summary>
+    /// True when a tool_use block's part-level <c>openai</c> bag marks its input as
+    /// grammar text (raw, non-JSON) — set by T1 when it carried a custom (grammar)
+    /// tool's raw-text arguments (Codex `exec`). Tells the <c>function_call</c> emit
+    /// to write the raw string (<c>GetString()</c>) instead of <c>GetRawText()</c>.
+    /// Every Claude Code / JSON function-tool block has no such marker, so this is
+    /// inert there and the arguments emit is byte-identical.
+    /// </summary>
+    private static bool IsGrammarTextArgs(Models.Common.ProviderExtensions? ext) =>
+        ext?.ByProvider.TryGetValue(
+            ResponsesToIrInboundAdapter.OpenAiProviderKey, out var bag) == true
+        && bag.ValueKind == JsonValueKind.Object
+        && bag.TryGetProperty("grammar_text_arguments", out var g)
+        && g.ValueKind == JsonValueKind.True;
 
     /// <summary>
     /// Re-emit the bag's un-modeled knobs, applying the two uniform coercions:
