@@ -37,10 +37,12 @@
 - [x] 3.3 Full unit suite green.
 
 ## 4. Verification gate (the process fix — no more single-sample "done")
-- [x] 4.1 `CodexInboundCorpusReplayTests`: replayed 1213 real `/codex/responses` inbound
-  bodies (from 9298 trace files) through deserializer + T1→T2 — 0 failures, every item
-  type (message/function_call/function_call_output/additional_tools/agent_message) covered,
-  including the 2 agent_messages that 400'd pre-fix.
+- [x] 4.1 `CodexInboundCorpusReplayTests`: replayed the real `/codex/responses` inbound
+  bodies from a live session's `request-traces` (latest run: 1343 codex bodies from 9298
+  trace files, including 161 `agent_message`s) through deserializer + T1→T2 — 0 failures,
+  every item type covered (message/function_call/function_call_output/reasoning and the
+  opaque agent_message/additional_tools, incl. the agent_messages that 400'd pre-fix). The
+  exact counts grow as the corpus grows; the gate asserts zero failures, not a fixed count.
 - [x] 4.2 Real bytes end-to-end: replayed the actual agent_message 400 request through the
   FIXED bridge → real Copilot → 200, response.completed, no Polymorphism 400, and the audit
   shows encrypted_content forwarded byte-intact (`CodexAgentMessageHeadlessTests`).
@@ -63,4 +65,3 @@
   headlessly. Ship acknowledging this leg is the user's to confirm; do not present it as
   real-client-verified.
 - [ ] 5.3 `/ship-pr` → 0.4.13-beta (folds in the namespace + exec changes).
-- [ ] 5.2 `/ship-pr` → 0.4.13-beta (folds in the namespace fix).

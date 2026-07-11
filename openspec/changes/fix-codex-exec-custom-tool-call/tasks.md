@@ -36,8 +36,10 @@
   function_call bug before).
 - [x] 4.2 `MixedCustomThenFunctionTool_...` guards the `_toolIsCustom` per-block reset
   (mutation-checked: conditional set + no reset → block 2 mis-emits custom → reddens).
-- [x] 4.3 `ClaudeCodeMarkerScrubTests` (3) — markers stripped, real fields survive,
-  marker-free byte-identical (mutation-checked: disable scrub → leak test reddens).
+- [x] 4.3 `ClaudeCodeMarkerScrubTests` (4) — markers stripped + real fields survive;
+  marker-free byte-identical; a content_block whose VALUE mentions a marker name is not
+  rewritten; only content_block marker properties removed (mutation-checked: disable scrub
+  → leak test reddens).
 - [x] 4.4 `KnownTypesMatchesDerivedTypesTests` (2, mutation-checked).
 - [x] 4.5 `AgentMessage_RoundTripsVerbatim` strengthened to re-parse the wire bytes.
 - [x] 4.6 Full unit suite green (855).
