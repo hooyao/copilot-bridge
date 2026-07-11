@@ -44,8 +44,11 @@ Contract source (authoritative, not reverse-engineered from the error):
 - **T3 (Responses SSE→IR) carries the namespace.** `OnOutputItemAdded` reads the
   function_call/custom_tool_call item's `namespace` and stamps a bridge-internal marker
   `bridge_tool_namespace` on the IR `tool_use` content_block (alongside the existing
-  `bridge_input_is_grammar_text` marker). IR-internal: only T3 emits it, so `/cc` is
-  untouched.
+  `bridge_input_is_grammar_text` marker). The marker is removed at BOTH client edges: T4
+  strips it on the `/codex` route, and — because T3 also runs when Claude Code is routed
+  to a gpt-5.6 `/responses` backend (the CC→gpt route) — `ClaudeCodeOutboundAdapter`
+  scrubs it there (see `fix-codex-exec-custom-tool-call`; without that scrub the marker
+  would leak to `claude.exe`). Native Anthropic `/cc` traffic never stamps it.
 - **T4 (IR→Responses SSE) re-emits it to Codex.** `OnBlockStart` lifts
   `bridge_tool_namespace` off the content_block; `FunctionCallItem` writes `"namespace"`
   on the Codex-facing function_call item (sibling to call_id/name, per the codex
@@ -61,7 +64,11 @@ Contract source (authoritative, not reverse-engineered from the error):
 ## Impact
 
 - Fixes the production 400 that killed every gpt-5.6 multi-agent / MCP tool loop.
-- No change to Claude Code (`/cc`): the markers are IR-internal and only T3 emits them.
+- Native Anthropic `/cc` traffic is behaviorally unchanged (T3 never runs for it, so no
+  marker is stamped). The CC→gpt route (Claude Code → a gpt-5.6 `/responses` backend) DOES
+  run T3, so this batch adds a `ClaudeCodeOutboundAdapter` scrub that strips the internal
+  `bridge_tool_namespace` / `bridge_input_is_grammar_text` markers before they reach
+  `claude.exe` (byte-identical no-op when no marker is present).
 - No change to default-namespace function tools or custom (grammar) tools: the
   namespace field is emitted only when present, so their wire bytes are unchanged.
 

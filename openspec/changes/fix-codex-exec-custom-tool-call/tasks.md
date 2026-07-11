@@ -45,9 +45,18 @@
 ## 5. Verification (CLIENT'S OWN execution, not bridge 200)
 - [x] 5.1 Diagnosed + fixed against codex `logs_2.sqlite` (the client's log), not bridge status.
 - [x] 5.2 Real headless codex run: user confirmed exec now executes (no more aborted /
-  incompatible payload).
+  incompatible payload). This covers the exec `custom_tool_call` fix (the /codex path).
 - [x] 5.3 AOT publish clean (0 trim warnings); deployed to 8765.
+- [ ] 5.4 **UNVERIFIED (per AGENTS.md 🔴 real-client rule):** the CC→gpt marker-scrub edge
+  (`ClaudeCodeOutboundAdapter`) is proven by unit tests (`ClaudeCodeMarkerScrubTests`) but
+  NOT by a real `claude.exe` routed to a gpt-5.6 backend executing a tool call. The unit
+  scrub tests establish the markers are stripped; they do NOT establish Claude Code
+  receives and executes the resulting tool call. A real CC→gpt run (docs/routing.md) is the
+  user's to confirm before this route is considered real-client-verified.
 
 ## 6. Ship
-- [ ] 6.1 Pre-ship review (5-agent) — done; findings addressed above.
-- [ ] 6.2 `/ship-pr` → 0.4.13-beta (folds in fix-codex-tool-namespace + fix-codex-unknown-input-items).
+- [x] 6.1 Pre-ship review (5-agent + 3 Copilot rounds) — findings addressed above.
+- [ ] 6.2 **SHIPPING CAVEAT:** exec `custom_tool_call` is real-client-verified (5.2); the
+  CC→gpt marker scrub (5.4) is unit-verified only — ship acknowledging that leg is
+  UNVERIFIED against a real claude.exe.
+- [ ] 6.3 `/ship-pr` → 0.4.13-beta (folds in fix-codex-tool-namespace + fix-codex-unknown-input-items).

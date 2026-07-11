@@ -51,4 +51,10 @@
   reviewed as part of the 0.4.13-beta batch; findings — the CC→gpt marker leak that also
   affects `bridge_tool_namespace`, and the `ToolCallItem` namespace-on-custom handling —
   addressed in `fix-codex-exec-custom-tool-call`).
-- [ ] 5.2 `/ship-pr` → 0.4.13-beta.
+- [ ] 5.2 **SHIPPING CAVEAT (per AGENTS.md 🔴 real-client rule):** the namespace
+  round-trip is proven at the byte/HTTP level (real captured turn → real Copilot → 200,
+  the exact failing bytes replayed) but task 4.2 — a real DESKTOP codex.exe collaboration
+  session reproducing the turn-2 namespaced-tool echo — is still **UNVERIFIED** (only the
+  desktop app emits collaboration tools; not headless-drivable). Ship acknowledging this
+  leg is the user's to confirm.
+- [ ] 5.3 `/ship-pr` → 0.4.13-beta.

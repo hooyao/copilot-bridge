@@ -50,9 +50,17 @@
   leg can't be run headlessly. The AOT exe is rebuilt (publish/, 12.28 MB) for the user.
 
 ## 5. Ship
-- [x] 5.1 code-review the diff (5-agent review, 0.4.13-beta batch). Findings addressed:
-  `agent_message` typed model DELETED (required-field fragility) → rides `ResponsesUnknownItem`;
-  `KnownTypes`↔`[JsonDerivedType]` drift now test-guarded; passthrough re-emit switched to
-  `WriteRawValue(GetRawText())`; malformed `after` defaults to end-append. See
-  `fix-codex-exec-custom-tool-call` for the full review-hardening set.
+- [x] 5.1 code-review the diff (5-agent review + 3 Copilot rounds, 0.4.13-beta batch).
+  Findings addressed: `agent_message` AND `additional_tools` are UNMODELED → both ride
+  `ResponsesUnknownItem` (whole `Raw`, every sibling field verbatim); `KnownTypes` is
+  DERIVED from the source-gen `[JsonDerivedType]` metadata (drift unrepresentable both
+  ways); passthrough re-emit uses `WriteRawValue(GetRawText())`; malformed `after` →
+  end-append. See `fix-codex-exec-custom-tool-call` for the full review-hardening set.
+- [ ] 5.2 **SHIPPING CAVEAT (per AGENTS.md 🔴 real-client rule):** the deserialize /
+  round-trip / corpus-replay / real-Copilot-200 evidence is strong for the "don't 400"
+  contract, but task 4.3 (a real DESKTOP codex.exe multi-agent session exercising the
+  `agent_message` round-trip end-to-end) is still **UNVERIFIED** — it can't be driven
+  headlessly. Ship acknowledging this leg is the user's to confirm; do not present it as
+  real-client-verified.
+- [ ] 5.3 `/ship-pr` → 0.4.13-beta (folds in the namespace + exec changes).
 - [ ] 5.2 `/ship-pr` → 0.4.13-beta (folds in the namespace fix).

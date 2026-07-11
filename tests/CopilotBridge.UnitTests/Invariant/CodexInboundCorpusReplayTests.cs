@@ -51,20 +51,32 @@ public class CodexInboundCorpusReplayTests
         foreach (var file in files)
         {
             string bodyJson;
+            // First, cheaply classify the file WITHOUT a broad try/catch that would
+            // swallow a corrupt codex trace: parse the envelope, and only `continue`
+            // for a legitimately non-codex trace. A file that fails to parse — or
+            // parses but is a /responses trace with a malformed body — is a FAILURE,
+            // not a silent skip, so the gate can't report 0 while excluding captures.
+            JsonObject envelope;
             try
             {
-                var envelope = JsonNode.Parse(File.ReadAllText(file))!.AsObject();
-                var target = envelope["target"]?.GetValue<string>() ?? "";
-                // Only codex /responses inbound bodies carry input[] and go through T1.
-                if (!target.EndsWith("/responses", StringComparison.Ordinal)) continue;
-                if (envelope["body"] is not JsonObject body || body["input"] is not JsonArray) continue;
-                bodyJson = body.ToJsonString();
+                envelope = JsonNode.Parse(File.ReadAllText(file))!.AsObject();
             }
             catch (Exception ex)
             {
-                _output.WriteLine($"  [skip] {Path.GetFileName(file)}: envelope parse — {ex.Message}");
+                failures.Add($"{Path.GetFileName(file)}: ENVELOPE parse threw {ex.GetType().Name}: {ex.Message}");
                 continue;
             }
+            var target = envelope["target"]?.GetValue<string>() ?? "";
+            // Legitimate skip: not a codex /responses inbound (cc traces, non-inbound, …).
+            if (!target.EndsWith("/responses", StringComparison.Ordinal)) continue;
+            if (envelope["body"] is not JsonObject bodyObj || bodyObj["input"] is not JsonArray)
+            {
+                // It IS a /responses trace but has no body.input — that's a malformed
+                // capture for this gate, not a benign skip.
+                failures.Add($"{Path.GetFileName(file)}: /responses trace missing body.input");
+                continue;
+            }
+            bodyJson = bodyObj.ToJsonString();
 
             codexCount++;
             var name = Path.GetFileName(file);
