@@ -68,6 +68,7 @@ appsettings.local.json
 .claude/skills/*
 !.claude/skills/copilot-model-sync/
 !.claude/skills/ship-pr/
+!.claude/skills/real-client-verify/
 
 # Local-only: MCP server config + Claude Code session-handoff dumps (never commit)
 .mcp.json
@@ -89,6 +90,10 @@ log/
 request-traces/
 tests/harness/last-stdout.txt
 tests/harness/last-stderr.txt
+# Client-behavior flywheel evidence: bridge traces + run manifests + saved client
+# stdout/stderr, written by ServeProcess/BehaviorRun. Throwaway per-run output the
+# real-client-verify skill's agent reads; never commit.
+tests/behavior-runs/
 
 # docs/scratch/ is throwaway working material — capture scripts, raw session
 # dumps with real ids/git metadata, de-identification helpers. The committed
