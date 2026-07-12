@@ -108,8 +108,19 @@ internal sealed class ServeHandle : IAsyncDisposable
                 // wait for the trace dir to QUIESCE (no new/changed *.json for a quiet
                 // window) before killing — i.e. wait for the sink to finish. Bounded so a
                 // silent bridge still tears down.
-                await WaitForTraceQuiescenceAsync(
-                    quiet: TimeSpan.FromSeconds(2), deadline: TimeSpan.FromSeconds(15));
+                //
+                // The quiescence wait is a best-effort OPTIMIZATION for audit completeness,
+                // NEVER a precondition for the kill: if it throws (e.g. Directory.GetFiles
+                // races an evidence cleanup), swallow it HERE so the hard kill below still
+                // runs — otherwise a poll failure would leak the bridge subprocess and lock
+                // its scratch dir.
+                try
+                {
+                    await WaitForTraceQuiescenceAsync(
+                        quiet: TimeSpan.FromSeconds(2), deadline: TimeSpan.FromSeconds(15));
+                }
+                catch { /* best effort — never block the kill */ }
+
                 _process.Kill(entireProcessTree: true);
                 await Task.Run(() => _process.WaitForExit(5000));
             }
@@ -308,13 +319,13 @@ internal static class ServeProcess
 
     /// <summary>
     /// Patch the copied production <c>appsettings.json</c> to the scenario shape: force
-    /// <c>Tracing.Enabled=true</c> always; for <see cref="ServeScenario.CcToGpt"/>,
-    /// promote the shipped <c>_Locations_disabled</c> example to the active
-    /// <c>Locations</c> array. Everything else (the whole <c>Pipeline</c> block) is
-    /// left exactly as production ships it, so a behavior run never drifts from the
-    /// real detector/timeout config. Throws if the source shape the patch depends on
-    /// is missing (a drifted appsettings should fail loudly, not silently run the
-    /// wrong scenario).
+    /// <c>Tracing.Enabled=true</c> always; make <c>Routing.Locations</c> match the
+    /// scenario EXPLICITLY — empty for <see cref="ServeScenario.Passthrough"/>, the
+    /// promoted <c>_Locations_disabled</c> example for <see cref="ServeScenario.CcToGpt"/>.
+    /// Everything else (the whole <c>Pipeline</c> block) is left exactly as production
+    /// ships it, so a behavior run never drifts from the real detector/timeout config.
+    /// Throws if the source shape the patch depends on is missing (a drifted appsettings
+    /// should fail loudly, not silently run the wrong scenario).
     /// </summary>
     private static void PatchAppSettings(string path, ServeScenario scenario, string traceDir)
     {
@@ -329,10 +340,11 @@ internal static class ServeProcess
         tracing["Enabled"] = true;
         tracing["Directory"] = traceDir;
 
+        var routing = root["Routing"]?.AsObject()
+            ?? throw new ServeStartupException("appsettings.json has no Routing section.");
+
         if (scenario == ServeScenario.CcToGpt)
         {
-            var routing = root["Routing"]?.AsObject()
-                ?? throw new ServeStartupException("appsettings.json has no Routing section.");
             var disabled = routing["_Locations_disabled"]?.AsArray()
                 ?? throw new ServeStartupException(
                     "CcToGpt scenario needs Routing._Locations_disabled (the claude-opus-4.8 → "
@@ -341,6 +353,14 @@ internal static class ServeProcess
             // Move the disabled example into the active Locations slot (deep-clone so
             // we don't share nodes across the tree).
             routing["Locations"] = JsonNode.Parse(disabled.ToJsonString());
+        }
+        else
+        {
+            // Passthrough: make the empty-Locations contract EXPLICIT rather than relying
+            // on today's production file happening to ship an empty list. If a future
+            // default/enabled route were added, native /cc and /codex behavior cases would
+            // otherwise silently exercise that rewrite instead of true passthrough.
+            routing["Locations"] = new JsonArray();
         }
 
         File.WriteAllText(path, root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
