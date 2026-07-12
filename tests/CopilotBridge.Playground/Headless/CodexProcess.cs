@@ -116,9 +116,14 @@ internal static class CodexProcess
         var stdout = await stdoutTask;
         var stderr = await stderrTask;
         sw.Stop();
-        // Stamp the end just after exit (plus slack) — the upper window bound. codex may
-        // flush its last rows a beat after the process returns, so pad forward.
-        var endedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 5;
+        // Upper window bound. codex flushes its last dispatch rows a beat AFTER the
+        // process returns, so wait for that drain, THEN stamp the actual current time —
+        // do NOT pad the bound into the future (a `now + N` bound would overlap the NEXT
+        // sequential run in the same class and let its rows, including a fast fatal, be
+        // attributed to this case). The bounded wait captures the flush without reaching
+        // past it.
+        await Task.Delay(TimeSpan.FromSeconds(3), ct);
+        var endedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         return new CodexResult(proc.ExitCode, stdout, stderr, sw.Elapsed, codexHome,
             RealDispatchLog, startedUnix, endedUnix);
     }

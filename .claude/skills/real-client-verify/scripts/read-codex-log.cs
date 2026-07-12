@@ -3,8 +3,11 @@
 //
 // Run with the .NET 10 file-based-app runner (no csproj needed):
 //
-//     dotnet run read-codex-log.cs -- <path-to-logs_2.sqlite> [sinceUnixSeconds] [outFile]
+//     dotnet run read-codex-log.cs -- <path-to-logs_2.sqlite> [sinceUnixSeconds] [untilUnixSeconds] [outFile]
 //
+// Always pass BOTH bounds when verifying a specific run: the real ~/.codex is long-lived
+// and shared, so a start-only read silently scans LATER runs too and can attribute their
+// fatal to the wrong case (see the `until` handling below).
 // WHY THIS EXISTS. codex records its tool-router outcome — including the
 // `Fatal error: tool exec invoked with incompatible payload` dispatch fatal —
 // ONLY in logs_2.sqlite. The bridge stays HTTP 200 with function_call on the wire

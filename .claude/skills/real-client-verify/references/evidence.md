@@ -50,22 +50,38 @@ Then Read `<out.txt>`. It has three sections: router/dispatch fatals, all ERROR 
 and a recent tail — plus a summary with the fatal count.
 
 **Codex PASS requires ALL of:**
-- **the canary is present in the client stdout** — the value the task could only produce
-  by actually running the tool. **Canary ABSENT = FAIL**, full stop: the tool did not
-  execute, whatever the log says. (Proven: a mutated exec fix made codex abort the
-  custom-`exec` call — stdout showed *"execution was aborted"* and the canary was
-  missing — while the bridge stayed 200 AND the sqlite log had zero router-ERROR rows.
-  The canary/stdout is the load-bearing signal; the log fatal is corroborating.)
+- **a real tool round-trip on the bridge trace** — at least one upstream `/responses`
+  body carrying a `function_call` **or** `custom_tool_call`, AND a later one carrying the
+  matching `function_call_output` / `custom_tool_call_output` the client fed back. This
+  is the **load-bearing** signal that the tool actually executed. A stdout canary is NOT
+  sufficient on its own: the task prompts embed the canary literally, so a model can echo
+  it without ever calling a tool (the same reason `CodexLoadTaskSmokeTests` refuses to
+  treat a prompt-embedded canary as execution evidence). Read the round-trip from the
+  trace, not the canary.
 - **no execution-abort in stdout** — codex prints *"execution was aborted"* /
   *"the shell tool aborted"* when it could not run the tool the bridge sent. Any such
-  line = FAIL.
+  line = FAIL even if a tool call reached the wire (the mutation proof: codex emitted the
+  `custom_tool_call` but aborted its execution — stdout showed the abort, canary absent —
+  while the bridge stayed 200 and the sqlite log had zero router-ERROR rows).
 - `router/dispatch-fatal rows: 0` in the log summary — no `[ERROR] codex_core::tools::router`,
   no `incompatible payload`, no `Missing namespace`, no `Polymorphism_`. (A fatal here is
-  conclusive FAIL, but its ABSENCE is not sufficient — see the canary rule above; some
-  abort shapes surface only in stdout, not as a router-ERROR row.)
+  conclusive FAIL, but its ABSENCE is not sufficient — some abort shapes surface only in
+  stdout, not as a router-ERROR row, so the trace round-trip + no-abort checks above are
+  what carry the verdict.)
+- **canary present in stdout** — corroborating, not load-bearing: its ABSENCE is a strong
+  FAIL (the tool clearly didn't run to a real result), but its PRESENCE only matters
+  alongside the trace round-trip, because it's echo-able from the prompt.
 
-Any fatal row, a missing canary, or a stdout abort = **FAIL**, regardless of the
-bridge's 200 and regardless of exit code.
+Any missing tool round-trip, a stdout abort, a fatal row, or a missing canary = **FAIL**,
+regardless of the bridge's 200 and regardless of exit code.
+
+> **The bridge trace is per-run; the log window is shared.** The four-file trace lives in
+> THIS run's own `traceDir`, so the tool round-trip read from it is unambiguously this
+> run's. The `logs_2.sqlite` window, by contrast, is carved out of the shared long-lived
+> `~/.codex` by timestamp, and back-to-back runs in one class can still slightly overlap
+> at the boundary. So treat the **trace** as the authoritative source for "did the tool
+> execute", and the log window as the router-fatal check within it — if the two ever
+> disagree, trust the per-run trace.
 
 > **Empty window ≠ PASS.** If the reader finds essentially no rows in the window (the
 > tail is empty), the verdict is **INCONCLUSIVE, not clean** — the run may not have
@@ -82,13 +98,16 @@ bridge's 200 and regardless of exit code.
 
 ## Claude Code — the transcript
 
-The saved stdout (`--output-format json`) is the turn transcript. Plus the bridge trace
-for wire confirmation.
+The saved stdout is captured with `--output-format stream-json --verbose`, so it is a
+JSONL stream of the INTERMEDIATE events (assistant / `tool_use` / `tool_result` / result),
+not just the final envelope — that is what makes the tool round-trip verifiable from the
+transcript. Cross-check against the bridge trace for wire confirmation.
 
 **Claude PASS requires:**
-- the turn **completed** (a final assistant message, not an error/cutoff), and
+- the turn **completed** (a final `result` event, not an error/cutoff), and
 - the tool calls **executed**: a `tool_use` block was followed by a `tool_result` the
-  model consumed on a later turn, and
+  model consumed on a later turn — read these directly from the stream-json events (and,
+  corroborating, from the bridge trace's upstream bodies), and
 - the canary is in the final answer.
 
 A streamed 200 with no `tool_result` consumed = the tool did not close the loop = not a
