@@ -74,6 +74,10 @@ dotnet test CopilotBridge.slnx --filter "Category!=Integration"
 # Integration harness — real claude.exe + live Copilot login (tests/harness/
 # README.md). Tagged [Trait("Category","Integration")]; run explicitly.
 dotnet test tests/CopilotBridge.Playground
+# Real-client behavior flywheel — subprocess bridge + real codex/claude, latest
+# models; thin asserts, verdict via the real-client-verify skill from the client's
+# own log. (The captured-byte contract/replay net is Kind=ApiContract.)
+dotnet test tests/CopilotBridge.Playground --filter "Kind=ClientBehavior"
 dotnet test --filter FullyQualifiedName~<TestName>       # single test
 ```
 
@@ -233,7 +237,20 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
 - **New tests:** pure logic → `tests/CopilotBridge.UnitTests` (CI runs these —
   fast, no deps). Anything needing live Copilot or `claude.exe` →
   `tests/CopilotBridge.Playground`, tagged `[Trait("Category", "Integration")]`
-  so CI skips it. Forgetting the trait makes CI try to run it (and fail).
+  so CI skips it. Forgetting the trait makes CI try to run it (and fail). Also tag
+  a second `[Trait("Kind", …)]`: **`ClientBehavior`** (the flywheel — drives a real
+  client through a bridge SUBPROCESS, asserts only harness health, and defers the
+  semantic verdict to the `real-client-verify` skill; `Headless/ClientBehavior/`) or
+  **`ApiContract`** (asserts the wire contract itself in-test — probes, captured-byte
+  replays, AND the legacy real-client smokes that assert wire shape directly in xUnit;
+  `Headless/ApiContract/`, root `ApiContract/`). Rule for NEW tests: **a thin
+  actuator + agent-verdict real-client test → ClientBehavior; anything that asserts
+  the wire contract in-test (whether by posting bytes, probing an endpoint, or driving
+  a client and then asserting the upstream shape) → ApiContract.** The pre-existing
+  real-client smokes (`ToolUseHeadlessTests`, `HeadlessSmokeTests`,
+  `CodexLoadTaskSmokeTests`, `CodexE2EHeadlessTests`, …) are ApiContract by this rule:
+  they drive a client but their verdict is an in-xUnit wire assertion, not the skill's
+  log-read — so they're strong-assertion regression tests, not flywheel actuators.
 - **🔴 A FIX IS NOT DONE UNTIL A REAL HEADLESS CLIENT EXECUTED A COMPLEX TASK
   THROUGH IT — THIS STEP IS NEVER OPTIONAL AND NEVER SKIPPABLE.** Unit tests,
   offline round-trips, and "the bridge returned HTTP 200" are necessary but NOT
@@ -261,15 +278,39 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
     replay, or a bridge-side 200 for this step. If the user asked for a
     headless-client test, run the headless client. Doing otherwise once already
     cost the user days of a silently-broken exec loop.
+  - **Two gates make a real-client run count — the client alone is necessary but NOT
+    sufficient.** Both blind spots below shipped three gpt-5.6 bugs green while a
+    real-client smoke passed:
+    - **① The task must exercise the code path you changed.** A trivial `echo … > f;
+      cat f` task went green through the namespaced-tool (`Missing namespace`),
+      multi-agent (`agent_message`), and custom-`exec` (`incompatible payload`) bugs —
+      it never reached those paths, only default-namespace shell tools. Pick a task
+      that hits your path.
+    - **② The verdict comes from the CLIENT's own dispatch log, not the bridge trace.**
+      codex's `incompatible payload` fatal is in `logs_2.sqlite` only; the bridge
+      stayed 200 with `function_call` on the wire, so exit code + stdout canary + a
+      green audit were all true while exec was 100% broken. A green bridge audit is
+      **INCONCLUSIVE, not PASS**.
+  - **Use the `real-client-verify` skill — it IS this directive, executed.**
+    `dotnet test tests/CopilotBridge.Playground --filter "Kind=ClientBehavior"` boots a
+    real bridge subprocess (`ServeProcess`, scenario appsettings, non-8765 port) and
+    drives the real client on a path-exercising task; the skill then reads each run
+    manifest + the client's OWN log (codex `logs_2.sqlite` via its bundled reader;
+    claude transcript) to render PASS/FAIL, driving the fix → unit-test → integration
+    loop. Behavior tests are `Kind=ClientBehavior`; the captured-byte regression net is
+    `Kind=ApiContract`.
   - **Codex (`/codex/responses`, `gpt-*`)** → real `codex.exe` (`codex exec
     "<prompt>"` runs headless; the desktop app path exercises custom `exec`/grammar
     tools). One turn is not enough — failures show on the SECOND turn (client echoes
     a prior call back) or only when the client EXECUTES a call (payload-shape
     mismatch). Reproduce execution, not just acceptance.
   - **Claude Code (`/cc`, `claude-*`)** → real `claude.exe`, multi-tool task.
-  - **Claude Code → gpt** → point `claude.exe` at the bridge with the route
-    mapping `claude-*` → a `gpt-*` backend (`docs/routing.md`) and run a complex
-    task so the CC→gpt translation is exercised end-to-end.
+  - **Claude Code → gpt** → run `claude.exe` against the `CcToGpt` behavior scenario
+    (the `ServeProcess` variant promoting the `claude-opus-4.8 → gpt-5.6-sol`
+    location; `docs/routing.md`) so the CC→gpt translation is exercised end-to-end.
+    Also confirm from the trace that the T3-internal markers
+    (`bridge_tool_namespace` / `bridge_input_is_grammar_text`) do NOT leak to the
+    Claude client — that scrub is the leg to guard.
   - If you genuinely cannot run the real client, STOP, say so, and mark the fix
     **UNVERIFIED** — never dress up unit-test or 200 evidence as a real-client pass.
 - **Logging/tracing:** the text log at `<exe-dir>/log/bridge-<stamp>.log` is
