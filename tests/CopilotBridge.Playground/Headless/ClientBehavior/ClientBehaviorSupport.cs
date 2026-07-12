@@ -41,15 +41,19 @@ internal static class ClientBehaviorSupport
 
     /// <summary>
     /// The harness-contract assertions every behavior test shares: the bridge bound a
-    /// port (implied by a non-null handle), the client actually ran (its trace dir
-    /// exists and holds at least one audit file — i.e. it reached the bridge), and the
-    /// manifest was written. A timeout or missing-exe throws before this and reddens
-    /// the test; a client that ran but produced a broken tool call still passes here
-    /// (the agent judges that from the client log the manifest points at).
+    /// port (implied by a non-null handle), the client process ran to completion with a
+    /// zero exit code, it actually reached the bridge (its trace dir exists and holds at
+    /// least one audit file), and the manifest was written. A timeout or missing-exe
+    /// throws before this and reddens the test; a NONZERO client exit is asserted here
+    /// (a client that crashed / errored out is a run failure, not a green actuator). What
+    /// is deliberately NOT checked is whether the tool executed correctly — a client that
+    /// ran to a clean exit but produced a broken tool call still passes here; the verdict
+    /// agent judges that from the client's own log the manifest points at.
     /// </summary>
-    public static void AssertHarnessProducedEvidence(string traceDir, string manifestPath)
+    public static void AssertHarnessProducedEvidence(int clientExitCode, string traceDir, string manifestPath)
     {
         Assert.True(File.Exists(manifestPath), $"run manifest not written: {manifestPath}");
+        Assert.Equal(0, clientExitCode);
         Assert.True(Directory.Exists(traceDir), $"bridge trace dir missing: {traceDir}");
         var traceFiles = Directory.GetFiles(traceDir, "*.json");
         Assert.True(traceFiles.Length > 0,

@@ -32,7 +32,8 @@ internal sealed record BehaviorManifest(
     double DurationSeconds,
     string TraceDir,      // bridge four-file audit (BridgeLogReader reads this)
     string? DispatchLogPath, // codex: real ~/.codex/logs_2.sqlite (codex logs there, NOT CODEX_HOME); null for claude
-    long DispatchSinceUnix,  // codex: window logs_2.sqlite to this run (0 for claude)
+    long DispatchSinceUnix,  // codex: lower bound to window logs_2.sqlite to this run (0 for claude)
+    long DispatchUntilUnix,  // codex: upper bound (0 for claude → treated as no upper bound)
     string Prompt);
     // NOTE: the saved-stdout/stderr file paths are NOT fields here — they are DERIVED by
     // BehaviorRun.Write from CaseId + utcStamp (the code that owns the write), and
@@ -78,6 +79,7 @@ internal static class BehaviorRun
             ["traceDir"] = manifest.TraceDir,
             ["dispatchLogPath"] = manifest.DispatchLogPath,
             ["dispatchSinceUnix"] = manifest.DispatchSinceUnix == 0 ? null : manifest.DispatchSinceUnix,
+            ["dispatchUntilUnix"] = manifest.DispatchUntilUnix == 0 ? null : manifest.DispatchUntilUnix,
             ["stdoutPath"] = stdoutPath,
             ["stderrPath"] = stderrPath,
             ["prompt"] = manifest.Prompt,

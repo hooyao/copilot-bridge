@@ -80,7 +80,12 @@ public class ClaudeCodeBehaviorTests
             Prompt: prompt,
             Model: model,
             Effort: null,
-            OutputFormat: "json",
+            // stream-json + verbose so the saved stdout carries the INTERMEDIATE
+            // assistant/tool_use/tool_result events, not just the final result envelope
+            // (which `--output-format json` alone emits) — the verdict agent needs the
+            // client-side tool round-trip, and this is where it reads it.
+            OutputFormat: "stream-json",
+            Verbose: true,
             AllowedTools: "Bash,Read",
             Timeout: TimeSpan.FromMinutes(8)));
 
@@ -98,6 +103,7 @@ public class ClaudeCodeBehaviorTests
                 TraceDir: bridge.TraceDir,
                 DispatchLogPath: null,
                 DispatchSinceUnix: 0,
+                DispatchUntilUnix: 0,
                 Prompt: prompt),
             result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
             out _, out _);
@@ -105,6 +111,6 @@ public class ClaudeCodeBehaviorTests
         _output.WriteLine($"[manifest] {manifestPath}");
         _output.WriteLine("[verdict] run `/real-client-verify` — it reads the claude transcript + bridge trace.");
 
-        ClientBehaviorSupport.AssertHarnessProducedEvidence(bridge.TraceDir, manifestPath);
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
     }
 }

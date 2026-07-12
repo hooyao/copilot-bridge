@@ -93,13 +93,18 @@ custom `exec`. See `references/test-cases.md` for the taxonomy and which case hi
 which path.
 
 ### Gate 2 — the verdict comes from the CLIENT's own dispatch log
-- **Codex** → `<CODEX_HOME>/logs_2.sqlite` (the manifest gives the exact path). Read it
-  with `scripts/read-codex-log.cs`. PASS requires: the tool actually ran (output
-  present, not `aborted`) AND **zero** rows matching `[ERROR] codex_core::tools::router`
-  / `incompatible payload` / `Missing namespace` / `Polymorphism_`.
-- **Claude Code** → the JSON transcript (saved stdout the manifest points at) plus the
-  bridge trace. PASS requires: the turn completed and the tool calls executed (a
-  `tool_use` followed by a `tool_result` the model consumed), not just a streamed 200.
+- **Codex** → the real `~/.codex/logs_2.sqlite`, windowed to this run (the manifest's
+  `dispatchLogPath` + `dispatchSinceUnix` — codex logs to the real home, NOT
+  `CODEX_HOME`). Read it with `scripts/read-codex-log.cs`. PASS requires: the tool
+  actually ran (the canary is in the client stdout, no `aborted` in stdout) AND **zero**
+  rows matching `[ERROR] codex_core::tools::router` / `incompatible payload` /
+  `Missing namespace` / `Polymorphism_`.
+- **Claude Code** → the behavior tests capture `--output-format stream-json --verbose`,
+  so the manifest's `stdoutPath` carries the INTERMEDIATE assistant / `tool_use` /
+  `tool_result` events (not just the final result envelope), cross-checked against the
+  bridge trace. PASS requires: the turn completed (final result present, not an error)
+  AND the `tool_use` → `tool_result` round-trip is present (in the stream-json transcript
+  and/or on the wire) — not just a streamed 200.
 
 A bridge-side 200 alone is **INCONCLUSIVE**, never PASS.
 
@@ -117,10 +122,11 @@ A bridge-side 200 alone is **INCONCLUSIVE**, never PASS.
 3. **Render the verdict.** Each run wrote a manifest under `tests/behavior-runs/manifests/`.
    For each: read the manifest, then read the client's own evidence it points at —
    for codex, run the log reader against the real `~/.codex/logs_2.sqlite` windowed to
-   the run (`dispatchLogPath` + `dispatchSinceUnix` from the manifest — codex logs to
-   the real home, NOT `CODEX_HOME`):
+   the run (`dispatchLogPath` + `dispatchSinceUnix` + `dispatchUntilUnix` from the
+   manifest — codex logs to the real home, NOT `CODEX_HOME`; BOTH bounds matter so a
+   later run's fatal isn't misattributed to this one):
    ```powershell
-   dotnet run .claude/skills/real-client-verify/scripts/read-codex-log.cs -- "<dispatchLogPath>" <dispatchSinceUnix> "<out.txt>"
+   dotnet run .claude/skills/real-client-verify/scripts/read-codex-log.cs -- "<dispatchLogPath>" <dispatchSinceUnix> <dispatchUntilUnix> "<out.txt>"
    ```
    then Read `<out.txt>`. Apply the Gate-2 rubric. Details + exact field names:
    `references/evidence.md`.
@@ -160,6 +166,10 @@ guard (step 5). See `references/flywheel.md`.
 - **Never bind 8765** — `ServeProcess` picks a free high port; the user's real bridge
   owns 8765.
 - **A green bridge audit is INCONCLUSIVE, not PASS.**
-- **If you can't run the real client, STOP and mark it UNVERIFIED** — don't claim it
-  "needs the desktop app / can't be headless"; agent_message and namespaced tools were
-  both reproduced in the codex CLI.
+- **If you can't run the real client, STOP and mark it UNVERIFIED** — don't reflexively
+  claim a path "can't be tested." Most paths are headless-reproducible via `codex exec` /
+  `claude.exe`. The exceptions are the desktop-only multi-agent shapes (`agent_message`,
+  namespaced collaboration tools) that `codex exec` does not emit — those are still
+  covered, by the `ApiContract` captured-byte replays of the real bytes, not by a live
+  CLI run. Pick the right harness for the path (see `references/test-cases.md`); never
+  skip a path entirely.

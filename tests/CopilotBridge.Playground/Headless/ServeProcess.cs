@@ -139,22 +139,24 @@ internal static class ServeProcess
         // touched — we patch the COPY.
         var scratchDir = Path.Combine(
             Path.GetTempPath(), "cbridge-serve-" + Guid.NewGuid().ToString("N"));
-        CopyDirectory(buildOutputDir, scratchDir);
 
         // Trace to a STABLE dir OUTSIDE the scratch tree so the four-file audit — the
         // agent's evidence — survives this handle disposing the scratch dir when the
         // bridge stops. Lives under the solution's test output, one dir per run.
         var traceDir = Path.Combine(EvidenceRoot(), "serve-" + Guid.NewGuid().ToString("N"));
 
-        // Everything past the copy can throw — a drifted config (PatchAppSettings), a
+        // Everything from the copy onward can throw — CopyDirectory itself (an AV lock,
+        // disk-full, a stale locked file), a drifted config (PatchAppSettings), a
         // locked/quarantined exe (proc.Start), a lost port race, the readiness wait
         // timing out, OR the CALLER's ct cancelling. Any of those must clean up the
         // scratch dir, the (empty) trace dir, and a half-started process — otherwise a
-        // cancelled or failed start leaks an orphaned bridge (holding its port) and temp
-        // dirs. So run the whole setup+wait under one guard.
+        // cancelled or failed start leaks a partial scratch dir, an orphaned bridge
+        // (holding its port), and temp dirs. So run the whole copy+setup+wait under one
+        // guard.
         Process? proc = null;
         try
         {
+            CopyDirectory(buildOutputDir, scratchDir);
             Directory.CreateDirectory(traceDir);
             PatchAppSettings(Path.Combine(scratchDir, "appsettings.json"), inv.Scenario, traceDir);
 
@@ -363,10 +365,15 @@ internal static class ServeProcess
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {
-            // Repo root marker: the solution file / .git live next to tests/.
-            if (Directory.Exists(Path.Combine(dir.FullName, "tests"))
-                && (File.Exists(Path.Combine(dir.FullName, "CopilotBridge.sln"))
-                    || Directory.Exists(Path.Combine(dir.FullName, ".git"))))
+            // Repo root marker: a solution file (this repo ships CopilotBridge.slnx, the
+            // XML solution format — NOT .sln) or a .git entry next to tests/. .git is a
+            // DIRECTORY in a normal clone but a FILE in a git worktree, so accept either.
+            var hasTests = Directory.Exists(Path.Combine(dir.FullName, "tests"));
+            var hasSln = File.Exists(Path.Combine(dir.FullName, "CopilotBridge.slnx"))
+                || File.Exists(Path.Combine(dir.FullName, "CopilotBridge.sln"));
+            var gitPath = Path.Combine(dir.FullName, ".git");
+            var hasGit = Directory.Exists(gitPath) || File.Exists(gitPath);
+            if (hasTests && (hasSln || hasGit))
             {
                 var root = Path.Combine(dir.FullName, "tests", "behavior-runs");
                 Directory.CreateDirectory(root);

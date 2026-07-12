@@ -13,12 +13,14 @@ how to read each source and what signatures decide PASS / FAIL.
 - `route` — `/codex` | `/cc` | `/cc->gpt`
 - `model`, `scenario`, `clientExitCode`, `durationSeconds`, `prompt`
 - `traceDir` — the bridge's four-file audit for this run
-- `dispatchLogPath` / `dispatchSinceUnix` — codex only: the codex dispatch DB and the
-  Unix-second lower bound to window it to THIS run. **The path is the real
-  `~/.codex/logs_2.sqlite`, NOT anything under `CODEX_HOME`**: codex writes its dispatch
-  log to the real user home regardless of the `CODEX_HOME` override (an isolated home's
-  `logs_2.sqlite` stays empty). The DB is long-lived and holds every past session, so
-  the `since` window is what isolates this run's rows.
+- `dispatchLogPath` / `dispatchSinceUnix` / `dispatchUntilUnix` — codex only: the codex
+  dispatch DB and the Unix-second lower AND upper bounds to window it to THIS run. **The
+  path is the real `~/.codex/logs_2.sqlite`, NOT anything under `CODEX_HOME`**: codex
+  writes its dispatch log to the real user home regardless of the `CODEX_HOME` override
+  (an isolated home's `logs_2.sqlite` stays empty). The DB is long-lived and holds every
+  past session, so BOTH bounds isolate this run's rows — a start-only window would sweep
+  in rows from later runs (or a concurrent desktop codex) and could misattribute a later
+  fatal to this case.
 - `stdoutPath` / `stderrPath` — the saved client stdout/stderr (claude transcript /
   codex JSONL)
 
@@ -32,16 +34,18 @@ fatal is recorded** — the bridge stays 200. Schema (`table logs`): `ts` (Unix 
 `level`, `target`, `feedback_log_body` (the message + otel span; the human message is at
 the END, e.g. `… error=Fatal error: tool exec invoked with incompatible payload`).
 
-Read it with the bundled reader — it copies the DB **with its `-wal` sidecar** and opens
-the copy read-write to fold the WAL in (codex runs in WAL mode; recent rows live in the
-`-wal`, so a naive ReadOnly open would miss them and falsely report zero fatals):
+Read it with the bundled reader — it snapshots the live DB via SQLite's **online backup
+API** (a transactionally-consistent, WAL-aware copy in one call, so it never contends
+with a live codex and can't miss WAL-resident rows the way a naive file-by-file main+`-wal`
+copy can), then queries the snapshot:
 
 ```powershell
-dotnet run .claude/skills/real-client-verify/scripts/read-codex-log.cs -- "<dispatchLogPath>" <dispatchSinceUnix> "<out.txt>"
+dotnet run .claude/skills/real-client-verify/scripts/read-codex-log.cs -- "<dispatchLogPath>" <dispatchSinceUnix> <dispatchUntilUnix> "<out.txt>"
 ```
 
-`<dispatchSinceUnix>` = the manifest's `dispatchSinceUnix` (the run's start) so you only
-see this run's rows — the real `~/.codex` is long-lived and holds every past session.
+`<dispatchSinceUnix>` / `<dispatchUntilUnix>` = the manifest's window bounds, so you only
+see THIS run's rows — the real `~/.codex` is long-lived and holds every past session, and
+without the upper bound a later run's fatal could be misattributed to this one.
 Then Read `<out.txt>`. It has three sections: router/dispatch fatals, all ERROR rows,
 and a recent tail — plus a summary with the fatal count.
 

@@ -238,11 +238,19 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
   fast, no deps). Anything needing live Copilot or `claude.exe` →
   `tests/CopilotBridge.Playground`, tagged `[Trait("Category", "Integration")]`
   so CI skips it. Forgetting the trait makes CI try to run it (and fail). Also tag
-  a second `[Trait("Kind", …)]`: **`ClientBehavior`** (drives a real client through a
-  bridge subprocess — `Headless/ClientBehavior/`) or **`ApiContract`** (probes /
-  captured-byte replays — `Headless/ApiContract/`, root `ApiContract/`). Rule:
-  **drives a real client → ClientBehavior; posts bytes / probes an endpoint →
-  ApiContract.**
+  a second `[Trait("Kind", …)]`: **`ClientBehavior`** (the flywheel — drives a real
+  client through a bridge SUBPROCESS, asserts only harness health, and defers the
+  semantic verdict to the `real-client-verify` skill; `Headless/ClientBehavior/`) or
+  **`ApiContract`** (asserts the wire contract itself in-test — probes, captured-byte
+  replays, AND the legacy real-client smokes that assert wire shape directly in xUnit;
+  `Headless/ApiContract/`, root `ApiContract/`). Rule for NEW tests: **a thin
+  actuator + agent-verdict real-client test → ClientBehavior; anything that asserts
+  the wire contract in-test (whether by posting bytes, probing an endpoint, or driving
+  a client and then asserting the upstream shape) → ApiContract.** The pre-existing
+  real-client smokes (`ToolUseHeadlessTests`, `HeadlessSmokeTests`,
+  `CodexLoadTaskSmokeTests`, `CodexE2EHeadlessTests`, …) are ApiContract by this rule:
+  they drive a client but their verdict is an in-xUnit wire assertion, not the skill's
+  log-read — so they're strong-assertion regression tests, not flywheel actuators.
 - **🔴 A FIX IS NOT DONE UNTIL A REAL HEADLESS CLIENT EXECUTED A COMPLEX TASK
   THROUGH IT — THIS STEP IS NEVER OPTIONAL AND NEVER SKIPPABLE.** Unit tests,
   offline round-trips, and "the bridge returned HTTP 200" are necessary but NOT

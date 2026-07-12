@@ -114,7 +114,7 @@ public class CodexBehaviorTests
             Timeout: TimeSpan.FromMinutes(6)));
 
         _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration}");
-        _output.WriteLine($"dispatch log (real ~/.codex)={result.DispatchLogPath} since={result.StartedUnixSeconds}");
+        _output.WriteLine($"dispatch log (real ~/.codex)={result.DispatchLogPath} window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
 
         var manifestPath = BehaviorRun.Write(
             new BehaviorManifest(
@@ -128,6 +128,7 @@ public class CodexBehaviorTests
                 TraceDir: bridge.TraceDir,
                 DispatchLogPath: result.DispatchLogPath,
                 DispatchSinceUnix: result.StartedUnixSeconds,
+                DispatchUntilUnix: result.EndedUnixSeconds,
                 Prompt: prompt),
             result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
             out _, out _);
@@ -137,6 +138,6 @@ public class CodexBehaviorTests
 
         // Harness contract only. The dispatch verdict (did exec run? any router fatal?)
         // is the skill agent's job, read from logs_2.sqlite the manifest points at.
-        ClientBehaviorSupport.AssertHarnessProducedEvidence(bridge.TraceDir, manifestPath);
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
     }
 }

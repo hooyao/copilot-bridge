@@ -32,7 +32,8 @@ using System.Text;
 
 if (args.Length < 1)
 {
-    Console.Error.WriteLine("usage: dotnet run read-codex-log.cs -- <logs_2.sqlite> [sinceUnixSeconds] [outFile]");
+    Console.Error.WriteLine(
+        "usage: dotnet run read-codex-log.cs -- <logs_2.sqlite> [sinceUnixSeconds] [untilUnixSeconds] [outFile]");
     return 2;
 }
 
@@ -44,42 +45,59 @@ if (!File.Exists(dbPath))
 }
 
 long since = args.Length >= 2 && long.TryParse(args[1], out var s) ? s : 0;
-string? outFile = args.Length >= 3 ? args[2] : null;
-
-// Copy the DB to a temp file before opening: a live codex holds a WAL lock, and even
-// ReadOnly open can contend. A snapshot copy is always safe to read. CRITICAL: codex
-// runs in WAL mode, and recent rows often live ONLY in the `-wal` sidecar, not yet
-// checkpointed into the main file. So we MUST copy the -wal/-shm alongside AND open the
-// snapshot READ-WRITE (not ReadOnly): a ReadOnly open will not replay the WAL, so those
-// rows stay invisible and the digest wrongly reports zero fatals. The snapshot is a
-// throwaway copy and codex has already exited by verdict time, so read-write here is
-// safe and forces SQLite to fold the WAL in on connect.
-var snapshot = Path.Combine(Path.GetTempPath(), $"codexlog-{Guid.NewGuid():N}.sqlite");
-File.Copy(dbPath, snapshot, overwrite: true);
-// Whether the source has a -wal sidecar, recorded so the digest can say so — a run's
-// recent rows usually live in the WAL, so its presence is expected right after a run.
-var hadWal = File.Exists(dbPath + "-wal");
-foreach (var side in new[] { "-wal", "-shm" })
+// Optional END bound. A start-only window does NOT isolate one run: the real ~/.codex is
+// long-lived, so verifying a manifest after LATER runs (or while a concurrent desktop
+// codex is writing) would sweep in rows from those runs and could attribute a later
+// router fatal to the wrong case. So bound the top too. The 3rd positional is `until`
+// when it parses as a number; otherwise it's the out file (backward compatible).
+long until = long.MaxValue;
+string? outFile = null;
+if (args.Length >= 3)
 {
-    var extra = dbPath + side;
-    if (!File.Exists(extra)) continue;
-    // Do NOT swallow this: copying the -wal sidecar is mandatory (recent rows live there
-    // only). If it fails we would open a WAL-blind snapshot and print "0 fatals" — the
-    // exact false-negative this tool exists to prevent, indistinguishable from a real
-    // clean run. Abort loudly instead so the verdict can never be read off a blind copy.
-    try
+    if (long.TryParse(args[2], out var u)) { until = u; outFile = args.Length >= 4 ? args[3] : null; }
+    else { outFile = args[2]; }
+}
+
+// Snapshot the DB before querying, so we never contend with (or lock) a live codex, and
+// so the read is a consistent point-in-time view. CRITICAL: codex runs in WAL mode, and
+// recent rows — the ones we care about — usually live in the `-wal` sidecar, not yet
+// checkpointed into the main file. A naive file-by-file copy of the main DB + `-wal` is
+// NOT a consistent snapshot: on this shared real-home DB another codex can append or
+// checkpoint between the two copies, and SQLite may then ignore an unmatched WAL tail,
+// silently dropping the newest fatal rows. So use SQLite's ONLINE BACKUP API instead
+// (`SqliteConnection.BackupDatabase`): opened read-only against the live DB, it produces
+// one transactionally-consistent copy that already includes the WAL — no sidecar to copy
+// and no inconsistency window. Whether the source has a `-wal` sidecar is recorded only
+// as an informational signal for the digest header.
+var hadWal = File.Exists(dbPath + "-wal");
+var snapshot = Path.Combine(Path.GetTempPath(), $"codexlog-{Guid.NewGuid():N}.sqlite");
+try
+{
+    var liveCs = new SqliteConnectionStringBuilder
     {
-        File.Copy(extra, snapshot + side, overwrite: true);
-    }
-    catch (Exception ex)
+        DataSource = dbPath,
+        Mode = SqliteOpenMode.ReadOnly,
+        Pooling = false,
+    }.ToString();
+    var snapCs = new SqliteConnectionStringBuilder
     {
-        Console.Error.WriteLine(
-            $"FATAL: could not copy the {side} sidecar of {dbPath} ({ex.Message}). Recent "
-            + "WAL-resident rows would be invisible and the digest would falsely report 0 "
-            + "fatals — refusing to produce a blind verdict.");
-        try { File.Delete(snapshot); } catch { }
-        return 3;
-    }
+        DataSource = snapshot,
+        Mode = SqliteOpenMode.ReadWriteCreate,
+        Pooling = false,
+    }.ToString();
+    using var live = new SqliteConnection(liveCs);
+    using var snap = new SqliteConnection(snapCs);
+    live.Open();
+    snap.Open();
+    live.BackupDatabase(snap); // consistent, WAL-aware copy in one call
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine(
+        $"FATAL: could not snapshot {dbPath} via the SQLite backup API ({ex.Message}). "
+        + "Refusing to produce a verdict off an inconsistent or missing snapshot.");
+    try { File.Delete(snapshot); } catch { }
+    return 3;
 }
 
 var sb = new StringBuilder();
@@ -90,23 +108,17 @@ try
     var cs = new SqliteConnectionStringBuilder
     {
         DataSource = snapshot,
-        // Read-write (not ReadOnly) so SQLite replays the copied -wal into the snapshot
-        // on open — otherwise WAL-only rows (the recent ones we care about) are missing.
-        Mode = SqliteOpenMode.ReadWrite,
+        // The backup already folded the WAL in, so ReadOnly is sufficient and safest here.
+        Mode = SqliteOpenMode.ReadOnly,
         Pooling = false,
     }.ToString();
     using var conn = new SqliteConnection(cs);
     conn.Open();
-    // Force a full checkpoint so every WAL row is materialized before we query.
-    using (var wal = conn.CreateCommand())
-    {
-        wal.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
-        try { wal.ExecuteNonQuery(); } catch { /* not fatal — a non-WAL DB ignores this */ }
-    }
 
     Line($"# codex dispatch log digest");
     Line($"source: {dbPath}");
     Line($"since:  {(since > 0 ? $"ts >= {since} ({DateTimeOffset.FromUnixTimeSeconds(since):u})" : "(all rows)")}");
+    Line($"until:  {(until != long.MaxValue ? $"ts <= {until} ({DateTimeOffset.FromUnixTimeSeconds(until):u})" : "(no upper bound)")}");
 
     // Total rows scanned in range, so a reader can tell "0 fatals out of N real rows"
     // (a genuine clean run) from "0 fatals out of 0 rows" (nothing logged in the window
@@ -114,14 +126,15 @@ try
     long rowsInRange;
     using (var cnt = conn.CreateCommand())
     {
-        cnt.CommandText = "SELECT count(*) FROM logs WHERE ts >= $since";
+        cnt.CommandText = "SELECT count(*) FROM logs WHERE ts >= $since AND ts <= $until";
         cnt.Parameters.AddWithValue("$since", since);
+        cnt.Parameters.AddWithValue("$until", until);
         rowsInRange = (long)(cnt.ExecuteScalar() ?? 0L);
     }
     Line($"rows in range: {rowsInRange}  (source -wal sidecar present: {(hadWal ? "yes" : "no")})");
     if (rowsInRange == 0)
         Line("WARNING: zero rows in range — this window captured NOTHING, so a 0 fatal "
-            + "count is INCONCLUSIVE, not clean. Check the since-window and the stdout canary.");
+            + "count is INCONCLUSIVE, not clean. Check the since/until window and the stdout canary.");
     Line();
 
     // 1) The signal that most matters: tool-router / dispatch fatals. A real dispatch
@@ -132,7 +145,7 @@ try
     //    client echoed back), so an unqualified body LIKE would false-positive on every
     //    later transport row of a once-failed session.
     Line("## router / dispatch fatals (the exec-broken signal)");
-    var fatalCount = DumpRows(conn, sb, since,
+    var fatalCount = DumpRows(conn, sb, since, until,
         where: "level = 'ERROR' AND ("
              + "target LIKE 'codex_core::tools::router%' "
              + "OR target LIKE 'codex_core::tools::parallel%' "
@@ -146,13 +159,13 @@ try
 
     // 2) All ERROR-level rows (broader net for any other client-side failure).
     Line("## ERROR-level rows");
-    var errCount = DumpRows(conn, sb, since, where: "level = 'ERROR'", limit: 60);
+    var errCount = DumpRows(conn, sb, since, until, where: "level = 'ERROR'", limit: 60);
     if (errCount == 0) Line("  (none)");
     Line();
 
     // 3) A tail of recent rows for context (what the client was doing).
     Line("## recent rows (tail, any level)");
-    DumpRows(conn, sb, since, where: "1=1", limit: 40, tail: true);
+    DumpRows(conn, sb, since, until, where: "1=1", limit: 40, tail: true);
 
     Line();
     Line("## summary");
@@ -165,8 +178,6 @@ try
 finally
 {
     try { File.Delete(snapshot); } catch { }
-    try { File.Delete(snapshot + "-wal"); } catch { }
-    try { File.Delete(snapshot + "-shm"); } catch { }
 }
 
 var text = sb.ToString();
@@ -183,15 +194,16 @@ return 0;
 
 // ---- helpers ----------------------------------------------------------------
 
-static int DumpRows(SqliteConnection conn, StringBuilder sb, long since, string where, int limit, bool tail = false)
+static int DumpRows(SqliteConnection conn, StringBuilder sb, long since, long until, string where, int limit, bool tail = false)
 {
     using var cmd = conn.CreateCommand();
     // ORDER DESC to get the most-recent `limit` rows; the tail view keeps that order,
     // the targeted views too (newest fatal first is what you want to read).
     cmd.CommandText =
         $"SELECT ts, level, target, feedback_log_body FROM logs "
-        + $"WHERE ts >= $since AND ({where}) ORDER BY ts DESC, id DESC LIMIT $limit";
+        + $"WHERE ts >= $since AND ts <= $until AND ({where}) ORDER BY ts DESC, id DESC LIMIT $limit";
     cmd.Parameters.AddWithValue("$since", since);
+    cmd.Parameters.AddWithValue("$until", until);
     cmd.Parameters.AddWithValue("$limit", limit);
 
     using var r = cmd.ExecuteReader();

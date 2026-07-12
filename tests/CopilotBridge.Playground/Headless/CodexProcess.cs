@@ -29,9 +29,13 @@ internal sealed record CodexResult(
     // tool actually execute / any incompatible-payload fatal" signal — the REAL
     // ~/.codex copy, since codex logs there regardless of CODEX_HOME.
     string DispatchLogPath,
-    // Unix seconds just before codex started, so the verdict can window logs_2.sqlite to
-    // THIS run's rows (the real ~/.codex is long-lived and holds every past session).
-    long StartedUnixSeconds);
+    // Unix-second window bounding THIS run's rows in the long-lived, shared ~/.codex
+    // logs_2.sqlite. Both bounds are needed: a start-only window would also sweep in rows
+    // from LATER runs (or a concurrent desktop codex), misattributing a later fatal to
+    // this case. Started is stamped just before launch (minus slack); Ended just after
+    // exit (plus slack).
+    long StartedUnixSeconds,
+    long EndedUnixSeconds);
 
 internal static class CodexProcess
 {
@@ -112,8 +116,11 @@ internal static class CodexProcess
         var stdout = await stdoutTask;
         var stderr = await stderrTask;
         sw.Stop();
+        // Stamp the end just after exit (plus slack) — the upper window bound. codex may
+        // flush its last rows a beat after the process returns, so pad forward.
+        var endedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 5;
         return new CodexResult(proc.ExitCode, stdout, stderr, sw.Elapsed, codexHome,
-            RealDispatchLog, startedUnix);
+            RealDispatchLog, startedUnix, endedUnix);
     }
 
     private static string ResolveCodexExe()
