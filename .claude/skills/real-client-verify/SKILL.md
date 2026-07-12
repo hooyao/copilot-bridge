@@ -121,12 +121,18 @@ A bridge-side 200 alone is **INCONCLUSIVE**, never PASS.
    ```
    Target one case with an extra `FullyQualifiedName~` filter (e.g.
    `~CodexBehaviorTests`) while iterating.
-3. **Render the verdict.** Each run wrote a manifest under `tests/behavior-runs/manifests/`.
-   For each: read the manifest, then read the client's own evidence it points at —
-   for codex, run the log reader against the real `~/.codex/logs_2.sqlite` windowed to
-   the run (`dispatchLogPath` + `dispatchSinceUnix` + `dispatchUntilUnix` from the
-   manifest — codex logs to the real home, NOT `CODEX_HOME`; BOTH bounds matter so a
-   later run's fatal isn't misattributed to this one):
+3. **Render the verdict — for THIS run's manifests only.** The
+   `tests/behavior-runs/manifests/` dir is **append-only**, so it accumulates every past
+   run; do NOT scan all of it or you'll report a stale failure (or an old model/scenario)
+   as the current verdict. Use only the manifests this invocation produced: each behavior
+   test prints its `[manifest] <path>` line to the test output, so read those exact paths;
+   or, equivalently, select the manifest files whose mtime is after this run started
+   (e.g. the newest N for the cases you ran). For each such manifest: read it, then read
+   the client's own evidence it points at — for codex, run the log reader against the
+   real `~/.codex/logs_2.sqlite` windowed to the run (`dispatchLogPath` +
+   `dispatchSinceUnix` + `dispatchUntilUnix` — codex logs to the real home, NOT
+   `CODEX_HOME`; and note the log window is only a coarse fatal-check, the per-run trace
+   is authoritative — see `references/evidence.md`):
    ```powershell
    dotnet run .claude/skills/real-client-verify/scripts/read-codex-log.cs -- "<dispatchLogPath>" <dispatchSinceUnix> <dispatchUntilUnix> "<out.txt>"
    ```

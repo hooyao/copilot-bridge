@@ -34,7 +34,6 @@ Client `codex.exe` (`codex exec`), scenario `Passthrough`, route `/codex`.
 | B1 multi-step tool chain | two `echo` writes then a `cat` read-back, report the exact second line (`CodexBehaviorTests.Codex_MultiStepToolChain…`) | `logs_2.sqlite`: the shell tool actually ran (output present, not `aborted`); **zero** `[ERROR] codex_core::tools::router` / `incompatible payload`. Canary in stdout. ≥2 upstream `/responses` 2xx with `function_call` + `function_call_output`. |
 | B1b code-computation → custom exec | "using your code-execution tool, sum 1..100, append a canary suffix, report it" (`CodexBehaviorTests.Codex_CodeComputation_DrivesCustomExecPath…`) | biases codex toward the **custom `exec` grammar tool** (`custom_tool_call` on the wire) — the exact path the 0.4.13 exec fix guards. PASS: canary in stdout AND **zero** `incompatible payload` in `logs_2.sqlite`. Confirm from the trace that the run actually took `custom_tool_call` (codex still picks its tool per run). |
 | B2 second-turn echo | a task that makes codex call a tool, get a result, then reference that prior call on the next turn | `logs_2.sqlite`: no deserialize/echo error on turn 2 (the request-side round-trip); tool ran both turns |
-| B3 custom `exec` (desktop) | a task the desktop app services via its custom grammar `exec` tool | `logs_2.sqlite`: **no** `Fatal error: tool exec invoked with incompatible payload`; exec output present |
 
 > **codex picks its tool per run — B1b biases, it does not guarantee.** The same task
 > can be serviced by a plain `function_call` shell tool (which the exec bug never
@@ -43,17 +42,20 @@ Client `codex.exe` (`codex exec`), scenario `Passthrough`, route `/codex`.
 > `custom_tool_call` path; a clean log over a `function_call`-only run does not exercise
 > the fix. This is a Gate-1 consequence — the case must actually hit the path.
 
-> **CLI vs desktop coverage.** `codex exec` (headless CLI) drives B1/B2 — the real
-> function-tool loop and the turn-2 echo. The custom-`exec` grammar tool (B3), the
-> namespaced-collaboration tools (`list_agents`/`spawn_agent`), and multi-agent
-> `agent_message` are emitted by the desktop Codex app's multi-agent mode, which the
-> CLI does not drive. **These are NOT unverifiable** — they were all reproduced from
-> real captured CLI/desktop bytes and are guarded directly by the `ApiContract`
-> captured-byte replays (`CodexNamespaceEchoHeadlessTests`,
-> `CodexAgentMessageHeadlessTests`, `CodexCustomToolEchoHeadlessTests`). When your
-> change touches those paths, the live gate is the replay (real bytes → `/codex/responses`
-> → assert fixed shape); the behavior leg drives what the CLI can drive. Never skip a
-> path by calling it "desktop-only / can't be tested" — capture its bytes and replay.
+> **CLI vs desktop coverage.** `codex exec` (headless CLI) drives B1, B2, AND B1b — the
+> real function-tool loop, the turn-2 echo, AND the custom-`exec` grammar tool (B1b's
+> code-computation prompt biases codex toward `custom_tool_call`, confirmed on the trace
+> by `Codex_CodeComputation_DrivesCustomExecPath_ForVerdict`). What the headless CLI does
+> NOT emit is the desktop Codex app's **multi-agent** shapes: the namespaced-collaboration
+> tools (`list_agents`/`spawn_agent`) and multi-agent `agent_message`. **Those are NOT
+> unverifiable** — they were reproduced from real
+> captured bytes and are guarded directly by the `ApiContract` captured-byte replays
+> (`CodexNamespaceEchoHeadlessTests`, `CodexAgentMessageHeadlessTests`,
+> `CodexCustomToolEchoHeadlessTests`). When your change touches a multi-agent shape, the
+> live gate is the replay (real bytes → `/codex/responses` → assert fixed shape); custom
+> `exec` and the function-tool loop are driven live by the CLI behavior cases. Never skip
+> a path by calling it "desktop-only / can't be tested" — either drive it headless (exec,
+> function tools) or capture its bytes and replay (collaboration, agent_message).
 
 ## C. Claude Code → gpt (CC routed to a Codex backend)
 
