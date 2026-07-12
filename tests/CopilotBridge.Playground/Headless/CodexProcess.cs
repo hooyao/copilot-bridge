@@ -33,11 +33,13 @@ internal sealed record CodexResult(
     // tool actually execute / any incompatible-payload fatal" signal — the REAL
     // ~/.codex copy, since codex logs there regardless of CODEX_HOME.
     string DispatchLogPath,
-    // Unix-second window bounding THIS run's rows in the long-lived, shared ~/.codex
-    // logs_2.sqlite. Both bounds are needed: a start-only window would also sweep in rows
-    // from LATER runs (or a concurrent desktop codex), misattributing a later fatal to
-    // this case. Started is stamped just before launch (minus slack); Ended just after
-    // exit (plus slack).
+    // A COARSE Unix-second window to narrow the scan of the long-lived, shared ~/.codex
+    // logs_2.sqlite — NOT a clean run isolator. It is second-resolution, and codex
+    // multiplexes sequential `codex exec` runs onto a shared worker process, so a window
+    // can overlap an adjacent run and the log has no reliable per-run key. The
+    // AUTHORITATIVE execution evidence is the per-run bridge trace; the log window is only
+    // a best-effort router-fatal check (see references/evidence.md). Started is stamped
+    // before launch; Ended after the post-exit flush (not padded into the future).
     long StartedUnixSeconds,
     long EndedUnixSeconds);
 

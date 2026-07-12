@@ -100,6 +100,16 @@ internal sealed class ServeHandle : IAsyncDisposable
         {
             if (!_process.HasExited)
             {
+                // Kill bypasses the bridge's ProcessExit → Log.CloseAndFlush() →
+                // BridgeIoSink.Dispose drain, so a hard kill can drop audit files still
+                // queued in the sink's channel — losing the final tool-result/request
+                // artifacts the verifier reads AFTER the test returns. The sink has no
+                // external "flushed" signal, but it writes each audit as its own file, so
+                // wait for the trace dir to QUIESCE (no new/changed *.json for a quiet
+                // window) before killing — i.e. wait for the sink to finish. Bounded so a
+                // silent bridge still tears down.
+                await WaitForTraceQuiescenceAsync(
+                    quiet: TimeSpan.FromSeconds(2), deadline: TimeSpan.FromSeconds(15));
                 _process.Kill(entireProcessTree: true);
                 await Task.Run(() => _process.WaitForExit(5000));
             }
@@ -113,6 +123,39 @@ internal sealed class ServeHandle : IAsyncDisposable
         // Best-effort scratch cleanup. A locked log/trace file (still-flushing sink)
         // must not fail the test — the OS temp dir is reclaimed anyway.
         try { Directory.Delete(_scratchDir, recursive: true); } catch { /* best effort */ }
+    }
+
+    /// <summary>
+    /// Wait until the trace dir stops changing — the same total <c>*.json</c> count and
+    /// latest write time observed across a <paramref name="quiet"/> window — so the audit
+    /// sink's worker has drained everything the client produced before we hard-kill the
+    /// bridge. Returns early once quiet, or when <paramref name="deadline"/> elapses.
+    /// </summary>
+    private async Task WaitForTraceQuiescenceAsync(TimeSpan quiet, TimeSpan deadline)
+    {
+        var end = DateTime.UtcNow + deadline;
+        (int count, long ticks) Snapshot()
+        {
+            if (!Directory.Exists(TraceDir)) return (0, 0);
+            var files = Directory.GetFiles(TraceDir, "*.json");
+            long latest = 0;
+            foreach (var f in files)
+            {
+                try { latest = Math.Max(latest, File.GetLastWriteTimeUtc(f).Ticks); }
+                catch { /* file vanished mid-scan — ignore */ }
+            }
+            return (files.Length, latest);
+        }
+
+        var last = Snapshot();
+        var stableSince = DateTime.UtcNow;
+        while (DateTime.UtcNow < end)
+        {
+            await Task.Delay(250);
+            var now = Snapshot();
+            if (now != last) { last = now; stableSince = DateTime.UtcNow; continue; }
+            if (DateTime.UtcNow - stableSince >= quiet) return; // quiet long enough → drained
+        }
     }
 }
 

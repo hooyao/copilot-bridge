@@ -92,13 +92,15 @@ regression but proves nothing about namespaced tools, multi-agent `agent_message
 custom `exec`. See `references/test-cases.md` for the taxonomy and which case hits
 which path.
 
-### Gate 2 — the verdict comes from the CLIENT's own dispatch log
-- **Codex** → the real `~/.codex/logs_2.sqlite`, windowed to this run (the manifest's
-  `dispatchLogPath` + `dispatchSinceUnix` — codex logs to the real home, NOT
-  `CODEX_HOME`). Read it with `scripts/read-codex-log.cs`. PASS requires: the tool
-  actually ran (the canary is in the client stdout, no `aborted` in stdout) AND **zero**
-  rows matching `[ERROR] codex_core::tools::router` / `incompatible payload` /
-  `Missing namespace` / `Polymorphism_`.
+### Gate 2 — the verdict comes from the CLIENT's own evidence
+- **Codex** → PASS requires (a) a real tool round-trip on THIS run's **bridge trace** — a
+  `function_call`/`custom_tool_call` and its matching `*_output` (the authoritative
+  execution signal; the stdout canary alone is echo-able from the prompt), (b) **no**
+  `aborted` in stdout, and (c) **zero** router fatals in the real `~/.codex/logs_2.sqlite`
+  (`[ERROR] codex_core::tools::router` / `incompatible payload` / `Missing namespace` /
+  `Polymorphism_`). Read the log with `scripts/read-codex-log.cs` (codex logs to the real
+  home, NOT `CODEX_HOME`). The log window is a coarse router-fatal check only — codex
+  reuses a shared worker across runs, so the trace, not the log window, isolates this run.
 - **Claude Code** → the behavior tests capture `--output-format stream-json --verbose`,
   so the manifest's `stdoutPath` carries the INTERMEDIATE assistant / `tool_use` /
   `tool_result` events (not just the final result envelope), cross-checked against the

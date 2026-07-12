@@ -14,13 +14,15 @@ how to read each source and what signatures decide PASS / FAIL.
 - `model`, `scenario`, `clientExitCode`, `durationSeconds`, `prompt`
 - `traceDir` — the bridge's four-file audit for this run
 - `dispatchLogPath` / `dispatchSinceUnix` / `dispatchUntilUnix` — codex only: the codex
-  dispatch DB and the Unix-second lower AND upper bounds to window it to THIS run. **The
-  path is the real `~/.codex/logs_2.sqlite`, NOT anything under `CODEX_HOME`**: codex
-  writes its dispatch log to the real user home regardless of the `CODEX_HOME` override
-  (an isolated home's `logs_2.sqlite` stays empty). The DB is long-lived and holds every
-  past session, so BOTH bounds isolate this run's rows — a start-only window would sweep
-  in rows from later runs (or a concurrent desktop codex) and could misattribute a later
-  fatal to this case.
+  dispatch DB and a Unix-second lower/upper window. **The path is the real
+  `~/.codex/logs_2.sqlite`, NOT anything under `CODEX_HOME`** (codex logs to the real user
+  home regardless of the override; an isolated home's `logs_2.sqlite` stays empty). The
+  window is a **coarse narrowing, NOT a clean run isolator**: it is second-resolution, and
+  codex multiplexes back-to-back `codex exec` runs onto a **shared, long-lived worker
+  process**, so a window can overlap an adjacent run and the log has no reliable per-run
+  key (the `process_uuid` column is that shared worker's pid, not this run's). That is why
+  the **per-run bridge trace is the authoritative execution evidence** and the log window
+  is only the router-fatal check within it (see the note below the rubric).
 - `stdoutPath` / `stderrPath` — the saved client stdout/stderr (claude transcript /
   codex JSONL)
 
@@ -75,13 +77,17 @@ and a recent tail — plus a summary with the fatal count.
 Any missing tool round-trip, a stdout abort, a fatal row, or a missing canary = **FAIL**,
 regardless of the bridge's 200 and regardless of exit code.
 
-> **The bridge trace is per-run; the log window is shared.** The four-file trace lives in
+> **The bridge trace is per-run; the log window is NOT.** The four-file trace lives in
 > THIS run's own `traceDir`, so the tool round-trip read from it is unambiguously this
-> run's. The `logs_2.sqlite` window, by contrast, is carved out of the shared long-lived
-> `~/.codex` by timestamp, and back-to-back runs in one class can still slightly overlap
-> at the boundary. So treat the **trace** as the authoritative source for "did the tool
-> execute", and the log window as the router-fatal check within it — if the two ever
-> disagree, trust the per-run trace.
+> run's — that is why it is the **authoritative** "did the tool execute" signal. The
+> `logs_2.sqlite` window, by contrast, is carved out of the shared long-lived `~/.codex`
+> by second-resolution timestamp, and codex multiplexes sequential `codex exec` runs onto
+> one shared worker process (its `process_uuid` is that worker's pid, shared across runs —
+> so there is no reliable per-run key in the log). A window can therefore overlap an
+> adjacent run. Treat the log strictly as a **router-fatal check** (an `incompatible
+> payload` / router-ERROR row is a real problem worth surfacing even if attribution is
+> fuzzy), and the per-run **trace** as the source of truth for execution — if the two ever
+> disagree, trust the trace.
 
 > **Empty window ≠ PASS.** If the reader finds essentially no rows in the window (the
 > tail is empty), the verdict is **INCONCLUSIVE, not clean** — the run may not have
