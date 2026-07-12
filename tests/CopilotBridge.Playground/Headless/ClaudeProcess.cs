@@ -20,7 +20,12 @@ internal sealed record ClaudeInvocation(
     string? AnthropicApiKey = null,   // when set, AnthropicBaseUrl points at native
     string? AnthropicBaseUrl = null,  // override target (e.g. https://api.anthropic.com); null = bridge
     IReadOnlyList<string>? Betas = null,
-    string? McpConfigPath = null);    // when set, passes --mcp-config <path>
+    string? McpConfigPath = null,     // when set, passes --mcp-config <path>
+    // When set, the client process runs with this as its working directory. Behavior
+    // tasks that write relative filenames MUST pass a disposable dir so the real client
+    // cannot create/overwrite files in the test runner's CWD (the checkout). null =
+    // inherit the runner's directory (fine for no-tool / read-only tasks).
+    string? WorkingDirectory = null);
 
 internal sealed record ClaudeResult(
     int ExitCode,
@@ -67,6 +72,7 @@ internal static class ClaudeProcess
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        if (inv.WorkingDirectory is not null) psi.WorkingDirectory = inv.WorkingDirectory;
         foreach (var a in args) psi.ArgumentList.Add(a);
         // --bare requires API key auth; bridge ignores the value, but Claude Code
         // refuses to start without one set.

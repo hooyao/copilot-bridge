@@ -246,12 +246,16 @@ internal static class ServeProcess
 
             return new ServeHandle(proc, scratchDir, baseUrl, traceDir, stderrTail);
         }
-        catch (Exception ex) when (ex is not ServeStartupException)
+        catch
         {
-            // Any other abnormal exit before we handed ownership to a ServeHandle — the
-            // caller's ct cancelling the readiness wait, PatchAppSettings on a drifted
-            // config, a locked/quarantined exe failing proc.Start, a lost port race.
-            // Clean up so we never leak an orphaned bridge (holding its port) or temp dirs.
+            // ANY abnormal exit before we handed ownership to a ServeHandle: the caller's
+            // ct cancelling the readiness wait, PatchAppSettings throwing on a drifted
+            // config (a ServeStartupException raised BEFORE proc exists — which an
+            // `ex is not ServeStartupException` filter would wrongly let leak), a
+            // locked/quarantined exe failing proc.Start, a lost port race, a failed
+            // CopyDirectory. Clean up so we never leak an orphaned bridge (holding its
+            // port) or temp dirs. The inner timeout/early-exit paths already delete before
+            // throwing, so repeating the best-effort cleanup here is harmless (idempotent).
             if (proc is not null) await KillQuietly(proc);
             TryDeleteDir(scratchDir);
             TryDeleteDir(traceDir);
@@ -305,6 +309,16 @@ internal static class ServeProcess
         foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
         {
             var rel = Path.GetRelativePath(source, file);
+
+            // Never copy the encrypted GitHub credential into the scratch tree:
+            // TokenStore.FilePath is next to the exe, so a prior JIT login can leave a
+            // github_token.dat in the build output. The subprocess bridge is meant to use
+            // the ~/github_token.dat HOME fallback, and best-effort scratch cleanup could
+            // leave the copied blob behind — so exclude it outright.
+            var name = Path.GetFileName(file);
+            if (string.Equals(name, "github_token.dat", StringComparison.OrdinalIgnoreCase))
+                continue;
+
             // Skip the bridge's own runtime output subtrees if a prior JIT run left them
             // in the build dir: they're irrelevant to a fresh scenario run, they bloat the
             // copy, and — worse — a file under log/ or request-traces/ can be locked by a

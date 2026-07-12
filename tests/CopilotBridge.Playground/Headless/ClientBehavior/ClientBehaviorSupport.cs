@@ -40,6 +40,28 @@ internal static class ClientBehaviorSupport
     public static string Stamp() => DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff");
 
     /// <summary>
+    /// A fresh, disposable working directory under the OS temp dir for a client run whose
+    /// task writes relative filenames — so the real client mutates THIS dir, never the
+    /// test runner's CWD (the checkout) or an unrelated user file. Dispose to remove it.
+    /// </summary>
+    public static ScratchDir NewWorkDir(string caseId) => new(caseId);
+
+    internal sealed class ScratchDir : IDisposable
+    {
+        public string Path { get; }
+        public ScratchDir(string caseId)
+        {
+            Path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(), $"cbridge-work-{caseId}-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(Path);
+        }
+        public void Dispose()
+        {
+            try { Directory.Delete(Path, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>
     /// The harness-contract assertions every behavior test shares: the bridge bound a
     /// port (implied by a non-null handle), the client process ran to completion with a
     /// zero exit code, it actually reached the bridge (its trace dir exists and holds at

@@ -107,11 +107,16 @@ public class CodexBehaviorTests
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(ServeScenario.Passthrough));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
 
+        // Disposable work dir so codex's file-writing tools mutate a throwaway dir, never
+        // the test runner's checkout.
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+
         var result = await CodexProcess.RunAsync(new CodexInvocation(
             BridgeBaseUrl: bridge.BaseUrl,
             Prompt: prompt,
             Model: ClientBehaviorSupport.LatestGpt,
-            Timeout: TimeSpan.FromMinutes(6)));
+            Timeout: TimeSpan.FromMinutes(6),
+            WorkingDirectory: work.Path));
 
         _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration}");
         _output.WriteLine($"dispatch log (real ~/.codex)={result.DispatchLogPath} window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");

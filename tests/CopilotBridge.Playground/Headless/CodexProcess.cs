@@ -21,7 +21,11 @@ internal sealed record CodexInvocation(
     // isolated home's logs_2.sqlite stays empty while ~/.codex gains the run's rows).
     // So the verdict reads ~/.codex/logs_2.sqlite filtered by the run's start time; see
     // CodexResult.DispatchLogPath / StartedUnixSeconds.
-    string? CodexHome = null);
+    string? CodexHome = null,
+    // When set, codex runs with this as its working directory. Tasks that write relative
+    // filenames MUST pass a disposable dir so the real client cannot create/overwrite
+    // files in the test runner's CWD (the checkout). null = inherit the runner's dir.
+    string? WorkingDirectory = null);
 
 internal sealed record CodexResult(
     int ExitCode, string Stdout, string Stderr, TimeSpan Duration, string CodexHome,
@@ -83,6 +87,7 @@ internal static class CodexProcess
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        if (inv.WorkingDirectory is not null) psi.WorkingDirectory = inv.WorkingDirectory;
         foreach (var a in args) psi.ArgumentList.Add(a);
         psi.Environment["BRIDGE_DUMMY_KEY"] = "dummy-bridge-bypass";
         // Isolate config/auth/state from the user's real ~/.codex — but note codex still

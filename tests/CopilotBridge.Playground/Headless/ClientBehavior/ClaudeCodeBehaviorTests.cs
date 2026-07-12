@@ -75,6 +75,10 @@ public class ClaudeCodeBehaviorTests
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(scenario));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} scenario={scenario} (trace: {bridge.TraceDir})");
 
+        // Disposable work dir so claude's Bash/Read tools mutate a throwaway dir, never
+        // the test runner's checkout.
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+
         var result = await ClaudeProcess.RunAsync(new ClaudeInvocation(
             BridgeBaseUrl: bridge.BaseUrl,
             Prompt: prompt,
@@ -87,7 +91,8 @@ public class ClaudeCodeBehaviorTests
             OutputFormat: "stream-json",
             Verbose: true,
             AllowedTools: "Bash,Read",
-            Timeout: TimeSpan.FromMinutes(8)));
+            Timeout: TimeSpan.FromMinutes(8),
+            WorkingDirectory: work.Path));
 
         _output.WriteLine($"claude.exe exit={result.ExitCode} duration={result.Duration}");
 
