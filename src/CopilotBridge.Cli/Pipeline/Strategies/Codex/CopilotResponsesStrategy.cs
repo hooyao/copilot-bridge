@@ -200,6 +200,11 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
                 if (!moved) break;
                 foreach (var irItem in sm.Translate(e.Current))
                     yield return irItem;
+                // A Responses completed/incomplete event is authoritative. Do not
+                // wait for transport EOF after yielding the client terminal: a
+                // keep-open connection, tail stall, or reset must not reverse an
+                // already-completed model turn into an error after message_stop.
+                if (sm.SawTerminal) break;
             }
         }
         finally

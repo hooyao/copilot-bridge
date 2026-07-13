@@ -138,6 +138,36 @@ public class ResponsesStreamFaultEndpointContractTests
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
+    private sealed class ReadCountingTailFaultStream(byte[] prefix, Exception tailFault) : Stream
+    {
+        private int _position;
+        public int ReadsAfterPrefix { get; private set; }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => _position; set => throw new NotSupportedException(); }
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (_position >= prefix.Length)
+            {
+                ReadsAfterPrefix++;
+                return ValueTask.FromException<int>(tailFault);
+            }
+            var count = Math.Min(buffer.Length, prefix.Length - _position);
+            prefix.AsSpan(_position, count).CopyTo(buffer.Span);
+            _position += count;
+            return ValueTask.FromResult(count);
+        }
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
     private static byte[] PartialTextPrefix() => Encoding.UTF8.GetBytes(
         "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_fault\",\"status\":\"in_progress\"}}\n\n"
         + "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_partial\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[]}}\n\n"
@@ -503,6 +533,21 @@ public class ResponsesStreamFaultEndpointContractTests
         Assert.Equal(StatusCodes.Status200OK, codex.Status);
         Assert.Equal(1, Count(codex.Body, "event: response.failed"));
         Assert.DoesNotContain("event: response.completed", codex.Body);
+    }
+
+    [Fact]
+    public async Task AuthoritativeTerminal_StopsReadingBeforeFaultingTransportTail()
+    {
+        var upstream = new ReadCountingTailFaultStream(
+            CompletedTextStream(), new IOException("transport reset after terminal"));
+
+        var outcome = await RunClaudeAsync(upstream);
+
+        Assert.Equal(StatusCodes.Status200OK, outcome.Status);
+        Assert.Equal(1, Count(outcome.Body, "event: message_stop"));
+        Assert.DoesNotContain("event: error", outcome.Body);
+        Assert.Equal(0, upstream.ReadsAfterPrefix);
+        Assert.Equal("(none)", outcome.Summary["ErrorDisplay"]?.ToString());
     }
 
     /// <summary>

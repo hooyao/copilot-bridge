@@ -59,3 +59,4 @@
 - [x] 8.4 Treat clean EOF after any nonterminal Responses activity as a bounded fault and verify both downstream protocol surfaces.
 - [x] 8.5 Validate the actual selected CLI build configuration before enabling the Debug-only deterministic upstream.
 - [x] 8.6 Update durable design links to the date-prefixed archived OpenSpec paths.
+- [x] 8.7 Stop reading the upstream SSE immediately after a real Responses terminal so a transport tail cannot reverse success into failure.
