@@ -56,6 +56,16 @@ internal sealed class BridgeContext<TBody> where TBody : class
         new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// True when the downstream request is being executed by a Claude Code
+    /// sub-agent. The `/cc` endpoint snapshots this from a non-empty inbound
+    /// <c>x-claude-code-agent-id</c> header before <c>HeadersOutboundStage</c>
+    /// removes private Claude headers. First-generation sub-agents need not carry
+    /// a parent-agent header, so that header is deliberately not part of the test.
+    /// Native `/codex` requests leave this false.
+    /// </summary>
+    public bool IsClaudeCodeSubagent { get; set; }
+
+    /// <summary>
     /// Strip patterns accumulated when routing rules fire. Each pattern may end
     /// in <c>*</c> (trailing wildcard). <c>HeadersOutboundStage</c> applies them
     /// against the merged outbound beta list right before writing the header.

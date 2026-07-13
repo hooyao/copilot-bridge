@@ -21,6 +21,10 @@ internal sealed record ClaudeInvocation(
     string? AnthropicBaseUrl = null,  // override target (e.g. https://api.anthropic.com); null = bridge
     IReadOnlyList<string>? Betas = null,
     string? McpConfigPath = null,     // when set, passes --mcp-config <path>
+    // Bare mode sets CLAUDE_CODE_SIMPLE=1 and removes Agent orchestration. Keep it
+    // on for ordinary behavior cases; multi-agent cases set false explicitly while
+    // still disabling settings sources and session persistence below.
+    bool Bare = true,
     // When set, the client process runs with this as its working directory. Behavior
     // tasks that write relative filenames MUST pass a disposable dir so the real client
     // cannot create/overwrite files in the test runner's CWD (the checkout). null =
@@ -41,12 +45,12 @@ internal static class ClaudeProcess
     {
         var claudeExe = ResolveClaudeExe();
 
-        var args = new List<string>
-        {
-            "--bare",
-            "-p", inv.Prompt,
-            "--output-format", inv.OutputFormat,
-        };
+        var args = new List<string>();
+        if (inv.Bare) args.Add("--bare");
+        args.Add("-p");
+        args.Add(inv.Prompt);
+        args.Add("--output-format");
+        args.Add(inv.OutputFormat);
         if (inv.Verbose) args.Add("--verbose");
         if (inv.Model is not null) { args.Add("--model"); args.Add(inv.Model); }
         if (inv.AllowedTools is not null)

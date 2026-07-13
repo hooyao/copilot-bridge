@@ -198,6 +198,7 @@ internal static class ClaudeCodeMessagesEndpoint
             bridgeCtx.Response = new BridgeResponse();
             bridgeCtx.Ct = ct;
             bridgeCtx.InboundBetas = inboundBetaSet;
+            bridgeCtx.IsClaudeCodeSubagent = IsClaudeCodeSubagent(inboundHeaders);
             bridgeCtx.TraceId = traceId;
 
             await runner.RunAsync(pipeline);
@@ -574,6 +575,15 @@ internal static class ClaudeCodeMessagesEndpoint
                 sw.ElapsedMilliseconds, inboundLen);
         }
     }
+
+    /// <summary>
+    /// Claude Code's authoritative sub-agent signal. First-generation children
+    /// carry an agent id but may omit the parent-agent header, so parent presence
+    /// must never gate the classification.
+    /// </summary>
+    internal static bool IsClaudeCodeSubagent(IReadOnlyDictionary<string, string> headers) =>
+        headers.TryGetValue("x-claude-code-agent-id", out var agentId)
+        && !string.IsNullOrWhiteSpace(agentId);
 
     /// <summary>Client-facing message injected as the retryable error when a
     /// mid-stream idle timeout fires with StreamIdleAction=Retry. No <c>"</c> or

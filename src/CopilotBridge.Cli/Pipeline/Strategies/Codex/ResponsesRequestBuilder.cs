@@ -31,7 +31,10 @@ internal static class ResponsesRequestBuilder
     /// <see cref="MessagesRequest.OutputConfig"/>'s inbound effort against this to
     /// WARN on a fallback and to log the honest outbound value.
     /// </summary>
-    public static (byte[] Body, bool Vision, string? CoercedEffort) Build(MessagesRequest ir, CodexModelProfileCatalog profiles)
+    public static (byte[] Body, bool Vision, string? CoercedEffort) Build(
+        MessagesRequest ir,
+        CodexModelProfileCatalog profiles,
+        bool filterRecursiveAgentTool = false)
     {
         // Exact profile, or the nearest known one (best-effort fallback for a
         // Codex model newer than this build's catalog — the router already
@@ -147,7 +150,7 @@ internal static class ResponsesRequestBuilder
             // request's bag still wins, keeping that path byte-identical.
             var irToolSurvivors = new HashSet<string>(StringComparer.Ordinal);
             if (!bagHasTools)
-                irToolSurvivors = WriteIrTools(w, ir.Tools);
+                irToolSurvivors = WriteIrTools(w, ir.Tools, filterRecursiveAgentTool);
             // Only emit tool_choice when tools are actually on the wire — a
             // tool_choice of "required" or {function,name} with no tools array is a
             // Responses 400. Tools are present iff the bag supplied them
@@ -380,7 +383,10 @@ internal static class ResponsesRequestBuilder
     /// rejects an empty tools array on some models, and an absent key is the correct
     /// "no tools" signal).
     /// </remarks>
-    private static HashSet<string> WriteIrTools(Utf8JsonWriter w, IReadOnlyList<Tool>? tools)
+    private static HashSet<string> WriteIrTools(
+        Utf8JsonWriter w,
+        IReadOnlyList<Tool>? tools,
+        bool filterRecursiveAgentTool)
     {
         var survivors = new HashSet<string>(StringComparer.Ordinal);
         if (tools is not { Count: > 0 }) return survivors;
@@ -390,6 +396,13 @@ internal static class ResponsesRequestBuilder
         var kept = new List<Tool>(tools.Count);
         foreach (var t in tools)
         {
+            // Claude Code exposes Agent to sub-agents, but a GPT backend treats it
+            // as an ordinary repeatable function and can recursively fan out a wide
+            // agent tree. The strategy supplies this flag only for a configured
+            // `/cc` sub-agent → Responses translation. Exact ordinal name matching
+            // avoids removing an unrelated user-defined tool.
+            if (filterRecursiveAgentTool && t.Name == "Agent")
+                continue;
             if (t.Type is { Length: > 0 } typ
                 && typ.StartsWith("web_search_", StringComparison.OrdinalIgnoreCase))
                 continue; // server tool — never reaches Copilot /responses
