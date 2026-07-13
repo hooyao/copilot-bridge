@@ -649,6 +649,31 @@ strategy.ForwardAsync(ctx)        executes HTTP call to upstream;
                                   populates ctx.Response.EventStream
 ```
 
+### 5.1 Claude Code sub-agent delegation on a Responses target
+
+Claude Code identifies every request executed by a sub-agent with the inbound
+`x-claude-code-agent-id` header. The first generation does **not** necessarily carry
+`x-claude-code-parent-agent-id`, so the agent-id header alone is the authoritative
+sub-agent signal. The `/cc` endpoint snapshots that signal on the scoped
+`BridgeContext` before `HeadersOutboundStage` removes the private `x-claude-code-*`
+headers.
+
+When routing selects `CopilotResponses:/responses`, T2 treats Claude Code's `Agent`
+tool as a client-specific delegation primitive, not an ordinary repeatable function.
+With `Pipeline:CcToResponses:PreventRecursiveAgentDelegation` enabled (the default),
+T2 omits the exact `Agent` tool from a sub-agent's translated Responses `tools[]` and
+reconciles a forced choice for that removed tool to `auto`. Each actual removal emits
+an operator-visible warning with the
+`Pipeline:CcToResponses:PreventRecursiveAgentDelegation=false` recovery setting.
+Root Claude Code requests retain `Agent`, and the IR is not mutated. Consequently
+native Anthropic `/cc` passthrough and native `/codex` traffic are unaffected;
+disabling the option restores the previous CC-to-Responses translation behavior.
+
+This is deliberately a translation-boundary compatibility policy. Claude Code may
+legitimately expose delegation recursively, but a non-Claude backend can interpret the
+tool as an unrestricted fan-out primitive: many individually valid, bounded responses
+can form a request storm that a per-response runaway detector cannot see.
+
 `CacheControlCleanStage` from research §3.6 rule 1 is intentionally absent —
 the DTO does not model `cache_control.scope`, so the field is silently dropped
 at deserialize time. Add the stage if a `Scope` property is ever introduced.

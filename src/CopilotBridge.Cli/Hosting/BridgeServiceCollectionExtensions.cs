@@ -86,6 +86,7 @@ internal static class BridgeServiceCollectionExtensions
         services.Configure<ToolInputValidationOptions>(config.GetSection("Pipeline:Detectors:ToolInputValidation"));
         services.Configure<RunawayGuardOptions>(config.GetSection("Pipeline:Detectors:RunawayGuard"));
         services.Configure<PoisonedContextOptions>(config.GetSection("Pipeline:PoisonedContext"));
+        services.Configure<CcToResponsesOptions>(config.GetSection("Pipeline:CcToResponses"));
 
         // Kestrel listens on the (post-PostConfigure) port + uses our generous
         // keep-alive limits. Configured via IConfigureOptions so it can pull

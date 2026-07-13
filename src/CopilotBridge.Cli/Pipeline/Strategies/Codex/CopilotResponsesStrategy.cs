@@ -29,6 +29,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
     private readonly BridgeContext<MessagesRequest> _ctx;
     private readonly RequestAudit _audit;
     private readonly UpstreamTimeoutOptions _timeout;
+    private readonly CcToResponsesOptions _ccOptions;
     private readonly ILogger<CopilotResponsesStrategy> _log;
 
     public CopilotResponsesStrategy(
@@ -37,13 +38,15 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         BridgeContext<MessagesRequest> ctx,
         RequestAudit audit,
         IOptions<UpstreamTimeoutOptions> timeout,
-        ILogger<CopilotResponsesStrategy> log)
+        ILogger<CopilotResponsesStrategy> log,
+        IOptions<CcToResponsesOptions>? ccOptions = null)
     {
         _copilot = copilot;
         _profiles = profiles;
         _ctx = ctx;
         _audit = audit;
         _timeout = timeout.Value;
+        _ccOptions = ccOptions?.Value ?? new CcToResponsesOptions();
         _log = log;
     }
 
@@ -57,7 +60,18 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
     {
         var ctx = _ctx;
         // ── T2: IR MessagesRequest → Responses wire bytes ──
-        var (body, vision, coercedEffort) = ResponsesRequestBuilder.Build(ctx.Request.Body, _profiles);
+        var filterRecursiveAgentTool =
+            _ccOptions.PreventRecursiveAgentDelegation && ctx.IsClaudeCodeSubagent;
+        var (body, vision, coercedEffort) = ResponsesRequestBuilder.Build(
+            ctx.Request.Body, _profiles, filterRecursiveAgentTool, out var removedAgentTool);
+        if (removedAgentTool)
+        {
+            _log.LogWarning(
+                "strategy {Name}: removed Claude Code Agent tool from a sub-agent request to prevent "
+                + "recursive delegation; if this removal is incorrect, set "
+                + "Pipeline:CcToResponses:PreventRecursiveAgentDelegation=false and restart copilot-bridge",
+                Name);
+        }
 
         // Effort coercion happens inside T2 (per-model DefaultEffort fallback) and
         // is NOT written back to the IR body. Surface the honest wire value so the
