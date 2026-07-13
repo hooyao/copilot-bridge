@@ -256,7 +256,7 @@ public class UpstreamResponseCaptureContractTests
     public async Task Codex_TracingOff_Streaming_NoCapture()
     {
         var raw = Encoding.UTF8.GetBytes(
-            "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n");
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n");
 
         var ctx = Ctx("gpt-5.3-codex", stream: true);
         var strategy = new CopilotResponsesStrategy(
@@ -297,6 +297,41 @@ public class UpstreamResponseCaptureContractTests
 
         Assert.NotNull(ctx.Response.RawUpstreamResponseBody);
         Assert.Equal(copilotBody, ctx.Response.RawUpstreamResponseBody);
+    }
+
+    /// <summary>
+    /// Contract: a successful buffered Responses object enters the Anthropic hub
+    /// IR before response stages run, while the audit retains the exact upstream
+    /// bytes. This is what lets the same buffered detectors protect a Claude
+    /// non-streaming recovery request.
+    /// </summary>
+    [Fact]
+    public async Task Codex_BufferedSuccess_IsTranslatedToIr_BeforeResponseStages()
+    {
+        var copilotBody = Encoding.UTF8.GetBytes("""
+        {"id":"resp_1","object":"response","status":"completed","model":"gpt-5.6-sol",
+         "output":[{"type":"message","content":[{"type":"output_text","text":"safe text"}]}],
+         "usage":{"input_tokens":3,"output_tokens":2}}
+        """);
+        var ctx = Ctx("gpt-5.6-sol", stream: false);
+        var strategy = new CopilotResponsesStrategy(
+            new StubClient(BufferedResponse(copilotBody)),
+            new CodexModelProfileCatalog(),
+            ctx,
+            TestAudit.Create(true),
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
+            NullLogger<CopilotResponsesStrategy>.Instance);
+
+        await strategy.ForwardAsync();
+
+        var ir = Encoding.UTF8.GetString(ctx.Response.BufferedBody!);
+        Assert.Contains("\"type\":\"message\"", ir);
+        Assert.Contains("\"content\":[{\"type\":\"text\",\"text\":\"safe text\"}]", ir);
+        Assert.DoesNotContain("\"object\":\"response\"", ir);
+        Assert.Equal(copilotBody, ctx.Response.RawUpstreamResponseBody);
+        Assert.Same(ctx.Response.RawUpstreamResponseBody, ctx.Response.BufferedResponsesWireBody);
+        Assert.Equal(copilotBody, ctx.Response.BufferedResponsesWireBody);
+        Assert.Same(ctx.Response.BufferedBody, ctx.Response.InitialBufferedIrBody);
     }
 
     // ── Gap (e): with the tee ON, the events the client sees are unperturbed ──
@@ -391,14 +426,12 @@ public class UpstreamResponseCaptureContractTests
     }
 
     /// <summary>
-    /// Contract: the Codex strategy CATCHES a mid-stream fault (to flush a
-    /// response.failed terminal) — so draining must NOT throw — but it must
-    /// surface the fault on <see cref="BridgeResponse.UpstreamStreamFault"/> so the
-    /// endpoint can stop logging a truncated upstream-resp as a clean success.
-    /// The partial capture is retained either way.
+    /// Contract: the Responses strategy propagates a mid-stream fault so the
+    /// downstream edge selects the client-native error shape. The partial raw
+    /// upstream capture remains available after that exception.
     /// </summary>
     [Fact]
-    public async Task Codex_MidStreamFault_Swallowed_ButFaultSurfaced_AndPartialKept()
+    public async Task Responses_MidStreamFault_Propagates_AndPartialCaptureIsKept()
     {
         var prefix = Encoding.UTF8.GetBytes(
             "event: response.created\ndata: {\"type\":\"response.created\"}\n\n");
@@ -412,13 +445,10 @@ public class UpstreamResponseCaptureContractTests
             NullLogger<CopilotResponsesStrategy>.Instance);
 
         await strategy.ForwardAsync();
-        // Codex swallows the fault internally and flushes a terminal — no throw.
-        await DrainAsync(ctx.Response.EventStream!);
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await DrainAsync(ctx.Response.EventStream!));
 
-        Assert.NotNull(ctx.Response.UpstreamStreamFault);
-        Assert.IsType<IOException>(ctx.Response.UpstreamStreamFault);
         Assert.NotNull(ctx.Response.RawUpstreamResponseCapture);
         Assert.Equal(prefix, ctx.Response.RawUpstreamResponseCapture!.ToArray());
     }
 }
-

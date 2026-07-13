@@ -43,7 +43,10 @@ namespace CopilotBridge.Playground.Headless;
 /// </remarks>
 internal sealed record ServeInvocation(
     ServeScenario Scenario,
-    TimeSpan? ReadyTimeout = null);
+    TimeSpan? ReadyTimeout = null,
+    string? TestUpstreamBaseUrl = null,
+    int? StreamIdleTimeoutSeconds = null,
+    bool WholeResponseBuffering = false);
 
 /// <summary>
 /// The appsettings shape a behavior run needs. Each value is applied by patching the
@@ -59,6 +62,10 @@ internal enum ServeScenario
     /// <summary>The <c>claude-opus-4.8 → gpt-5.6-sol</c> location active (promoted from
     /// the shipped <c>_Locations_disabled</c> example), tracing on. The CC→gpt leg.</summary>
     CcToGpt,
+
+    /// <summary>CC→gpt routing plus a deterministic test upstream supplied by the
+    /// caller. Used only by the path-exercising stream-fault behavior case.</summary>
+    CcToGptFaultRecovery,
 }
 
 /// <summary>
@@ -212,7 +219,12 @@ internal static class ServeProcess
         {
             CopyDirectory(buildOutputDir, scratchDir);
             Directory.CreateDirectory(traceDir);
-            PatchAppSettings(Path.Combine(scratchDir, "appsettings.json"), inv.Scenario, traceDir);
+            PatchAppSettings(
+                Path.Combine(scratchDir, "appsettings.json"),
+                inv.Scenario,
+                traceDir,
+                inv.StreamIdleTimeoutSeconds,
+                inv.WholeResponseBuffering);
 
             var scratchExe = Path.Combine(scratchDir, "copilot-bridge.exe");
             var port = GetFreeLoopbackPort();
@@ -231,6 +243,19 @@ internal static class ServeProcess
             psi.ArgumentList.Add("serve");
             psi.ArgumentList.Add("--port");
             psi.ArgumentList.Add(port.ToString());
+            if (inv.TestUpstreamBaseUrl is not null)
+            {
+                // Inspect the CLI build we actually selected, not the playground
+                // assembly's compile symbol: LocateBuildOutputDir may fall back
+                // across configurations. Only a Debug CLI contains the override.
+                var selectedConfiguration = Directory.GetParent(buildOutputDir)?.Name;
+                if (!string.Equals(selectedConfiguration, "Debug", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "Deterministic test upstream overrides require a Debug bridge build; "
+                        + $"selected '{selectedConfiguration ?? "unknown"}' output and refusing to run "
+                        + "the fault-recovery scenario against live Copilot.");
+                psi.Environment["COPILOT_BRIDGE_TEST_UPSTREAM_BASE_URL"] = inv.TestUpstreamBaseUrl;
+            }
 
             proc = new Process { StartInfo = psi };
             var stderrTail = new StringBuilder();
@@ -327,7 +352,12 @@ internal static class ServeProcess
     /// Throws if the source shape the patch depends on is missing (a drifted appsettings
     /// should fail loudly, not silently run the wrong scenario).
     /// </summary>
-    private static void PatchAppSettings(string path, ServeScenario scenario, string traceDir)
+    private static void PatchAppSettings(
+        string path,
+        ServeScenario scenario,
+        string traceDir,
+        int? streamIdleTimeoutSeconds,
+        bool wholeResponseBuffering)
     {
         var root = JsonNode.Parse(File.ReadAllText(path))?.AsObject()
             ?? throw new ServeStartupException($"appsettings.json at {path} is not a JSON object.");
@@ -343,7 +373,7 @@ internal static class ServeProcess
         var routing = root["Routing"]?.AsObject()
             ?? throw new ServeStartupException("appsettings.json has no Routing section.");
 
-        if (scenario == ServeScenario.CcToGpt)
+        if (scenario is ServeScenario.CcToGpt or ServeScenario.CcToGptFaultRecovery)
         {
             var disabled = routing["_Locations_disabled"]?.AsArray()
                 ?? throw new ServeStartupException(
@@ -361,6 +391,22 @@ internal static class ServeProcess
             // default/enabled route were added, native /cc and /codex behavior cases would
             // otherwise silently exercise that rewrite instead of true passthrough.
             routing["Locations"] = new JsonArray();
+        }
+
+        if (streamIdleTimeoutSeconds is not null)
+        {
+            var upstreamTimeout = root["Pipeline"]?["UpstreamTimeout"]?.AsObject()
+                ?? throw new ServeStartupException(
+                    "appsettings.json has no Pipeline.UpstreamTimeout section.");
+            upstreamTimeout["StreamIdleTimeoutSeconds"] = streamIdleTimeoutSeconds.Value;
+        }
+
+        if (wholeResponseBuffering)
+        {
+            var leakGuard = root["Pipeline"]?["Detectors"]?["ResponseLeakGuard"]?.AsObject()
+                ?? throw new ServeStartupException(
+                    "appsettings.json has no Pipeline.Detectors.ResponseLeakGuard section.");
+            leakGuard["PreserveStream"] = false;
         }
 
         File.WriteAllText(path, root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));

@@ -1,5 +1,6 @@
 using System.Net.ServerSentEvents;
 using System.Text.Json;
+using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -123,5 +124,17 @@ public class ClaudeCodeMarkerScrubTests
         // Unchanged — the marker name inside prose is left alone (no content_block to scrub).
         Assert.Equal(evt.Data, outEvt.Data);
         Assert.Contains("bridge_tool_namespace field is internal", outEvt.Data, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PrivateFailureStopReason_FailsClosedAtClaudeEdge()
+    {
+        var evt = new SseItem<string>(
+            "{ \"type\": \"message_delta\", \"delta\": { \"stop_reason\": \"error\" } }",
+            "message_delta");
+
+        var ex = await Assert.ThrowsAsync<UpstreamResponseFailedException>(async () =>
+            await Run(evt));
+        Assert.Equal("bridge_private_marker", ex.Code);
     }
 }

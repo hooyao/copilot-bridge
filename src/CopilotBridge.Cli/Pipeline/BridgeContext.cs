@@ -203,6 +203,25 @@ internal sealed class BridgeResponse
     public byte[]? BufferedBody { get; set; }
 
     /// <summary>
+    /// A buffered Responses object that explicitly failed or could not be safely
+    /// converted into response IR. Buffered delivery has no async-enumeration seam
+    /// on which to propagate it, so the strategy records the typed fault here and
+    /// the downstream endpoint throws it only after snapshotting upstream metadata
+    /// for truthful summaries/audits. Streaming faults propagate through
+    /// <see cref="EventStream"/> and never use this field.
+    /// </summary>
+    public Exception? BufferedUpstreamFault { get; set; }
+
+    /// <summary>
+    /// Successful buffered Responses bytes and the exact IR array produced from
+    /// them. T4 uses the pair to preserve a native Codex response byte-for-byte
+    /// when no response stage replaced the IR array. If a stage rewrites or aborts,
+    /// the reference changes and T4 serializes the mutated IR instead.
+    /// </summary>
+    public byte[]? BufferedResponsesWireBody { get; set; }
+    public byte[]? InitialBufferedIrBody { get; set; }
+
+    /// <summary>
     /// The exact bytes a strategy POSTed upstream, captured for the
     /// <c>upstream-req</c> audit: the passthrough Anthropic body on a <c>/cc</c>
     /// (CopilotAnthropic) route, or the Codex T2 Responses body on a
@@ -251,20 +270,6 @@ internal sealed class BridgeResponse
     /// path (see <see cref="RawUpstreamResponseBody"/>).
     /// </summary>
     public RawResponseCapture? RawUpstreamResponseCapture { get; set; }
-
-    /// <summary>
-    /// A mid-stream upstream fault that a streaming strategy CAUGHT internally
-    /// (rather than letting propagate) so it could still flush a terminal event.
-    /// The Codex <c>/responses</c> strategy does this: it latches a transient
-    /// disconnect into a synthetic <c>response.failed</c> terminal and returns
-    /// normally, so no exception reaches the endpoint's catch. The endpoint folds
-    /// this into the audit's <c>error</c> field after draining the stream, so a
-    /// truncated <c>upstream-resp</c> isn't logged as a clean success. Null when
-    /// the stream completed without a caught fault. (The <c>/cc</c> passthrough
-    /// strategy does NOT catch — its faults propagate to the endpoint directly —
-    /// so it leaves this null.)
-    /// </summary>
-    public Exception? UpstreamStreamFault { get; set; }
 
     /// <summary>
     /// The bytes to record as the <c>upstream-resp</c> audit body — Copilot's RAW

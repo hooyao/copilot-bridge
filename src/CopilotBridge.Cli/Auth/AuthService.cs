@@ -36,7 +36,17 @@ public sealed class AuthService : IAuthService, IDisposable
 
     public string TokenLocation => TokenStore.FilePath;
 
-    public string? CopilotApiBaseUrl => Volatile.Read(ref _copilotCache)?.ApiBaseUrl;
+    public string? CopilotApiBaseUrl
+    {
+        get
+        {
+#if DEBUG
+            var testBaseUrl = Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_UPSTREAM_BASE_URL");
+            if (!string.IsNullOrWhiteSpace(testBaseUrl)) return testBaseUrl;
+#endif
+            return Volatile.Read(ref _copilotCache)?.ApiBaseUrl;
+        }
+    }
 
     public DateTimeOffset? CopilotTokenExpiry => Volatile.Read(ref _copilotCache)?.Expiry;
 
@@ -58,6 +68,14 @@ public sealed class AuthService : IAuthService, IDisposable
 
     public async ValueTask<string> GetCopilotTokenAsync(CancellationToken ct = default)
     {
+#if DEBUG
+        // Real-client behavior tests need a deterministic upstream that can stall
+        // after headers. This override is deliberately absent from Release/AOT
+        // builds; setting the variable on a shipped binary has no effect.
+        if (!string.IsNullOrWhiteSpace(
+                Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_UPSTREAM_BASE_URL")))
+            return "behavior-test-token";
+#endif
         var snapshot = Volatile.Read(ref _copilotCache);
         if (IsFresh(snapshot)) return snapshot!.Token;
 

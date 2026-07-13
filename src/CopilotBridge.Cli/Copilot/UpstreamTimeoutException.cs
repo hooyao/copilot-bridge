@@ -25,12 +25,10 @@ internal enum UpstreamTimeoutPhase
 /// mislabel it a 502).</para>
 /// <para>Surfacing differs by path and phase. First-byte (both paths): thrown out
 /// of the client, mapped by the endpoint to a real 504. Mid-stream
-/// <see cref="UpstreamTimeoutPhase.StreamIdle"/>: on <c>/cc</c> the passthrough
-/// strategy throws it and the endpoint injects a retryable Anthropic error event
-/// (or truncates, per config); on Codex the strategy latches it as a stream fault
-/// and flushes a <c>response.failed</c> terminal through its existing fault channel
-/// (the Codex client speaks the Responses protocol and could not parse an Anthropic
-/// error envelope).</para>
+/// <see cref="UpstreamTimeoutPhase.StreamIdle"/>: the upstream strategy propagates
+/// it to the downstream client edge; <c>/cc</c> injects a retryable Anthropic error
+/// event (or truncates, per config), while the Codex T4 adapter first flushes a
+/// <c>response.failed</c> terminal and then rethrows it for endpoint accounting.</para>
 /// <para>The distinguishing test at every throw site is: the linked timeout token
 /// was cancelled AND the caller's own token was not — so a genuine client cancel
 /// always wins the race and propagates as its original
