@@ -208,8 +208,14 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             resp.Dispose();
         }
 
-        // Clean EOF without a terminal retains the historical defensive terminal.
-        // An exception skips this code and remains exceptional at the client edge.
+        // A clean TCP EOF is not a successful model terminal. If any Responses
+        // event arrived but no response.completed/incomplete followed, propagate a
+        // bounded fault exactly like a throwing disconnect so the downstream edge
+        // selects Anthropic event:error/truncation or Responses response.failed.
+        if (sm.SawUpstreamActivity && !sm.SawTerminal)
+            throw new UpstreamResponseFailedException("incomplete_stream");
+
+        // A genuinely empty stream retains the historical defensive terminal.
         foreach (var tail in sm.FlushTerminal())
             yield return tail;
     }

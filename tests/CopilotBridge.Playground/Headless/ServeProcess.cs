@@ -243,15 +243,19 @@ internal static class ServeProcess
             psi.ArgumentList.Add("serve");
             psi.ArgumentList.Add("--port");
             psi.ArgumentList.Add(port.ToString());
-#if DEBUG
             if (inv.TestUpstreamBaseUrl is not null)
+            {
+                // Inspect the CLI build we actually selected, not the playground
+                // assembly's compile symbol: LocateBuildOutputDir may fall back
+                // across configurations. Only a Debug CLI contains the override.
+                var selectedConfiguration = Directory.GetParent(buildOutputDir)?.Name;
+                if (!string.Equals(selectedConfiguration, "Debug", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "Deterministic test upstream overrides require a Debug bridge build; "
+                        + $"selected '{selectedConfiguration ?? "unknown"}' output and refusing to run "
+                        + "the fault-recovery scenario against live Copilot.");
                 psi.Environment["COPILOT_BRIDGE_TEST_UPSTREAM_BASE_URL"] = inv.TestUpstreamBaseUrl;
-#else
-            if (inv.TestUpstreamBaseUrl is not null)
-                throw new InvalidOperationException(
-                    "Deterministic test upstream overrides require a Debug bridge build; "
-                    + "refusing to run the fault-recovery scenario against live Copilot.");
-#endif
+            }
 
             proc = new Process { StartInfo = psi };
             var stderrTail = new StringBuilder();

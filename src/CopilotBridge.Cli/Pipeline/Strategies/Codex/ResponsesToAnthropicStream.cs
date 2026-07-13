@@ -40,6 +40,8 @@ internal sealed class ResponsesToAnthropicStream
     // FlushTerminal() sees !_messageStarted and synthesizes a SECOND, dangling
     // message_start — corrupting every streamed response the client parses.
     private bool _terminated;
+    private bool _sawUpstreamActivity;
+    private bool _sawUpstreamTerminal;
     private int _blockIndex = -1;
     private bool _blockOpen;
     // True once the current tool-call block has received at least one argument
@@ -70,8 +72,19 @@ internal sealed class ResponsesToAnthropicStream
         _log = log;
     }
 
+    /// <summary>True after any non-empty upstream event was observed, including
+    /// an event whose JSON could not be parsed.</summary>
+    public bool SawUpstreamActivity => _sawUpstreamActivity;
+
+    /// <summary>True only after a real Responses completed/incomplete terminal
+    /// emitted the Anthropic terminal.</summary>
+    public bool SawTerminal => _sawUpstreamTerminal;
+
     public IEnumerable<SseItem<string>> Translate(SseItem<string> evt)
     {
+        if (!string.IsNullOrWhiteSpace(evt.Data))
+            _sawUpstreamActivity = true;
+
         // The Responses SSE carries the event type as the SSE `event:` field AND
         // a `type` inside the data JSON; use the data type (authoritative).
         JsonDocument doc;
@@ -181,6 +194,7 @@ internal sealed class ResponsesToAnthropicStream
 
                 case "response.completed":
                 case "response.incomplete":
+                    _sawUpstreamTerminal = true;
                     CaptureUsage(root);
                     // Don't clobber a tool_use stop already latched when a
                     // function_call item opened — only a max_tokens/incomplete
@@ -227,9 +241,9 @@ internal sealed class ResponsesToAnthropicStream
     }
 
     /// <summary>
-    /// Emit a terminal when the upstream stream ended cleanly WITHOUT a
-    /// response.completed. A throwing path never calls this method: faults remain
-    /// exceptional until the downstream client boundary.
+    /// Emit a terminal only for a genuinely empty upstream stream. Once upstream
+    /// activity exists, the strategy treats EOF without a real Responses terminal
+    /// as a fault instead of calling this method.
     /// </summary>
     public IEnumerable<SseItem<string>> FlushTerminal()
     {

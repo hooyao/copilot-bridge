@@ -48,7 +48,7 @@ The existing contract already says that mid-stream timeouts are shaped by client
 
 ### D1 — The downstream adapter/endpoint owns failure protocol selection
 
-T3 SHALL translate successful Responses events into the hub IR, but it SHALL NOT turn a read fault into an apparently normal Anthropic terminal. A fault remains exceptional until it reaches the client edge:
+T3 SHALL translate successful Responses events into the hub IR, but it SHALL NOT turn a read fault or a clean EOF after nonterminal upstream activity into an apparently normal Anthropic terminal. A fault remains exceptional until it reaches the client edge:
 
 - Claude Code edge: `ClaudeCodeMessagesEndpoint` applies the existing `StreamIdleAction` and `StreamIdleSignal` policy and, by default, writes Anthropic `event: error` framing.
 - Codex edge: T4 catches the exceptional IR stream, emits `response.failed`, then rethrows so the endpoint can record the failure.

@@ -256,7 +256,7 @@ public class UpstreamResponseCaptureContractTests
     public async Task Codex_TracingOff_Streaming_NoCapture()
     {
         var raw = Encoding.UTF8.GetBytes(
-            "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n");
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n");
 
         var ctx = Ctx("gpt-5.3-codex", stream: true);
         var strategy = new CopilotResponsesStrategy(

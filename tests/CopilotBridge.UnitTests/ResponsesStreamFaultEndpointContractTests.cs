@@ -486,6 +486,26 @@ public class ResponsesStreamFaultEndpointContractTests
     }
 
     /// <summary>
+    /// A graceful HTTP-body EOF after partial Responses events is still a failed
+    /// model turn because no response.completed/incomplete terminal was observed.
+    /// It must not be repaired into an apparently successful client terminal.
+    /// </summary>
+    [Fact]
+    public async Task NonterminalCleanEof_RemainsClientNativeOnBothEdges()
+    {
+        var claude = await RunClaudeAsync(new MemoryStream(PartialTextPrefix()));
+        Assert.Equal(StatusCodes.Status200OK, claude.Status);
+        Assert.Equal(1, Count(claude.Body, "event: error"));
+        Assert.DoesNotContain("event: message_stop", claude.Body);
+        Assert.DoesNotContain("\"stop_reason\":\"end_turn\"", claude.Body);
+
+        var codex = await RunCodexAsync(new MemoryStream(PartialTextPrefix()));
+        Assert.Equal(StatusCodes.Status200OK, codex.Status);
+        Assert.Equal(1, Count(codex.Body, "event: response.failed"));
+        Assert.DoesNotContain("event: response.completed", codex.Body);
+    }
+
+    /// <summary>
     /// Truncate is an explicit operator policy: preserve bytes already delivered
     /// but append no error and no apparently-successful terminal.
     /// </summary>

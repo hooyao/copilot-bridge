@@ -56,3 +56,6 @@
 - [x] 8.1 Add generic transport-fault endpoint coverage for both Claude and Codex client-native failure framing.
 - [x] 8.2 Fail the deterministic real-client scenario fast when a Release bridge would ignore its Debug-only test-upstream override.
 - [x] 8.3 Reconcile the durable AOT size record and PR verification metadata to the same measured artifact.
+- [x] 8.4 Treat clean EOF after any nonterminal Responses activity as a bounded fault and verify both downstream protocol surfaces.
+- [x] 8.5 Validate the actual selected CLI build configuration before enabling the Debug-only deterministic upstream.
+- [x] 8.6 Update durable design links to the date-prefixed archived OpenSpec paths.
