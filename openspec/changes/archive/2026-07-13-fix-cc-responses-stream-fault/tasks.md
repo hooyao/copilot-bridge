@@ -27,6 +27,7 @@
 - [x] 4.3 Make the Codex endpoint timeout catch response-start-aware so a rethrown mid-stream timeout retains status `200` and records the failure, while a first-byte timeout remains `504`.
 - [x] 4.4 Consolidate or remove the `BridgeResponse.UpstreamStreamFault` side channel where propagation supersedes it, without losing observability for any path that intentionally catches a fault.
 - [x] 4.5 Add contract coverage and buffered T3/T4 translation for Claude Code's `stream:false` fallback on a Responses route, including text and tool-use bodies; keep response detectors on IR and preserve upstream error envelopes.
+- [x] 4.6 Route generic Responses transport faults through the same downstream client boundary policy, and fail closed when a successful buffered Responses body cannot enter IR.
 
 ## 5. Observability and Configuration Integrity
 
@@ -49,3 +50,9 @@
 - [x] 7.2 Drive real headless `claude.exe` through the subprocess bridge on a complex multi-step task requiring tools after the injected fault, using a non-8765 port.
 - [x] 7.3 Use the `real-client-verify` workflow to inspect the Claude transcript/run manifest and prove: the partial attempt is not committed as a completed turn, another model request occurs, tool execution succeeds after retry/fallback, and the task reaches its success canary.
 - [x] 7.4 Inspect the same request-id traces and prove the Claude-facing stream contains exactly one retryable `event:error`, no `bridge_*` marker, no `stop_reason: "error"`, and no synthetic normal `message_stop`; record the manifest and trace ids in this change.
+
+## 8. PR Review Follow-ups
+
+- [x] 8.1 Add generic transport-fault endpoint coverage for both Claude and Codex client-native failure framing.
+- [x] 8.2 Fail the deterministic real-client scenario fast when a Release bridge would ignore its Debug-only test-upstream override.
+- [x] 8.3 Reconcile the durable AOT size record and PR verification metadata to the same measured artifact.

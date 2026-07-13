@@ -6,12 +6,17 @@ The production incident `20260713-024829-0074` demonstrates the failure: Copilot
 
 ## What Changes
 
-- Surface a mid-stream fault according to the downstream client protocol, not merely the selected upstream backend protocol.
+- Surface every mid-stream fault (idle timeout, transport disconnect, or malformed
+  terminal) according to the downstream client protocol, not merely the selected
+  upstream backend protocol.
 - Ensure `/cc` requests routed to `/responses` receive the configured retryable Anthropic SSE error on a stream-idle timeout, so Claude Code enters its streaming retry/fallback path.
 - Translate a successful non-streaming Responses fallback body into an Anthropic
   Messages response on cross-routed `/cc` requests. Claude Code 2.1.207 recovers
   from a streaming error by issuing `stream:false`; without this leg it rejects
   the raw Responses object as an empty or malformed HTTP 200.
+- Fail closed with a bounded client-native error when a successful buffered
+  Responses body is malformed or nonterminal, so raw Responses bytes never cross
+  the `/cc` edge.
 - Keep Codex clients on the Responses-native `response.failed` terminal contract.
 - Prevent the T3-to-T4 private failure marker from crossing the Claude Code edge under any routing combination.
 - Record caught Responses-stream faults, including the timeout phase and error, in `/cc` request summaries and trace artifacts instead of reporting a misleading clean `200`.

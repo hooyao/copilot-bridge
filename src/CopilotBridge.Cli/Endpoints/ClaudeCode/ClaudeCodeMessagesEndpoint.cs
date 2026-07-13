@@ -454,11 +454,29 @@ internal static class ClaudeCodeMessagesEndpoint
             }
             else
             {
-                // Already sent response headers (mid-stream disconnect); we
-                // cannot rewrite the status, so reflect what the wire sees:
-                // a 200 stream that was cut short. The Warning + summary
-                // error field tell the operator why.
+                // A propagated Responses read fault is client-visible protocol
+                // failure, just like an idle timeout: T3 cannot select the Claude
+                // wire shape, so the /cc boundary must emit the configured
+                // Anthropic retry signal (or intentionally truncate). Native
+                // Anthropic passthrough retains its historical truncation behavior.
                 responseStatus = httpCtx.Response.StatusCode;
+                if (bridgeCtx.Target?.Vendor == BackendVendor.CopilotResponses
+                    && upstreamTimeout.Value.StreamIdleAction == UpstreamTimeoutAction.Retry)
+                {
+                    var errorJson = ResponseDetectionError.JsonWithMessage(
+                        ResponseDetectionSignal.ApiError, UpstreamResponseFailedMessage);
+                    try
+                    {
+                        await WriteSseEventAsync(httpCtx.Response, "error", errorJson, CancellationToken.None);
+                        capturedEvents?.Add(new CapturedSseEvent("error", errorJson, Filtered: false));
+                    }
+                    catch (Exception writeEx)
+                    {
+                        endpointLog.LogDebug(
+                            "endpoint upstream-disconnect: could not write error event ({Type})",
+                            writeEx.GetType().Name);
+                    }
+                }
             }
         }
         catch (Exception ex)
@@ -476,11 +494,28 @@ internal static class ClaudeCodeMessagesEndpoint
             }
             else
             {
-                // Same as the transient branch: headers already sent, we
-                // can only record the wire-visible status so the summary
-                // line doesn't claim a misleading 500 from the initial
-                // default value.
+                // Even an unexpected read/translation fault must not make a
+                // cross-routed Responses turn look like a clean partial Claude
+                // success. Preserve the Error log for diagnosis, but fail closed
+                // at the client protocol boundary with the same bounded signal.
                 responseStatus = httpCtx.Response.StatusCode;
+                if (bridgeCtx.Target?.Vendor == BackendVendor.CopilotResponses
+                    && upstreamTimeout.Value.StreamIdleAction == UpstreamTimeoutAction.Retry)
+                {
+                    var errorJson = ResponseDetectionError.JsonWithMessage(
+                        ResponseDetectionSignal.ApiError, UpstreamResponseFailedMessage);
+                    try
+                    {
+                        await WriteSseEventAsync(httpCtx.Response, "error", errorJson, CancellationToken.None);
+                        capturedEvents?.Add(new CapturedSseEvent("error", errorJson, Filtered: false));
+                    }
+                    catch (Exception writeEx)
+                    {
+                        endpointLog.LogDebug(
+                            "endpoint exception: could not write error event ({Type})",
+                            writeEx.GetType().Name);
+                    }
+                }
             }
         }
         finally

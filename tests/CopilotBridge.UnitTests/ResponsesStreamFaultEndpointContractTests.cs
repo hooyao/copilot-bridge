@@ -450,6 +450,42 @@ public class ResponsesStreamFaultEndpointContractTests
     }
 
     /// <summary>
+    /// A generic transport read failure is the same incomplete Responses turn at
+    /// the Claude boundary. It must enter Claude's recovery path rather than end as
+    /// a silent truncated 200 merely because the fault was not an idle timeout.
+    /// </summary>
+    [Fact]
+    public async Task Claude_ResponseTransportFault_EmitsOneClientNativeError_NotSilentTruncation()
+    {
+        var outcome = await RunClaudeAsync(
+            new FaultAfterPrefixStream(PartialTextPrefix(), new IOException("simulated disconnect")));
+
+        Assert.Equal(StatusCodes.Status200OK, outcome.Status);
+        Assert.Contains("I will update both specifications now.", outcome.Body);
+        Assert.Equal(1, Count(outcome.Body, "event: error"));
+        Assert.Equal(1, Count(outcome.Body, "api_error"));
+        Assert.DoesNotContain("\"stop_reason\":\"error\"", outcome.Body);
+        Assert.DoesNotContain("event: message_stop", outcome.Body);
+        Assert.Contains(nameof(IOException), outcome.Summary["ErrorDisplay"]?.ToString());
+    }
+
+    [Fact]
+    public async Task GenericResponseTransportFault_RemainsClientNativeOnBothEdges()
+    {
+        var claude = await RunClaudeAsync(
+            new FaultAfterPrefixStream(PartialTextPrefix(), new IOException("claude disconnect")),
+            UpstreamTimeoutAction.Truncate);
+        Assert.DoesNotContain("event: error", claude.Body);
+        Assert.DoesNotContain("event: message_stop", claude.Body);
+
+        var codex = await RunCodexAsync(
+            new FaultAfterPrefixStream(PartialTextPrefix(), new IOException("codex disconnect")));
+        Assert.Equal(1, Count(codex.Body, "event: response.failed"));
+        Assert.DoesNotContain("event: error", codex.Body);
+        Assert.DoesNotContain("event: response.completed", codex.Body);
+    }
+
+    /// <summary>
     /// Truncate is an explicit operator policy: preserve bytes already delivered
     /// but append no error and no apparently-successful terminal.
     /// </summary>
@@ -533,6 +569,21 @@ public class ResponsesStreamFaultEndpointContractTests
         """);
 
         var outcome = await RunClaudeBufferedAsync(body, inspectForLeaks: false);
+
+        Assert.Equal(StatusCodes.Status502BadGateway, outcome.Status);
+        using var doc = System.Text.Json.JsonDocument.Parse(outcome.Body);
+        Assert.Equal("error", doc.RootElement.GetProperty("type").GetString());
+        Assert.Equal("api_error", doc.RootElement.GetProperty("error").GetProperty("type").GetString());
+        Assert.DoesNotContain("\"object\":\"response\"", outcome.Body);
+    }
+
+    [Theory]
+    [InlineData("not-json")]
+    [InlineData("{\"id\":\"resp_missing_status\",\"object\":\"response\",\"output\":[]}")]
+    [InlineData("{\"id\":\"resp_nonterminal\",\"object\":\"response\",\"status\":\"in_progress\",\"output\":[]}")]
+    public async Task UntranslatableSuccessfulBufferedResponse_FailsClosedAtClaudeEdge(string body)
+    {
+        var outcome = await RunClaudeBufferedAsync(Encoding.UTF8.GetBytes(body), inspectForLeaks: false);
 
         Assert.Equal(StatusCodes.Status502BadGateway, outcome.Status);
         using var doc = System.Text.Json.JsonDocument.Parse(outcome.Body);

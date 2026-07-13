@@ -246,6 +246,11 @@ internal static class ServeProcess
 #if DEBUG
             if (inv.TestUpstreamBaseUrl is not null)
                 psi.Environment["COPILOT_BRIDGE_TEST_UPSTREAM_BASE_URL"] = inv.TestUpstreamBaseUrl;
+#else
+            if (inv.TestUpstreamBaseUrl is not null)
+                throw new InvalidOperationException(
+                    "Deterministic test upstream overrides require a Debug bridge build; "
+                    + "refusing to run the fault-recovery scenario against live Copilot.");
 #endif
 
             proc = new Process { StartInfo = psi };

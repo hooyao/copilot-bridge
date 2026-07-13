@@ -128,9 +128,10 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
                 // Error envelopes remain Responses-shaped passthrough bodies.
                 try
                 {
-                    if (resp.IsSuccessStatusCode
-                        && BufferedResponsesToAnthropic.TryTranslate(ctx.Response.BufferedBody) is { } irBody)
+                    if (resp.IsSuccessStatusCode)
                     {
+                        var irBody = BufferedResponsesToAnthropic.TryTranslate(ctx.Response.BufferedBody)
+                            ?? throw new UpstreamResponseFailedException("invalid_buffered_response");
                         ctx.Response.BufferedResponsesWireBody = ctx.Response.BufferedBody;
                         ctx.Response.InitialBufferedIrBody = irBody;
                         ctx.Response.BufferedBody = irBody;
