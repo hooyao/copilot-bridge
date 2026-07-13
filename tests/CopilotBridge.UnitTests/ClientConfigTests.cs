@@ -116,14 +116,14 @@ public class ClientConfigTests
     private static BridgeConnection Conn(int port = 8765, bool fallback = true) => new(port, fallback);
 
     [Fact]
-    public void ClaudeCode_sets_base_url_and_fallback_when_needed()
+    public void ClaudeCode_sets_base_url_and_leaves_recovery_fallback_enabled()
     {
         var (content, _) = ClaudeCodeConfigurator.BuildContent(null, Conn(fallback: true));
         var root = System.Text.Json.Nodes.JsonNode.Parse(content)!;
         var env = root["env"]!;
 
         Assert.Equal("http://localhost:8765/cc", (string?)env["ANTHROPIC_BASE_URL"]);
-        Assert.Equal("1", (string?)env["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"]);
+        Assert.Null((string?)env["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"]);
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public class ClientConfigTests
     }
 
     [Fact]
-    public void ClaudeCode_removes_fallback_env_when_not_needed()
+    public void ClaudeCode_removes_legacy_fallback_disable_regardless_of_detector_state()
     {
         var original = """
         { "env": { "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": "1", "ANTHROPIC_AUTH_TOKEN": "x" } }
@@ -158,6 +158,10 @@ public class ClientConfigTests
         var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!.AsObject();
 
         Assert.False(env.ContainsKey("CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"));
+
+        var (withDetectors, _) = ClaudeCodeConfigurator.BuildContent(original, Conn(fallback: true));
+        var detectorEnv = System.Text.Json.Nodes.JsonNode.Parse(withDetectors)!["env"]!.AsObject();
+        Assert.False(detectorEnv.ContainsKey("CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"));
     }
 
     [Fact]
@@ -672,4 +676,3 @@ public class ClientConfigWriteTests : IDisposable
         Assert.Empty(provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>());
     }
 }
-

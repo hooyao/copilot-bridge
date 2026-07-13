@@ -253,20 +253,6 @@ internal sealed class BridgeResponse
     public RawResponseCapture? RawUpstreamResponseCapture { get; set; }
 
     /// <summary>
-    /// A mid-stream upstream fault that a streaming strategy CAUGHT internally
-    /// (rather than letting propagate) so it could still flush a terminal event.
-    /// The Codex <c>/responses</c> strategy does this: it latches a transient
-    /// disconnect into a synthetic <c>response.failed</c> terminal and returns
-    /// normally, so no exception reaches the endpoint's catch. The endpoint folds
-    /// this into the audit's <c>error</c> field after draining the stream, so a
-    /// truncated <c>upstream-resp</c> isn't logged as a clean success. Null when
-    /// the stream completed without a caught fault. (The <c>/cc</c> passthrough
-    /// strategy does NOT catch — its faults propagate to the endpoint directly —
-    /// so it leaves this null.)
-    /// </summary>
-    public Exception? UpstreamStreamFault { get; set; }
-
-    /// <summary>
     /// The bytes to record as the <c>upstream-resp</c> audit body — Copilot's RAW
     /// response, pre-stage. Prefers the buffered pre-rewrite array
     /// (<see cref="RawUpstreamResponseBody"/>), then the finalized streaming

@@ -1,6 +1,7 @@
 using System.Net.ServerSentEvents;
 using System.Text;
 using System.Text.Json;
+using CopilotBridge.Cli.Copilot;
 using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Strategies.Codex;
@@ -29,15 +30,6 @@ namespace CopilotBridge.Cli.Pipeline.Strategies.Codex;
 /// </summary>
 internal sealed class ResponsesToAnthropicStream
 {
-    /// <summary>
-    /// IR-internal stop reason used ONLY between T3 and T4 to carry an upstream
-    /// failure honestly: Anthropic's grammar has no "failed" stop, so T3 latches
-    /// this private marker and T4 maps it to a real Responses <c>response.failed</c>
-    /// terminal instead of a fake <c>response.completed</c>. Never reaches a
-    /// Claude Code client (it only exists on the Codex T3→T4 hop).
-    /// </summary>
-    internal const string ErrorStopReason = "error";
-
     private readonly string _model;
     private readonly ILogger? _log;
     private bool _messageStarted;
@@ -200,16 +192,10 @@ internal sealed class ResponsesToAnthropicStream
                     break;
 
                 case "response.failed":
-                    // Upstream FAILED. Carry it honestly: latch the IR-internal
-                    // error stop so T4 emits a real response.failed terminal, not a
-                    // fake completed. Log the upstream error so the operator can see
-                    // why (the failure detail vanishes otherwise — the IR has no
-                    // typed home for it).
-                    _log?.LogWarning("T3: upstream /responses signalled response.failed: {Error}",
-                        ExtractError(root));
-                    _stopReason = ErrorStopReason;
-                    foreach (var s in Flush()) yield return s;
-                    break;
+                    // A failed Responses terminal is not a successful Anthropic
+                    // stop. Keep it exceptional until the downstream client edge;
+                    // carry only the bounded machine code, never generated detail.
+                    throw new UpstreamResponseFailedException(ExtractErrorCode(root));
 
                 // in_progress, content_part.*, reasoning_*, etc. — no IR equivalent
                 // needed for the bridge's purposes; swallow.
@@ -241,20 +227,17 @@ internal sealed class ResponsesToAnthropicStream
     }
 
     /// <summary>
-    /// Emit a terminal even when the upstream stream ended (or threw) WITHOUT a
-    /// response.completed — Codex's parser requires a terminal. Called by the
-    /// strategy on the throwing/empty path. <paramref name="failed"/> latches the
-    /// error stop so T4 produces response.failed. If no message_start was ever
-    /// emitted (empty stream), synthesize one so the terminal is well-formed.
+    /// Emit a terminal when the upstream stream ended cleanly WITHOUT a
+    /// response.completed. A throwing path never calls this method: faults remain
+    /// exceptional until the downstream client boundary.
     /// </summary>
-    public IEnumerable<SseItem<string>> FlushTerminal(bool failed)
+    public IEnumerable<SseItem<string>> FlushTerminal()
     {
         // Idempotent: if the stream already produced its terminal (the normal
         // response.completed path), do nothing. Otherwise a redundant call would
         // emit a dangling second message_start (empty content, no message_stop),
         // which corrupts the client's parse of an otherwise-complete response.
         if (_terminated) yield break;
-        if (failed) _stopReason = ErrorStopReason;
         if (!_messageStarted)
         {
             _messageStarted = true;
@@ -357,15 +340,22 @@ internal sealed class ResponsesToAnthropicStream
             && otd.TryGetProperty("reasoning_tokens", out var rt) && rt.TryGetInt64(out var r)) _reasoningOutputTokens = r;
     }
 
-    private static string ExtractError(JsonElement root)
+    private static string? ExtractErrorCode(JsonElement root)
     {
-        // response.failed carries the detail on response.error (or a top-level error).
+        // response.failed carries detail on response.error (or a top-level error).
+        // Only the bounded code may leave T3; messages can contain generated text.
         if (root.TryGetProperty("response", out var resp)
-            && resp.TryGetProperty("error", out var err) && err.ValueKind != JsonValueKind.Null)
-            return err.ToString();
-        if (root.TryGetProperty("error", out var topErr) && topErr.ValueKind != JsonValueKind.Null)
-            return topErr.ToString();
-        return "(no error detail)";
+            && resp.TryGetProperty("error", out var err)
+            && err.ValueKind == JsonValueKind.Object
+            && err.TryGetProperty("code", out var code)
+            && code.ValueKind == JsonValueKind.String)
+            return code.GetString();
+        if (root.TryGetProperty("error", out var topErr)
+            && topErr.ValueKind == JsonValueKind.Object
+            && topErr.TryGetProperty("code", out var topCode)
+            && topCode.ValueKind == JsonValueKind.String)
+            return topCode.GetString();
+        return null;
     }
 
     private string MessageStartJson() =>

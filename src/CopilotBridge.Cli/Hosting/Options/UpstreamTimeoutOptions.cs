@@ -46,17 +46,19 @@ internal sealed class UpstreamTimeoutOptions
     /// sent, the wire status stays <c>200</c>; by default the bridge injects the
     /// same retryable <c>overloaded_error</c> the response guards use (so Claude
     /// Code re-attempts the turn), unless <see cref="StreamIdleAction"/> selects
-    /// truncation. Default 60: far above any legitimate inter-event gap (deltas are
-    /// sub-second, extended thinking still emits deltas) and below Claude Code's own
-    /// opt-in stream watchdog (<c>CLAUDE_STREAM_IDLE_TIMEOUT_MS</c>, default 90s) so
-    /// the bridge is the earlier deterministic actor. <c>&lt;= 0</c> disables.
+    /// truncation. Default 60, below Claude Code's own opt-in stream watchdog
+    /// (<c>CLAUDE_STREAM_IDLE_TIMEOUT_MS</c>, default 90s), is unchanged by the
+    /// downstream-framing fix. The motivating observation was cancelled at 60s and
+    /// therefore cannot establish whether upstream would later have resumed; tune
+    /// this operator knob separately from failure recovery. <c>&lt;= 0</c> disables.
     /// </summary>
     public int StreamIdleTimeoutSeconds { get; set; } = 60;
 
     /// <summary>
     /// What the bridge does to the client stream when the stream-idle budget fires
     /// mid-response. <see cref="UpstreamTimeoutAction.Retry"/> (default) injects a
-    /// retryable error event so Claude Code re-attempts the turn;
+    /// retryable error event so Claude Code discards the partial stream and enters
+    /// its non-streaming recovery path;
     /// <see cref="UpstreamTimeoutAction.Truncate"/> ends the stream with no error
     /// event (a silent cut-short 200) for operators who explicitly do not want a
     /// retry. Only relevant to the mid-stream phase — a first-byte timeout is
@@ -79,7 +81,7 @@ internal sealed class UpstreamTimeoutOptions
 /// </summary>
 internal enum UpstreamTimeoutAction
 {
-    /// <summary>Inject a retryable error event so Claude Code re-attempts the turn.</summary>
+    /// <summary>Inject a retryable error event so Claude Code enters recovery.</summary>
     Retry = 0,
 
     /// <summary>End the stream with no error event (silent cut-short 200).</summary>

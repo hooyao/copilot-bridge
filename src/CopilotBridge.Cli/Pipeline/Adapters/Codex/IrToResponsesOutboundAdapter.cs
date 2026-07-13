@@ -45,7 +45,7 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         // EOF, common on long streams), a plain `await foreach` would skip Flush
         // and hand Codex a headless stream that hangs. So iterate manually,
         // capture any fault, ALWAYS flush a terminal (response.failed on fault,
-        // response.completed otherwise), then rethrow a non-transient fault.
+        // response.completed otherwise), then rethrow it for endpoint accounting.
         await using var e = irStream.GetAsyncEnumerator(ct);
         Exception? fault = null;
         while (true)
@@ -63,7 +63,7 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
 
         if (fault is not null)
         {
-            _log.LogWarning("adapter {Name}: upstream IR stream faulted mid-relay ({Type}: {Message}); "
+            _log.LogDebug("adapter {Name}: upstream IR stream faulted mid-relay ({Type}: {Message}); "
                 + "emitted a terminal response.failed before propagating",
                 Name, fault.GetType().Name, fault.Message);
             // Cancellation is expected on client disconnect — don't wrap it.
@@ -99,6 +99,7 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
 /// </summary>
 internal sealed class AnthropicToResponsesStream
 {
+    private const string FailedStopReason = "error";
     private readonly string _model;
     private readonly ILogger? _log;
     private int _seq;
@@ -227,8 +228,8 @@ internal sealed class AnthropicToResponsesStream
     /// </summary>
     public IEnumerable<SseItem<string>> FlushTerminal(bool failed)
     {
-        if (failed && _stopReason != Strategies.Codex.ResponsesToAnthropicStream.ErrorStopReason)
-            _stopReason = Strategies.Codex.ResponsesToAnthropicStream.ErrorStopReason;
+        if (failed && _stopReason != FailedStopReason)
+            _stopReason = FailedStopReason;
         if (!_created)
         {
             _created = true;
@@ -416,7 +417,7 @@ internal sealed class AnthropicToResponsesStream
         + $"\"output_tokens\":{_outputTokens},\"output_tokens_details\":{{\"reasoning_tokens\":{_reasoningOutputTokens}}},"
         + $"\"total_tokens\":{_inputTokens + _outputTokens}}}";
 
-    private bool IsFailed() => _stopReason == Strategies.Codex.ResponsesToAnthropicStream.ErrorStopReason;
+    private bool IsFailed() => _stopReason == FailedStopReason;
 
     private string MapStatus() => _stopReason == "max_tokens" ? "incomplete" : "completed";
 

@@ -107,7 +107,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             ctx.Response.RawUpstreamResponseCapture = capture;
             // T3: translate Responses SSE → IR (Anthropic) SSE on the fly. The
             // response stages + the outbound T4 adapter then operate on IR shape.
-            ctx.Response.EventStream = TranslateStreamAsync(resp, ctx.Request.Body.Model, capture, ctx.Response, ctx.Ct);
+            ctx.Response.EventStream = TranslateStreamAsync(resp, ctx.Request.Body.Model, capture, ctx.Ct);
             _log.LogDebug("strategy {Name}: T3 streaming (content-type={ContentType})", Name, contentType);
         }
         else
@@ -145,12 +145,10 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         HttpResponseMessage resp,
         string model,
         RawResponseCapture? capture,
-        BridgeResponse response,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var sm = new ResponsesToAnthropicStream(model, _log);
         Stream? rawStream = null;
-        Exception? fault = null;
         var streamIdleSeconds = _timeout.StreamIdleTimeoutSeconds;
         try
         {
@@ -158,21 +156,12 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             // Tee the raw Copilot SSE when capturing; otherwise parse directly.
             var readStream = capture is null ? rawStream : new TeeReadStream(rawStream, capture);
             var parser = SseParser.Create(readStream);
-            // Iterate manually so a mid-stream upstream fault (premature EOF /
-            // transient disconnect) still lets us flush a terminal — Codex's
-            // parser requires one, and T4 turns a faulted terminal into
-            // response.failed rather than a headless stream.
-            //
             // Stream-idle inactivity budget: when enabled, each read is bounded by
             // StreamIdleReader (races the read against an independent delay — no
-            // CancelAfter poison race). A fired idle timer surfaces as an
-            // UpstreamTimeoutException, which we latch as `fault` exactly like a real
-            // mid-stream disconnect — reusing this path's catch-and-flush so the Codex
-            // client gets a well-formed response.failed terminal rather than a
-            // headless stream or an Anthropic overloaded_error it can't parse. Budget
-            // <= 0 ⇒ the original loop (parser driven by `ct` only). readCts backs the
-            // enumerator's read token so the reader can end a pending read on timeout;
-            // `using` disposes it on every exit (a null is a using no-op).
+            // CancelAfter poison race). The read exception deliberately propagates
+            // through the IR stream: only the downstream client edge knows whether
+            // it must emit Anthropic event:error or Responses response.failed.
+            // Budget <= 0 ⇒ the original loop (parser driven by `ct` only).
             using var readCts = streamIdleSeconds > 0
                 ? CancellationTokenSource.CreateLinkedTokenSource(ct)
                 : null;
@@ -181,14 +170,9 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             await using var e = parser.EnumerateAsync(readCt).GetAsyncEnumerator(readCt);
             while (true)
             {
-                bool moved;
-                try
-                {
-                    moved = readCts is not null
-                        ? await StreamIdleReader.MoveNextAsync(e, readCts, idle, ct)
-                        : await e.MoveNextAsync();
-                }
-                catch (Exception ex) { fault = ex; break; }
+                var moved = readCts is not null
+                    ? await StreamIdleReader.MoveNextAsync(e, readCts, idle, ct)
+                    : await e.MoveNextAsync();
                 if (!moved) break;
                 foreach (var irItem in sm.Translate(e.Current))
                     yield return irItem;
@@ -200,19 +184,9 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             resp.Dispose();
         }
 
-        // Always emit a terminal (even on fault / empty stream). On a fault, latch
-        // the IR error stop so T4 emits response.failed; surface the underlying
-        // exception on ctx.Response so the endpoint folds it into the audit's
-        // error field (otherwise a truncated upstream-resp would log as a clean
-        // 200 — see BridgeResponse.UpstreamStreamFault).
-        foreach (var tail in sm.FlushTerminal(failed: fault is not null))
+        // Clean EOF without a terminal retains the historical defensive terminal.
+        // An exception skips this code and remains exceptional at the client edge.
+        foreach (var tail in sm.FlushTerminal())
             yield return tail;
-
-        if (fault is not null)
-        {
-            response.UpstreamStreamFault = fault;
-            _log.LogWarning("strategy {Name}: T3 upstream stream faulted ({Type}: {Message}); "
-                + "flushed a failed terminal", Name, fault.GetType().Name, fault.Message);
-        }
     }
 }

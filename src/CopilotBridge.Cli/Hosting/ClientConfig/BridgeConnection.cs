@@ -12,9 +12,9 @@ namespace CopilotBridge.Cli.Hosting.ClientConfig;
 /// abort mid-stream: the ResponseLeakGuard or ToolInputValidation detector with
 /// <c>Enabled &amp;&amp; PreserveStream</c>, or the RunawayGuard detector with
 /// <c>Enabled</c> (it has no <c>PreserveStream</c> toggle and always aborts
-/// mid-stream). Claude Code only: when true the configurator writes
-/// <c>CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1</c> so a mid-stream detector abort
-/// forces a whole-turn retry; when false it removes that env key.</param>
+/// mid-stream). Retained as a detector-state fact for status/reporting; Claude Code
+/// configuration no longer disables non-streaming fallback because real 2.1.207
+/// uses that request as its recovery path.</param>
 internal sealed record BridgeConnection(int Port, bool NeedNonStreamingFallbackDisabled)
 {
     /// <summary>Base URL Claude Code points <c>ANTHROPIC_BASE_URL</c> at.</summary>

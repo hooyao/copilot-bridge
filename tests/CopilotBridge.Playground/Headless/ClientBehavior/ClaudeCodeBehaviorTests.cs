@@ -62,6 +62,64 @@ public class ClaudeCodeBehaviorTests
             canary: "cc-to-gpt-canary-33917");
     }
 
+    /// <summary>
+    /// Path-exercising acceptance for a Responses stream that emits partial
+    /// commentary and then stalls after headers. The deterministic upstream makes
+    /// the first bridge request time out; only a real Claude streaming retry can
+    /// reach the later Bash/Read calls and final canary.
+    /// </summary>
+    [Fact]
+    public async Task ClaudeCode_RoutedToGpt_StalledAttempt_RetriesAndExecutesTools()
+    {
+        const string caseId = "cc-to-gpt-stream-fault-recovery";
+        const string canary = "cc-stream-recovery-canary-64129";
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        var probePath = Path.Combine(work.Path, "cbridge_probe.txt");
+        await using var upstream = ResponsesFaultRecoveryServer.Start(probePath, canary);
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.CcToGptFaultRecovery,
+            TestUpstreamBaseUrl: upstream.BaseUrl,
+            StreamIdleTimeoutSeconds: 1));
+
+        var prompt =
+            "Actually use the Bash tool to write the exact text " + canary
+            + " to cbridge_probe.txt, then use Read on that file, then report the exact text. ";
+        var result = await ClaudeProcess.RunAsync(new ClaudeInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: prompt,
+            Model: ClientBehaviorSupport.LatestClaude,
+            OutputFormat: "stream-json",
+            Verbose: true,
+            AllowedTools: "Bash,Read",
+            Timeout: TimeSpan.FromMinutes(4),
+            WorkingDirectory: work.Path));
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "claude",
+                Route: "/cc->gpt/fault-recovery",
+                Model: ClientBehaviorSupport.LatestClaude,
+                Scenario: ServeScenario.CcToGptFaultRecovery,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: null,
+                DispatchSinceUnix: 0,
+                DispatchUntilUnix: 0,
+                Prompt: prompt),
+            result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
+            out _, out _);
+
+        _output.WriteLine($"fault upstream={upstream.BaseUrl} requests={upstream.RequestCount}");
+        _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
+        _output.WriteLine($"claude.exe exit={result.ExitCode} duration={result.Duration}");
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine("[verdict] run `/real-client-verify` against the transcript and request-id traces.");
+
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
     private async Task RunMultiToolCaseAsync(
         string caseId, ServeScenario scenario, string model, string route, string canary)
     {

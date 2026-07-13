@@ -391,14 +391,12 @@ public class UpstreamResponseCaptureContractTests
     }
 
     /// <summary>
-    /// Contract: the Codex strategy CATCHES a mid-stream fault (to flush a
-    /// response.failed terminal) — so draining must NOT throw — but it must
-    /// surface the fault on <see cref="BridgeResponse.UpstreamStreamFault"/> so the
-    /// endpoint can stop logging a truncated upstream-resp as a clean success.
-    /// The partial capture is retained either way.
+    /// Contract: the Responses strategy propagates a mid-stream fault so the
+    /// downstream edge selects the client-native error shape. The partial raw
+    /// upstream capture remains available after that exception.
     /// </summary>
     [Fact]
-    public async Task Codex_MidStreamFault_Swallowed_ButFaultSurfaced_AndPartialKept()
+    public async Task Responses_MidStreamFault_Propagates_AndPartialCaptureIsKept()
     {
         var prefix = Encoding.UTF8.GetBytes(
             "event: response.created\ndata: {\"type\":\"response.created\"}\n\n");
@@ -412,13 +410,10 @@ public class UpstreamResponseCaptureContractTests
             NullLogger<CopilotResponsesStrategy>.Instance);
 
         await strategy.ForwardAsync();
-        // Codex swallows the fault internally and flushes a terminal — no throw.
-        await DrainAsync(ctx.Response.EventStream!);
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await DrainAsync(ctx.Response.EventStream!));
 
-        Assert.NotNull(ctx.Response.UpstreamStreamFault);
-        Assert.IsType<IOException>(ctx.Response.UpstreamStreamFault);
         Assert.NotNull(ctx.Response.RawUpstreamResponseCapture);
         Assert.Equal(prefix, ctx.Response.RawUpstreamResponseCapture!.ToArray());
     }
 }
-

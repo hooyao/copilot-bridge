@@ -61,14 +61,14 @@ public class ResponsesStreamTerminalTests
 
     /// <summary>
     /// Drive T3 the way the production strategy does: translate every upstream
-    /// event, THEN call FlushTerminal(failed:false) once after the loop.
+    /// event, THEN call FlushTerminal once after a clean loop.
     /// </summary>
     private static List<SseItem<string>> RunLikeStrategy(List<SseItem<string>> upstream, string model = "gpt-5.5")
     {
         var sm = new ResponsesToAnthropicStream(model);
         var ir = new List<SseItem<string>>();
         foreach (var e in upstream) ir.AddRange(sm.Translate(e));
-        ir.AddRange(sm.FlushTerminal(failed: false)); // mirrors CopilotResponsesStrategy
+        ir.AddRange(sm.FlushTerminal()); // mirrors CopilotResponsesStrategy
         return ir;
     }
 
@@ -112,7 +112,7 @@ public class ResponsesStreamTerminalTests
         // client sees a complete, empty turn rather than a hung stream.
         var sm = new ResponsesToAnthropicStream("gpt-5.5");
         var ir = new List<SseItem<string>>();
-        ir.AddRange(sm.FlushTerminal(failed: false));
+        ir.AddRange(sm.FlushTerminal());
 
         var types = ir.Select(Type).ToList();
         Assert.Equal(1, types.Count(t => t == "message_start"));

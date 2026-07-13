@@ -199,19 +199,6 @@ internal static class CodexResponsesEndpoint
                     capturedEvents?.Add(new CapturedSseEvent(evt.EventType, evt.Data, Filtered: false));
                     await WriteSseEventAsync(httpCtx.Response, evt.EventType, evt.Data, ct);
                 }
-                // The Codex strategy CATCHES a mid-stream upstream fault (including a
-                // stream-idle timeout) internally to flush a response.failed terminal,
-                // so it never reaches the catch blocks below. Surface it here so the
-                // truncated upstream-resp carries the real error rather than a
-                // misleading clean 200; and when the fault is a stream-idle timeout,
-                // record it on the summary line like the /cc path does.
-                if (bridgeCtx.Response.UpstreamStreamFault is { } streamFault && endpointError is null)
-                {
-                    endpointError = streamFault.Message;
-                    summary.Error = $"{streamFault.GetType().Name}: {streamFault.Message}";
-                    if (streamFault is UpstreamTimeoutException ute)
-                        summary.UpstreamTimeout = UpstreamTimeoutException.PhaseLabel(ute.Phase);
-                }
             }
             else if (bridgeCtx.Response.BufferedBody is not null)
             {
@@ -241,17 +228,17 @@ internal static class CodexResponsesEndpoint
         }
         catch (UpstreamTimeoutException ex)
         {
-            // First-byte inactivity timeout from PostResponsesAsync (pre-headers).
-            // A stream-idle timeout never reaches here — the strategy catches it and
-            // flushes response.failed, surfaced via UpstreamStreamFault above. So this
-            // branch is the first-byte case: no bytes sent yet ⇒ a real 504.
+            // First-byte timeouts arrive before any downstream bytes. Stream-idle
+            // faults arrive here only after T4 emitted response.failed and rethrew;
+            // the response-start check preserves the already-sent 200.
             var phase = UpstreamTimeoutException.PhaseLabel(ex.Phase);
             summary.UpstreamTimeout = phase;
             endpointError = ex.Message;
-            summary.Error = ex.Message;
+            summary.Error = $"{ex.GetType().Name}: {ex.Message}";
             endpointLog.LogWarning(
-                "endpoint upstream-timeout: phase={Phase} idle={IdleSeconds:0.#}s (tune Pipeline:UpstreamTimeout)",
-                phase, ex.Elapsed.TotalSeconds);
+                "endpoint upstream-timeout: phase={Phase} type={ExceptionType} idle={IdleSeconds:0.#}s "
+                + "(tune Pipeline:UpstreamTimeout)",
+                phase, ex.GetType().Name, ex.Elapsed.TotalSeconds);
             if (!httpCtx.Response.HasStarted)
             {
                 responseStatus = StatusCodes.Status504GatewayTimeout;
@@ -259,6 +246,23 @@ internal static class CodexResponsesEndpoint
                 await httpCtx.Response.WriteAsync(
                     $"upstream timed out waiting for first byte after {ex.Elapsed.TotalSeconds:0.#}s",
                     CancellationToken.None);
+            }
+            else responseStatus = httpCtx.Response.StatusCode;
+        }
+        catch (UpstreamResponseFailedException ex)
+        {
+            // T4 already wrote the single Responses-native response.failed before
+            // rethrowing this bounded fault. Only account for it here.
+            endpointError = ex.Message;
+            summary.Error = $"{ex.GetType().Name}: {ex.Message}";
+            endpointLog.LogWarning(
+                "endpoint upstream-response-failed: type={ExceptionType} code={FailureCode}",
+                ex.GetType().Name, ex.Code);
+            if (!httpCtx.Response.HasStarted)
+            {
+                responseStatus = StatusCodes.Status502BadGateway;
+                httpCtx.Response.StatusCode = responseStatus;
+                await httpCtx.Response.WriteAsync("upstream model backend failed", CancellationToken.None);
             }
             else responseStatus = httpCtx.Response.StatusCode;
         }

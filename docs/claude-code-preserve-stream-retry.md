@@ -60,18 +60,12 @@ Therefore the Claude Code setting that copilot-bridge should write is an environ
 
 This is not a magic "force retry" switch. It is a guardrail to avoid users or inherited config disabling the fallback path.
 
-> **Update — what `copilot-bridge config claude-code` actually writes.** The
-> auto-configuration command (see `openspec/changes/add-client-config-command`)
-> writes `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` — the *opposite* of the
-> `"false"` guardrail argued for above — whenever a response detector runs with
-> `PreserveStream=true` (the shipped default for both `ResponseLeakGuard` and
-> `ToolInputValidation`). This is a deliberate product choice: with those
-> detectors preserving the stream, a mid-stream abort should drive a **whole-turn
-> retry** (the error reaches Claude Code's `withRetry` path) rather than a silent
-> non-streaming re-request. `isEnvTruthy("1")` is true, so `"1"` disables the
-> fallback; `"false"`/`"0"`/unset keep it. Both README and the detector source
-> comments state `=1`; this doc's earlier `"false"` recommendation predates the
-> detectors and is kept for the reasoning, not as the current default.
+> **Verified update (Claude Code 2.1.207).** Disabling fallback does not produce a
+> same-mode whole-turn retry for a mid-stream SSE error; it surfaces a terminal API
+> error. With fallback enabled, Claude tombstones the partial attempt and issues a
+> non-streaming request (the `stream` field is omitted). The `/cc` client edge now
+> translates a successful buffered Responses object on cross-model routes, and
+> `copilot-bridge config claude-code` removes the legacy disable override.
 
 ### Current Claude Code may preserve partial output after visible text has streamed
 
@@ -113,7 +107,7 @@ That means the bridge often has to let earlier `text_delta` chunks pass through 
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:{port}/cc",
     "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": "false"
+    // Leave CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK unset.
   }
 }
 ```

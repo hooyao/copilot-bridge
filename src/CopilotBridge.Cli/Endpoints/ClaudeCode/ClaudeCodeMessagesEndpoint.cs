@@ -316,10 +316,11 @@ internal static class ClaudeCodeMessagesEndpoint
             var phase = UpstreamTimeoutException.PhaseLabel(ex.Phase);
             summary.UpstreamTimeout = phase;
             endpointError = ex.Message;
-            summary.Error = ex.Message;
+            summary.Error = $"{ex.GetType().Name}: {ex.Message}";
             endpointLog.LogWarning(
-                "endpoint upstream-timeout: phase={Phase} idle={IdleSeconds:0.#}s (tune Pipeline:UpstreamTimeout)",
-                phase, ex.Elapsed.TotalSeconds);
+                "endpoint upstream-timeout: phase={Phase} type={ExceptionType} idle={IdleSeconds:0.#}s "
+                + "(tune Pipeline:UpstreamTimeout)",
+                phase, ex.GetType().Name, ex.Elapsed.TotalSeconds);
 
             if (!httpCtx.Response.HasStarted)
             {
@@ -349,6 +350,7 @@ internal static class ClaudeCodeMessagesEndpoint
                     try
                     {
                         await WriteSseEventAsync(httpCtx.Response, "error", errorJson, CancellationToken.None);
+                        capturedEvents?.Add(new CapturedSseEvent("error", errorJson, Filtered: false));
                     }
                     catch (Exception writeEx)
                     {
@@ -357,6 +359,38 @@ internal static class ClaudeCodeMessagesEndpoint
                     }
                 }
                 // Truncate: nothing more to write — the stream simply ends.
+            }
+        }
+        catch (UpstreamResponseFailedException ex)
+        {
+            endpointError = ex.Message;
+            summary.Error = $"{ex.GetType().Name}: {ex.Message}";
+            endpointLog.LogWarning(
+                "endpoint upstream-response-failed: type={ExceptionType} code={FailureCode}",
+                ex.GetType().Name, ex.Code);
+
+            if (!httpCtx.Response.HasStarted)
+            {
+                responseStatus = StatusCodes.Status502BadGateway;
+                httpCtx.Response.StatusCode = responseStatus;
+                await httpCtx.Response.WriteAsync("upstream model backend failed", CancellationToken.None);
+            }
+            else
+            {
+                responseStatus = httpCtx.Response.StatusCode;
+                var errorJson = ResponseDetectionError.JsonWithMessage(
+                    ResponseDetectionSignal.ApiError, UpstreamResponseFailedMessage);
+                try
+                {
+                    await WriteSseEventAsync(httpCtx.Response, "error", errorJson, CancellationToken.None);
+                    capturedEvents?.Add(new CapturedSseEvent("error", errorJson, Filtered: false));
+                }
+                catch (Exception writeEx)
+                {
+                    endpointLog.LogDebug(
+                        "endpoint upstream-response-failed: could not write error event ({Type})",
+                        writeEx.GetType().Name);
+                }
             }
         }
         catch (UnknownModelException ex)
@@ -498,6 +532,9 @@ internal static class ClaudeCodeMessagesEndpoint
         "[copilot-bridge] The upstream model stalled mid-response (no further output within the configured "
         + "stream-idle budget) and the turn was aborted; forcing a clean retry. If this is a false positive on a "
         + "legitimately slow stream, raise Pipeline:UpstreamTimeout:StreamIdleTimeoutSeconds in appsettings.json and restart copilot-bridge.";
+
+    private const string UpstreamResponseFailedMessage =
+        "[copilot-bridge] The upstream model backend failed this streaming turn; forcing a clean retry.";
 
     private static IReadOnlyList<string> ParseOutboundBetas(IReadOnlyDictionary<string, string> headers)
     {

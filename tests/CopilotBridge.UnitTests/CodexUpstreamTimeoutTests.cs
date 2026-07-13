@@ -6,6 +6,7 @@ using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Models.Copilot;
 using CopilotBridge.Cli.Pipeline;
+using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Routing;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -16,10 +17,9 @@ namespace CopilotBridge.UnitTests;
 
 /// <summary>
 /// Contract coverage for the upstream inactivity timeout on the Codex/Responses
-/// path. Unlike `/cc`, a Codex mid-stream stall does NOT surface an Anthropic
-/// `overloaded_error` — the strategy latches the timeout as a stream fault and
-/// flushes a `response.failed` terminal through its existing fault channel, so the
-/// Codex client sees a well-formed terminated stream. The first-byte budget is
+/// path. The upstream strategy propagates a mid-stream fault through the IR; the
+/// Codex T4 boundary emits `response.failed` and rethrows it for endpoint
+/// accounting. The first-byte budget is
 /// shared with `/cc` (both use `CopilotClient.SendWithFirstByteBudgetAsync`), so
 /// first-byte behavior is covered by both this file and the `/cc` file.
 /// </summary>
@@ -117,48 +117,54 @@ public class CodexUpstreamTimeoutTests
     }
 
     /// <summary>
-    /// Contract: a Codex mid-stream stall past the budget aborts the read and
-    /// surfaces an `UpstreamTimeoutException(StreamIdle)` on
-    /// `BridgeResponse.UpstreamStreamFault` — the fault channel the endpoint reads.
-    /// Draining does NOT throw (the strategy swallows the fault to flush a terminal).
+    /// Contract: a Responses strategy is upstream-facing and therefore cannot
+    /// choose a Codex or Claude failure envelope. A mid-stream stall propagates an
+    /// UpstreamTimeoutException(StreamIdle) after the partial IR, with no private
+    /// failure terminal appended.
     /// </summary>
     [Fact]
-    public async Task Codex_MidStreamStall_LatchesTimeoutFault_NoThrow()
+    public async Task ResponsesStrategy_MidStreamStall_PropagatesTimeout_NoPrivateTerminal()
     {
         var ctx = Ctx(stream: true);
         var body = new StallAfterPrefixStream(ResponsesPrefix());
         var strategy = Strategy(new StubClient(StreamingResponse(body)), ctx, Timeouts(0, streamIdle: 1));
 
         await strategy.ForwardAsync();
-        // No throw — the strategy catches the idle timeout and flushes a terminal.
-        var got = await DrainAsync(ctx.Response.EventStream!);
+        var got = new List<SseItem<string>>();
+        var ex = await Assert.ThrowsAsync<UpstreamTimeoutException>(async () =>
+        {
+            await foreach (var item in ctx.Response.EventStream!) got.Add(item);
+        });
 
-        Assert.NotNull(ctx.Response.UpstreamStreamFault);
-        Assert.IsType<UpstreamTimeoutException>(ctx.Response.UpstreamStreamFault);
-        Assert.Equal(UpstreamTimeoutPhase.StreamIdle,
-            ((UpstreamTimeoutException)ctx.Response.UpstreamStreamFault!).Phase);
-        // A terminal was still emitted (the stream is not headless).
+        Assert.Equal(UpstreamTimeoutPhase.StreamIdle, ex.Phase);
         Assert.NotEmpty(got);
+        Assert.DoesNotContain(got, item => item.Data.Contains("\"stop_reason\":\"error\""));
+        Assert.DoesNotContain(got, item => item.EventType == "message_stop");
     }
 
     /// <summary>
-    /// Contract: the Codex mid-stream surface must NOT be the Anthropic
-    /// `overloaded_error` envelope (the Codex client can't parse it). The IR terminal
-    /// the strategy flushes on a timeout carries a stop/error shape T4 renders as
-    /// response.failed — assert no `overloaded_error` appears in the emitted events.
+    /// Contract: the Codex edge, not T3, catches the same propagated fault. T4
+    /// writes one response.failed and no Anthropic error before rethrowing.
     /// </summary>
     [Fact]
-    public async Task Codex_MidStreamStall_DoesNotEmitOverloadedError()
+    public async Task Codex_MidStreamStall_T4EmitsOneFailedThenRethrows()
     {
         var ctx = Ctx(stream: true);
         var body = new StallAfterPrefixStream(ResponsesPrefix());
         var strategy = Strategy(new StubClient(StreamingResponse(body)), ctx, Timeouts(0, streamIdle: 1));
 
         await strategy.ForwardAsync();
-        var got = await DrainAsync(ctx.Response.EventStream!);
+        var adapter = new IrToResponsesOutboundAdapter(
+            ctx, NullLogger<IrToResponsesOutboundAdapter>.Instance);
+        var got = new List<SseItem<string>>();
+        await Assert.ThrowsAsync<UpstreamTimeoutException>(async () =>
+        {
+            await foreach (var item in adapter.AdaptStreamAsync(ctx.Response.EventStream!, default))
+                got.Add(item);
+        });
 
-        foreach (var e in got)
-            Assert.DoesNotContain("overloaded_error", e.Data);
+        Assert.Single(got, item => item.EventType == "response.failed");
+        Assert.DoesNotContain(got, item => item.Data.Contains("overloaded_error"));
     }
 
     /// <summary>
@@ -176,17 +182,15 @@ public class CodexUpstreamTimeoutTests
 
         await strategy.ForwardAsync();
         cts.CancelAfter(TimeSpan.FromMilliseconds(150));
-        await DrainAsync(ctx.Response.EventStream!);
-
-        // A fault is surfaced (client cancel), but it is NOT our timeout type.
-        Assert.IsNotType<UpstreamTimeoutException>(ctx.Response.UpstreamStreamFault);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await DrainAsync(ctx.Response.EventStream!));
     }
 
     /// <summary>
     /// Contract (D5, Codex stream-idle site): with the budget ENABLED but long
     /// (30s), a client cancel mid-stall wins the race — the latched
-    /// `UpstreamStreamFault` is NOT an `UpstreamTimeoutException` (it falls through
-    /// the timeout-specific `when` to the generic fault catch). Exercises the
+    /// thrown exception remains a client cancellation, not an upstream timeout.
+    /// Exercises the
     /// `&amp;&amp; !ct.IsCancellationRequested` guard at the Codex throw site, which the
     /// disabled test cannot (it arms no timer).
     /// </summary>
@@ -200,10 +204,8 @@ public class CodexUpstreamTimeoutTests
 
         await strategy.ForwardAsync();
         cts.CancelAfter(TimeSpan.FromMilliseconds(150));
-        await DrainAsync(ctx.Response.EventStream!);
-
-        Assert.NotNull(ctx.Response.UpstreamStreamFault);
-        Assert.IsNotType<UpstreamTimeoutException>(ctx.Response.UpstreamStreamFault);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await DrainAsync(ctx.Response.EventStream!));
     }
 
     /// <summary>
@@ -222,7 +224,6 @@ public class CodexUpstreamTimeoutTests
         await strategy.ForwardAsync();
         await DrainAsync(ctx.Response.EventStream!);
 
-        Assert.Null(ctx.Response.UpstreamStreamFault);
     }
 
     /// <summary>
@@ -256,8 +257,6 @@ public class CodexUpstreamTimeoutTests
             Assert.Equal(seqOff[i].EventType, seqOn[i].EventType);
             Assert.Equal(seqOff[i].Data, seqOn[i].Data);
         }
-        Assert.Null(ctxOff.Response.UpstreamStreamFault);
-        Assert.Null(ctxOn.Response.UpstreamStreamFault);
     }
 
     /// <summary>

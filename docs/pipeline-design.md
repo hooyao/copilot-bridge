@@ -400,8 +400,12 @@ prompt cache) is never aborted.
   idle timeout the pending read is cancelled and awaited so it never dangles.
   Default 60s sits *below* Claude Code's own opt-in stream watchdog
   (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`, default 90s) so the bridge is the earlier
-  deterministic actor. On expiry `/cc` throws `UpstreamTimeoutException(StreamIdle)`;
-  Codex latches it as a stream fault (see below).
+  deterministic actor. On expiry the upstream strategy throws
+  `UpstreamTimeoutException(StreamIdle)` through the hub stream; the downstream
+  client edge selects the protocol-specific failure surface (see below). The 60s
+  default is unchanged by the downstream-framing fix: an observation cancelled at
+  that deadline is right-censored and cannot establish whether upstream would
+  later have resumed, so timeout tuning remains a separate operator decision.
 
 Each budget disables at `<= 0` (no timer armed, no allocation — the byte-identical
 `/cc` passthrough hot path is unchanged). Surfacing, mapped by the endpoint's one
@@ -410,9 +414,11 @@ Each budget disables at `<= 0` (no timer armed, no allocation — the byte-ident
 - **Before headers** (first-byte): a real `504 Gateway Timeout`.
 - **Mid-stream** (headers already sent, status locked at `200`): by default inject
   the *same* retryable `overloaded_error` SSE event the response guards use
-  (`ResponseDetectionError.JsonWithMessage`) so Claude Code re-attempts the turn —
-  a whole-turn retry under `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` (which the
-  bridge's `config` command writes), a non-streaming fallback re-request otherwise;
+  (`ResponseDetectionError.JsonWithMessage`) so Claude Code discards the partial
+  attempt and issues its `stream:false` recovery request. The `/cc` client edge
+  translates a successful cross-routed Responses object back to Anthropic Messages;
+  `config claude-code` removes `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` so this
+  recovery path remains enabled;
   `StreamIdleAction=Truncate` instead ends the stream with no error event. Note the
   detector framework is pull-based (it inspects events that *arrive*), so an idle
   gap — the absence of an event — cannot be a detector; the injection happens at
@@ -423,14 +429,19 @@ helper (`CopilotClient.SendWithFirstByteBudgetAsync`) called by both
 `PostMessagesAsync` (`/cc`) and `PostResponsesAsync` (Codex), so a first-byte
 stall on either path throws `UpstreamTimeoutException(FirstByte)` → `504`. The
 stream-idle budget is applied at each strategy's read site, but the **mid-stream
-surface differs by client protocol**: the Codex path (`CopilotResponsesStrategy.
-TranslateStreamAsync`) does **not** inject an Anthropic `overloaded_error` (the
-Codex client speaks Responses and could not parse it). Instead it latches the
-timeout as `fault` and reuses the strategy's existing mid-stream-fault channel —
-flushing a `response.failed` terminal and surfacing `UpstreamStreamFault` — so the
-Codex client sees a well-formed terminated stream. `CodexResponsesEndpoint` reads
-that fault, records `upstream_timeout=stream_idle`, and folds the error into the
-audit.
+surface is selected by the downstream client protocol, not the upstream backend**.
+This distinction matters on cross-model routes: Claude Code may enter through
+`/cc` while routing selects Copilot `/responses`. The Responses-to-IR translator
+therefore propagates a read fault instead of encoding it as a normal IR terminal.
+At the Claude Code edge, `ClaudeCodeMessagesEndpoint` catches the fault and writes
+the configured Anthropic retryable `event: error` (or truncates, by explicit
+operator choice). At the Codex edge, `IrToResponsesOutboundAdapter` catches the
+same fault, flushes exactly one `response.failed` terminal required by the Codex
+parser, then rethrows so `CodexResponsesEndpoint` records
+`upstream_timeout=stream_idle` and the audit error. A bridge-private failure marker
+must never cross the `/cc` edge as `message_delta.stop_reason`; Claude Code accepts
+unknown stop-reason strings as ordinary terminal metadata and would silently end
+the agent turn instead of entering its streaming retry path.
 
 A client cancellation always wins the race against a timeout: the throw sites only
 convert to `UpstreamTimeoutException` when the linked timer fired **and** the
