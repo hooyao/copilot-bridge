@@ -27,6 +27,9 @@ internal sealed class ManagedInstallManager
     // replacement bytes, materialized+flushed during preparation so cutover is
     // only atomic renames.
     private readonly Dictionary<string, string> _stagedReplacements = new(StringComparer.Ordinal);
+    // Install-dir siblings the image-lock fallback renamed a locked executable to
+    // (<name>.old.<rand>); swept after commit/rollback once the lock releases.
+    private readonly List<string> _renamedAside = [];
     private ConfigSnapshot? _configSnapshot;
     private string _configBakPath = string.Empty;
     private string _privateConfigCopy = string.Empty;
@@ -394,9 +397,24 @@ internal sealed class ManagedInstallManager
     {
         TryDelete(_configBakPath);
         RemoveStagedReplacementTemps();
+        SweepRenamedAside();
         // The attempt root holds plan.json, the updater copy, staging/, backup/,
         // the archive, and the journal — delete the lot.
         TryDeleteDirectory(attemptRoot);
+    }
+
+    /// <summary>
+    /// Best-effort removal of the <c>*.old.&lt;rand&gt;</c> siblings the image-lock
+    /// fallback created. Safe to call after commit or rollback; a file still held
+    /// by the OS is simply retried-never (left for a future cleanup), never fatal.
+    /// </summary>
+    public void SweepRenamedAside()
+    {
+        foreach (var aside in _renamedAside)
+        {
+            TryDelete(aside);
+        }
+        _renamedAside.Clear();
     }
 
     /// <summary>
@@ -434,7 +452,7 @@ internal sealed class ManagedInstallManager
     // executable. The parent has already exited and been verified; a short bounded
     // retry (with a rename-aside fallback) makes the replace reliable. Because the
     // source is a same-directory temp, the move is atomic — no partial write.
-    private static void MoveOverManagedFile(string tempPath, string installPath)
+    private void MoveOverManagedFile(string tempPath, string installPath)
     {
         const int attempts = 20;
         for (var i = 0; ; i++)
@@ -486,16 +504,20 @@ internal sealed class ManagedInstallManager
         dst.Flush(flushToDisk: true);
     }
 
-    private static void TryRenameAside(string installPath)
+    private void TryRenameAside(string installPath)
     {
         try
         {
             if (File.Exists(installPath))
             {
                 // A locked-but-renamable image: move it to a sibling the OS can
-                // release lazily, freeing the name for the new file.
+                // release lazily, freeing the name for the new file. Record the
+                // aside path so it can be swept after the image lock releases —
+                // otherwise these accumulate in the install dir on every update
+                // that hits the Windows image-lock fallback.
                 var aside = installPath + ".old." + Guid.NewGuid().ToString("N")[..6];
                 File.Move(installPath, aside);
+                _renamedAside.Add(aside);
             }
         }
         catch

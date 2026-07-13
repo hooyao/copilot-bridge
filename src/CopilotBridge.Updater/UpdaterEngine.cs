@@ -49,7 +49,18 @@ internal sealed class UpdaterEngine
             return await FailPreflightAsync($"invalid plan: {validate.Reason}", ct).ConfigureAwait(false);
         }
 
-        using var installLock = InstallationLock.TryAcquire(_plan.InstallDir, _trustedRoot);
+        // The install lock file must live in a directory SHARED by all attempts
+        // for the same installation, not the per-attempt trusted root (which is
+        // unique per attempt and would let two concurrent updates each acquire
+        // their own lock). Use the parent of the attempt root — the common
+        // updates directory — falling back to the trusted root only if it has no
+        // parent (defensive).
+        var lockRoot = Path.GetDirectoryName(Path.GetFullPath(_trustedRoot));
+        if (string.IsNullOrEmpty(lockRoot))
+        {
+            lockRoot = _trustedRoot;
+        }
+        using var installLock = InstallationLock.TryAcquire(_plan.InstallDir, lockRoot);
         if (installLock is null)
         {
             return await FailPreflightAsync("another update is in progress", ct).ConfigureAwait(false);
@@ -236,6 +247,9 @@ internal sealed class UpdaterEngine
         if (recovered)
         {
             _journal.Write("rollback.recovered");
+            // Sweep any *.old.<rand> siblings the cutover image-lock fallback
+            // created (the old executable image lock has now released).
+            install.SweepRenamedAside();
             return UpdaterExit.RolledBack;
         }
 

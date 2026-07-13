@@ -26,7 +26,23 @@ internal sealed class ConfigSnapshot
 
     public string Sha256Hex { get; }
 
-    public string Text => Encoding.UTF8.GetString(_bytes);
+    /// <summary>
+    /// The snapshot decoded to text for parsing/merging. Uses a BOM-detecting
+    /// reader so a UTF-8 or UTF-16 BOM (which the normal configuration provider
+    /// accepts) is consumed rather than left as a stray U+FEFF that would make
+    /// JsonDocument.Parse fail during migration. <see cref="_bytes"/> stays
+    /// unchanged, so rollback remains byte-exact.
+    /// </summary>
+    public string Text
+    {
+        get
+        {
+            using var ms = new MemoryStream(_bytes, writable: false);
+            // detectEncodingFromByteOrderMarks: true consumes a leading BOM.
+            using var reader = new StreamReader(ms, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            return reader.ReadToEnd();
+        }
+    }
 
     /// <summary>Read the installed config once into an immutable snapshot.</summary>
     public static ConfigSnapshot Read(string path)

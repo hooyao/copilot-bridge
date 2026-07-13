@@ -109,8 +109,12 @@ internal sealed class UpdateDownloader
         {
             return UpdateStepResult.Fail("download timed out");
         }
-        catch (Exception ex) when (ex is HttpRequestException or IOException)
+        catch (Exception ex) when (ex is HttpRequestException or IOException or UriFormatException or InvalidOperationException)
         {
+            // Includes a malformed remote URL (UriFormatException while building the
+            // request or resolving a redirect) — treat it as an ordinary download
+            // failure so the updater fails open promptly instead of letting the
+            // parent wait out the handoff timeout.
             return UpdateStepResult.Fail($"download failed: {ex.GetType().Name}");
         }
     }

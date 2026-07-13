@@ -312,8 +312,12 @@ jobs:
 
       # Belt-and-suspenders: re-check ANONYMOUSLY (no Authorization header — the
       # exact way the installed bridge sees it) now that the release is public.
+      # If this fails, the release is already public, so delete it (authenticated
+      # cleanup) before exiting non-zero — a broken release is never left up, and
+      # the same tag can be cleanly retried.
       - name: Verify anonymous asset digests (post-publish)
         env:
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -343,5 +347,6 @@ jobs:
             echo "attempt $attempt: $pending archive(s) not yet uploaded/usable (of $count); retrying…"
             sleep 10
           done
-          echo "error: update archives did not expose usable anonymous sha256: digests" >&2
+          echo "error: published release lacks usable anonymous sha256: digests — deleting it" >&2
+          gh release delete "v$version" --yes --cleanup-tag || true
           exit 1

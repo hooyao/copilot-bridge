@@ -292,9 +292,11 @@ internal sealed class StartupUpdateGate
 
         var authorized = received is not null
             && prepared is not null
+            && prepared.ProtocolVersion == UpdateWire.ProtocolVersion
             && prepared.Kind == UpdateWire.MsgPrepared
             && string.Equals(prepared.AttemptId, attemptId, StringComparison.Ordinal)
-            && string.Equals(prepared.Token, handoff.Token, StringComparison.Ordinal);
+            && string.Equals(prepared.Token, handoff.Token, StringComparison.Ordinal)
+            && prepared.SenderPid == updater.Id;
 
         if (!authorized)
         {

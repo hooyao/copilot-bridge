@@ -282,4 +282,30 @@ public class ManagedInstallManagerTests : IDisposable
         Assert.True(snap.WriteVerifiedCopy(copyPath));
         Assert.Equal("original", File.ReadAllText(copyPath));
     }
+
+    [Fact]
+    public void ConfigSnapshot_Text_strips_utf8_bom_but_rollback_stays_byte_exact()
+    {
+        // A BOM-prefixed appsettings.json is accepted by the config provider, so
+        // ConfigSnapshot.Text must NOT leave a U+FEFF that would break
+        // JsonDocument.Parse during migration — yet the private copy must restore
+        // the exact original bytes (BOM included).
+        var path = Path.Combine(_install, ConfigName);
+        var bom = new byte[] { 0xEF, 0xBB, 0xBF };
+        var jsonBytes = System.Text.Encoding.UTF8.GetBytes("""{ "Server": { "Port": 19000 } }""");
+        var withBom = bom.Concat(jsonBytes).ToArray();
+        File.WriteAllBytes(path, withBom);
+
+        var snap = ConfigSnapshot.Read(path);
+
+        // Text has no leading BOM char and parses as JSON.
+        Assert.False(snap.Text.StartsWith('﻿'));
+        using var doc = System.Text.Json.JsonDocument.Parse(snap.Text);
+        Assert.Equal(19000, doc.RootElement.GetProperty("Server").GetProperty("Port").GetInt32());
+
+        // The verified private copy is byte-for-byte the original, BOM included.
+        var copyPath = Path.Combine(_root, "copy.json");
+        Assert.True(snap.WriteVerifiedCopy(copyPath));
+        Assert.Equal(withBom, File.ReadAllBytes(copyPath));
+    }
 }
