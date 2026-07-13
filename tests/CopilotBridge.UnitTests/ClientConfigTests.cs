@@ -337,8 +337,8 @@ public class ClientConfigTests
     [Fact]
     public void Status_reports_fallback_drift_even_when_base_url_matches()
     {
-        // A ConfigState whose base URL matches but whose fallback-env does not (e.g.
-        // appsettings later turned a detector off) must be reported as drifted.
+        // A ConfigState whose base URL matches but which still carries the legacy
+        // fallback-disable env must be reported as drifted.
         var drifted = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
             ConfiguredForBridge: true,
             CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
