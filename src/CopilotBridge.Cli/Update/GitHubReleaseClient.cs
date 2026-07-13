@@ -134,9 +134,18 @@ internal sealed class GitHubReleaseClient
             List<GitHubRelease>? page;
             try
             {
-                // Per-request timeout that still honors shutdown cancellation.
+                // Per-request timeout, further capped by the REMAINING overall
+                // budget so a request begun just before the deadline can't run the
+                // full per-request timeout and blow past the whole-traversal bound.
+                var remaining = _overallDeadline - _clock.Elapsed(started);
+                if (remaining <= TimeSpan.Zero)
+                {
+                    return ReleaseDiscoveryResult.Fail("update-check deadline exceeded");
+                }
+                var effectiveTimeout = remaining < _perRequestTimeout ? remaining : _perRequestTimeout;
+
                 using var perReq = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                perReq.CancelAfter(_perRequestTimeout);
+                perReq.CancelAfter(effectiveTimeout);
                 try
                 {
                     using var req = BuildRequest(next);
@@ -145,7 +154,8 @@ internal sealed class GitHubReleaseClient
                 }
                 catch (OperationCanceledException) when (perReq.IsCancellationRequested && !ct.IsCancellationRequested)
                 {
-                    // The per-request budget fired, not shutdown — fail open.
+                    // The per-request budget (or the remaining overall budget)
+                    // fired, not shutdown — fail open.
                     return ReleaseDiscoveryResult.Fail("update-check request timeout");
                 }
 

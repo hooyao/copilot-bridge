@@ -91,11 +91,18 @@ internal readonly struct SemanticVersion : IComparable<SemanticVersion>, IEquata
             span = span[1..];
         }
 
-        // Build metadata does not affect precedence — drop it before parsing.
+        // Build metadata does not affect precedence, but per SemVer 2.0 it must
+        // still be a valid dot-separated set of non-empty alphanumeric-or-hyphen
+        // identifiers — a malformed "+" section makes the whole tag invalid.
         var plus = span.IndexOf('+');
         if (plus >= 0)
         {
+            var build = span[(plus + 1)..];
             span = span[..plus];
+            if (!IsValidDotSeparated(build, numericNoLeadingZero: false))
+            {
+                return false;
+            }
         }
 
         string core;
@@ -127,22 +134,40 @@ internal readonly struct SemanticVersion : IComparable<SemanticVersion>, IEquata
         var preIds = Array.Empty<string>();
         if (pre is not null)
         {
-            if (pre.Length == 0)
+            // Prerelease identifiers: non-empty, alphanumeric-or-hyphen, and a
+            // numeric identifier must not carry a leading zero (SemVer 2.0 §9).
+            if (!IsValidDotSeparated(pre, numericNoLeadingZero: true))
             {
                 return false;
             }
-
             preIds = pre.Split('.');
-            foreach (var id in preIds)
-            {
-                if (!IsLegalIdentifier(id))
-                {
-                    return false;
-                }
-            }
         }
 
         version = new SemanticVersion(major, minor, patch, preIds);
+        return true;
+    }
+
+    // Validate a dot-separated identifier list (prerelease or build metadata).
+    // Each identifier must be non-empty and contain only [0-9A-Za-z-]; when
+    // numericNoLeadingZero is set, an all-digit identifier longer than one char
+    // must not start with '0'.
+    private static bool IsValidDotSeparated(string value, bool numericNoLeadingZero)
+    {
+        if (value.Length == 0)
+        {
+            return false;
+        }
+        foreach (var id in value.Split('.'))
+        {
+            if (!IsLegalIdentifier(id))
+            {
+                return false;
+            }
+            if (numericNoLeadingZero && IsNumeric(id) && id.Length > 1 && id[0] == '0')
+            {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -150,6 +175,12 @@ internal readonly struct SemanticVersion : IComparable<SemanticVersion>, IEquata
     {
         value = 0;
         if (s.Length == 0)
+        {
+            return false;
+        }
+        // SemVer 2.0 §2: numeric identifiers MUST NOT include leading zeroes.
+        // "0" itself is fine; "01" is not.
+        if (s.Length > 1 && s[0] == '0')
         {
             return false;
         }

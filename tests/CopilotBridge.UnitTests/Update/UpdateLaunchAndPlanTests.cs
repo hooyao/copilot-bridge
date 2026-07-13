@@ -62,35 +62,42 @@ public class UpdateLaunchAndPlanTests
         Assert.Null(ctx);
     }
 
-    private static UpdatePlan ValidPlan(string installDir) => new()
+    private static UpdatePlan ValidPlan(string installDir)
     {
-        AttemptId = "a1",
-        ParentPid = 10,
-        ParentStartTicks = 123,
-        InstallDir = installDir,
-        BridgeExePath = Path.Combine(installDir, "copilot-bridge.exe"),
-        UpdaterExePath = Path.Combine(installDir, "copilot-updater.exe"),
-        ConfigPath = Path.Combine(installDir, "appsettings.json"),
-        CurrentVersion = "0.4.13",
-        TargetVersion = "0.4.14",
-        AssetName = "a.zip",
-        AssetUrl = "https://example/a.zip",
-        AssetSize = 10,
-        AssetSha256 = new string('a', 64),
-        ArchiveKind = UpdateWire.ArchiveZip,
-        StagingDir = Path.Combine(installDir, "..", "staging"),
-        BackupDir = Path.Combine(installDir, "..", "backup"),
-        ArchivePath = Path.Combine(installDir, "..", "a.zip"),
-        JournalPath = Path.Combine(installDir, "..", "t.log"),
-        ManagedFiles = ["copilot-bridge.exe", "copilot-updater.exe", "appsettings.json"],
-        OriginalArgs = [],
-        WorkingDirectory = installDir,
-        DownloadTimeoutMs = 1000,
-        ParentExitTimeoutMs = 1000,
-        ReadyTimeoutMs = 1000,
-        HandoffPipe = "pipe",
-        HandoffToken = new string('b', 64),
-    };
+        // A realistic layout: the install dir and the owner-private attempt root
+        // are two separate, non-overlapping directories; every temporary path
+        // lives under the attempt root.
+        var attemptRoot = installDir + "-attempt";
+        return new()
+        {
+            AttemptId = "a1",
+            ParentPid = 10,
+            ParentStartTicks = 123,
+            InstallDir = installDir,
+            BridgeExePath = Path.Combine(installDir, "copilot-bridge.exe"),
+            UpdaterExePath = Path.Combine(installDir, "copilot-updater.exe"),
+            ConfigPath = Path.Combine(installDir, "appsettings.json"),
+            CurrentVersion = "0.4.13",
+            TargetVersion = "0.4.14",
+            AssetName = "a.zip",
+            AssetUrl = "https://example/a.zip",
+            AssetSize = 10,
+            AssetSha256 = new string('a', 64),
+            ArchiveKind = UpdateWire.ArchiveZip,
+            StagingDir = Path.Combine(attemptRoot, "staging"),
+            BackupDir = Path.Combine(attemptRoot, "backup"),
+            ArchivePath = Path.Combine(attemptRoot, "a.zip"),
+            JournalPath = Path.Combine(attemptRoot, "t.log"),
+            ManagedFiles = ["copilot-bridge.exe", "copilot-updater.exe", "appsettings.json"],
+            OriginalArgs = [],
+            WorkingDirectory = installDir,
+            DownloadTimeoutMs = 1000,
+            ParentExitTimeoutMs = 1000,
+            ReadyTimeoutMs = 1000,
+            HandoffPipe = "pipe",
+            HandoffToken = new string('b', 64),
+        };
+    }
 
     [Fact]
     public void Valid_plan_passes()
@@ -128,6 +135,54 @@ public class UpdateLaunchAndPlanTests
     {
         var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
         var plan = ValidPlan(dir) with { AssetSize = 0 };
+        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+    }
+
+    [Fact]
+    public void Managed_files_beyond_the_exact_allowlist_are_rejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        // An extra managed file the plan should never be allowed to add.
+        var plan = ValidPlan(dir) with
+        {
+            ManagedFiles = ["copilot-bridge.exe", "copilot-updater.exe", "appsettings.json", "extra.dll"],
+        };
+        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+    }
+
+    [Fact]
+    public void Managed_files_missing_a_required_target_are_rejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        var plan = ValidPlan(dir) with { ManagedFiles = ["copilot-bridge.exe", "appsettings.json"] };
+        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+    }
+
+    [Fact]
+    public void Temporary_path_outside_the_attempt_root_is_rejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        // BackupDir escapes to an unrelated directory — later recursive cleanup
+        // must never be aimable at an arbitrary path.
+        var plan = ValidPlan(dir) with
+        {
+            BackupDir = Path.Combine(Path.GetTempPath(), "cb-elsewhere-" + Guid.NewGuid().ToString("N")),
+        };
+        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+    }
+
+    [Fact]
+    public void Attempt_root_overlapping_the_install_dir_is_rejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        // Staging (hence the attempt root) placed inside the install dir.
+        var plan = ValidPlan(dir) with
+        {
+            StagingDir = Path.Combine(dir, "sub", "staging"),
+            BackupDir = Path.Combine(dir, "sub", "backup"),
+            ArchivePath = Path.Combine(dir, "sub", "a.zip"),
+            JournalPath = Path.Combine(dir, "sub", "t.log"),
+        };
         Assert.False(UpdatePlanValidator.Validate(plan).Ok);
     }
 

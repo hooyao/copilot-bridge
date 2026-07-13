@@ -46,6 +46,30 @@ public class SemanticVersionTests
         Assert.False(SemanticVersion.TryParse(text, out _));
     }
 
+    [Theory]
+    [InlineData("01.2.3")]        // leading-zero major
+    [InlineData("1.02.3")]        // leading-zero minor
+    [InlineData("1.2.03")]        // leading-zero patch
+    [InlineData("1.2.3-01")]      // leading-zero numeric prerelease id
+    [InlineData("1.2.3-beta.01")] // leading-zero numeric prerelease id (later)
+    [InlineData("1.2.3+")]        // empty build metadata
+    [InlineData("1.2.3+bad_meta")] // illegal build-metadata char
+    [InlineData("1.2.3+a..b")]    // empty build-metadata identifier
+    public void Rejects_semver_2_0_violations(string text)
+    {
+        Assert.False(SemanticVersion.TryParse(text, out _), $"'{text}' must be rejected");
+    }
+
+    [Theory]
+    [InlineData("0.1.0")]         // a single zero component is legal
+    [InlineData("1.2.3-alpha.0")] // numeric prerelease id "0" is legal
+    [InlineData("1.2.3+build.5")] // well-formed build metadata is legal
+    [InlineData("1.2.3+21AF26D3")]
+    public void Accepts_wellformed_edge_cases(string text)
+    {
+        Assert.True(SemanticVersion.TryParse(text, out _), $"'{text}' must parse");
+    }
+
     [Fact]
     public void Stable_outranks_its_own_prerelease()
     {

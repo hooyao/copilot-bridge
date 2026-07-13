@@ -61,6 +61,22 @@ public class ArchiveExtractorTests : IDisposable
     }
 
     [Fact]
+    public void Zip_expanding_beyond_the_budget_is_rejected_and_staging_removed()
+    {
+        // Highly compressible content that expands well past a tiny test budget.
+        var big = new string('A', 200_000);
+        var zip = WriteZip(z => AddZipEntry(z, "copilot-bridge.exe", big));
+
+        // 1 KiB budget — the 200 KB entry must trip the expanded-size guard.
+        var result = ArchiveExtractor.Extract(zip, UpdateWire.ArchiveZip, Staging, maxExtractedBytes: 1024);
+
+        Assert.False(result.Ok);
+        Assert.Contains("budget", result.Reason, System.StringComparison.OrdinalIgnoreCase);
+        // The partially-extracted staging tree is cleaned up.
+        Assert.False(Directory.Exists(Staging));
+    }
+
+    [Fact]
     public void Zip_traversal_entry_is_rejected_and_nothing_escapes()
     {
         var zip = WriteZip(z => AddZipEntry(z, "../escaped.txt", "evil"));

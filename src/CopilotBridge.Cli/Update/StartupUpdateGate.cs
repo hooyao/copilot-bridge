@@ -178,7 +178,7 @@ internal sealed class StartupUpdateGate
 
         var attemptId = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(8));
         var attemptRoot = Path.Combine(UpdateRoot(), attemptId);
-        Directory.CreateDirectory(attemptRoot);
+        CreateOwnerOnlyDirectory(attemptRoot);
 
         // Copy the updater to the private attempt dir so Windows can replace the
         // installed updater during cutover.
@@ -228,6 +228,10 @@ internal sealed class StartupUpdateGate
         await File.WriteAllTextAsync(
             planPath, JsonSerializer.Serialize(plan, UpdateWireJsonContext.Default.UpdatePlan), ct)
             .ConfigureAwait(false);
+        // The plan carries the handoff capability token — restrict it to the owner
+        // and make it read-only after flushing so another local account can't read
+        // or tamper with it.
+        HardenPlanFile(planPath);
 
         // Launch the updater copy and wait (bounded) for its Prepared message.
         var psi = new ProcessStartInfo
@@ -308,5 +312,45 @@ internal sealed class StartupUpdateGate
             baseDir = Path.GetTempPath();
         }
         return Path.Combine(baseDir, "copilot-bridge", "updates");
+    }
+
+    // Create a directory owner-only where the OS supports it. On Unix that is
+    // 0700 (the attempt dir + plan hold the handoff capability, so they must not
+    // be world-readable under a typical 0022 umask); on Windows the inherited
+    // user-profile ACLs already scope LocalApplicationData to the user.
+    private static void CreateOwnerOnlyDirectory(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(path);
+            return;
+        }
+        Directory.CreateDirectory(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        try
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+        catch
+        {
+            // A filesystem without mode support keeps its defaults; the plan file
+            // hardening below is the second layer.
+        }
+    }
+
+    private static void HardenPlanFile(string planPath)
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(planPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            // Read-only after flush on every platform (best-effort).
+            File.SetAttributes(planPath, File.GetAttributes(planPath) | FileAttributes.ReadOnly);
+        }
+        catch
+        {
+            // Best-effort hardening — a failure here does not abort the update.
+        }
     }
 }

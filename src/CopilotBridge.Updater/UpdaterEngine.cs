@@ -122,40 +122,66 @@ internal sealed class UpdaterEngine
         _journal.Write("handoff.prepared");
         if (!await SendPreparedAndAwaitAuthorizationAsync(ct).ConfigureAwait(false))
         {
-            // Parent chose to keep serving / disconnected — nothing installed.
+            // Parent chose to keep serving / disconnected — nothing installed and
+            // the old bridge is still up, so a plain fail-open is correct.
             return await FailPreflightAsync("cutover not authorized", ct).ConfigureAwait(false);
         }
 
-        // 5. Wait for the exact parent to exit, then final drift check.
-        await WaitForParentExitAsync(ct).ConfigureAwait(false);
+        // 5. Wait for the exact parent to exit. If it can't be confirmed gone, the
+        //    old bridge may still be serving and holding its executable — do NOT
+        //    cut over. Nothing has been installed yet, so fail-open is safe.
+        if (!await WaitForParentExitAsync(ct).ConfigureAwait(false))
+        {
+            return await FailPreflightAsync("parent did not exit before cutover", ct).ConfigureAwait(false);
+        }
+
+        // From here the authorizing parent has positively exited: there is NO
+        // bridge serving. Any failure now must RECOVER service (restart the old
+        // bridge), not merely fail-open — hence RecoverOldBridgeAsync, not
+        // FailPreflightAsync.
         if (!install.RevalidateNoDrift())
         {
-            return await FailPreflightAsync("install drifted after handoff", ct).ConfigureAwait(false);
+            _journal.Write("drift.after-handoff");
+            return await RecoverOldBridgeAsync(install, "install drifted after handoff", ct).ConfigureAwait(false);
         }
 
         // 6. Cutover.
         var cutover = install.Cutover(mergedConfig);
         if (!cutover.Ok)
         {
-            // Cutover aborts before installing on config drift — treat as preflight
-            // fail if nothing was installed; otherwise roll back.
+            // Cutover aborts before installing on config drift; the parent has
+            // already exited, so restore + restart the old bridge to recover
+            // service rather than leaving nothing running.
             _journal.Write("cutover.failed", cutover.Reason);
             return await RollbackAndReportAsync(install, ct).ConfigureAwait(false);
         }
 
-        // 7. Launch the replacement and wait for authenticated Ready.
-        var ready = await LaunchAndAwaitReadyAsync(
-            _plan.BridgeExePath, _plan.TargetVersion, UpdateWire.RoleTarget, ct).ConfigureAwait(false);
-        if (ready)
+        // 7. From here the transaction has CUT OVER: the old bridge is stopped
+        //    and the new files are installed. Cancellation (Ctrl+C) must NOT leave
+        //    the installation in a half-open/unserved state — it has to drive the
+        //    same rollback/recovery as a failed launch. Rollback itself runs to
+        //    completion regardless of the incoming token.
+        try
         {
-            _journal.Write("commit");
-            install.CleanupAfterCommit();
-            return UpdaterExit.Committed;
-        }
+            var ready = await LaunchAndAwaitReadyAsync(
+                _plan.BridgeExePath, _plan.TargetVersion, UpdateWire.RoleTarget, ct).ConfigureAwait(false);
+            if (ready)
+            {
+                _journal.Write("commit");
+                install.CleanupAfterCommit();
+                return UpdaterExit.Committed;
+            }
 
-        // 8. Ready failed → full rollback.
-        _journal.Write("target.not-ready");
-        return await RollbackAndReportAsync(install, ct).ConfigureAwait(false);
+            // Ready failed → full rollback.
+            _journal.Write("target.not-ready");
+            return await RollbackAndReportAsync(install, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled after cutover — recover service rather than exit unserved.
+            _journal.Write("cancelled.after-cutover");
+            return await RollbackAndReportAsync(install, CancellationToken.None).ConfigureAwait(false);
+        }
     }
 
     private async Task<UpdaterExit> RollbackAndReportAsync(ManagedInstallManager install, CancellationToken ct)
@@ -177,6 +203,40 @@ internal sealed class UpdaterEngine
         }
 
         ReportUnrecovered(install, "restored old bridge did not become ready");
+        return UpdaterExit.Unrecovered;
+    }
+
+    /// <summary>
+    /// Recover service when the authorizing parent has already exited but cutover
+    /// has NOT installed anything yet (e.g. config/binary drift detected after
+    /// handoff). No managed file was replaced, so there is nothing to restore —
+    /// but there is also no bridge serving, so the old bridge must be relaunched
+    /// and confirmed Ready. If the drift was a managed-BINARY change (someone
+    /// replaced the installed exe out-of-band), do not execute that unplanned
+    /// file: report unrecovered with manual-recovery guidance.
+    /// </summary>
+    private async Task<UpdaterExit> RecoverOldBridgeAsync(
+        ManagedInstallManager install, string reason, CancellationToken ct)
+    {
+        _journal.Write("recover.old-bridge", reason);
+
+        if (install.ManagedBinaryDrifted())
+        {
+            // The installed executable is not the one we snapshotted; launching it
+            // would run unknown code. Preserve everything and require manual action.
+            ReportUnrecovered(install, $"{reason} (installed binary changed out-of-band)");
+            return UpdaterExit.Unrecovered;
+        }
+
+        var recovered = await LaunchAndAwaitReadyAsync(
+            _plan.BridgeExePath, _plan.CurrentVersion, UpdateWire.RoleRollback, ct).ConfigureAwait(false);
+        if (recovered)
+        {
+            _journal.Write("recover.recovered");
+            return UpdaterExit.RolledBack;
+        }
+
+        ReportUnrecovered(install, $"{reason}; old bridge did not become ready");
         return UpdaterExit.Unrecovered;
     }
 
@@ -207,14 +267,20 @@ internal sealed class UpdaterEngine
             && string.Equals(msg.Token, _plan.HandoffToken, StringComparison.Ordinal);
     }
 
-    private async Task WaitForParentExitAsync(CancellationToken ct)
+    /// <summary>
+    /// Wait for the exact recorded parent to exit; if it overruns the bounded
+    /// deadline, force-stop only that revalidated identity. Returns true ONLY when
+    /// the parent is positively confirmed gone — the caller must NOT cut over
+    /// while the old bridge could still be serving and holding its executable.
+    /// </summary>
+    private async Task<bool> WaitForParentExitAsync(CancellationToken ct)
     {
         var deadline = DateTimeOffset.UtcNow.AddMilliseconds(_plan.ParentExitTimeoutMs);
         while (DateTimeOffset.UtcNow < deadline)
         {
             if (!ProcessIdentity.Matches(_plan.ParentPid, _plan.ParentStartTicks, _plan.BridgeExePath))
             {
-                return; // exact parent has exited
+                return true; // exact parent has exited
             }
             await Task.Delay(100, ct).ConfigureAwait(false);
         }
@@ -229,9 +295,12 @@ internal sealed class UpdaterEngine
             }
             catch
             {
-                // If it's already gone or unkillable, the drift check still guards us.
+                // Already gone or unkillable — fall through to the confirmation
+                // check below rather than assuming success.
             }
         }
+        // Positively confirm it is gone; a still-live parent means "do not cut over".
+        return !ProcessIdentity.Matches(_plan.ParentPid, _plan.ParentStartTicks, _plan.BridgeExePath);
     }
 
     private async Task<bool> LaunchAndAwaitReadyAsync(

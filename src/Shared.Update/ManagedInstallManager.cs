@@ -163,15 +163,26 @@ internal sealed class ManagedInstallManager
         {
             return false;
         }
+        return !ManagedBinaryDrifted();
+    }
+
+    /// <summary>
+    /// True when any installed managed binary no longer matches the hash recorded
+    /// at preflight — i.e. it was replaced out-of-band. Distinguishes a
+    /// recoverable config-only drift (restart the old bridge) from a
+    /// binary-changed drift (must not execute the unplanned file).
+    /// </summary>
+    public bool ManagedBinaryDrifted()
+    {
         foreach (var (name, hash) in _managedHashes)
         {
             var installPath = Path.Combine(_plan.InstallDir, name);
             if (!File.Exists(installPath) || HashFile(installPath) != hash)
             {
-                return false;
+                return true;
             }
         }
-        return true;
+        return false;
     }
 
     /// <summary>
@@ -252,13 +263,20 @@ internal sealed class ManagedInstallManager
         _journal.Write("rollback.begin");
 
         // Restore managed binaries from verified backups.
-        foreach (var (name, _) in _managedHashes)
+        foreach (var (name, hash) in _managedHashes)
         {
             var backupPath = Path.Combine(_plan.BackupDir, name);
             var installPath = Path.Combine(_plan.InstallDir, name);
             if (!File.Exists(backupPath))
             {
                 return UpdateStepResult.Fail($"rollback backup missing: {name}");
+            }
+            // The backup must still be the exact bytes recorded at preflight — a
+            // corrupted/modified backup must not be copied and launched while we
+            // report a successful recovery.
+            if (HashFile(backupPath) != hash)
+            {
+                return UpdateStepResult.Fail($"rollback backup corrupted: {name}");
             }
             try
             {
@@ -269,6 +287,11 @@ internal sealed class ManagedInstallManager
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 return UpdateStepResult.Fail($"rollback restore failed: {name}");
+            }
+            // Confirm the installed copy matches too.
+            if (HashFile(installPath) != hash)
+            {
+                return UpdateStepResult.Fail($"rollback restore verify failed: {name}");
             }
         }
 
@@ -287,8 +310,13 @@ internal sealed class ManagedInstallManager
             {
                 File.Move(_configBakPath, _plan.ConfigPath);
             }
-            else if (File.Exists(_privateConfigCopy))
+            else if (_configSnapshot is not null
+                && File.Exists(_privateConfigCopy)
+                && _configSnapshot.MatchesFile(_privateConfigCopy))
             {
+                // Only trust the private copy if it still matches the immutable
+                // snapshot — otherwise a damaged copy would silently produce a
+                // non-byte-exact "recovery".
                 File.Copy(_privateConfigCopy, _plan.ConfigPath, overwrite: true);
             }
             else

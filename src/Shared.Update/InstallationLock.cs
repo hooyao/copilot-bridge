@@ -44,12 +44,14 @@ internal sealed class InstallationLock : IDisposable
         }
     }
 
-    // Stable, filesystem-safe key from the canonical install path (case-folded on
-    // Windows/macOS to match their path semantics).
+    // Stable, filesystem-safe key from the canonical install path. Case-folded
+    // ONLY on Windows (always case-insensitive); ordinal elsewhere, so on a
+    // case-sensitive macOS/Linux volume two genuinely different install dirs that
+    // differ only in case get distinct locks — consistent with UpdatePaths.IsInside.
     private static string DeriveKey(string installDir)
     {
         var full = Path.GetFullPath(installDir);
-        if (!OperatingSystem.IsLinux())
+        if (OperatingSystem.IsWindows())
         {
             full = full.ToLowerInvariant();
         }

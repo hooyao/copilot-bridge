@@ -193,6 +193,24 @@ public class ManagedInstallManagerTests : IDisposable
     }
 
     [Fact]
+    public void Rollback_fails_when_a_managed_binary_backup_is_corrupted()
+    {
+        SeedInstalled("old-bridge", "old-updater", """{ "Server": { "Port": 19000 } }""");
+        SeedStaging("new-bridge", "new-updater", """{ "Server": { "Port": 8765 } }""");
+
+        var mgr = Manager();
+        Assert.True(mgr.Prepare().Ok);
+        var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
+        Assert.True(mgr.Cutover(merged).Ok);
+
+        // Corrupt a backup after preparation — rollback must NOT copy+launch
+        // unverified bytes while reporting success; it must fail the hash check.
+        File.WriteAllText(Path.Combine(_backup, BridgeName), "corrupted");
+
+        Assert.False(mgr.Rollback().Ok);
+    }
+
+    [Fact]
     public void Cutover_refuses_when_config_drifts_after_prepare()
     {
         SeedInstalled("old-bridge", "old-updater", """{ "Server": { "Port": 19000 } }""");

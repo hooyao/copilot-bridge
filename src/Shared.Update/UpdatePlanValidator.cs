@@ -61,23 +61,64 @@ internal static class UpdatePlanValidator
             return UpdateStepResult.Fail("plan archive kind is unsupported");
         }
 
-        // Every managed install target must resolve inside the canonical install
-        // root. Release-derived names never become arbitrary target paths.
+        // Managed files are an EXACT allowlist, not "any relative path": exactly
+        // the RID-specific bridge exe, the updater exe, and appsettings.json. A
+        // modified plan must not be able to add arbitrary files that cutover would
+        // then overwrite from the archive.
+        var bridgeName = Path.GetFileName(plan.BridgeExePath);
+        var updaterName = Path.GetFileName(plan.UpdaterExePath);
+        var configName = Path.GetFileName(plan.ConfigPath);
+        var expectedManaged = new HashSet<string>(StringComparer.Ordinal)
+        {
+            bridgeName, updaterName, configName,
+        };
+        if (plan.ManagedFiles.Count != expectedManaged.Count
+            || !plan.ManagedFiles.All(expectedManaged.Contains))
+        {
+            return UpdateStepResult.Fail("managed files are not the exact bridge/updater/config allowlist");
+        }
+        // Each managed name must resolve to its canonical install-root target.
         foreach (var name in plan.ManagedFiles)
         {
-            if (UpdatePaths.ResolveContained(plan.InstallDir, name) is null)
+            var resolved = UpdatePaths.ResolveContained(plan.InstallDir, name);
+            if (resolved is null)
             {
                 return UpdateStepResult.Fail("managed file escapes install root");
             }
         }
 
         // The bridge/updater/config paths named in the plan must also be inside
-        // the install root (the config's ".bak" sibling lands next to it).
+        // the install root (the config's ".bak" sibling lands next to it), and
+        // must be the direct install-dir children matching the managed names.
         if (!UpdatePaths.IsInside(plan.InstallDir, plan.BridgeExePath)
             || !UpdatePaths.IsInside(plan.InstallDir, plan.UpdaterExePath)
             || !UpdatePaths.IsInside(plan.InstallDir, plan.ConfigPath))
         {
             return UpdateStepResult.Fail("managed path escapes install root");
+        }
+
+        // Confine every per-attempt temporary path to ONE owner-private attempt
+        // root (the staging dir's parent). Later failure cleanup recursively
+        // deletes StagingDir/BackupDir, so a malformed plan must not be able to
+        // point those at an unrelated directory.
+        var attemptRoot = Path.GetDirectoryName(Path.GetFullPath(plan.StagingDir));
+        if (string.IsNullOrEmpty(attemptRoot))
+        {
+            return UpdateStepResult.Fail("plan staging path has no parent");
+        }
+        foreach (var tmp in new[] { plan.StagingDir, plan.BackupDir, plan.ArchivePath, plan.JournalPath })
+        {
+            if (!UpdatePaths.IsInside(attemptRoot, tmp))
+            {
+                return UpdateStepResult.Fail("temporary path escapes the attempt root");
+            }
+        }
+        // The attempt root must NOT be the install dir (temporaries live off to
+        // the side, never among managed files).
+        if (UpdatePaths.IsInside(plan.InstallDir, attemptRoot)
+            || UpdatePaths.IsInside(attemptRoot, plan.InstallDir))
+        {
+            return UpdateStepResult.Fail("attempt root overlaps the install directory");
         }
 
         return UpdateStepResult.Success();

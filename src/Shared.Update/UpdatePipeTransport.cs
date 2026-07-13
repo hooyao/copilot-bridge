@@ -26,7 +26,7 @@ internal static class UpdatePipeTransport
         {
             using var server = new NamedPipeServerStream(
                 pipeName, PipeDirection.InOut, 1,
-                PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             await server.WaitForConnectionAsync(cts.Token).ConfigureAwait(false);
             return await ReadLineAsync(server, cts.Token).ConfigureAwait(false);
         }
@@ -58,7 +58,7 @@ internal static class UpdatePipeTransport
         {
             using var server = new NamedPipeServerStream(
                 pipeName, PipeDirection.InOut, 1,
-                PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             await server.WaitForConnectionAsync(cts.Token).ConfigureAwait(false);
             await WriteLineAsync(server, line, cts.Token).ConfigureAwait(false);
             return expectReply
@@ -92,7 +92,7 @@ internal static class UpdatePipeTransport
         try
         {
             using var client = new NamedPipeClientStream(
-                ".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                ".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             await client.ConnectAsync(cts.Token).ConfigureAwait(false);
             await WriteLineAsync(client, line, cts.Token).ConfigureAwait(false);
             return true;
@@ -123,7 +123,7 @@ internal static class UpdatePipeTransport
         try
         {
             using var client = new NamedPipeClientStream(
-                ".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                ".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             await client.ConnectAsync(cts.Token).ConfigureAwait(false);
 
             var received = await ReadLineAsync(client, cts.Token).ConfigureAwait(false);

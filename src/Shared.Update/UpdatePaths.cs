@@ -10,8 +10,12 @@ internal static class UpdatePaths
 {
     /// <summary>
     /// True when <paramref name="candidate"/>, fully resolved, is
-    /// <paramref name="root"/> itself or a descendant of it. Uses the OS path
-    /// comparison (case-insensitive on Windows/macOS, case-sensitive on Linux).
+    /// <paramref name="root"/> itself or a descendant of it. For a security
+    /// containment check we use the conservative comparison: case-insensitive
+    /// ONLY on Windows (always case-insensitive), and ordinal everywhere else.
+    /// macOS volumes CAN be case-sensitive (APFS case-sensitive, case-sensitive
+    /// HFS+), so treating Unix as case-insensitive could accept a sibling like
+    /// `/tmp/install/x` as inside `/tmp/Install` — ordinal refuses that.
     /// </summary>
     public static bool IsInside(string root, string candidate)
     {
@@ -19,9 +23,9 @@ internal static class UpdatePaths
         var fullCandidate = Path.GetFullPath(candidate);
         var fullCandidateDir = AppendSeparator(fullCandidate);
 
-        var comparison = OperatingSystem.IsLinux()
-            ? StringComparison.Ordinal
-            : StringComparison.OrdinalIgnoreCase;
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
 
         // candidate == root, or candidate is strictly under root/.
         return fullCandidateDir.Equals(fullRoot, comparison)

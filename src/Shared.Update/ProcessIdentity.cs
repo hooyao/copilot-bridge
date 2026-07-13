@@ -88,9 +88,13 @@ internal static class ProcessIdentity
 
     private static bool PathsEqual(string a, string b)
     {
-        var comparison = OperatingSystem.IsLinux()
-            ? StringComparison.Ordinal
-            : StringComparison.OrdinalIgnoreCase;
+        // Conservative containment/identity comparison: case-insensitive only on
+        // Windows. On case-sensitive macOS/Linux volumes, a case-folded compare
+        // could treat two DIFFERENT executables as the same identity and let the
+        // updater terminate the wrong process.
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
         return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), comparison);
     }
 }

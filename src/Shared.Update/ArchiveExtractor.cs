@@ -74,28 +74,76 @@ internal static class ArchiveExtractor
     /// duplicate normalized names. On any violation nothing outside staging
     /// remains usable and a fail reason is returned.
     /// </summary>
-    public static UpdateStepResult Extract(string archivePath, string archiveKind, string stagingDir)
+    public static UpdateStepResult Extract(
+        string archivePath, string archiveKind, string stagingDir, long maxExtractedBytes = MaxExtractedBytes)
     {
         Directory.CreateDirectory(stagingDir);
         var seen = new HashSet<string>(
             OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
+        var budget = new ExtractBudget(maxExtractedBytes);
 
         try
         {
-            return archiveKind switch
+            var result = archiveKind switch
             {
-                UpdateWire.ArchiveZip => ExtractZip(archivePath, stagingDir, seen),
-                UpdateWire.ArchiveTarGz => ExtractTarGz(archivePath, stagingDir, seen),
+                UpdateWire.ArchiveZip => ExtractZip(archivePath, stagingDir, seen, budget),
+                UpdateWire.ArchiveTarGz => ExtractTarGz(archivePath, stagingDir, seen, budget),
                 _ => UpdateStepResult.Fail("unsupported archive kind"),
             };
+            if (!result.Ok)
+            {
+                // A rejected archive leaves no partially-extracted tree behind.
+                TryDeleteTree(stagingDir);
+            }
+            return result;
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException)
         {
+            TryDeleteTree(stagingDir);
             return UpdateStepResult.Fail($"archive extraction failed: {ex.GetType().Name}");
         }
     }
 
-    private static UpdateStepResult ExtractZip(string archivePath, string stagingDir, HashSet<string> seen)
+    // Defensive cap on TOTAL expanded bytes across all entries, so a small
+    // highly-compressed archive (a "zip bomb") cannot exhaust the disk and stall
+    // startup before preflight fails. Far above a legitimate release archive.
+    private const long MaxExtractedBytes = 512L * 1024 * 1024;
+
+    private sealed class ExtractBudget(long limit)
+    {
+        private long _used;
+        public bool TryAdd(long bytes)
+        {
+            _used += bytes;
+            return _used <= limit;
+        }
+    }
+
+    // Stream one entry to disk while counting expanded bytes against the budget.
+    private static UpdateStepResult WriteEntry(Stream source, string target, ExtractBudget budget)
+    {
+        using var dst = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        var buffer = new byte[81920];
+        int read;
+        while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            if (!budget.TryAdd(read))
+            {
+                return UpdateStepResult.Fail("archive expands beyond the size budget");
+            }
+            dst.Write(buffer, 0, read);
+        }
+        return UpdateStepResult.Success();
+    }
+
+    private static void TryDeleteTree(string dir)
+    {
+        try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
+        catch { /* best effort */ }
+    }
+
+    private static UpdateStepResult ExtractZip(
+        string archivePath, string stagingDir, HashSet<string> seen, ExtractBudget budget)
     {
         using var zip = ZipFile.OpenRead(archivePath);
         foreach (var entry in zip.Entries)
@@ -119,12 +167,18 @@ internal static class ArchiveExtractor
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            entry.ExtractToFile(target, overwrite: false);
+            using var src = entry.Open();
+            var wrote = WriteEntry(src, target, budget);
+            if (!wrote.Ok)
+            {
+                return wrote;
+            }
         }
         return UpdateStepResult.Success();
     }
 
-    private static UpdateStepResult ExtractTarGz(string archivePath, string stagingDir, HashSet<string> seen)
+    private static UpdateStepResult ExtractTarGz(
+        string archivePath, string stagingDir, HashSet<string> seen, ExtractBudget budget)
     {
         using var file = File.OpenRead(archivePath);
         using var gzip = new GZipStream(file, CompressionMode.Decompress);
@@ -155,7 +209,18 @@ internal static class ArchiveExtractor
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            entry.ExtractToFile(target, overwrite: false);
+            var data = entry.DataStream;
+            if (data is null)
+            {
+                // A regular file with no data stream is an empty file.
+                using var _ = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                continue;
+            }
+            var wrote = WriteEntry(data, target, budget);
+            if (!wrote.Ok)
+            {
+                return wrote;
+            }
         }
         return UpdateStepResult.Success();
     }
