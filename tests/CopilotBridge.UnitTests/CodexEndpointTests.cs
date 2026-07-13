@@ -277,6 +277,28 @@ public class CodexEndpointTests
     }
 
     [Fact]
+    public async Task BufferedTranslatedIr_Unchanged_PreservesOriginalResponsesBytes()
+    {
+        const string original = "{ \"id\": \"resp_exact\", \"object\": \"response\", \"status\": \"completed\", \"output\": [] }";
+        var originalBytes = Encoding.UTF8.GetBytes(original);
+        var irBytes = Encoding.UTF8.GetBytes(
+            "{\"id\":\"resp_exact\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gpt-5.3-codex\",\"content\":[],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}");
+
+        var (status, body) = await Invoke(ValidRequest, ctx =>
+        {
+            ctx.Response.Status = StatusCodes.Status200OK;
+            ctx.Response.Mode = ResponseMode.Buffered;
+            ctx.Response.BufferedBody = irBytes;
+            ctx.Response.InitialBufferedIrBody = irBytes;
+            ctx.Response.BufferedResponsesWireBody = originalBytes;
+            ctx.Response.Headers["Content-Type"] = "application/json";
+        });
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Equal(original, body);
+    }
+
+    [Fact]
     public async Task BufferedUpstreamError_PropagatesStatusAndBody()
     {
         // A 4xx from Copilot is buffered (error envelope) and passed through with

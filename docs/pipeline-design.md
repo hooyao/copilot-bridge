@@ -415,8 +415,10 @@ Each budget disables at `<= 0` (no timer armed, no allocation — the byte-ident
 - **Mid-stream** (headers already sent, status locked at `200`): by default inject
   the *same* retryable `overloaded_error` SSE event the response guards use
   (`ResponseDetectionError.JsonWithMessage`) so Claude Code discards the partial
-  attempt and issues its `stream:false` recovery request. The `/cc` client edge
-  translates a successful cross-routed Responses object back to Anthropic Messages;
+  attempt and issues its `stream:false` recovery request. Buffered T3 translates a
+  successful cross-routed Responses object into Anthropic Messages IR before
+  response detectors run; the `/cc` client edge then remains identity while Codex
+  T4 converts the same IR back to Responses;
   `config claude-code` removes `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` so this
   recovery path remains enabled;
   `StreamIdleAction=Truncate` instead ends the stream with no error event. Note the

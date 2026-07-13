@@ -113,14 +113,15 @@ The regression test SHALL be mutation-checked by restoring the current swallow-a
 
 Final acceptance requires a real `claude.exe` headless multi-step task through the `CcToGpt` scenario. A controllable upstream test leg SHALL exercise the actual stall/fault path; the verdict comes from the Claude transcript: the failed attempt must not commit as a completed partial turn, a subsequent request must occur, and the task must continue to successful tool execution. A real Copilot run that never stalls is useful health evidence but does not exercise this fix.
 
-### D8 — Translate the Claude non-streaming fallback at the client edge
+### D8 — Translate the non-streaming fallback into buffered IR before detectors
 
-The `/cc` outbound adapter SHALL recognize a successful buffered Responses object
-on a cross-routed request and convert it to an Anthropic Messages response. This is
-downstream protocol ownership: Codex continues to receive the original Responses
-object, while Claude receives text/tool-use blocks, stop reason, model, and usage
-in Anthropic shape. Upstream error envelopes remain error envelopes and are not
-misclassified as successful messages.
+The Responses strategy SHALL recognize a successful buffered Responses object and
+convert it to an Anthropic Messages response IR before response stages run. This
+keeps the single-IR contract true in buffered mode and ensures leak, runaway, model
+rewrite, and tool-input detectors see the same Anthropic shape as on the streaming
+path. Claude then receives that IR through its identity adapter; Codex T4 converts
+it back to a Responses object. Upstream error envelopes remain error envelopes and
+are not misclassified as successful messages.
 
 The conversion uses `JsonDocument` plus `Utf8JsonWriter` and carries only modeled
 Responses fields, preserving Native AOT constraints without adding reflection
@@ -130,7 +131,7 @@ serialization. Streaming success bytes remain untouched.
 
 - **T4 emits `response.failed` and then the Codex endpoint mishandles the rethrown timeout** → make the catch response-start-aware and pin exactly one terminal plus status 200 in an endpoint test.
 - **An error is written after an Anthropic normal terminal** → T3 must not synthesize the terminal on the fault path; assert event ordering and absence of both private marker and `message_stop`.
-- **Retry duplicates a tool that began before the stall** → preserve the existing Claude Code configuration that disables non-streaming fallback when streaming guards are active, and test a stall before tool dispatch for this incident contract. Do not add bridge-side replay.
+- **Retry duplicates a tool that began before the stall** → Claude tombstones the failed partial attempt before its non-streaming recovery request; test a stall before tool dispatch for this incident contract. Do not add bridge-side replay.
 - **A typed upstream failure leaks response content into logs** → carry only bounded code/category metadata and use existing bridge-authored client messages.
 - **Successful hot path regresses** → retain byte/event equality tests with the fault machinery dormant and tracing off.
 - **The upstream may legitimately remain silent for more than 60 seconds** → deterministic retry prevents silent task termination; timeout tuning remains operator-configurable and explicitly outside this change.

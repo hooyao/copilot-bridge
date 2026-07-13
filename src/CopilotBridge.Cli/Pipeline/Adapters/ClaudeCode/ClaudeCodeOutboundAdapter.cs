@@ -1,10 +1,7 @@
 using System.Net.ServerSentEvents;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
-using CopilotBridge.Cli.Models;
-using CopilotBridge.Cli.Models.Anthropic.Common;
 using CopilotBridge.Cli.Models.Anthropic.Request;
-using CopilotBridge.Cli.Models.Anthropic.Response;
 using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
@@ -57,142 +54,83 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
         byte[] irBody,
         CancellationToken ct)
     {
-        var translated = TryTranslateResponsesBody(irBody);
-        if (translated is null)
-        {
-            _log.LogDebug("adapter {Name}: identity-buffered  bytes={Bytes}", Name, irBody.Length);
-            return ValueTask.FromResult(irBody);
-        }
-
-        _log.LogDebug(
-            "adapter {Name}: Responses-buffered→Anthropic  in_bytes={InBytes} out_bytes={OutBytes}",
-            Name, irBody.Length, translated.Length);
-        return ValueTask.FromResult(translated);
+        var scrubbed = ScrubBufferedMarkers(irBody);
+        _log.LogDebug("adapter {Name}: identity-buffered (with CC-edge marker scrub) bytes={Bytes}",
+            Name, scrubbed.Length);
+        return ValueTask.FromResult(scrubbed);
     }
 
-    /// <summary>
-    /// Claude Code recovers from a streaming failure with a non-streaming
-    /// <c>/cc</c> request. When routing selected Copilot Responses, convert that
-    /// successful buffered object at the Claude client edge. Native Anthropic
-    /// messages and upstream error/failed objects pass through byte-identically.
-    /// </summary>
-    private static byte[]? TryTranslateResponsesBody(byte[] body)
+    private static byte[] ScrubBufferedMarkers(byte[] body)
     {
+        if (body.AsSpan().IndexOf(GrammarMarkerBytes) < 0
+            && body.AsSpan().IndexOf(NamespaceMarkerBytes) < 0)
+            return body;
+
         try
         {
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object
-                || !root.TryGetProperty("object", out var objectType)
-                || objectType.GetString() != "response"
-                || !root.TryGetProperty("status", out var statusElement)
-                || statusElement.GetString() is not ("completed" or "incomplete")
-                || !root.TryGetProperty("output", out var output)
-                || output.ValueKind != JsonValueKind.Array)
-                return null;
+                || !root.TryGetProperty("content", out var content)
+                || content.ValueKind != JsonValueKind.Array)
+                return body;
 
-            var blocks = new List<ContentBlock>();
-            var hasToolUse = false;
-            foreach (var item in output.EnumerateArray())
+            var found = false;
+            foreach (var block in content.EnumerateArray())
             {
-                if (item.ValueKind != JsonValueKind.Object
-                    || !item.TryGetProperty("type", out var itemType))
-                    continue;
-
-                switch (itemType.GetString())
+                if (block.ValueKind == JsonValueKind.Object
+                    && (block.TryGetProperty(GrammarMarker, out _)
+                        || block.TryGetProperty(NamespaceMarker, out _)))
                 {
-                    case "message":
-                        if (!item.TryGetProperty("content", out var content)
-                            || content.ValueKind != JsonValueKind.Array)
-                            continue;
-                        foreach (var part in content.EnumerateArray())
-                        {
-                            if (part.ValueKind == JsonValueKind.Object
-                                && part.TryGetProperty("type", out var partType)
-                                && partType.GetString() == "output_text"
-                                && part.TryGetProperty("text", out var text)
-                                && text.ValueKind == JsonValueKind.String)
-                            {
-                                blocks.Add(new TextBlock { Text = text.GetString() ?? "" });
-                            }
-                        }
-                        break;
-
-                    case "function_call":
-                        if (!item.TryGetProperty("call_id", out var callId)
-                            || callId.ValueKind != JsonValueKind.String
-                            || !item.TryGetProperty("name", out var name)
-                            || name.ValueKind != JsonValueKind.String
-                            || !item.TryGetProperty("arguments", out var arguments)
-                            || arguments.ValueKind != JsonValueKind.String)
-                            return null;
-                        JsonElement input;
-                        try
-                        {
-                            using var argsDoc = JsonDocument.Parse(arguments.GetString() ?? "{}");
-                            if (argsDoc.RootElement.ValueKind != JsonValueKind.Object) return null;
-                            input = argsDoc.RootElement.Clone();
-                        }
-                        catch (JsonException)
-                        {
-                            return null;
-                        }
-                        blocks.Add(new ToolUseBlock
-                        {
-                            Id = callId.GetString() ?? "",
-                            Name = name.GetString() ?? "",
-                            Input = input,
-                        });
-                        hasToolUse = true;
-                        break;
+                    found = true;
+                    break;
                 }
             }
+            if (!found) return body;
 
-            var inputTokens = 0;
-            var outputTokens = 0;
-            var cacheReadTokens = 0;
-            if (root.TryGetProperty("usage", out var usage)
-                && usage.ValueKind == JsonValueKind.Object)
+            using var buffer = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(buffer))
             {
-                inputTokens = ReadInt32(usage, "input_tokens");
-                outputTokens = ReadInt32(usage, "output_tokens");
-                if (usage.TryGetProperty("input_tokens_details", out var details)
-                    && details.ValueKind == JsonValueKind.Object)
-                    cacheReadTokens = ReadInt32(details, "cached_tokens");
-            }
-
-            var status = statusElement.GetString();
-            var message = new AnthropicMessage
-            {
-                Id = root.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String
-                    ? id.GetString() ?? "msg_bridge"
-                    : "msg_bridge",
-                Model = root.TryGetProperty("model", out var model) && model.ValueKind == JsonValueKind.String
-                    ? model.GetString() ?? "unknown"
-                    : "unknown",
-                Content = blocks,
-                StopReason = hasToolUse ? "tool_use" : status == "incomplete" ? "max_tokens" : "end_turn",
-                Usage = new Usage
+                writer.WriteStartObject();
+                foreach (var property in root.EnumerateObject())
                 {
-                    InputTokens = inputTokens,
-                    OutputTokens = outputTokens,
-                    CacheReadInputTokens = cacheReadTokens,
-                },
-            };
-            return JsonSerializer.SerializeToUtf8Bytes(message, JsonContext.Default.AnthropicMessage);
+                    if (!property.NameEquals("content"))
+                    {
+                        property.WriteTo(writer);
+                        continue;
+                    }
+
+                    writer.WritePropertyName("content");
+                    writer.WriteStartArray();
+                    foreach (var block in property.Value.EnumerateArray())
+                    {
+                        if (block.ValueKind != JsonValueKind.Object)
+                        {
+                            block.WriteTo(writer);
+                            continue;
+                        }
+                        writer.WriteStartObject();
+                        foreach (var inner in block.EnumerateObject())
+                        {
+                            if (!inner.NameEquals(GrammarMarker) && !inner.NameEquals(NamespaceMarker))
+                                inner.WriteTo(writer);
+                        }
+                        writer.WriteEndObject();
+                    }
+                    writer.WriteEndArray();
+                }
+                writer.WriteEndObject();
+            }
+            return buffer.ToArray();
         }
         catch (JsonException)
         {
-            return null;
+            return body;
         }
     }
 
-    private static int ReadInt32(JsonElement obj, string property)
-    {
-        if (!obj.TryGetProperty(property, out var value) || !value.TryGetInt64(out var number))
-            return 0;
-        return (int)Math.Clamp(number, 0, int.MaxValue);
-    }
+    private static ReadOnlySpan<byte> GrammarMarkerBytes => "bridge_input_is_grammar_text"u8;
+    private static ReadOnlySpan<byte> NamespaceMarkerBytes => "bridge_tool_namespace"u8;
 
     /// <summary>
     /// Return the event unchanged unless its data carries a bridge marker; if it does,

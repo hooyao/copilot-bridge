@@ -64,7 +64,8 @@ This is not a magic "force retry" switch. It is a guardrail to avoid users or in
 > same-mode whole-turn retry for a mid-stream SSE error; it surfaces a terminal API
 > error. With fallback enabled, Claude tombstones the partial attempt and issues a
 > non-streaming request (the `stream` field is omitted). The `/cc` client edge now
-> translates a successful buffered Responses object on cross-model routes, and
+> translates a successful buffered Responses object into Anthropic IR before
+> response detectors run on cross-model routes, and
 > `copilot-bridge config claude-code` removes the legacy disable override.
 
 ### Current Claude Code may preserve partial output after visible text has streamed

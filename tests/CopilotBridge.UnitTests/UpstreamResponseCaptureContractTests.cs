@@ -299,6 +299,41 @@ public class UpstreamResponseCaptureContractTests
         Assert.Equal(copilotBody, ctx.Response.RawUpstreamResponseBody);
     }
 
+    /// <summary>
+    /// Contract: a successful buffered Responses object enters the Anthropic hub
+    /// IR before response stages run, while the audit retains the exact upstream
+    /// bytes. This is what lets the same buffered detectors protect a Claude
+    /// non-streaming recovery request.
+    /// </summary>
+    [Fact]
+    public async Task Codex_BufferedSuccess_IsTranslatedToIr_BeforeResponseStages()
+    {
+        var copilotBody = Encoding.UTF8.GetBytes("""
+        {"id":"resp_1","object":"response","status":"completed","model":"gpt-5.6-sol",
+         "output":[{"type":"message","content":[{"type":"output_text","text":"safe text"}]}],
+         "usage":{"input_tokens":3,"output_tokens":2}}
+        """);
+        var ctx = Ctx("gpt-5.6-sol", stream: false);
+        var strategy = new CopilotResponsesStrategy(
+            new StubClient(BufferedResponse(copilotBody)),
+            new CodexModelProfileCatalog(),
+            ctx,
+            TestAudit.Create(true),
+            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
+            NullLogger<CopilotResponsesStrategy>.Instance);
+
+        await strategy.ForwardAsync();
+
+        var ir = Encoding.UTF8.GetString(ctx.Response.BufferedBody!);
+        Assert.Contains("\"type\":\"message\"", ir);
+        Assert.Contains("\"content\":[{\"type\":\"text\",\"text\":\"safe text\"}]", ir);
+        Assert.DoesNotContain("\"object\":\"response\"", ir);
+        Assert.Equal(copilotBody, ctx.Response.RawUpstreamResponseBody);
+        Assert.Same(ctx.Response.RawUpstreamResponseBody, ctx.Response.BufferedResponsesWireBody);
+        Assert.Equal(copilotBody, ctx.Response.BufferedResponsesWireBody);
+        Assert.Same(ctx.Response.BufferedBody, ctx.Response.InitialBufferedIrBody);
+    }
+
     // ── Gap (e): with the tee ON, the events the client sees are unperturbed ──
 
     /// <summary>

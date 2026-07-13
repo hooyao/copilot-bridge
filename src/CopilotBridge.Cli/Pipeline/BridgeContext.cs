@@ -203,6 +203,25 @@ internal sealed class BridgeResponse
     public byte[]? BufferedBody { get; set; }
 
     /// <summary>
+    /// A buffered Responses object that explicitly failed or could not be safely
+    /// converted into response IR. Buffered delivery has no async-enumeration seam
+    /// on which to propagate it, so the strategy records the typed fault here and
+    /// the downstream endpoint throws it only after snapshotting upstream metadata
+    /// for truthful summaries/audits. Streaming faults propagate through
+    /// <see cref="EventStream"/> and never use this field.
+    /// </summary>
+    public Exception? BufferedUpstreamFault { get; set; }
+
+    /// <summary>
+    /// Successful buffered Responses bytes and the exact IR array produced from
+    /// them. T4 uses the pair to preserve a native Codex response byte-for-byte
+    /// when no response stage replaced the IR array. If a stage rewrites or aborts,
+    /// the reference changes and T4 serializes the mutated IR instead.
+    /// </summary>
+    public byte[]? BufferedResponsesWireBody { get; set; }
+    public byte[]? InitialBufferedIrBody { get; set; }
+
+    /// <summary>
     /// The exact bytes a strategy POSTed upstream, captured for the
     /// <c>upstream-req</c> audit: the passthrough Anthropic body on a <c>/cc</c>
     /// (CopilotAnthropic) route, or the Codex T2 Responses body on a

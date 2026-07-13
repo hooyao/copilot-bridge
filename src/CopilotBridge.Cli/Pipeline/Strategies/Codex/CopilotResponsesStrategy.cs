@@ -122,6 +122,29 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
                 // Stash the original reference for upstream-resp before any stage
                 // could rewrite BufferedBody (mirrors the /cc passthrough path).
                 if (_audit.Enabled) ctx.Response.RawUpstreamResponseBody = ctx.Response.BufferedBody;
+                // Response stages operate on the Anthropic-shaped hub IR. A
+                // successful non-streaming /responses object must therefore enter
+                // buffered T3 here, before leak/runaway/tool-input detectors run.
+                // Error envelopes remain Responses-shaped passthrough bodies.
+                try
+                {
+                    if (resp.IsSuccessStatusCode
+                        && BufferedResponsesToAnthropic.TryTranslate(ctx.Response.BufferedBody) is { } irBody)
+                    {
+                        ctx.Response.BufferedResponsesWireBody = ctx.Response.BufferedBody;
+                        ctx.Response.InitialBufferedIrBody = irBody;
+                        ctx.Response.BufferedBody = irBody;
+                        ctx.Response.Headers["Content-Type"] = "application/json";
+                    }
+                }
+                catch (UpstreamResponseFailedException ex)
+                {
+                    // Preserve the raw body for tracing, but never let a known
+                    // failed/malformed Responses object cross either client edge.
+                    // The endpoint rethrows this after it snapshots the response.
+                    ctx.Response.BufferedUpstreamFault = ex;
+                    ctx.Response.BufferedBody = [];
+                }
                 _log.LogDebug("strategy {Name}: buffered status={Status} bytes={Bytes}",
                     Name, ctx.Response.Status, ctx.Response.BufferedBody.Length);
             }

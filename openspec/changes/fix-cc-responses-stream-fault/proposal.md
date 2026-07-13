@@ -27,6 +27,7 @@ None.
 
 - `upstream-timeout`: Make the existing client-protocol-specific mid-stream timeout contract hold when `/cc` is cross-routed to a Responses backend, while preserving the Codex `response.failed` surface.
 - `observability`: Require internally caught upstream stream faults to remain visible in the request summary and trace error fields at the downstream endpoint that owns the request.
+- `client-autoconfiguration`: Remove the legacy Claude Code fallback-disable switch so the verified non-streaming recovery request remains enabled.
 
 ## Impact
 

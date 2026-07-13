@@ -79,7 +79,8 @@ public class ClaudeCodeBehaviorTests
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
             ServeScenario.CcToGptFaultRecovery,
             TestUpstreamBaseUrl: upstream.BaseUrl,
-            StreamIdleTimeoutSeconds: 1));
+            StreamIdleTimeoutSeconds: 1,
+            WholeResponseBuffering: true));
 
         var prompt =
             "Actually use the Bash tool to write the exact text " + canary

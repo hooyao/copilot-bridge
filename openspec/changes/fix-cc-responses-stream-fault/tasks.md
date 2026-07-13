@@ -26,7 +26,7 @@
 - [x] 4.2 Keep T4's catch-and-flush behavior for Codex, ensuring it writes one `response.failed` before rethrowing the fault for endpoint accounting.
 - [x] 4.3 Make the Codex endpoint timeout catch response-start-aware so a rethrown mid-stream timeout retains status `200` and records the failure, while a first-byte timeout remains `504`.
 - [x] 4.4 Consolidate or remove the `BridgeResponse.UpstreamStreamFault` side channel where propagation supersedes it, without losing observability for any path that intentionally catches a fault.
-- [x] 4.5 Add contract coverage and client-edge translation for Claude Code's `stream:false` fallback on a Responses route, including text and tool-use bodies; preserve Codex buffered Responses behavior and upstream error envelopes.
+- [x] 4.5 Add contract coverage and buffered T3/T4 translation for Claude Code's `stream:false` fallback on a Responses route, including text and tool-use bodies; keep response detectors on IR and preserve upstream error envelopes.
 
 ## 5. Observability and Configuration Integrity
 
@@ -34,6 +34,7 @@
 - [x] 5.2 Record the exception on `upstream-resp` and the actual client-protocol failure/truncation on `inbound-resp`, while preserving the exact partial raw upstream bytes.
 - [x] 5.3 Verify logs contain one bounded warning with trace id, phase, exception type, and elapsed idle time, but no prompt, tool arguments, or generated response text.
 - [x] 5.4 Leave the `StreamIdleTimeoutSeconds=60` default and existing operator knobs unchanged; document that timeout tuning is separate because the incident cannot establish whether upstream would have resumed after cancellation.
+- [x] 5.5 Update the client-autoconfiguration capability contract so it requires removing the legacy fallback-disable environment key.
 
 ## 6. Automated Verification
 

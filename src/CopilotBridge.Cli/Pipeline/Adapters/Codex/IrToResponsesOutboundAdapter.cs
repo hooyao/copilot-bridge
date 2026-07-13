@@ -79,12 +79,25 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         byte[] irBody,
         CancellationToken ct)
     {
-        // Non-streaming path. On the Codex→/responses cell the strategy buffers
-        // the raw Responses JSON (or error envelope) — it never round-tripped
-        // through the Anthropic IR body, so it's already Responses-shaped and is
-        // returned as-is. (Codex always streams in practice; this is the
-        // error/edge path.)
-        _log.LogDebug("adapter {Name}: buffered passthrough bytes={Bytes}", Name, irBody.Length);
+        if (ReferenceEquals(irBody, _ctx.Response.InitialBufferedIrBody)
+            && _ctx.Response.BufferedResponsesWireBody is { } original)
+        {
+            _log.LogDebug("adapter {Name}: buffered Responses byte-preserving passthrough bytes={Bytes}",
+                Name, original.Length);
+            return ValueTask.FromResult(original);
+        }
+
+        var translated = BufferedAnthropicToResponses.TryTranslate(irBody);
+        if (translated is not null)
+        {
+            _log.LogDebug("adapter {Name}: buffered IR→Responses in_bytes={InBytes} out_bytes={OutBytes}",
+                Name, irBody.Length, translated.Length);
+            return ValueTask.FromResult(translated);
+        }
+
+        // Upstream non-success envelopes and detector-generated error bodies do
+        // not represent successful response IR; preserve their existing surface.
+        _log.LogDebug("adapter {Name}: buffered non-message passthrough bytes={Bytes}", Name, irBody.Length);
         return ValueTask.FromResult(irBody);
     }
 }

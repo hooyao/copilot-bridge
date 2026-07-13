@@ -10,6 +10,7 @@ using CopilotBridge.Cli.Models.Copilot;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
+using CopilotBridge.Cli.Pipeline.Response.Detection;
 using CopilotBridge.Cli.Pipeline.Routing;
 using CopilotBridge.Cli.Pipeline.Strategies;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
@@ -79,7 +80,20 @@ public class ResponsesStreamFaultEndpointContractTests
                 "/responses",
                 context.Request.Body.Model);
             await strategy.ForwardAsync();
+            foreach (var stage in pipeline.ResponseStages)
+                await stage.ApplyAsync();
         }
+    }
+
+    private sealed class WholeResponseBufferingDetector : IResponseDetector
+    {
+        public string Name => "WholeResponseBufferingContract";
+        public int Order => 0;
+        public bool Enabled => true;
+        public bool RequiresBuffering => true;
+        public void Begin() { }
+        public DetectionAction InspectEvent(in System.Net.ServerSentEvents.SseItem<string> evt) =>
+            DetectionAction.None;
     }
 
     private static readonly Pipeline<MessagesRequest> DummyPipeline = new()
@@ -153,6 +167,16 @@ public class ResponsesStreamFaultEndpointContractTests
         return response;
     }
 
+    private static HttpResponseMessage BufferedResponse(byte[] body)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(body),
+        };
+        response.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+        return response;
+    }
+
     private static CopilotResponsesStrategy BuildStrategy(
         ICopilotClient client,
         BridgeContext<MessagesRequest> context,
@@ -173,7 +197,8 @@ public class ResponsesStreamFaultEndpointContractTests
     private static async Task<Outcome> RunClaudeAsync(
         Stream upstream,
         UpstreamTimeoutAction action = UpstreamTimeoutAction.Retry,
-        bool tracing = true)
+        bool tracing = true,
+        bool wholeResponseBuffering = false)
     {
         var recorder = new RecordingLoggerProvider();
         using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(recorder));
@@ -183,11 +208,14 @@ public class ResponsesStreamFaultEndpointContractTests
             new StubClient(StreamingResponse(upstream)), context, audit, loggerFactory);
 
         var http = BuildHttpContext("/cc/v1/messages", CcRequest, out var responseBytes);
+        var pipeline = wholeResponseBuffering
+            ? PipelineWithWholeResponseBuffering(context, loggerFactory)
+            : DummyPipeline;
         await ClaudeCodeMessagesEndpoint.HandleAsync(
             http,
             context,
             new ResponsesRunner(context, strategy),
-            DummyPipeline,
+            pipeline,
             new ClaudeCodeInboundAdapter(loggerFactory.CreateLogger<ClaudeCodeInboundAdapter>()),
             new ClaudeCodeOutboundAdapter(loggerFactory.CreateLogger<ClaudeCodeOutboundAdapter>()),
             new ModelProfileCatalog(),
@@ -227,6 +255,138 @@ public class ResponsesStreamFaultEndpointContractTests
             loggerFactory.CreateLogger<CodexResponsesEndpointTag>());
 
         return OutcomeFrom(http, responseBytes, recorder.Events);
+    }
+
+    private static async Task<Outcome> RunCodexAsync(
+        Stream upstream,
+        bool tracing,
+        bool wholeResponseBuffering)
+    {
+        var recorder = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(recorder));
+        var audit = TestAudit.Create(tracing, loggerFactory.CreateLogger<MessagesRequest>());
+        var context = new BridgeContext<MessagesRequest>();
+        var strategy = BuildStrategy(
+            new StubClient(StreamingResponse(upstream)), context, audit, loggerFactory);
+        var pipeline = wholeResponseBuffering
+            ? PipelineWithWholeResponseBuffering(context, loggerFactory)
+            : DummyPipeline;
+
+        var http = BuildHttpContext("/codex/responses", CodexRequest, out var responseBytes);
+        await CodexResponsesEndpoint.HandleAsync(
+            http,
+            context,
+            new ResponsesRunner(context, strategy),
+            pipeline,
+            new ResponsesToIrInboundAdapter(loggerFactory.CreateLogger<ResponsesToIrInboundAdapter>()),
+            new IrToResponsesOutboundAdapter(context, loggerFactory.CreateLogger<IrToResponsesOutboundAdapter>()),
+            new RequestSummaryLogger(loggerFactory.CreateLogger<RequestSummaryLogger>()),
+            audit,
+            loggerFactory.CreateLogger<CodexResponsesEndpointTag>());
+
+        return OutcomeFrom(http, responseBytes, recorder.Events);
+    }
+
+    private static Pipeline<MessagesRequest> PipelineWithWholeResponseBuffering(
+        BridgeContext<MessagesRequest> context,
+        ILoggerFactory loggerFactory) => new()
+    {
+        Name = "whole-response-buffering-contract",
+        RequestStages = [],
+        ResponseStages =
+        [
+            new ResponseInspectionStage(
+                [new WholeResponseBufferingDetector()],
+                context,
+                loggerFactory.CreateLogger<ResponseInspectionStage>()),
+        ],
+        Strategies = new StrategyRegistry<MessagesRequest>([]),
+    };
+
+    private static async Task<Outcome> RunClaudeBufferedAsync(
+        byte[] upstreamBody,
+        bool inspectForLeaks)
+    {
+        var recorder = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(recorder));
+        var audit = TestAudit.Create(true, loggerFactory.CreateLogger<MessagesRequest>());
+        var context = new BridgeContext<MessagesRequest>();
+        var strategy = BuildStrategy(
+            new StubClient(BufferedResponse(upstreamBody)), context, audit, loggerFactory);
+        var pipeline = inspectForLeaks
+            ? PipelineWithLeakDetector(context, loggerFactory)
+            : DummyPipeline;
+
+        var http = BuildHttpContext(
+            "/cc/v1/messages",
+            CcRequest.Replace("\"stream\":true", "\"stream\":false", StringComparison.Ordinal),
+            out var responseBytes);
+        await ClaudeCodeMessagesEndpoint.HandleAsync(
+            http,
+            context,
+            new ResponsesRunner(context, strategy),
+            pipeline,
+            new ClaudeCodeInboundAdapter(loggerFactory.CreateLogger<ClaudeCodeInboundAdapter>()),
+            new ClaudeCodeOutboundAdapter(loggerFactory.CreateLogger<ClaudeCodeOutboundAdapter>()),
+            new ModelProfileCatalog(),
+            new RequestSummaryLogger(loggerFactory.CreateLogger<RequestSummaryLogger>()),
+            audit,
+            Options.Create(new UpstreamTimeoutOptions()),
+            loggerFactory.CreateLogger<ClaudeCodeMessagesEndpointTag>());
+
+        return OutcomeFrom(http, responseBytes, recorder.Events);
+    }
+
+    private static async Task<Outcome> RunCodexBufferedAsync(byte[] upstreamBody)
+    {
+        var recorder = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(recorder));
+        var audit = TestAudit.Create(true, loggerFactory.CreateLogger<MessagesRequest>());
+        var context = new BridgeContext<MessagesRequest>();
+        var strategy = BuildStrategy(
+            new StubClient(BufferedResponse(upstreamBody)), context, audit, loggerFactory);
+
+        var request = CodexRequest.Replace("\"stream\":true", "\"stream\":false", StringComparison.Ordinal);
+        var http = BuildHttpContext("/codex/responses", request, out var responseBytes);
+        await CodexResponsesEndpoint.HandleAsync(
+            http,
+            context,
+            new ResponsesRunner(context, strategy),
+            DummyPipeline,
+            new ResponsesToIrInboundAdapter(loggerFactory.CreateLogger<ResponsesToIrInboundAdapter>()),
+            new IrToResponsesOutboundAdapter(context, loggerFactory.CreateLogger<IrToResponsesOutboundAdapter>()),
+            new RequestSummaryLogger(loggerFactory.CreateLogger<RequestSummaryLogger>()),
+            audit,
+            loggerFactory.CreateLogger<CodexResponsesEndpointTag>());
+
+        return OutcomeFrom(http, responseBytes, recorder.Events);
+    }
+
+    private static Pipeline<MessagesRequest> PipelineWithLeakDetector(
+        BridgeContext<MessagesRequest> context,
+        ILoggerFactory loggerFactory)
+    {
+        var detector = new ResponseLeakDetector(
+            new DetectorOrder<ResponseLeakDetector>(0),
+            TestOptions.Snapshot(new ResponseLeakGuardOptions
+            {
+                Enabled = true,
+                PreserveStream = true,
+                Signal = ResponseDetectionSignal.OverloadedError,
+            }),
+            context,
+            loggerFactory.CreateLogger<ResponseLeakDetector>());
+        return new Pipeline<MessagesRequest>
+        {
+            Name = "buffered-responses-leak-contract",
+            RequestStages = [],
+            ResponseStages =
+            [
+                new ResponseInspectionStage(
+                    [detector], context, loggerFactory.CreateLogger<ResponseInspectionStage>()),
+            ],
+            Strategies = new StrategyRegistry<MessagesRequest>([]),
+        };
     }
 
     private static DefaultHttpContext BuildHttpContext(
@@ -326,6 +486,83 @@ public class ResponsesStreamFaultEndpointContractTests
         Assert.DoesNotContain("event: response.completed", outcome.Body);
         Assert.Equal("stream_idle", outcome.Summary["UpstreamTimeout"]?.ToString());
         Assert.NotEqual("(none)", outcome.Summary["ErrorDisplay"]?.ToString());
+    }
+
+    [Fact]
+    public async Task WholeResponseBuffering_DoesNotBypassClientNativeFaultSurfaces()
+    {
+        var claude = await RunClaudeAsync(
+            new FaultAfterPrefixStream(PartialTextPrefix(), StreamIdleFault()),
+            wholeResponseBuffering: true);
+        Assert.Equal(StatusCodes.Status200OK, claude.Status);
+        Assert.Equal(1, Count(claude.Body, "event: error"));
+        Assert.DoesNotContain("message_stop", claude.Body);
+
+        var codex = await RunCodexAsync(
+            new FaultAfterPrefixStream(PartialTextPrefix(), StreamIdleFault()),
+            tracing: true,
+            wholeResponseBuffering: true);
+        Assert.Equal(StatusCodes.Status200OK, codex.Status);
+        Assert.Equal(1, Count(codex.Body, "event: response.failed"));
+        Assert.DoesNotContain("event: error", codex.Body);
+    }
+
+    [Fact]
+    public async Task BufferedResponsesFallback_IsTranslatedBeforeLeakDetection()
+    {
+        var body = Encoding.UTF8.GetBytes("""
+        {"id":"resp_leak","object":"response","status":"completed","model":"gpt-5.6-sol",
+         "output":[{"type":"message","content":[{"type":"output_text","text":"<system-reminder>private control text</system-reminder>"}]}],
+         "usage":{"input_tokens":4,"output_tokens":4}}
+        """);
+
+        var outcome = await RunClaudeBufferedAsync(body, inspectForLeaks: true);
+
+        Assert.Equal(529, outcome.Status);
+        Assert.Contains("overloaded_error", outcome.Body);
+        Assert.DoesNotContain("\"object\":\"response\"", outcome.Body);
+        Assert.DoesNotContain("private control text", outcome.Body);
+    }
+
+    [Fact]
+    public async Task MalformedBufferedToolCall_ReturnsAnthropicError_NotRawResponses()
+    {
+        var body = Encoding.UTF8.GetBytes("""
+        {"id":"resp_bad","object":"response","status":"completed","model":"gpt-5.6-sol",
+         "output":[{"type":"function_call","call_id":"call_bad","name":"Bash","arguments":"{not-json"}]}
+        """);
+
+        var outcome = await RunClaudeBufferedAsync(body, inspectForLeaks: false);
+
+        Assert.Equal(StatusCodes.Status502BadGateway, outcome.Status);
+        using var doc = System.Text.Json.JsonDocument.Parse(outcome.Body);
+        Assert.Equal("error", doc.RootElement.GetProperty("type").GetString());
+        Assert.Equal("api_error", doc.RootElement.GetProperty("error").GetProperty("type").GetString());
+        Assert.DoesNotContain("\"object\":\"response\"", outcome.Body);
+    }
+
+    [Fact]
+    public async Task BufferedResponseFailed_IsClientNativeOnBothEdges()
+    {
+        var body = Encoding.UTF8.GetBytes("""
+        {"id":"resp_failed","object":"response","status":"failed","model":"gpt-5.6-sol",
+         "output":[],"error":{"code":"server_error","message":"secret generated response text"}}
+        """);
+
+        var claude = await RunClaudeBufferedAsync(body, inspectForLeaks: false);
+        Assert.Equal(StatusCodes.Status502BadGateway, claude.Status);
+        using (var doc = System.Text.Json.JsonDocument.Parse(claude.Body))
+            Assert.Equal("api_error", doc.RootElement.GetProperty("error").GetProperty("type").GetString());
+        Assert.DoesNotContain("secret generated response text", claude.Body);
+
+        var codex = await RunCodexBufferedAsync(body);
+        Assert.Equal(StatusCodes.Status502BadGateway, codex.Status);
+        using (var doc = System.Text.Json.JsonDocument.Parse(codex.Body))
+        {
+            Assert.Equal("response", doc.RootElement.GetProperty("object").GetString());
+            Assert.Equal("failed", doc.RootElement.GetProperty("status").GetString());
+        }
+        Assert.DoesNotContain("secret generated response text", codex.Body);
     }
 
     /// <summary>

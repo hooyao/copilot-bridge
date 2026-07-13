@@ -178,6 +178,9 @@ internal static class CodexResponsesEndpoint
             // before finally finalizes it).
             pipelineResponse = bridgeCtx.Response;
 
+            if (bridgeCtx.Response.BufferedUpstreamFault is { } bufferedFault)
+                throw bufferedFault;
+
             responseStatus = bridgeCtx.Response.Status;
             foreach (var (k, v) in bridgeCtx.Response.Headers)
                 responseHeaders[k] = v;
@@ -262,7 +265,15 @@ internal static class CodexResponsesEndpoint
             {
                 responseStatus = StatusCodes.Status502BadGateway;
                 httpCtx.Response.StatusCode = responseStatus;
-                await httpCtx.Response.WriteAsync("upstream model backend failed", CancellationToken.None);
+                httpCtx.Response.ContentType = "application/json";
+                var bytes = Encoding.UTF8.GetBytes(
+                    "{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":\"failed\","
+                    + "\"model\":\"unknown\",\"output\":[],\"error\":{\"code\":\"upstream_error\","
+                    + "\"message\":\"the upstream model backend failed\"}}");
+                responseBody = bytes;
+                responseBodyLen = bytes.Length;
+                httpCtx.Response.ContentLength = bytes.Length;
+                await httpCtx.Response.Body.WriteAsync(bytes, CancellationToken.None);
             }
             else responseStatus = httpCtx.Response.StatusCode;
         }

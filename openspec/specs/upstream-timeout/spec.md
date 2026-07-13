@@ -75,10 +75,10 @@ client protocol of the path:
   turn with a **retryable signal**: it SHALL inject the same retryable error event
   the response guards use (an `overloaded_error` SSE event) and then end the
   stream, so that Claude Code re-attempts the turn rather than committing a silent
-  partial. (Verified against Claude Code: a mid-stream error is re-attempted — a
-  whole-turn retry when `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` is set, which
-  is the setting the bridge's own client-configuration writes, or a non-streaming
-  fallback re-request otherwise.) An operator SHALL be able to configure the bridge
+  partial. (Verified against Claude Code 2.1.207: with the legacy disable switch
+  absent, a mid-stream error tombstones the partial attempt and issues a
+  non-streaming fallback request; the bridge's client-configuration removes that
+  switch.) An operator SHALL be able to configure the bridge
   to instead end the stream as a plain truncation (no error event).
 - On the **Codex (Responses) path**, the bridge SHALL end the stalled turn through
   the same failed-terminal channel it already uses for a mid-stream upstream fault:
@@ -153,4 +153,3 @@ arming and resetting the inactivity timers.
 
 - **WHEN** both budgets are enabled and the Codex/Responses upstream responds within them
 - **THEN** the translated (T3) downstream event sequence is identical to the behavior with the timeout absent.
-

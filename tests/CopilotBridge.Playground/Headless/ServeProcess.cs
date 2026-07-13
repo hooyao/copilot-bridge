@@ -45,7 +45,8 @@ internal sealed record ServeInvocation(
     ServeScenario Scenario,
     TimeSpan? ReadyTimeout = null,
     string? TestUpstreamBaseUrl = null,
-    int? StreamIdleTimeoutSeconds = null);
+    int? StreamIdleTimeoutSeconds = null,
+    bool WholeResponseBuffering = false);
 
 /// <summary>
 /// The appsettings shape a behavior run needs. Each value is applied by patching the
@@ -222,7 +223,8 @@ internal static class ServeProcess
                 Path.Combine(scratchDir, "appsettings.json"),
                 inv.Scenario,
                 traceDir,
-                inv.StreamIdleTimeoutSeconds);
+                inv.StreamIdleTimeoutSeconds,
+                inv.WholeResponseBuffering);
 
             var scratchExe = Path.Combine(scratchDir, "copilot-bridge.exe");
             var port = GetFreeLoopbackPort();
@@ -345,7 +347,8 @@ internal static class ServeProcess
         string path,
         ServeScenario scenario,
         string traceDir,
-        int? streamIdleTimeoutSeconds)
+        int? streamIdleTimeoutSeconds,
+        bool wholeResponseBuffering)
     {
         var root = JsonNode.Parse(File.ReadAllText(path))?.AsObject()
             ?? throw new ServeStartupException($"appsettings.json at {path} is not a JSON object.");
@@ -387,6 +390,14 @@ internal static class ServeProcess
                 ?? throw new ServeStartupException(
                     "appsettings.json has no Pipeline.UpstreamTimeout section.");
             upstreamTimeout["StreamIdleTimeoutSeconds"] = streamIdleTimeoutSeconds.Value;
+        }
+
+        if (wholeResponseBuffering)
+        {
+            var leakGuard = root["Pipeline"]?["Detectors"]?["ResponseLeakGuard"]?.AsObject()
+                ?? throw new ServeStartupException(
+                    "appsettings.json has no Pipeline.Detectors.ResponseLeakGuard section.");
+            leakGuard["PreserveStream"] = false;
         }
 
         File.WriteAllText(path, root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));

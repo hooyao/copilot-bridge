@@ -242,6 +242,9 @@ internal static class ClaudeCodeMessagesEndpoint
             // pre-rewrite reference is already set.
             pipelineResponse = bridgeCtx.Response;
 
+            if (bridgeCtx.Response.BufferedUpstreamFault is { } bufferedFault)
+                throw bufferedFault;
+
             responseStatus = bridgeCtx.Response.Status;
             foreach (var (k, v) in bridgeCtx.Response.Headers)
             {
@@ -373,7 +376,20 @@ internal static class ClaudeCodeMessagesEndpoint
             {
                 responseStatus = StatusCodes.Status502BadGateway;
                 httpCtx.Response.StatusCode = responseStatus;
-                await httpCtx.Response.WriteAsync("upstream model backend failed", CancellationToken.None);
+                httpCtx.Response.ContentType = "application/json";
+                var error = new ErrorResponse
+                {
+                    Error = new ErrorBody
+                    {
+                        Type = "api_error",
+                        Message = UpstreamResponseFailedMessage,
+                    },
+                };
+                var bytes = JsonSerializer.SerializeToUtf8Bytes(error, JsonContext.Default.ErrorResponse);
+                responseBody = bytes;
+                responseBodyLen = bytes.Length;
+                httpCtx.Response.ContentLength = bytes.Length;
+                await httpCtx.Response.Body.WriteAsync(bytes, CancellationToken.None);
             }
             else
             {

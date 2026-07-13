@@ -138,8 +138,23 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
     {
         var buffered = new List<SseItem<string>>();
 
-        await foreach (var evt in source.WithCancellation(ct))
+        Exception? streamFault = null;
+        await using var e = source.GetAsyncEnumerator(ct);
+        while (true)
         {
+            bool moved;
+            try
+            {
+                moved = await e.MoveNextAsync();
+            }
+            catch (Exception ex)
+            {
+                streamFault = ex;
+                break;
+            }
+            if (!moved) break;
+
+            var evt = e.Current;
             var action = DetectionAction.None;
             foreach (var d in detectors)
             {
@@ -179,17 +194,25 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
             }
         }
 
-        // Clean: replace the (now-drained) upstream stream with a replay of the
-        // collected events so the endpoint's streaming relay delivers them.
-        ctx.Response.EventStream = Replay(buffered);
+        // Replay the detector-approved prefix at the normal client edge. If the
+        // source faulted while this stage was eagerly draining it, rethrow only
+        // after that prefix has been enumerated: /cc can then emit Anthropic
+        // event:error and Codex T4 can emit response.failed. Throwing here would
+        // bypass both protocol owners and misclassify a mid-stream fault as a
+        // pre-header failure merely because PreserveStream=false buffered it.
+        ctx.Response.EventStream = Replay(buffered, streamFault);
     }
 
-    private static async IAsyncEnumerable<SseItem<string>> Replay(List<SseItem<string>> events)
+    private static async IAsyncEnumerable<SseItem<string>> Replay(
+        List<SseItem<string>> events,
+        Exception? fault = null)
     {
         foreach (var e in events)
         {
             yield return e;
         }
+        if (fault is not null)
+            throw fault;
         await Task.CompletedTask;
     }
 
