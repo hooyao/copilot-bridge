@@ -9,6 +9,7 @@
 - [x] 2.1 Snapshot Claude Code sub-agent identity from the inbound agent-id header before outbound header sanitization.
 - [x] 2.2 Thread the configured per-request filter decision into T2 without mutating the IR.
 - [x] 2.3 Filter the exact `Agent` tool in the typed Claude Code tool writer and preserve valid forced-tool-choice behavior.
+- [x] 2.4 Log a warning only when `Agent` is actually removed, with the explicit configuration recovery path.
 
 ## 3. Contract-first tests
 

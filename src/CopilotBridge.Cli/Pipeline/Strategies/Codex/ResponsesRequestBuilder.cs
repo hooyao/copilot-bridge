@@ -34,8 +34,21 @@ internal static class ResponsesRequestBuilder
     public static (byte[] Body, bool Vision, string? CoercedEffort) Build(
         MessagesRequest ir,
         CodexModelProfileCatalog profiles,
-        bool filterRecursiveAgentTool = false)
+        bool filterRecursiveAgentTool = false) =>
+        Build(ir, profiles, filterRecursiveAgentTool, out _);
+
+    /// <summary>
+    /// Build overload that reports whether the recursive-delegation guard actually
+    /// removed an <c>Agent</c> tool. This lets the strategy log an operator-visible
+    /// warning without making the pure wire builder depend on logging.
+    /// </summary>
+    public static (byte[] Body, bool Vision, string? CoercedEffort) Build(
+        MessagesRequest ir,
+        CodexModelProfileCatalog profiles,
+        bool filterRecursiveAgentTool,
+        out bool removedAgentTool)
     {
+        removedAgentTool = false;
         // Exact profile, or the nearest known one (best-effort fallback for a
         // Codex model newer than this build's catalog — the router already
         // WARN-logged the fuzzy match and let the request through; here we just
@@ -150,7 +163,10 @@ internal static class ResponsesRequestBuilder
             // request's bag still wins, keeping that path byte-identical.
             var irToolSurvivors = new HashSet<string>(StringComparer.Ordinal);
             if (!bagHasTools)
-                irToolSurvivors = WriteIrTools(w, ir.Tools, filterRecursiveAgentTool);
+            {
+                irToolSurvivors = WriteIrTools(
+                    w, ir.Tools, filterRecursiveAgentTool, out removedAgentTool);
+            }
             // Only emit tool_choice when tools are actually on the wire — a
             // tool_choice of "required" or {function,name} with no tools array is a
             // Responses 400. Tools are present iff the bag supplied them
@@ -386,8 +402,10 @@ internal static class ResponsesRequestBuilder
     private static HashSet<string> WriteIrTools(
         Utf8JsonWriter w,
         IReadOnlyList<Tool>? tools,
-        bool filterRecursiveAgentTool)
+        bool filterRecursiveAgentTool,
+        out bool removedAgentTool)
     {
+        removedAgentTool = false;
         var survivors = new HashSet<string>(StringComparer.Ordinal);
         if (tools is not { Count: > 0 }) return survivors;
 
@@ -402,7 +420,10 @@ internal static class ResponsesRequestBuilder
             // `/cc` sub-agent → Responses translation. Exact ordinal name matching
             // avoids removing an unrelated user-defined tool.
             if (filterRecursiveAgentTool && t.Name == "Agent")
+            {
+                removedAgentTool = true;
                 continue;
+            }
             if (t.Type is { Length: > 0 } typ
                 && typ.StartsWith("web_search_", StringComparison.OrdinalIgnoreCase))
                 continue; // server tool — never reaches Copilot /responses

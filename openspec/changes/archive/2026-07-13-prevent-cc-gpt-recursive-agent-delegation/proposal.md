@@ -8,6 +8,7 @@ Claude Code can include its `Agent` delegation tool in requests made by a sub-ag
 - Identify a sub-agent by the inbound `x-claude-code-agent-id` header; do not require `x-claude-code-parent-agent-id`, because first-generation Claude Code sub-agents omit it.
 - Keep `Agent` available to the root Claude Code request, and leave native `/cc` Anthropic passthrough and native `/codex` traffic unchanged.
 - Reconcile `tool_choice` when a filtered tool was forced so the emitted Responses request remains valid.
+- Emit an operator-visible warning for each actual removal, including the configuration recovery path when the removal is considered incorrect.
 - Expose a startup-bound configuration switch, enabled by default, that restores the current recursive-delegation behavior when disabled.
 
 ## Capabilities

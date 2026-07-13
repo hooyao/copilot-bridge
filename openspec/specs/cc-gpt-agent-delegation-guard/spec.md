@@ -9,6 +9,8 @@ Prevent recursively expanding Claude Code agent trees when `/cc` traffic is tran
 
 When enabled, the bridge SHALL omit the exact `Agent` tool from the upstream Responses request if and only if the downstream request came from a Claude Code sub-agent and routing selected a Responses backend. The bridge SHALL classify a request as a sub-agent from a non-empty inbound `x-claude-code-agent-id` header without requiring a parent-agent header. The bridge SHALL NOT mutate the shared IR tool collection.
 
+Each request from which the bridge actually removes `Agent` SHALL emit a warning that identifies `Pipeline:CcToResponses:PreventRecursiveAgentDelegation=false` as the recovery setting when the removal is considered incorrect. The bridge SHALL NOT emit this warning merely because a request is classified as a sub-agent when no `Agent` tool was removed.
+
 #### Scenario: First-generation sub-agent cannot delegate recursively
 
 - **WHEN** a `/cc` request carries `x-claude-code-agent-id`, carries no `x-claude-code-parent-agent-id`, includes `Agent` plus another tool, and is routed to `/responses` with the guard enabled
@@ -29,6 +31,16 @@ When enabled, the bridge SHALL omit the exact `Agent` tool from the upstream Res
 
 - **WHEN** a native `/cc` request is routed to the Anthropic upstream or a native `/codex` request contains a function named `Agent`
 - **THEN** this guard does not remove or rewrite that tool.
+
+#### Scenario: Actual removal is operator-visible
+
+- **WHEN** the enabled guard removes `Agent` from a translated sub-agent request
+- **THEN** the bridge logs a warning that advises setting `Pipeline:CcToResponses:PreventRecursiveAgentDelegation=false` and restarting the bridge if the removal is incorrect.
+
+#### Scenario: No removal produces no guard warning
+
+- **WHEN** the request is a root request, the guard is disabled, or the translated typed tool set contains no `Agent`
+- **THEN** the bridge does not log the recursive-delegation removal warning.
 
 ### Requirement: Recursive delegation guard is configurable
 

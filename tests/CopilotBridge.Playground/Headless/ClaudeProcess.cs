@@ -4,9 +4,10 @@ using System.Text;
 namespace CopilotBridge.Playground.Headless;
 
 /// <summary>
-/// Spawns <c>claude.exe -p</c> in non-interactive (--bare) mode pointing at a
-/// bridge URL. Captures stdout / stderr / exit code; the test asserts on those
-/// alongside the bridge's per-request audit logs.
+/// Spawns <c>claude.exe -p</c> in non-interactive mode pointing at a bridge URL.
+/// Invocations use <c>--bare</c> by default but may opt into Agent orchestration.
+/// Captures stdout / stderr / exit code; the test asserts on those alongside the
+/// bridge's per-request audit logs.
 /// </summary>
 internal sealed record ClaudeInvocation(
     string BridgeBaseUrl,

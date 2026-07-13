@@ -662,10 +662,12 @@ When routing selects `CopilotResponses:/responses`, T2 treats Claude Code's `Age
 tool as a client-specific delegation primitive, not an ordinary repeatable function.
 With `Pipeline:CcToResponses:PreventRecursiveAgentDelegation` enabled (the default),
 T2 omits the exact `Agent` tool from a sub-agent's translated Responses `tools[]` and
-reconciles a forced choice for that removed tool to `auto`. Root Claude Code requests
-retain `Agent`, and the IR is not mutated. Consequently native Anthropic `/cc`
-passthrough and native `/codex` traffic are unaffected; disabling the option restores
-the previous CC-to-Responses translation behavior.
+reconciles a forced choice for that removed tool to `auto`. Each actual removal emits
+an operator-visible warning with the
+`Pipeline:CcToResponses:PreventRecursiveAgentDelegation=false` recovery setting.
+Root Claude Code requests retain `Agent`, and the IR is not mutated. Consequently
+native Anthropic `/cc` passthrough and native `/codex` traffic are unaffected;
+disabling the option restores the previous CC-to-Responses translation behavior.
 
 This is deliberately a translation-boundary compatibility policy. Claude Code may
 legitimately expose delegation recursively, but a non-Claude backend can interpret the

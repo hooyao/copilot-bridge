@@ -34,6 +34,8 @@ Alternative considered: retain the private header through `HeadersOutboundStage`
 
 `CopilotResponsesStrategy` SHALL combine the request-scoped sub-agent signal with the configuration switch and pass one explicit filter decision to `ResponsesRequestBuilder`. `WriteIrTools` SHALL omit only the exact case-sensitive tool name `Agent`. It SHALL not mutate `MessagesRequest.Tools`, so a different strategy or audit of the IR observes the original request.
 
+The builder SHALL report whether it actually removed `Agent`, and the strategy SHALL emit a warning only for an actual removal. The warning SHALL identify `Pipeline:CcToResponses:PreventRecursiveAgentDelegation=false` plus a restart as the recovery path when an operator considers the removal incorrect.
+
 The Codex bag path is outside this policy: native Codex tools are re-emitted from `ProviderExtensions["openai"]`, while Claude Code tools use the typed IR writer. This placement therefore makes the requested route isolation structural rather than dependent on model names.
 
 Alternative considered: remove `Agent` in the shared `ToolsSanitizeStage`. Rejected because that stage is Anthropic-upstream-only and modifying the IR there would also risk changing native `/cc` behavior.
@@ -72,9 +74,9 @@ Final acceptance SHALL drive real headless `claude.exe` through `CcToGpt` on a t
 
 ## Verification Record
 
-- Real-client manifest: `tests/behavior-runs/manifests/cc-to-gpt-recursive-agent-guard-20260713-101932-431.json`.
-- Bridge used the OS-assigned `http://localhost:63651`, not port 8765, with Claude Code 2.1.207 and the `CcToGpt` scenario.
-- The real client transcript records a root `Agent` tool call, child id `a8e93664c05408da0`, the corresponding completed tool result, child Bash/Read tool results, a root Read result, and final canary `cc-agent-guard-canary-73154`.
-- Child request `20260713-101907-0003` carried `x-claude-code-agent-id` without a parent-agent header. Its inbound tool set contained `Agent` (27 tools); the translated upstream `/responses` tool set omitted only `Agent` (26 tools). The same held on all later child turns.
+- Real-client manifest: `tests/behavior-runs/manifests/cc-to-gpt-recursive-agent-guard-20260713-104135-001.json`.
+- Bridge used the OS-assigned `http://localhost:64214`, not port 8765, with Claude Code 2.1.207 and the `CcToGpt` scenario.
+- The real client transcript records a root `Agent` tool call, child id `aa222890d1746a5ab`, the corresponding completed tool result, child Bash/Read tool results, a root Read result, and final canary `cc-agent-guard-canary-73154`.
+- Child request `20260713-104106-0003` carried `x-claude-code-agent-id` without a parent-agent header. Its inbound tool set contained `Agent` (27 tools); the translated upstream `/responses` tool set omitted only `Agent` (26 tools). The same held on all later child turns.
 - No grandchild was launched; the child executed two Bash calls and one Read, the root consumed the result and completed successfully, and no `bridge_tool_namespace` or `bridge_input_is_grammar_text` marker appeared in any Claude-facing response.
-- The temporary home token hard link used only to let the subprocess follow `TokenStore`'s documented fallback was deleted after the test; `C:\Users\yahu2\github_token.dat` does not exist.
+- The temporary home token hard link used only to let the subprocess follow `TokenStore`'s documented fallback was deleted after the test; `%USERPROFILE%\github_token.dat` does not exist.

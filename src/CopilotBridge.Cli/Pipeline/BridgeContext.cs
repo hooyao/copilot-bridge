@@ -60,7 +60,8 @@ internal sealed class BridgeContext<TBody> where TBody : class
     /// sub-agent. The `/cc` endpoint snapshots this from a non-empty inbound
     /// <c>x-claude-code-agent-id</c> header before <c>HeadersOutboundStage</c>
     /// removes private Claude headers. First-generation sub-agents need not carry
-    /// a parent-agent header, so that header is deliberately not part of the test.
+    /// a parent-agent header, so that header is deliberately excluded from the
+    /// classification predicate.
     /// Native `/codex` requests leave this false.
     /// </summary>
     public bool IsClaudeCodeSubagent { get; set; }

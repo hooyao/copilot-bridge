@@ -13,6 +13,7 @@ using CopilotBridge.Cli.Pipeline.Routing;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -30,16 +31,18 @@ public class CcAgentDelegationGuardTests
 {
     private static readonly CodexModelProfileCatalog Catalog = new();
 
-    private static MessagesRequest ClaudeIr(ToolChoice? choice = null) => new()
+    private static MessagesRequest ClaudeIr(ToolChoice? choice = null, bool includeAgent = true) => new()
     {
         Model = "gpt-5.6-sol",
         MaxTokens = 1024,
         Messages = [new MessageParam { Role = Role.User, Content = [new TextBlockParam { Text = "inspect" }] }],
-        Tools =
-        [
-            new Tool { Name = "Agent", Description = "Delegate work.", InputSchema = new InputSchema() },
-            new Tool { Name = "Bash", Description = "Run a command.", InputSchema = new InputSchema() },
-        ],
+        Tools = includeAgent
+            ?
+            [
+                new Tool { Name = "Agent", Description = "Delegate work.", InputSchema = new InputSchema() },
+                new Tool { Name = "Bash", Description = "Run a command.", InputSchema = new InputSchema() },
+            ]
+            : [new Tool { Name = "Bash", Description = "Run a command.", InputSchema = new InputSchema() }],
         ToolChoice = choice,
         Stream = false,
     };
@@ -136,11 +139,12 @@ public class CcAgentDelegationGuardTests
     }
 
     [Theory]
-    [InlineData(true, true, false)]
-    [InlineData(false, true, true)]
-    [InlineData(true, false, true)]
+    [InlineData(true, true, true, false, true)]
+    [InlineData(false, true, true, true, false)]
+    [InlineData(true, false, true, true, false)]
+    [InlineData(true, true, false, false, false)]
     public async Task Strategy_CombinesConfigurationAndRequestScope(
-        bool enabled, bool isSubagent, bool expectAgent)
+        bool enabled, bool isSubagent, bool includeAgent, bool expectAgent, bool expectWarning)
     {
         var ctx = new BridgeContext<MessagesRequest>
         {
@@ -148,19 +152,21 @@ public class CcAgentDelegationGuardTests
             {
                 Method = "POST",
                 Path = "/cc/v1/messages",
-                Body = ClaudeIr(),
+                Body = ClaudeIr(includeAgent: includeAgent),
             },
             Response = new BridgeResponse(),
             IsClaudeCodeSubagent = isSubagent,
         };
         var client = new CapturingClient();
+        var logProvider = new RecordingLoggerProvider();
+        using var logFactory = LoggerFactory.Create(builder => builder.AddProvider(logProvider));
         var strategy = new CopilotResponsesStrategy(
             client,
             Catalog,
             ctx,
             TestAudit.Create(false),
             Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
-            NullLogger<CopilotResponsesStrategy>.Instance,
+            logFactory.CreateLogger<CopilotResponsesStrategy>(),
             Options.Create(new CcToResponsesOptions { PreventRecursiveAgentDelegation = enabled }));
 
         await strategy.ForwardAsync();
@@ -168,6 +174,19 @@ public class CcAgentDelegationGuardTests
         var wire = JsonNode.Parse(client.LastBody!)!.AsObject();
         Assert.Equal(expectAgent, ToolNames(wire).Contains("Agent"));
         Assert.Contains("Bash", ToolNames(wire));
+
+        var warnings = logProvider.Events.Where(e => e.Level == LogLevel.Warning).ToArray();
+        if (expectWarning)
+        {
+            var warning = Assert.Single(warnings);
+            Assert.Contains("removed Claude Code Agent tool", warning.Message);
+            Assert.Contains(
+                "Pipeline:CcToResponses:PreventRecursiveAgentDelegation=false", warning.Message);
+        }
+        else
+        {
+            Assert.Empty(warnings);
+        }
     }
 
     private static CcToResponsesOptions ResolveOptions(IConfiguration config)

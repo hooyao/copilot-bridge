@@ -63,7 +63,15 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         var filterRecursiveAgentTool =
             _ccOptions.PreventRecursiveAgentDelegation && ctx.IsClaudeCodeSubagent;
         var (body, vision, coercedEffort) = ResponsesRequestBuilder.Build(
-            ctx.Request.Body, _profiles, filterRecursiveAgentTool);
+            ctx.Request.Body, _profiles, filterRecursiveAgentTool, out var removedAgentTool);
+        if (removedAgentTool)
+        {
+            _log.LogWarning(
+                "strategy {Name}: removed Claude Code Agent tool from a sub-agent request to prevent "
+                + "recursive delegation; if this removal is incorrect, set "
+                + "Pipeline:CcToResponses:PreventRecursiveAgentDelegation=false and restart copilot-bridge",
+                Name);
+        }
 
         // Effort coercion happens inside T2 (per-model DefaultEffort fallback) and
         // is NOT written back to the IR body. Surface the honest wire value so the
