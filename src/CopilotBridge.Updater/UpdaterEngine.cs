@@ -29,25 +29,26 @@ internal sealed class UpdaterEngine
     private readonly UpdatePlan _plan;
     private readonly TransactionJournal _journal;
     private readonly TextWriter _stderr;
+    private readonly string _trustedRoot;
 
-    public UpdaterEngine(UpdatePlan plan, TransactionJournal journal, TextWriter stderr)
+    public UpdaterEngine(UpdatePlan plan, TransactionJournal journal, TextWriter stderr, string trustedRoot)
     {
         _plan = plan;
         _journal = journal;
         _stderr = stderr;
+        _trustedRoot = trustedRoot;
     }
 
     public async Task<UpdaterExit> RunAsync(CancellationToken ct)
     {
-        // 1. Validate plan + acquire the install lock.
-        var validate = UpdatePlanValidator.Validate(_plan);
+        // 1. Validate plan (against the trusted root) + acquire the install lock.
+        var validate = UpdatePlanValidator.Validate(_plan, _trustedRoot);
         if (!validate.Ok)
         {
             return await FailPreflightAsync($"invalid plan: {validate.Reason}", ct).ConfigureAwait(false);
         }
 
-        var lockRoot = Path.GetDirectoryName(_plan.StagingDir) ?? _plan.StagingDir;
-        using var installLock = InstallationLock.TryAcquire(_plan.InstallDir, lockRoot);
+        using var installLock = InstallationLock.TryAcquire(_plan.InstallDir, _trustedRoot);
         if (installLock is null)
         {
             return await FailPreflightAsync("another update is in progress", ct).ConfigureAwait(false);
@@ -113,8 +114,19 @@ internal sealed class UpdaterEngine
             return await FailPreflightAsync($"config prepare failed: {ex.GetType().Name}", ct).ConfigureAwait(false);
         }
 
+        // 3b. Materialize + flush + verify every replacement as a same-directory
+        //     temporary file (in the install dir, so on the same volume) DURING
+        //     preparation. A disk-full/write failure therefore surfaces here,
+        //     BEFORE the parent is stopped — cutover then does only bounded atomic
+        //     renames, which can't leave a half-written managed file.
+        var stage = install.StageReplacements(mergedConfig);
+        if (!stage.Ok)
+        {
+            return await FailPreflightAsync(stage.Reason!, ct).ConfigureAwait(false);
+        }
+
         // 4. Revalidate parent identity, then request cutover authorization.
-        if (!ProcessIdentity.Matches(_plan.ParentPid, _plan.ParentStartTicks, _plan.BridgeExePath))
+        if (ProcessIdentity.Check(_plan.ParentPid, _plan.ParentStartTicks, _plan.BridgeExePath) != IdentityCheck.Matched)
         {
             return await FailPreflightAsync("parent identity changed before cutover", ct).ConfigureAwait(false);
         }
@@ -127,42 +139,52 @@ internal sealed class UpdaterEngine
             return await FailPreflightAsync("cutover not authorized", ct).ConfigureAwait(false);
         }
 
-        // 5. Wait for the exact parent to exit. If it can't be confirmed gone, the
-        //    old bridge may still be serving and holding its executable — do NOT
-        //    cut over. Nothing has been installed yet, so fail-open is safe.
-        if (!await WaitForParentExitAsync(ct).ConfigureAwait(false))
-        {
-            return await FailPreflightAsync("parent did not exit before cutover", ct).ConfigureAwait(false);
-        }
-
-        // From here the authorizing parent has positively exited: there is NO
-        // bridge serving. Any failure now must RECOVER service (restart the old
-        // bridge), not merely fail-open — hence RecoverOldBridgeAsync, not
-        // FailPreflightAsync.
-        if (!install.RevalidateNoDrift())
-        {
-            _journal.Write("drift.after-handoff");
-            return await RecoverOldBridgeAsync(install, "install drifted after handoff", ct).ConfigureAwait(false);
-        }
-
-        // 6. Cutover.
-        var cutover = install.Cutover(mergedConfig);
-        if (!cutover.Ok)
-        {
-            // Cutover aborts before installing on config drift; the parent has
-            // already exited, so restore + restart the old bridge to recover
-            // service rather than leaving nothing running.
-            _journal.Write("cutover.failed", cutover.Reason);
-            return await RollbackAndReportAsync(install, ct).ConfigureAwait(false);
-        }
-
-        // 7. From here the transaction has CUT OVER: the old bridge is stopped
-        //    and the new files are installed. Cancellation (Ctrl+C) must NOT leave
-        //    the installation in a half-open/unserved state — it has to drive the
-        //    same rollback/recovery as a failed launch. Rollback itself runs to
-        //    completion regardless of the incoming token.
+        // ---- OWNERSHIP-TRANSFER WINDOW ----------------------------------------
+        // Authorization has been granted: the parent is exiting (or already gone),
+        // so from here there is soon NO bridge serving. EVERY failure past this
+        // point — cancellation, an I/O race in the drift check, a cutover error, a
+        // failed Ready — must RECOVER service, never escape as a plain fail-open or
+        // a fatal. A single guarded region enforces that: whether or not cutover
+        // has happened, control lands in recovery. Recovery uses CancellationToken.None
+        // so a Ctrl+C in this window cannot also abort the recovery itself.
+        var cutoverDone = false;
         try
         {
+            // 5. Wait for the exact parent to positively exit. A tri-state check
+            //    means a transient inspection failure is treated as "unknown", not
+            //    "gone": we do NOT cut over unless the parent is confirmed absent.
+            var exitState = await WaitForParentExitAsync(ct).ConfigureAwait(false);
+            if (exitState != IdentityCheck.AbsentOrReused)
+            {
+                // Not confirmed gone: nothing installed, and the old bridge may
+                // still be serving. Safe to fail open (recovery not needed).
+                return await FailPreflightAsync(
+                    exitState == IdentityCheck.InspectionFailed
+                        ? "could not confirm parent exit before cutover"
+                        : "parent did not exit before cutover",
+                    ct).ConfigureAwait(false);
+            }
+
+            // Parent confirmed gone: service is DOWN. Any failure below recovers.
+            if (!install.RevalidateNoDrift())
+            {
+                _journal.Write("drift.after-handoff");
+                return await RecoverOldBridgeAsync(install, "install drifted after handoff").ConfigureAwait(false);
+            }
+
+            // 6. Cutover (rename original config to .bak, atomically move the
+            //    pre-staged replacements into place — no writes here).
+            var cutover = install.Cutover();
+            if (!cutover.Ok)
+            {
+                _journal.Write("cutover.failed", cutover.Reason);
+                // Cutover fails before installing on config drift, but it may have
+                // partially replaced binaries — rollback restores everything.
+                return await RollbackAndReportAsync(install).ConfigureAwait(false);
+            }
+            cutoverDone = true;
+
+            // 7. Launch the replacement and wait for authenticated Ready.
             var ready = await LaunchAndAwaitReadyAsync(
                 _plan.BridgeExePath, _plan.TargetVersion, UpdateWire.RoleTarget, ct).ConfigureAwait(false);
             if (ready)
@@ -172,19 +194,29 @@ internal sealed class UpdaterEngine
                 return UpdaterExit.Committed;
             }
 
-            // Ready failed → full rollback.
             _journal.Write("target.not-ready");
-            return await RollbackAndReportAsync(install, CancellationToken.None).ConfigureAwait(false);
+            return await RollbackAndReportAsync(install).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            // Cancelled after cutover — recover service rather than exit unserved.
-            _journal.Write("cancelled.after-cutover");
-            return await RollbackAndReportAsync(install, CancellationToken.None).ConfigureAwait(false);
+            _journal.Write(cutoverDone ? "cancelled.after-cutover" : "cancelled.before-cutover");
+            // If cutover happened, the old files are replaced → rollback. If not,
+            // the parent is already gone but nothing was installed → just restart
+            // the old bridge to restore service.
+            return cutoverDone
+                ? await RollbackAndReportAsync(install).ConfigureAwait(false)
+                : await RecoverOldBridgeAsync(install, "cancelled during ownership transfer").ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _journal.Write("ownership-window.io-error", ex.GetType().Name);
+            return cutoverDone
+                ? await RollbackAndReportAsync(install).ConfigureAwait(false)
+                : await RecoverOldBridgeAsync(install, $"I/O error during ownership transfer: {ex.GetType().Name}").ConfigureAwait(false);
         }
     }
 
-    private async Task<UpdaterExit> RollbackAndReportAsync(ManagedInstallManager install, CancellationToken ct)
+    private async Task<UpdaterExit> RollbackAndReportAsync(ManagedInstallManager install)
     {
         var rollback = install.Rollback();
         if (!rollback.Ok)
@@ -194,8 +226,11 @@ internal sealed class UpdaterEngine
         }
 
         // Relaunch the OLD bridge and require its Ready before declaring recovery.
+        // Recovery must run to completion even if the incoming operation was
+        // cancelled, so it never observes the caller's token.
         var recovered = await LaunchAndAwaitReadyAsync(
-            _plan.BridgeExePath, _plan.CurrentVersion, UpdateWire.RoleRollback, ct).ConfigureAwait(false);
+            _plan.BridgeExePath, _plan.CurrentVersion, UpdateWire.RoleRollback, CancellationToken.None)
+            .ConfigureAwait(false);
         if (recovered)
         {
             _journal.Write("rollback.recovered");
@@ -215,8 +250,7 @@ internal sealed class UpdaterEngine
     /// replaced the installed exe out-of-band), do not execute that unplanned
     /// file: report unrecovered with manual-recovery guidance.
     /// </summary>
-    private async Task<UpdaterExit> RecoverOldBridgeAsync(
-        ManagedInstallManager install, string reason, CancellationToken ct)
+    private async Task<UpdaterExit> RecoverOldBridgeAsync(ManagedInstallManager install, string reason)
     {
         _journal.Write("recover.old-bridge", reason);
 
@@ -229,7 +263,8 @@ internal sealed class UpdaterEngine
         }
 
         var recovered = await LaunchAndAwaitReadyAsync(
-            _plan.BridgeExePath, _plan.CurrentVersion, UpdateWire.RoleRollback, ct).ConfigureAwait(false);
+            _plan.BridgeExePath, _plan.CurrentVersion, UpdateWire.RoleRollback, CancellationToken.None)
+            .ConfigureAwait(false);
         if (recovered)
         {
             _journal.Write("recover.recovered");
@@ -269,23 +304,27 @@ internal sealed class UpdaterEngine
 
     /// <summary>
     /// Wait for the exact recorded parent to exit; if it overruns the bounded
-    /// deadline, force-stop only that revalidated identity. Returns true ONLY when
-    /// the parent is positively confirmed gone — the caller must NOT cut over
-    /// while the old bridge could still be serving and holding its executable.
+    /// deadline, force-stop only that revalidated identity. Returns a tri-state:
+    /// <see cref="IdentityCheck.AbsentOrReused"/> = positively gone (safe to cut
+    /// over); <see cref="IdentityCheck.Matched"/> = still alive after the kill
+    /// attempt; <see cref="IdentityCheck.InspectionFailed"/> = could not determine.
+    /// The caller must only cut over on AbsentOrReused, so a transient inspection
+    /// failure never lets it race a possibly-live parent.
     /// </summary>
-    private async Task<bool> WaitForParentExitAsync(CancellationToken ct)
+    private async Task<IdentityCheck> WaitForParentExitAsync(CancellationToken ct)
     {
         var deadline = DateTimeOffset.UtcNow.AddMilliseconds(_plan.ParentExitTimeoutMs);
         while (DateTimeOffset.UtcNow < deadline)
         {
-            if (!ProcessIdentity.Matches(_plan.ParentPid, _plan.ParentStartTicks, _plan.BridgeExePath))
+            var state = ProcessIdentity.Check(_plan.ParentPid, _plan.ParentStartTicks, _plan.BridgeExePath);
+            if (state == IdentityCheck.AbsentOrReused)
             {
-                return true; // exact parent has exited
+                return state; // exact parent has positively exited
             }
             await Task.Delay(100, ct).ConfigureAwait(false);
         }
         // Force-stop ONLY the exact revalidated parent, never by name.
-        if (ProcessIdentity.Matches(_plan.ParentPid, _plan.ParentStartTicks, _plan.BridgeExePath))
+        if (ProcessIdentity.Check(_plan.ParentPid, _plan.ParentStartTicks, _plan.BridgeExePath) == IdentityCheck.Matched)
         {
             try
             {
@@ -299,8 +338,8 @@ internal sealed class UpdaterEngine
                 // check below rather than assuming success.
             }
         }
-        // Positively confirm it is gone; a still-live parent means "do not cut over".
-        return !ProcessIdentity.Matches(_plan.ParentPid, _plan.ParentStartTicks, _plan.BridgeExePath);
+        // Return the final positively-determined state.
+        return ProcessIdentity.Check(_plan.ParentPid, _plan.ParentStartTicks, _plan.BridgeExePath);
     }
 
     private async Task<bool> LaunchAndAwaitReadyAsync(

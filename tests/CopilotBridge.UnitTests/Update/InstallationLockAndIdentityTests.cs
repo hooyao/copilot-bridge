@@ -84,4 +84,18 @@ public class InstallationLockAndIdentityTests
             : "/definitely/not/me";
         Assert.False(ProcessIdentity.Matches(self.Id, ticks, bogus));
     }
+
+    [Fact]
+    public void Check_is_tri_state()
+    {
+        using var self = Process.GetCurrentProcess();
+        var ticks = ProcessIdentity.CurrentStartTicks();
+
+        // Alive + correct identity → Matched.
+        Assert.Equal(IdentityCheck.Matched, ProcessIdentity.Check(self.Id, ticks, expectedExePath: null));
+        // Reused PID (wrong start time) → AbsentOrReused, NOT InspectionFailed.
+        Assert.Equal(IdentityCheck.AbsentOrReused, ProcessIdentity.Check(self.Id, expectedStartTicks: 1, expectedExePath: null));
+        // No such process → AbsentOrReused.
+        Assert.Equal(IdentityCheck.AbsentOrReused, ProcessIdentity.Check(999_999_999, expectedStartTicks: 123, expectedExePath: null));
+    }
 }

@@ -39,6 +39,28 @@ if (plan is null)
     return (int)UpdaterExit.PreflightFailed;
 }
 
+// Establish the trusted attempt root from the path WE were handed (the directory
+// containing plan.json), NOT from any plan-supplied path. Validate the entire
+// plan — including confining every temporary path to this trusted root — BEFORE
+// opening the journal, because journal_path is plan-controlled: a tampered plan
+// must not be able to make us append to an arbitrary file (e.g. the installed
+// config) before it is rejected.
+var trustedRoot = Path.GetDirectoryName(Path.GetFullPath(planPath));
+if (string.IsNullOrEmpty(trustedRoot))
+{
+    Console.Error.WriteLine("copilot-updater: plan path has no directory.");
+    return (int)UpdaterExit.PreflightFailed;
+}
+
+var validation = UpdatePlanValidator.Validate(plan, trustedRoot);
+if (!validation.Ok)
+{
+    // Report to stderr only — no journal yet, since journal_path is not trusted
+    // until the plan (which confines it to trustedRoot) has been validated.
+    Console.Error.WriteLine($"copilot-updater: invalid plan: {validation.Reason}");
+    return (int)UpdaterExit.PreflightFailed;
+}
+
 var journal = new TransactionJournal(plan.JournalPath);
 journal.Write("updater.start");
 
@@ -51,13 +73,16 @@ Console.CancelKeyPress += (_, e) =>
 
 try
 {
-    var engine = new UpdaterEngine(plan, journal, Console.Error);
+    var engine = new UpdaterEngine(plan, journal, Console.Error, trustedRoot);
     var outcome = await engine.RunAsync(cts.Token);
     journal.Write("updater.exit", outcome.ToString());
     return (int)outcome;
 }
 catch (OperationCanceledException)
 {
+    // Cancellation that escapes the engine means it happened BEFORE cutover
+    // (the engine handles post-authorization cancellation internally and never
+    // rethrows it). Nothing was installed and the old bridge is still serving.
     journal.Write("updater.cancelled");
     return (int)UpdaterExit.PreflightFailed;
 }

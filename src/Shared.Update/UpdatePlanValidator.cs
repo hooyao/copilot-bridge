@@ -8,8 +8,14 @@ namespace CopilotBridge.Update.Wire;
 /// </summary>
 internal static class UpdatePlanValidator
 {
-    /// <summary>Validate schema/version, required fields, and path confinement.</summary>
-    public static UpdateStepResult Validate(UpdatePlan plan)
+    /// <summary>
+    /// Validate schema/version, required fields, and path confinement.
+    /// <paramref name="trustedRoot"/> is the directory the updater was handed
+    /// (the one containing plan.json), established independently of any
+    /// plan-supplied path; every per-attempt temporary path must be confined to
+    /// it, so a tampered plan can never aim recursive cleanup at unrelated data.
+    /// </summary>
+    public static UpdateStepResult Validate(UpdatePlan plan, string trustedRoot)
     {
         if (plan.ProtocolVersion != UpdateWire.ProtocolVersion)
         {
@@ -72,55 +78,75 @@ internal static class UpdatePlanValidator
         {
             bridgeName, updaterName, configName,
         };
+        if (expectedManaged.Count != 3)
+        {
+            // The three names must be distinct, or the allowlist is ambiguous.
+            return UpdateStepResult.Fail("managed target names are not distinct");
+        }
         if (plan.ManagedFiles.Count != expectedManaged.Count
             || !plan.ManagedFiles.All(expectedManaged.Contains))
         {
             return UpdateStepResult.Fail("managed files are not the exact bridge/updater/config allowlist");
         }
-        // Each managed name must resolve to its canonical install-root target.
+        // Each managed name must be a plain file name (no directory component), so
+        // it maps to a DIRECT child of the install dir — never a nested path.
         foreach (var name in plan.ManagedFiles)
         {
-            var resolved = UpdatePaths.ResolveContained(plan.InstallDir, name);
-            if (resolved is null)
+            if (name != Path.GetFileName(name)
+                || UpdatePaths.ResolveContained(plan.InstallDir, name) is null)
             {
-                return UpdateStepResult.Fail("managed file escapes install root");
+                return UpdateStepResult.Fail("managed file is not a direct install-dir child");
             }
         }
 
-        // The bridge/updater/config paths named in the plan must also be inside
-        // the install root (the config's ".bak" sibling lands next to it), and
-        // must be the direct install-dir children matching the managed names.
-        if (!UpdatePaths.IsInside(plan.InstallDir, plan.BridgeExePath)
-            || !UpdatePaths.IsInside(plan.InstallDir, plan.UpdaterExePath)
-            || !UpdatePaths.IsInside(plan.InstallDir, plan.ConfigPath))
+        // The explicit bridge/updater/config paths must equal their canonical
+        // direct-child targets exactly — NOT merely be "somewhere under" the
+        // install dir. Otherwise a plan could name <install>/sub/copilot-bridge.exe
+        // (which the updater verifies/kills/launches) while file replacement still
+        // targets <install>/copilot-bridge.exe — two different executables.
+        if (!IsCanonicalChild(plan.InstallDir, plan.BridgeExePath, bridgeName)
+            || !IsCanonicalChild(plan.InstallDir, plan.UpdaterExePath, updaterName)
+            || !IsCanonicalChild(plan.InstallDir, plan.ConfigPath, configName))
         {
-            return UpdateStepResult.Fail("managed path escapes install root");
+            return UpdateStepResult.Fail("managed path is not the canonical install-dir child");
         }
 
-        // Confine every per-attempt temporary path to ONE owner-private attempt
-        // root (the staging dir's parent). Later failure cleanup recursively
-        // deletes StagingDir/BackupDir, so a malformed plan must not be able to
-        // point those at an unrelated directory.
-        var attemptRoot = Path.GetDirectoryName(Path.GetFullPath(plan.StagingDir));
-        if (string.IsNullOrEmpty(attemptRoot))
-        {
-            return UpdateStepResult.Fail("plan staging path has no parent");
-        }
+        // Confine every per-attempt temporary path to the TRUSTED root the updater
+        // established from the plan-file location — never a plan-selected path.
+        // Recursive failure cleanup deletes StagingDir/BackupDir, so a tampered
+        // plan must not be able to point those at unrelated data.
+        var fullTrusted = Path.GetFullPath(trustedRoot);
         foreach (var tmp in new[] { plan.StagingDir, plan.BackupDir, plan.ArchivePath, plan.JournalPath })
         {
-            if (!UpdatePaths.IsInside(attemptRoot, tmp))
+            if (!UpdatePaths.IsInside(fullTrusted, tmp))
             {
-                return UpdateStepResult.Fail("temporary path escapes the attempt root");
+                return UpdateStepResult.Fail("temporary path escapes the trusted attempt root");
             }
         }
-        // The attempt root must NOT be the install dir (temporaries live off to
-        // the side, never among managed files).
-        if (UpdatePaths.IsInside(plan.InstallDir, attemptRoot)
-            || UpdatePaths.IsInside(attemptRoot, plan.InstallDir))
+        // The trusted root must NOT overlap the install dir (temporaries live off
+        // to the side, never among managed files).
+        if (UpdatePaths.IsInside(plan.InstallDir, fullTrusted)
+            || UpdatePaths.IsInside(fullTrusted, plan.InstallDir))
         {
             return UpdateStepResult.Fail("attempt root overlaps the install directory");
         }
 
         return UpdateStepResult.Success();
+    }
+
+    // True when <root>/<name> (a direct child) is exactly the full path of
+    // <candidate>, using the platform-correct path comparison.
+    private static bool IsCanonicalChild(string root, string candidate, string name)
+    {
+        if (name != Path.GetFileName(name) || string.IsNullOrEmpty(name))
+        {
+            return false;
+        }
+        var expected = Path.GetFullPath(Path.Combine(root, name));
+        var actual = Path.GetFullPath(candidate);
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        return string.Equals(expected, actual, comparison);
     }
 }

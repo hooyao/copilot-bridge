@@ -235,7 +235,12 @@ jobs:
             prev_tag=$(gh release list --exclude-drafts --exclude-pre-releases -L 1 --json tagName --jq '.[0].tagName // ""')
           fi
           echo "Generating notes since previous release: ${prev_tag:-<none>}"
+          # Create the release as a DRAFT: it is not public and not consumable by
+          # the auto-updater until the anonymous digest verification below passes
+          # and promotes it. A failed verification deletes the draft, so a broken
+          # release is never left published.
           args=(release create "v$version"
+            --draft
             --title "copilot-bridge $version"
             --generate-notes)
           if [ -n "$prev_tag" ]; then
@@ -250,20 +255,70 @@ jobs:
           done
           gh "${args[@]}"
 
-      # Prove the runtime's assumption: every auto-update archive is visible
-      # ANONYMOUSLY (no Authorization header — the exact way the installed bridge
-      # will see it) with uploaded state, a positive size, an HTTPS download URL,
-      # and a usable sha256: digest. `gh` is only the authenticated publishing
-      # mechanism above; this check deliberately uses a bare, unauthenticated
-      # HTTP request so an authenticated view can't paper over a missing digest.
-      - name: Verify anonymous asset digests
+      # Prove the runtime's assumption BEFORE the release is public: every
+      # auto-update archive must be visible with uploaded state, a positive size,
+      # an HTTPS download URL, and a usable sha256: digest. Draft assets are read
+      # with the authenticated gh here (anonymous users can't see a draft); the
+      # PURE-anonymous check runs again after publish, below. If verification
+      # fails, the draft is deleted so no incomplete release is ever published.
+      - name: Verify + publish (draft gate)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${{ needs.version.outputs.version }}"
+
+          check_ok() {
+            # $1 = JSON assets array from `gh release view --json assets`
+            local body="$1"
+            local pending count
+            pending=$(jq -r '[.assets[]
+              | select(.name | test("copilot-bridge-.*\\.(zip|tar\\.gz)$"))
+              | select((.size <= 0)
+                       or ((.apiUrl // .url // "") == "")
+                       or (.digest == null)
+                       or (.digest | startswith("sha256:") | not))
+              ] | length' <<<"$body" 2>/dev/null || echo 99)
+            count=$(jq -r '[.assets[]
+              | select(.name | test("copilot-bridge-.*\\.(zip|tar\\.gz)$"))] | length' \
+              <<<"$body" 2>/dev/null || echo 0)
+            [ "$pending" = "0" ] && [ "$count" -ge 4 ]
+          }
+
+          ok=""
+          for attempt in 1 2 3 4 5 6; do
+            body=$(gh release view "v$version" --json assets 2>/dev/null || echo '{"assets":[]}')
+            if check_ok "$body"; then
+              echo "Draft: all update archives expose a sha256: digest."
+              jq -r '.assets[] | select(.name|test("\\.(zip|tar\\.gz)$"))
+                | "  \(.name)  \(.size)  \(.digest)"' <<<"$body"
+              ok=1
+              break
+            fi
+            echo "attempt $attempt: draft assets not yet complete; retrying…"
+            sleep 10
+          done
+
+          if [ -z "$ok" ]; then
+            echo "error: draft update archives lack usable sha256: digests — deleting draft" >&2
+            gh release delete "v$version" --yes --cleanup-tag || true
+            exit 1
+          fi
+
+          # Verification passed → publish the draft.
+          gh release edit "v$version" --draft=false
+          echo "Published v$version."
+
+      # Belt-and-suspenders: re-check ANONYMOUSLY (no Authorization header — the
+      # exact way the installed bridge sees it) now that the release is public.
+      - name: Verify anonymous asset digests (post-publish)
         env:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           version="${{ needs.version.outputs.version }}"
           api="https://api.github.com/repos/${GH_REPO}/releases/tags/v${version}"
-          # Bounded retry: assets settle to "uploaded" shortly after creation.
           for attempt in 1 2 3 4 5 6; do
             # NO Authorization header — anonymous, like the runtime.
             body=$(curl -fsSL -H "Accept: application/vnd.github+json" \

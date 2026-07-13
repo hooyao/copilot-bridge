@@ -2,6 +2,17 @@ using System.Diagnostics;
 
 namespace CopilotBridge.Update.Wire;
 
+/// <summary>The tri-state outcome of a process-identity check.</summary>
+internal enum IdentityCheck
+{
+    /// <summary>The exact recorded process is alive.</summary>
+    Matched,
+    /// <summary>The process is positively gone, or a different process reused the PID.</summary>
+    AbsentOrReused,
+    /// <summary>Start-time / main-module could not be read (transient access failure).</summary>
+    InspectionFailed,
+}
+
 /// <summary>
 /// Verifies a process's identity before the updater ever terminates it, so a
 /// reused PID can never cause the wrong process to be killed. Identity is the
@@ -36,6 +47,17 @@ internal static class ProcessIdentity
     /// exit, or access failure returns false.
     /// </summary>
     public static bool Matches(int pid, long expectedStartTicks, string? expectedExePath)
+        => Check(pid, expectedStartTicks, expectedExePath) == IdentityCheck.Matched;
+
+    /// <summary>
+    /// Tri-state identity check. <see cref="IdentityCheck.Matched"/> = the exact
+    /// process is alive; <see cref="IdentityCheck.AbsentOrReused"/> = positively
+    /// gone or a different process reused the PID; <see cref="IdentityCheck.InspectionFailed"/>
+    /// = we could not read start-time/main-module (a transient access failure).
+    /// Callers must treat InspectionFailed as "unknown — do not proceed" rather
+    /// than "gone", so a cutover never races a possibly-live parent.
+    /// </summary>
+    public static IdentityCheck Check(int pid, long expectedStartTicks, string? expectedExePath)
     {
         Process process;
         try
@@ -44,29 +66,41 @@ internal static class ProcessIdentity
         }
         catch (ArgumentException)
         {
-            return false; // no such process
+            return IdentityCheck.AbsentOrReused; // no such process
         }
 
         try
         {
             if (process.HasExited)
             {
-                return false;
+                return IdentityCheck.AbsentOrReused;
             }
-            if (StartTicks(process) != expectedStartTicks)
+
+            var ticks = StartTicks(process);
+            if (ticks == 0)
             {
-                return false; // PID reused by a different process
+                // 0 means "could not read start time" (access denied / raced) —
+                // NOT a positive mismatch.
+                return IdentityCheck.InspectionFailed;
             }
+            if (ticks != expectedStartTicks)
+            {
+                return IdentityCheck.AbsentOrReused; // PID reused by a different process
+            }
+
             if (!string.IsNullOrEmpty(expectedExePath))
             {
                 var actual = SafeMainModulePath(process);
-                if (actual is null
-                    || !PathsEqual(actual, expectedExePath))
+                if (actual is null)
                 {
-                    return false;
+                    return IdentityCheck.InspectionFailed; // could not read the module path
+                }
+                if (!PathsEqual(actual, expectedExePath))
+                {
+                    return IdentityCheck.AbsentOrReused;
                 }
             }
-            return true;
+            return IdentityCheck.Matched;
         }
         finally
         {

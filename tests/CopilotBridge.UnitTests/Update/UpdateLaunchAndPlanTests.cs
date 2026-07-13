@@ -99,11 +99,16 @@ public class UpdateLaunchAndPlanTests
         };
     }
 
+
+    // The trusted attempt root the updater would establish from the plan-file
+    // location — here, the parent of the plan's temporary paths.
+    private static string TrustedRoot(string installDir) => installDir + "-attempt";
+
     [Fact]
     public void Valid_plan_passes()
     {
         var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
-        Assert.True(UpdatePlanValidator.Validate(ValidPlan(dir)).Ok);
+        Assert.True(UpdatePlanValidator.Validate(ValidPlan(dir), TrustedRoot(dir)).Ok);
     }
 
     [Fact]
@@ -111,7 +116,7 @@ public class UpdateLaunchAndPlanTests
     {
         var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
         var plan = ValidPlan(dir) with { AssetUrl = "http://insecure/a.zip" };
-        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+        Assert.False(UpdatePlanValidator.Validate(plan, TrustedRoot(dir)).Ok);
     }
 
     [Fact]
@@ -119,7 +124,7 @@ public class UpdateLaunchAndPlanTests
     {
         var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
         var plan = ValidPlan(dir) with { ManagedFiles = ["../evil.exe"] };
-        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+        Assert.False(UpdatePlanValidator.Validate(plan, TrustedRoot(dir)).Ok);
     }
 
     [Fact]
@@ -127,7 +132,7 @@ public class UpdateLaunchAndPlanTests
     {
         var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
         var plan = ValidPlan(dir) with { ProtocolVersion = 999 };
-        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+        Assert.False(UpdatePlanValidator.Validate(plan, TrustedRoot(dir)).Ok);
     }
 
     [Fact]
@@ -135,7 +140,7 @@ public class UpdateLaunchAndPlanTests
     {
         var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
         var plan = ValidPlan(dir) with { AssetSize = 0 };
-        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+        Assert.False(UpdatePlanValidator.Validate(plan, TrustedRoot(dir)).Ok);
     }
 
     [Fact]
@@ -147,7 +152,7 @@ public class UpdateLaunchAndPlanTests
         {
             ManagedFiles = ["copilot-bridge.exe", "copilot-updater.exe", "appsettings.json", "extra.dll"],
         };
-        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+        Assert.False(UpdatePlanValidator.Validate(plan, TrustedRoot(dir)).Ok);
     }
 
     [Fact]
@@ -155,7 +160,21 @@ public class UpdateLaunchAndPlanTests
     {
         var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
         var plan = ValidPlan(dir) with { ManagedFiles = ["copilot-bridge.exe", "appsettings.json"] };
-        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+        Assert.False(UpdatePlanValidator.Validate(plan, TrustedRoot(dir)).Ok);
+    }
+
+    [Fact]
+    public void Nested_bridge_path_that_differs_from_the_replaced_child_is_rejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        // BridgeExePath points at <install>/sub/copilot-bridge.exe — the updater
+        // would verify/kill/launch that, while file replacement targets
+        // <install>/copilot-bridge.exe. Must be rejected (not a canonical child).
+        var plan = ValidPlan(dir) with
+        {
+            BridgeExePath = Path.Combine(dir, "sub", "copilot-bridge.exe"),
+        };
+        Assert.False(UpdatePlanValidator.Validate(plan, TrustedRoot(dir)).Ok);
     }
 
     [Fact]
@@ -168,31 +187,33 @@ public class UpdateLaunchAndPlanTests
         {
             BackupDir = Path.Combine(Path.GetTempPath(), "cb-elsewhere-" + Guid.NewGuid().ToString("N")),
         };
-        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+        Assert.False(UpdatePlanValidator.Validate(plan, TrustedRoot(dir)).Ok);
     }
 
     [Fact]
     public void Attempt_root_overlapping_the_install_dir_is_rejected()
     {
         var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
-        // Staging (hence the attempt root) placed inside the install dir.
+        // A trusted root INSIDE the install dir, with temporaries under it — the
+        // attempt area must never overlap the install directory.
+        var overlappingRoot = Path.Combine(dir, "sub");
         var plan = ValidPlan(dir) with
         {
-            StagingDir = Path.Combine(dir, "sub", "staging"),
-            BackupDir = Path.Combine(dir, "sub", "backup"),
-            ArchivePath = Path.Combine(dir, "sub", "a.zip"),
-            JournalPath = Path.Combine(dir, "sub", "t.log"),
+            StagingDir = Path.Combine(overlappingRoot, "staging"),
+            BackupDir = Path.Combine(overlappingRoot, "backup"),
+            ArchivePath = Path.Combine(overlappingRoot, "a.zip"),
+            JournalPath = Path.Combine(overlappingRoot, "t.log"),
         };
-        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+        Assert.False(UpdatePlanValidator.Validate(plan, overlappingRoot).Ok);
     }
 
     [Fact]
     public void Non_positive_phase_timeout_is_rejected()
     {
         var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
-        Assert.False(UpdatePlanValidator.Validate(ValidPlan(dir) with { DownloadTimeoutMs = 0 }).Ok);
-        Assert.False(UpdatePlanValidator.Validate(ValidPlan(dir) with { ParentExitTimeoutMs = -1 }).Ok);
-        Assert.False(UpdatePlanValidator.Validate(ValidPlan(dir) with { ReadyTimeoutMs = 0 }).Ok);
+        Assert.False(UpdatePlanValidator.Validate(ValidPlan(dir) with { DownloadTimeoutMs = 0 }, TrustedRoot(dir)).Ok);
+        Assert.False(UpdatePlanValidator.Validate(ValidPlan(dir) with { ParentExitTimeoutMs = -1 }, TrustedRoot(dir)).Ok);
+        Assert.False(UpdatePlanValidator.Validate(ValidPlan(dir) with { ReadyTimeoutMs = 0 }, TrustedRoot(dir)).Ok);
     }
 
     [Theory]
@@ -222,6 +243,6 @@ public class UpdateLaunchAndPlanTests
             "WorkingDirectory" => plan with { WorkingDirectory = "" },
             _ => plan,
         };
-        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+        Assert.False(UpdatePlanValidator.Validate(plan, TrustedRoot(dir)).Ok);
     }
 }

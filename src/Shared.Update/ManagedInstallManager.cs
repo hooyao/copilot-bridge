@@ -23,6 +23,10 @@ internal sealed class ManagedInstallManager
 
     // Hashes recorded at preflight, checked again at cutover.
     private readonly Dictionary<string, string> _managedHashes = new(StringComparer.Ordinal);
+    // Managed name → same-volume temp file (in the install dir) holding the exact
+    // replacement bytes, materialized+flushed during preparation so cutover is
+    // only atomic renames.
+    private readonly Dictionary<string, string> _stagedReplacements = new(StringComparer.Ordinal);
     private ConfigSnapshot? _configSnapshot;
     private string _configBakPath = string.Empty;
     private string _privateConfigCopy = string.Empty;
@@ -186,13 +190,61 @@ internal sealed class ManagedInstallManager
     }
 
     /// <summary>
-    /// Cutover: rename the original config to a unique <c>.bak</c>, verify the
-    /// renamed bytes still match the snapshot, then install the staged managed
-    /// binaries and write the merged config. Assumes the parent has exited and
-    /// <see cref="RevalidateNoDrift"/> already passed. Returns a fail reason
-    /// without leaving a half-open state the rollback path can't recover.
+    /// Materialize every replacement (new managed binaries + the merged config)
+    /// as a flushed, same-volume temporary file next to its install target during
+    /// PREPARATION, and verify each was written completely. A disk-full or write
+    /// failure surfaces here, before the parent is stopped, so <see cref="Cutover"/>
+    /// can be pure atomic renames. Must run after <see cref="Prepare"/>.
     /// </summary>
-    public UpdateStepResult Cutover(string mergedConfigText)
+    public UpdateStepResult StageReplacements(string mergedConfigText)
+    {
+        if (_configSnapshot is null)
+        {
+            return UpdateStepResult.Fail("stage before prepare");
+        }
+        try
+        {
+            foreach (var f in ManagedFiles())
+            {
+                var isConfig = string.Equals(
+                    f.Name, Path.GetFileName(_plan.ConfigPath), StringComparison.OrdinalIgnoreCase);
+                var temp = $"{f.InstallPath}.new.{_plan.AttemptId}";
+
+                if (isConfig)
+                {
+                    WriteAllBytesFlushed(temp, System.Text.Encoding.UTF8.GetBytes(mergedConfigText));
+                }
+                else
+                {
+                    if (!File.Exists(f.StagingPath))
+                    {
+                        continue; // nothing to install for this name
+                    }
+                    CopyFlushed(f.StagingPath, temp);
+                    // Verify the staged temp equals the staged source byte-for-byte.
+                    if (HashFile(temp) != HashFile(f.StagingPath))
+                    {
+                        return UpdateStepResult.Fail($"staged replacement verify failed: {f.Name}");
+                    }
+                }
+                _stagedReplacements[f.Name] = temp;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return UpdateStepResult.Fail($"cannot stage replacements: {ex.GetType().Name}");
+        }
+        return UpdateStepResult.Success();
+    }
+
+    /// <summary>
+    /// Cutover: rename the original config to a unique <c>.bak</c>, verify the
+    /// renamed bytes still match the snapshot, then atomically move each pre-staged
+    /// replacement into place. No writes happen here — only renames — so a failure
+    /// cannot leave a half-written managed file. Assumes the parent has exited and
+    /// <see cref="RevalidateNoDrift"/> already passed.
+    /// </summary>
+    public UpdateStepResult Cutover()
     {
         if (_configSnapshot is null)
         {
@@ -227,20 +279,13 @@ internal sealed class ManagedInstallManager
         {
             foreach (var f in ManagedFiles())
             {
-                if (string.Equals(f.Name, Path.GetFileName(_plan.ConfigPath), StringComparison.OrdinalIgnoreCase))
+                if (!_stagedReplacements.TryGetValue(f.Name, out var temp))
                 {
                     continue;
                 }
-                if (!File.Exists(f.StagingPath))
-                {
-                    continue;
-                }
-                Directory.CreateDirectory(Path.GetDirectoryName(f.InstallPath)!);
-                CopyOverManagedFile(f.StagingPath, f.InstallPath);
+                MoveOverManagedFile(temp, f.InstallPath);
                 RestoreExecutableMode(f.InstallPath);
             }
-
-            File.WriteAllText(_plan.ConfigPath, mergedConfigText);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -352,23 +397,24 @@ internal sealed class ManagedInstallManager
         return Convert.ToHexStringLower(sha.ComputeHash(stream));
     }
 
-    // Replace a managed binary, tolerating the brief post-exit image lock Windows
-    // keeps on a just-terminated executable. The parent has already exited and
-    // been verified; a short bounded retry (with a rename-aside fallback) makes
-    // the overwrite reliable without weakening any safety check.
-    private static void CopyOverManagedFile(string stagingPath, string installPath)
+    // Atomically move a pre-staged same-volume temp file over a managed target,
+    // tolerating the brief post-exit image lock Windows keeps on a just-terminated
+    // executable. The parent has already exited and been verified; a short bounded
+    // retry (with a rename-aside fallback) makes the replace reliable. Because the
+    // source is a same-directory temp, the move is atomic — no partial write.
+    private static void MoveOverManagedFile(string tempPath, string installPath)
     {
         const int attempts = 20;
         for (var i = 0; ; i++)
         {
             try
             {
-                File.Copy(stagingPath, installPath, overwrite: true);
+                File.Move(tempPath, installPath, overwrite: true);
                 return;
             }
             catch (IOException) when (i < attempts)
             {
-                // First fall back to moving the locked file aside, then copy.
+                // First fall back to moving the locked file aside, then retry.
                 if (i == attempts / 2)
                 {
                     TryRenameAside(installPath);
@@ -380,6 +426,32 @@ internal sealed class ManagedInstallManager
                 Thread.Sleep(50);
             }
         }
+    }
+
+    // Write bytes to a NEW file and flush to disk before returning, so a
+    // disk-full failure surfaces now rather than at cutover.
+    private static void WriteAllBytesFlushed(string path, byte[] bytes)
+    {
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+        using var fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        fs.Write(bytes, 0, bytes.Length);
+        fs.Flush(flushToDisk: true);
+    }
+
+    // Copy a file and flush to disk before returning.
+    private static void CopyFlushed(string source, string dest)
+    {
+        if (File.Exists(dest))
+        {
+            File.Delete(dest);
+        }
+        using var src = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var dst = new FileStream(dest, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        src.CopyTo(dst);
+        dst.Flush(flushToDisk: true);
     }
 
     private static void TryRenameAside(string installPath)

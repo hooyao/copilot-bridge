@@ -108,6 +108,24 @@ public class GitHubReleaseClientTests
     }
 
     [Fact]
+    public async Task Malformed_next_link_fails_open_not_treated_as_exhausted()
+    {
+        // A present-but-malformed rel="next" (non-HTTPS URL) must NOT be read as
+        // "no more pages" — exhaustion is unproven, so discovery fails open.
+        var resp = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(OneReleasePage, System.Text.Encoding.UTF8, "application/json"),
+        };
+        resp.Headers.TryAddWithoutValidation("Link", "<ftp://evil/next>; rel=\"next\"");
+        var handler = new FakeHttpMessageHandler((_, _) => resp);
+
+        var result = await Client(handler).DiscoverAsync(CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("malformed", result.FailureReason, System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Endless_distinct_full_pages_hit_the_page_limit()
     {
         var n = 0;

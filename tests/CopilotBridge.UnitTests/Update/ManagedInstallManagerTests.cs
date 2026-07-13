@@ -94,9 +94,10 @@ public class ManagedInstallManagerTests : IDisposable
 
         var newDefault = File.ReadAllText(Path.Combine(_staging, ConfigName));
         var merged = mgr.BuildMergedConfig(newDefault);
+        Assert.True(mgr.StageReplacements(merged).Ok);
 
         Assert.True(mgr.RevalidateNoDrift());
-        Assert.True(mgr.Cutover(merged).Ok);
+        Assert.True(mgr.Cutover().Ok);
 
         Assert.Equal("new-bridge", File.ReadAllText(Path.Combine(_install, BridgeName)));
         Assert.Equal("new-updater", File.ReadAllText(Path.Combine(_install, UpdaterName)));
@@ -121,7 +122,8 @@ public class ManagedInstallManagerTests : IDisposable
         var mgr = Manager();
         Assert.True(mgr.Prepare().Ok);
         var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
-        Assert.True(mgr.Cutover(merged).Ok);
+        Assert.True(mgr.StageReplacements(merged).Ok);
+        Assert.True(mgr.Cutover().Ok);
 
         // A successful migration would DROP RemovedLegacyOption...
         Assert.DoesNotContain("RemovedLegacyOption", File.ReadAllText(Path.Combine(_install, ConfigName)));
@@ -143,7 +145,8 @@ public class ManagedInstallManagerTests : IDisposable
         var mgr = Manager();
         Assert.True(mgr.Prepare().Ok);
         var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
-        Assert.True(mgr.Cutover(merged).Ok);
+        Assert.True(mgr.StageReplacements(merged).Ok);
+        Assert.True(mgr.Cutover().Ok);
 
         // Simulate the transaction .bak being lost/corrupted before rollback.
         Assert.True(File.Exists(mgr.ConfigBackupPath));
@@ -164,7 +167,8 @@ public class ManagedInstallManagerTests : IDisposable
         var mgr = Manager();
         Assert.True(mgr.Prepare().Ok);
         var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
-        Assert.True(mgr.Cutover(merged).Ok);
+        Assert.True(mgr.StageReplacements(merged).Ok);
+        Assert.True(mgr.Cutover().Ok);
 
         // Tamper the .bak so its hash no longer matches the immutable snapshot.
         File.WriteAllText(mgr.ConfigBackupPath, "tampered!");
@@ -183,7 +187,8 @@ public class ManagedInstallManagerTests : IDisposable
         var mgr = Manager();
         Assert.True(mgr.Prepare().Ok);
         var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
-        Assert.True(mgr.Cutover(merged).Ok);
+        Assert.True(mgr.StageReplacements(merged).Ok);
+        Assert.True(mgr.Cutover().Ok);
 
         // Destroy a managed-binary backup — rollback can no longer restore it, which
         // is the branch that escalates to the Unrecovered outcome upstream.
@@ -201,7 +206,8 @@ public class ManagedInstallManagerTests : IDisposable
         var mgr = Manager();
         Assert.True(mgr.Prepare().Ok);
         var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
-        Assert.True(mgr.Cutover(merged).Ok);
+        Assert.True(mgr.StageReplacements(merged).Ok);
+        Assert.True(mgr.Cutover().Ok);
 
         // Corrupt a backup after preparation — rollback must NOT copy+launch
         // unverified bytes while reporting success; it must fail the hash check.
@@ -219,12 +225,13 @@ public class ManagedInstallManagerTests : IDisposable
         var mgr = Manager();
         Assert.True(mgr.Prepare().Ok);
         var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
+        Assert.True(mgr.StageReplacements(merged).Ok);
 
         // Operator edits the config after Prepare, before cutover.
         File.WriteAllText(Path.Combine(_install, ConfigName), """{ "Server": { "Port": 22222 } }""");
 
         Assert.False(mgr.RevalidateNoDrift());
-        var cutover = mgr.Cutover(merged);
+        var cutover = mgr.Cutover();
         Assert.False(cutover.Ok);
 
         // Nothing installed; the operator's latest edit is intact.

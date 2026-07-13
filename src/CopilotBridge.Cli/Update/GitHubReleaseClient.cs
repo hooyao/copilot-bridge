@@ -173,7 +173,20 @@ internal sealed class GitHubReleaseClient
                     page = await resp.Content
                         .ReadFromJsonAsync(JsonContext.Default.ListGitHubRelease, perReq.Token)
                         .ConfigureAwait(false);
-                    next = NextLink(resp.Headers);
+
+                    // A present-but-malformed next relation means exhaustion is not
+                    // proven → fail open rather than report a partial release set.
+                    switch (ParseNextLink(resp.Headers, out var nextUrl))
+                    {
+                        case NextLinkKind.Absent:
+                            next = null;
+                            break;
+                        case NextLinkKind.Valid:
+                            next = nextUrl;
+                            break;
+                        default:
+                            return ReleaseDiscoveryResult.Fail("update-check pagination link malformed");
+                    }
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -210,11 +223,18 @@ internal sealed class GitHubReleaseClient
     }
 
     // GitHub paginates via RFC 5988 Link headers: <url>; rel="next".
-    private static string? NextLink(HttpResponseHeaders headers)
+    // Distinguishes ABSENT (no next relation → traversal is genuinely exhausted)
+    // from PRESENT-BUT-MALFORMED (a next relation whose URL is missing/non-HTTPS →
+    // exhaustion is NOT proven, so the caller must fail open rather than silently
+    // report a partial set).
+    private enum NextLinkKind { Absent, Valid, Malformed }
+
+    private static NextLinkKind ParseNextLink(HttpResponseHeaders headers, out string? url)
     {
+        url = null;
         if (!headers.TryGetValues("Link", out var values))
         {
-            return null;
+            return NextLinkKind.Absent;
         }
         foreach (var header in values)
         {
@@ -230,13 +250,17 @@ internal sealed class GitHubReleaseClient
                 {
                     continue;
                 }
-                var url = segments[0].Trim().Trim('<', '>', ' ');
-                if (url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                // A next relation IS present. Its URL must be a usable HTTPS link;
+                // anything else is malformed, not "no more pages".
+                var candidate = segments[0].Trim().Trim('<', '>', ' ');
+                if (candidate.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
                 {
-                    return url;
+                    url = candidate;
+                    return NextLinkKind.Valid;
                 }
+                return NextLinkKind.Malformed;
             }
         }
-        return null;
+        return NextLinkKind.Absent;
     }
 }
