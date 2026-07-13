@@ -31,10 +31,13 @@ directory is never replaced by a release archive.
 }
 ```
 
-These **code defaults** (enabled, stable-only) are authoritative. An
-installation upgraded from a build that predates this section still
-auto-checks, because config migration overlays the *old* `appsettings.json`
-onto the new template and would not reintroduce a section the old file lacked.
+These **code defaults** (enabled, stable-only) are what make the feature
+on-by-default — not the stock JSON. An installation upgraded from a build that
+predates this section has no `AutoUpdate` keys in its *own* `appsettings.json`,
+so its **pre-update gate** relies on the POCO defaults. Configuration migration
+walks the *new* template and keeps new-only keys, so a successful update **does**
+write this section into the merged file — but only after that gate has already
+run, which is why the defaults live in code, not solely in the stock JSON.
 
 `AllowBetaUpdates=true` does not *prefer* betas — it only widens the candidate
 set. The highest [Semantic Versioning 2.0](https://semver.org) version in the

@@ -30,6 +30,7 @@ internal sealed class UpdaterEngine
     private readonly TransactionJournal _journal;
     private readonly TextWriter _stderr;
     private readonly string _trustedRoot;
+    private ManagedInstallManager? _install;
 
     public UpdaterEngine(UpdatePlan plan, TransactionJournal journal, TextWriter stderr, string trustedRoot)
     {
@@ -55,6 +56,7 @@ internal sealed class UpdaterEngine
         }
 
         var install = new ManagedInstallManager(_plan, _journal);
+        _install = install;
 
         // 2. Download + verify + extract. If the archive is already present and
         //    already verifies against the plan's size+digest (e.g. a re-run after
@@ -190,7 +192,7 @@ internal sealed class UpdaterEngine
             if (ready)
             {
                 _journal.Write("commit");
-                install.CleanupAfterCommit();
+                install.CleanupAfterCommit(_trustedRoot);
                 return UpdaterExit.Committed;
             }
 
@@ -297,9 +299,13 @@ internal sealed class UpdaterEngine
         }
         var msg = UpdatePipeCodec.DecodeControl(reply);
         return msg is not null
+            && msg.ProtocolVersion == UpdateWire.ProtocolVersion
             && msg.Kind == UpdateWire.MsgCutoverAuthorized
             && string.Equals(msg.AttemptId, _plan.AttemptId, StringComparison.Ordinal)
-            && string.Equals(msg.Token, _plan.HandoffToken, StringComparison.Ordinal);
+            && string.Equals(msg.Token, _plan.HandoffToken, StringComparison.Ordinal)
+            // Bind to the exact parent identity encoded in the plan — a control
+            // message from any other process is rejected before cutover.
+            && msg.SenderPid == _plan.ParentPid;
     }
 
     /// <summary>
@@ -465,7 +471,11 @@ internal sealed class UpdaterEngine
             // The parent may already be serving; that's fine.
         }
 
-        // Clean up private temporaries (never the install dir).
+        // Clean up private temporaries (never the install dir), plus any
+        // same-directory *.new.<attempt> replacement temporaries a completed
+        // StageReplacements left in the install dir (a pre-cutover failure after
+        // staging would otherwise leave them behind).
+        _install?.RemoveStagedReplacementTemps();
         TryDeleteDirectory(_plan.StagingDir);
         TryDelete(_plan.ArchivePath);
         return UpdaterExit.PreflightFailed;

@@ -2,12 +2,15 @@ namespace CopilotBridge.Cli.Hosting.Options;
 
 /// <summary>
 /// Bound from <c>appsettings.json</c> section <c>AutoUpdate</c>. Controls the
-/// serve-only startup update gate. The code defaults here are authoritative:
-/// an installation upgraded from a build that predates this section has no
-/// <c>AutoUpdate</c> keys, so the feature must still default to enabled
-/// stable-only checking from these POCO defaults alone — never from the stock
-/// JSON (which a successful config migration overlays with the old file's
-/// values and would therefore not reintroduce for an old installation).
+/// serve-only startup update gate. The code defaults here are authoritative for
+/// the gate that runs BEFORE any migration: an installation upgraded from a build
+/// that predates this section has no <c>AutoUpdate</c> keys in its own
+/// <c>appsettings.json</c>, so the pre-update gate must default to enabled,
+/// stable-only checking from these POCO defaults alone. (Configuration migration
+/// walks the NEW template and keeps new-only properties, so a successful update
+/// then WRITES this section into the merged file — but that happens after the
+/// gate has already decided, which is why the POCO defaults, not the stock JSON,
+/// are what the feature relies on to be on by default.)
 /// </summary>
 internal sealed class AutoUpdateOptions
 {

@@ -74,13 +74,20 @@ internal static class UpdatePlanValidator
         var bridgeName = Path.GetFileName(plan.BridgeExePath);
         var updaterName = Path.GetFileName(plan.UpdaterExePath);
         var configName = Path.GetFileName(plan.ConfigPath);
-        var expectedManaged = new HashSet<string>(StringComparer.Ordinal)
+        // On Windows the filesystem is case-insensitive, so bridge.exe and
+        // BRIDGE.EXE would target the SAME file — build the distinctness set with
+        // the platform-correct comparer so aliased names are rejected.
+        var nameComparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+        var expectedManaged = new HashSet<string>(nameComparer)
         {
             bridgeName, updaterName, configName,
         };
         if (expectedManaged.Count != 3)
         {
-            // The three names must be distinct, or the allowlist is ambiguous.
+            // The three names must be distinct (case-insensitively on Windows), or
+            // the allowlist is ambiguous.
             return UpdateStepResult.Fail("managed target names are not distinct");
         }
         if (plan.ManagedFiles.Count != expectedManaged.Count

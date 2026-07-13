@@ -267,9 +267,13 @@ internal sealed class StartupUpdateGate
                 var msg = UpdatePipeCodec.DecodeControl(line);
                 prepared = msg;
                 var valid = msg is not null
+                    && msg.ProtocolVersion == UpdateWire.ProtocolVersion
                     && msg.Kind == UpdateWire.MsgPrepared
                     && string.Equals(msg.AttemptId, attemptId, StringComparison.Ordinal)
-                    && string.Equals(msg.Token, handoff.Token, StringComparison.Ordinal);
+                    && string.Equals(msg.Token, handoff.Token, StringComparison.Ordinal)
+                    // Bind to the exact updater process we launched — a message from
+                    // any other process holding copied capability material is rejected.
+                    && msg.SenderPid == updater.Id;
                 if (!valid)
                 {
                     return null; // no authorization

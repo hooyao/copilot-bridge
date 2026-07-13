@@ -284,7 +284,10 @@ internal sealed class ManagedInstallManager
                     continue;
                 }
                 MoveOverManagedFile(temp, f.InstallPath);
-                RestoreExecutableMode(f.InstallPath);
+                if (!IsConfig(f.Name))
+                {
+                    RestoreExecutableMode(f.InstallPath);
+                }
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -378,14 +381,43 @@ internal sealed class ManagedInstallManager
         return UpdateStepResult.Success();
     }
 
-    /// <summary>Best-effort cleanup of transaction temporaries after a committed update.</summary>
-    public void CleanupAfterCommit()
+    /// <summary>
+    /// Best-effort cleanup of ALL transaction temporaries after a committed
+    /// update: the whole owner-private attempt root (plan.json with its handoff
+    /// capability, the private updater copy, staging, backup, archive, journal).
+    /// The running updater is the copy under the attempt root, so on Windows its
+    /// own binary may be undeletable — that's fine, cleanup is best-effort and
+    /// never blocks the now-serving new bridge. Also removes the transaction
+    /// <c>.bak</c> and any leftover same-directory replacement temporaries.
+    /// </summary>
+    public void CleanupAfterCommit(string attemptRoot)
     {
         TryDelete(_configBakPath);
-        TryDeleteDirectory(_plan.BackupDir);
-        TryDeleteDirectory(_plan.StagingDir);
-        TryDelete(_plan.ArchivePath);
+        RemoveStagedReplacementTemps();
+        // The attempt root holds plan.json, the updater copy, staging/, backup/,
+        // the archive, and the journal — delete the lot.
+        TryDeleteDirectory(attemptRoot);
     }
+
+    /// <summary>
+    /// Remove any same-directory replacement temporaries this attempt created in
+    /// the install directory (the <c>*.new.&lt;attempt&gt;</c> files). Safe to call
+    /// on a pre-cutover failure (they were moved away on a successful cutover, so
+    /// nothing is left then).
+    /// </summary>
+    public void RemoveStagedReplacementTemps()
+    {
+        foreach (var temp in _stagedReplacements.Values)
+        {
+            TryDelete(temp);
+        }
+        _stagedReplacements.Clear();
+    }
+
+    // True when a managed file name is the configuration file (never marked
+    // executable, unlike the bridge/updater binaries).
+    private bool IsConfig(string name) =>
+        string.Equals(name, Path.GetFileName(_plan.ConfigPath), StringComparison.OrdinalIgnoreCase);
 
     public string ConfigBackupPath => _configBakPath;
     public string PrivateConfigCopyPath => _privateConfigCopy;
