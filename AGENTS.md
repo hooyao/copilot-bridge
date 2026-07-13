@@ -90,7 +90,22 @@ dotnet test --filter FullyQualifiedName~<TestName>       # single test
 
 # Any OS, explicit RID (win-x64 | win-arm64 | linux-x64 | osx-arm64):
 dotnet publish src/CopilotBridge.Cli -c Release -r <rid> -o ./publish
+# The startup self-update feature adds a SECOND AOT executable that ships in
+# every release archive next to the bridge (a running Windows .exe cannot
+# replace itself). Publish it to the same output dir:
+dotnet publish src/CopilotBridge.Updater -c Release -r <rid> -o ./publish
+#  → .\publish\copilot-updater(.exe)
 ```
+
+The bridge and `copilot-updater` share the frozen cross-process wire contract
+and the transaction engine via **`src/Shared.Update/`** — one source copy,
+compiled into both by a `<Compile Include="..\Shared.Update\**\*.cs">` glob (no
+third runtime assembly). The wire DTOs pin every JSON name with
+`[JsonPropertyName]` under their own source-gen context so the bridge's global
+`SnakeCaseLower` policy can't shift the plan/message bytes. **Packaging must
+include both executables** — a release that ships only `copilot-bridge` leaves
+a bridge that finds no updater and silently keeps the current version. See
+`docs/auto-update.md`.
 
 `build-aot.bat` handles the **Windows-local** AOT-linker prerequisites for you:
 it adds `vswhere.exe` to PATH, uses it to locate the VS install, runs

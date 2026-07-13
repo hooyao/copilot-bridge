@@ -1,0 +1,260 @@
+using System.Text;
+using CopilotBridge.Update.Wire;
+using Xunit;
+
+namespace CopilotBridge.UnitTests.Update;
+
+/// <summary>
+/// Disposable-directory transaction tests for <see cref="ManagedInstallManager"/>
+/// and <see cref="ConfigSnapshot"/> ("Template-based configuration migration",
+/// "Complete pre-cutover safety", "Coordinated cutover", "Full rollback to exact
+/// old installation"). No processes or IPC — just the filesystem mechanics.
+/// </summary>
+public class ManagedInstallManagerTests : IDisposable
+{
+    private readonly string _root;
+    private readonly string _install;
+    private readonly string _staging;
+    private readonly string _backup;
+
+    public ManagedInstallManagerTests()
+    {
+        _root = Path.Combine(Path.GetTempPath(), "cb-install-" + Guid.NewGuid().ToString("N"));
+        _install = Path.Combine(_root, "install");
+        _staging = Path.Combine(_root, "staging");
+        _backup = Path.Combine(_root, "backup");
+        Directory.CreateDirectory(_install);
+        Directory.CreateDirectory(_staging);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
+    }
+
+    private const string BridgeName = "copilot-bridge.exe";
+    private const string UpdaterName = "copilot-updater.exe";
+    private const string ConfigName = "appsettings.json";
+
+    private UpdatePlan Plan() => new()
+    {
+        AttemptId = "att1",
+        ParentPid = 1,
+        ParentStartTicks = 1,
+        InstallDir = _install,
+        BridgeExePath = Path.Combine(_install, BridgeName),
+        UpdaterExePath = Path.Combine(_install, UpdaterName),
+        ConfigPath = Path.Combine(_install, ConfigName),
+        CurrentVersion = "0.4.13",
+        TargetVersion = "0.4.14",
+        AssetName = "a.zip",
+        AssetUrl = "https://example/a.zip",
+        AssetSize = 1,
+        AssetSha256 = new string('a', 64),
+        ArchiveKind = UpdateWire.ArchiveZip,
+        StagingDir = _staging,
+        BackupDir = _backup,
+        ArchivePath = Path.Combine(_root, "a.zip"),
+        JournalPath = Path.Combine(_root, "t.log"),
+        ManagedFiles = [BridgeName, UpdaterName, ConfigName],
+        OriginalArgs = [],
+        WorkingDirectory = _install,
+        DownloadTimeoutMs = 1000,
+        ParentExitTimeoutMs = 1000,
+        ReadyTimeoutMs = 1000,
+        HandoffPipe = "p",
+        HandoffToken = new string('b', 64),
+    };
+
+    private ManagedInstallManager Manager()
+        => new(Plan(), new TransactionJournal(Path.Combine(_root, "t.log")));
+
+    private void SeedInstalled(string bridge, string updater, string config)
+    {
+        File.WriteAllText(Path.Combine(_install, BridgeName), bridge);
+        File.WriteAllText(Path.Combine(_install, UpdaterName), updater);
+        File.WriteAllText(Path.Combine(_install, ConfigName), config);
+    }
+
+    private void SeedStaging(string bridge, string updater, string newConfig)
+    {
+        File.WriteAllText(Path.Combine(_staging, BridgeName), bridge);
+        File.WriteAllText(Path.Combine(_staging, UpdaterName), updater);
+        File.WriteAllText(Path.Combine(_staging, ConfigName), newConfig);
+    }
+
+    [Fact]
+    public void Successful_transaction_installs_new_binaries_and_merged_config()
+    {
+        SeedInstalled("old-bridge", "old-updater", """{ "Server": { "Port": 19000 } }""");
+        SeedStaging("new-bridge", "new-updater", """{ "Server": { "Port": 8765, "New": 1 } }""");
+
+        var mgr = Manager();
+        Assert.True(mgr.Prepare().Ok);
+
+        var newDefault = File.ReadAllText(Path.Combine(_staging, ConfigName));
+        var merged = mgr.BuildMergedConfig(newDefault);
+
+        Assert.True(mgr.RevalidateNoDrift());
+        Assert.True(mgr.Cutover(merged).Ok);
+
+        Assert.Equal("new-bridge", File.ReadAllText(Path.Combine(_install, BridgeName)));
+        Assert.Equal("new-updater", File.ReadAllText(Path.Combine(_install, UpdaterName)));
+
+        // Merged config: old port kept, new key added.
+        var installedConfig = File.ReadAllText(Path.Combine(_install, ConfigName));
+        Assert.Contains("19000", installedConfig);
+        Assert.Contains("\"New\"", installedConfig);
+
+        // The original config is preserved under a unique .bak.
+        Assert.True(File.Exists(mgr.ConfigBackupPath));
+        Assert.Contains(".bak.att1", mgr.ConfigBackupPath);
+    }
+
+    [Fact]
+    public void Rollback_restores_exact_original_config_including_old_only_keys()
+    {
+        var originalConfig = """{ "Server": { "Port": 19000 }, "RemovedLegacyOption": true }""";
+        SeedInstalled("old-bridge", "old-updater", originalConfig);
+        SeedStaging("new-bridge", "new-updater", """{ "Server": { "Port": 8765 } }""");
+
+        var mgr = Manager();
+        Assert.True(mgr.Prepare().Ok);
+        var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
+        Assert.True(mgr.Cutover(merged).Ok);
+
+        // A successful migration would DROP RemovedLegacyOption...
+        Assert.DoesNotContain("RemovedLegacyOption", File.ReadAllText(Path.Combine(_install, ConfigName)));
+
+        // ...but a rollback must restore the EXACT original bytes, old-only key included.
+        Assert.True(mgr.Rollback().Ok);
+        Assert.Equal(originalConfig, File.ReadAllText(Path.Combine(_install, ConfigName)));
+        Assert.Equal("old-bridge", File.ReadAllText(Path.Combine(_install, BridgeName)));
+        Assert.Equal("old-updater", File.ReadAllText(Path.Combine(_install, UpdaterName)));
+    }
+
+    [Fact]
+    public void Rollback_falls_back_to_private_copy_when_bak_is_missing()
+    {
+        var originalConfig = """{ "Server": { "Port": 19000 }, "RemovedLegacyOption": true }""";
+        SeedInstalled("old-bridge", "old-updater", originalConfig);
+        SeedStaging("new-bridge", "new-updater", """{ "Server": { "Port": 8765 } }""");
+
+        var mgr = Manager();
+        Assert.True(mgr.Prepare().Ok);
+        var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
+        Assert.True(mgr.Cutover(merged).Ok);
+
+        // Simulate the transaction .bak being lost/corrupted before rollback.
+        Assert.True(File.Exists(mgr.ConfigBackupPath));
+        File.Delete(mgr.ConfigBackupPath);
+
+        // Rollback must still restore the exact original from the verified private copy.
+        Assert.True(mgr.Rollback().Ok);
+        Assert.Equal(originalConfig, File.ReadAllText(Path.Combine(_install, ConfigName)));
+    }
+
+    [Fact]
+    public void Rollback_falls_back_to_private_copy_when_bak_is_tampered()
+    {
+        var originalConfig = """{ "Server": { "Port": 19000 } }""";
+        SeedInstalled("old-bridge", "old-updater", originalConfig);
+        SeedStaging("new-bridge", "new-updater", """{ "Server": { "Port": 8765 } }""");
+
+        var mgr = Manager();
+        Assert.True(mgr.Prepare().Ok);
+        var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
+        Assert.True(mgr.Cutover(merged).Ok);
+
+        // Tamper the .bak so its hash no longer matches the immutable snapshot.
+        File.WriteAllText(mgr.ConfigBackupPath, "tampered!");
+
+        Assert.True(mgr.Rollback().Ok);
+        // The exact original (not the tampered bytes) is restored from the private copy.
+        Assert.Equal(originalConfig, File.ReadAllText(Path.Combine(_install, ConfigName)));
+    }
+
+    [Fact]
+    public void Rollback_fails_when_a_managed_binary_backup_is_missing()
+    {
+        SeedInstalled("old-bridge", "old-updater", """{ "Server": { "Port": 19000 } }""");
+        SeedStaging("new-bridge", "new-updater", """{ "Server": { "Port": 8765 } }""");
+
+        var mgr = Manager();
+        Assert.True(mgr.Prepare().Ok);
+        var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
+        Assert.True(mgr.Cutover(merged).Ok);
+
+        // Destroy a managed-binary backup — rollback can no longer restore it, which
+        // is the branch that escalates to the Unrecovered outcome upstream.
+        File.Delete(Path.Combine(_backup, BridgeName));
+
+        Assert.False(mgr.Rollback().Ok);
+    }
+
+    [Fact]
+    public void Cutover_refuses_when_config_drifts_after_prepare()
+    {
+        SeedInstalled("old-bridge", "old-updater", """{ "Server": { "Port": 19000 } }""");
+        SeedStaging("new-bridge", "new-updater", """{ "Server": { "Port": 8765 } }""");
+
+        var mgr = Manager();
+        Assert.True(mgr.Prepare().Ok);
+        var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
+
+        // Operator edits the config after Prepare, before cutover.
+        File.WriteAllText(Path.Combine(_install, ConfigName), """{ "Server": { "Port": 22222 } }""");
+
+        Assert.False(mgr.RevalidateNoDrift());
+        var cutover = mgr.Cutover(merged);
+        Assert.False(cutover.Ok);
+
+        // Nothing installed; the operator's latest edit is intact.
+        Assert.Equal("old-bridge", File.ReadAllText(Path.Combine(_install, BridgeName)));
+        Assert.Contains("22222", File.ReadAllText(Path.Combine(_install, ConfigName)));
+    }
+
+    [Fact]
+    public void Prepare_fails_when_a_staged_binary_is_missing()
+    {
+        SeedInstalled("old-bridge", "old-updater", "{}");
+        // Only stage the config, not the binaries.
+        File.WriteAllText(Path.Combine(_staging, ConfigName), "{}");
+
+        Assert.False(Manager().Prepare().Ok);
+    }
+
+    [Fact]
+    public void Prepare_probes_install_writability_without_touching_managed_targets()
+    {
+        SeedInstalled("old-bridge", "old-updater", "{}");
+        SeedStaging("new-bridge", "new-updater", "{}");
+
+        // Record the managed binaries' bytes; the writability probe must not alter
+        // them (it writes and deletes a throwaway probe file, nothing managed).
+        var bridgeBefore = File.ReadAllText(Path.Combine(_install, BridgeName));
+
+        Assert.True(Manager().Prepare().Ok);
+
+        Assert.Equal(bridgeBefore, File.ReadAllText(Path.Combine(_install, BridgeName)));
+        // No probe file left behind.
+        Assert.Empty(Directory.GetFiles(_install, ".copilot-update-probe.*"));
+    }
+
+    [Fact]
+    public void ConfigSnapshot_detects_drift_and_writes_verified_copy()
+    {
+        var path = Path.Combine(_install, ConfigName);
+        File.WriteAllText(path, "original");
+        var snap = ConfigSnapshot.Read(path);
+
+        Assert.True(snap.MatchesFile(path));
+
+        File.WriteAllText(path, "changed");
+        Assert.False(snap.MatchesFile(path));
+
+        var copyPath = Path.Combine(_root, "copy.json");
+        Assert.True(snap.WriteVerifiedCopy(copyPath));
+        Assert.Equal("original", File.ReadAllText(copyPath));
+    }
+}

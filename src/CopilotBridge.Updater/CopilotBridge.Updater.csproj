@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>copilot-updater</AssemblyName>
+    <RootNamespace>CopilotBridge.Updater</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <!-- Drop the published exe alongside the CLI's publish/ output so packaging
+         picks up both binaries from one directory. -->
+    <PublishDir>$(MSBuildThisFileDirectory)..\..\publish\</PublishDir>
+    <OptimizationPreference>Size</OptimizationPreference>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
+    <!-- No ASP.NET framework reference: the updater is a plain console app that
+         downloads, extracts, replaces files, and launches processes using only
+         framework BCL APIs (HTTP, cryptography, ZIP, GZip/TAR, JSON, files,
+         named pipes, Process). Keeping the dependency graph flat is an
+         acceptance constraint, not a preference. -->
+  </PropertyGroup>
+
+  <!-- Release-only: trim debug-shaped support to shrink the binary further,
+       mirroring the CLI. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebuggerSupport>false</DebuggerSupport>
+    <StackTraceSupport>false</StackTraceSupport>
+    <MetricsSupport>false</MetricsSupport>
+    <EventSourceSupport>false</EventSourceSupport>
+    <HttpActivityPropagationSupport>false</HttpActivityPropagationSupport>
+  </PropertyGroup>
+
+  <!-- The frozen cross-executable wire contract, compiled from the SAME shared
+       source as the CLI so the two agree on the plan/message bytes by
+       construction (no third runtime assembly). -->
+  <ItemGroup>
+    <Compile Include="..\Shared.Update\**\*.cs" LinkBase="Shared.Update" />
+  </ItemGroup>
+
+</Project>

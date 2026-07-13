@@ -24,6 +24,13 @@ namespace CopilotBridge.Cli.Models;
 [JsonSerializable(typeof(AccessTokenRequest))]
 [JsonSerializable(typeof(AccessTokenResponse))]
 [JsonSerializable(typeof(GitHubUser))]
+// Public GitHub Releases REST surface — read anonymously by the startup
+// auto-update discovery client. A List<GitHubRelease> is the page shape; the
+// element and its assets are reachable from it. SnakeCaseLower maps
+// tag_name/browser_download_url/digest/published_at automatically.
+[JsonSerializable(typeof(List<GitHubRelease>))]
+[JsonSerializable(typeof(GitHubRelease))]
+[JsonSerializable(typeof(GitHubReleaseAsset))]
 [JsonSerializable(typeof(CopilotTokenResponse))]
 [JsonSerializable(typeof(CopilotTokenEndpoints))]
 [JsonSerializable(typeof(CopilotModelsResponse))]

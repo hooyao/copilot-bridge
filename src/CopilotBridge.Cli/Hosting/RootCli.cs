@@ -32,7 +32,10 @@ internal static class RootCli
         var serveCommand = new Command("serve", "Start the HTTP bridge");
         serveCommand.Options.Add(portOption);
         serveCommand.SetAction((parseResult, ct) =>
-            ServeCommand.RunAsync(parseResult.GetValue(portOption), ct));
+            ServeCommand.RunAsync(
+                parseResult.GetValue(portOption),
+                CapturedArgs,
+                ct));
 
         // --- auth -----------------------------------------------------------
         var authLogin = new Command("login", "Log in to GitHub via device-code flow");
@@ -155,8 +158,17 @@ internal static class RootCli
 
         // Default action when no subcommand is given: behave like 'serve' on
         // the default port (== whatever appsettings.json declares).
-        root.SetAction((_, ct) => ServeCommand.RunAsync(cliPort: null, ct));
+        root.SetAction((_, ct) => ServeCommand.RunAsync(cliPort: null, CapturedArgs, ct));
 
         return root;
     }
+
+    /// <summary>
+    /// The original process argument vector, captured verbatim in
+    /// <see cref="Program"/> before System.CommandLine parsing so the updater can
+    /// relaunch the replacement bridge with the exact same arguments (no-argument
+    /// startup stays no-argument; <c>serve --port N</c> is preserved element by
+    /// element). Empty when not set.
+    /// </summary>
+    public static IReadOnlyList<string> CapturedArgs { get; set; } = [];
 }

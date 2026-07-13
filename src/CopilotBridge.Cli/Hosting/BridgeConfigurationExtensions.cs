@@ -13,6 +13,9 @@ namespace CopilotBridge.Cli.Hosting;
 /// </summary>
 internal static class BridgeConfigurationExtensions
 {
+    /// <summary>The stock configuration file name, loaded from the .exe directory.</summary>
+    public const string ConfigFileName = "appsettings.json";
+
     /// <summary>
     /// Add the standard configuration sources to a <see cref="WebApplicationBuilder"/>:
     /// <c>appsettings.json</c> (required) is rebased to <see cref="AppContext.BaseDirectory"/>
@@ -37,7 +40,7 @@ internal static class BridgeConfigurationExtensions
     {
         configuration
             .SetBasePath(AppContext.BaseDirectory)
-            .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false);
+            .AddJsonFile(ConfigFileName, optional: false, reloadOnChange: false);
         return configuration;
     }
 }

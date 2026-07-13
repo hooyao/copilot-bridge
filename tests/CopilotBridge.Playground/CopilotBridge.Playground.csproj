@@ -18,6 +18,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\CopilotBridge.Cli\CopilotBridge.Cli.csproj" />
+    <!-- The updater project is built alongside so the real-process update
+         end-to-end test can launch the actual copilot-updater executable. -->
+    <ProjectReference Include="..\..\src\CopilotBridge.Updater\CopilotBridge.Updater.csproj"
+                      ReferenceOutputAssembly="false" />
+    <!-- The stub bridge the updater launches during the real-process test. Built
+         but not referenced as an assembly (it's an exe the test invokes). -->
+    <ProjectReference Include="..\StubBridge\StubBridge.csproj"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!-- Local-only config (Anthropic API key for native A/B compare tests).

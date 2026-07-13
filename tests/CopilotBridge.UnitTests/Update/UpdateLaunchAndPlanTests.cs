@@ -1,0 +1,172 @@
+using CopilotBridge.Update.Wire;
+using Xunit;
+
+namespace CopilotBridge.UnitTests.Update;
+
+/// <summary>
+/// Contract tests for <see cref="UpdateLaunchContext"/> ("Serve-only startup
+/// update gate" one-launch suppression + role acceptance) and
+/// <see cref="UpdatePlanValidator"/> ("Immutable plan and policy-free executor").
+/// </summary>
+public class UpdateLaunchAndPlanTests
+{
+    private static Func<string, string?> Env(Dictionary<string, string?> map)
+        => key => map.TryGetValue(key, out var v) ? v : null;
+
+    [Fact]
+    public void Complete_target_context_parses()
+    {
+        var ctx = UpdateLaunchContext.FromEnvironment(Env(new()
+        {
+            [UpdateLaunchContext.EnvAttempt] = "a1",
+            [UpdateLaunchContext.EnvRole] = UpdateWire.RoleTarget,
+            [UpdateLaunchContext.EnvPipe] = "pipe1",
+            [UpdateLaunchContext.EnvToken] = "tok1",
+            [UpdateLaunchContext.EnvVersion] = "0.4.14",
+        }));
+
+        Assert.NotNull(ctx);
+        Assert.Equal(UpdateWire.RoleTarget, ctx!.Role);
+        Assert.Equal("pipe1", ctx.PipeName);
+    }
+
+    [Fact]
+    public void Absent_context_is_null()
+    {
+        Assert.Null(UpdateLaunchContext.FromEnvironment(Env(new())));
+    }
+
+    [Fact]
+    public void Incomplete_context_is_null_and_not_partially_honored()
+    {
+        var ctx = UpdateLaunchContext.FromEnvironment(Env(new()
+        {
+            [UpdateLaunchContext.EnvAttempt] = "a1",
+            [UpdateLaunchContext.EnvRole] = UpdateWire.RoleTarget,
+            // pipe/token/version missing
+        }));
+        Assert.Null(ctx);
+    }
+
+    [Fact]
+    public void Unknown_role_is_rejected()
+    {
+        var ctx = UpdateLaunchContext.FromEnvironment(Env(new()
+        {
+            [UpdateLaunchContext.EnvAttempt] = "a1",
+            [UpdateLaunchContext.EnvRole] = "administrator",
+            [UpdateLaunchContext.EnvPipe] = "pipe1",
+            [UpdateLaunchContext.EnvToken] = "tok1",
+            [UpdateLaunchContext.EnvVersion] = "0.4.14",
+        }));
+        Assert.Null(ctx);
+    }
+
+    private static UpdatePlan ValidPlan(string installDir) => new()
+    {
+        AttemptId = "a1",
+        ParentPid = 10,
+        ParentStartTicks = 123,
+        InstallDir = installDir,
+        BridgeExePath = Path.Combine(installDir, "copilot-bridge.exe"),
+        UpdaterExePath = Path.Combine(installDir, "copilot-updater.exe"),
+        ConfigPath = Path.Combine(installDir, "appsettings.json"),
+        CurrentVersion = "0.4.13",
+        TargetVersion = "0.4.14",
+        AssetName = "a.zip",
+        AssetUrl = "https://example/a.zip",
+        AssetSize = 10,
+        AssetSha256 = new string('a', 64),
+        ArchiveKind = UpdateWire.ArchiveZip,
+        StagingDir = Path.Combine(installDir, "..", "staging"),
+        BackupDir = Path.Combine(installDir, "..", "backup"),
+        ArchivePath = Path.Combine(installDir, "..", "a.zip"),
+        JournalPath = Path.Combine(installDir, "..", "t.log"),
+        ManagedFiles = ["copilot-bridge.exe", "copilot-updater.exe", "appsettings.json"],
+        OriginalArgs = [],
+        WorkingDirectory = installDir,
+        DownloadTimeoutMs = 1000,
+        ParentExitTimeoutMs = 1000,
+        ReadyTimeoutMs = 1000,
+        HandoffPipe = "pipe",
+        HandoffToken = new string('b', 64),
+    };
+
+    [Fact]
+    public void Valid_plan_passes()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        Assert.True(UpdatePlanValidator.Validate(ValidPlan(dir)).Ok);
+    }
+
+    [Fact]
+    public void Non_https_asset_url_is_rejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        var plan = ValidPlan(dir) with { AssetUrl = "http://insecure/a.zip" };
+        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+    }
+
+    [Fact]
+    public void Managed_file_escaping_install_root_is_rejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        var plan = ValidPlan(dir) with { ManagedFiles = ["../evil.exe"] };
+        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+    }
+
+    [Fact]
+    public void Wrong_protocol_version_is_rejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        var plan = ValidPlan(dir) with { ProtocolVersion = 999 };
+        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+    }
+
+    [Fact]
+    public void Non_positive_asset_size_is_rejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        var plan = ValidPlan(dir) with { AssetSize = 0 };
+        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+    }
+
+    [Fact]
+    public void Non_positive_phase_timeout_is_rejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        Assert.False(UpdatePlanValidator.Validate(ValidPlan(dir) with { DownloadTimeoutMs = 0 }).Ok);
+        Assert.False(UpdatePlanValidator.Validate(ValidPlan(dir) with { ParentExitTimeoutMs = -1 }).Ok);
+        Assert.False(UpdatePlanValidator.Validate(ValidPlan(dir) with { ReadyTimeoutMs = 0 }).Ok);
+    }
+
+    [Theory]
+    [InlineData("StagingDir")]
+    [InlineData("BackupDir")]
+    [InlineData("ArchivePath")]
+    [InlineData("JournalPath")]
+    [InlineData("HandoffPipe")]
+    [InlineData("AssetName")]
+    [InlineData("CurrentVersion")]
+    [InlineData("TargetVersion")]
+    [InlineData("WorkingDirectory")]
+    public void Empty_required_path_field_is_rejected(string field)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        var plan = ValidPlan(dir);
+        plan = field switch
+        {
+            "StagingDir" => plan with { StagingDir = "" },
+            "BackupDir" => plan with { BackupDir = "" },
+            "ArchivePath" => plan with { ArchivePath = "" },
+            "JournalPath" => plan with { JournalPath = "" },
+            "HandoffPipe" => plan with { HandoffPipe = "" },
+            "AssetName" => plan with { AssetName = "" },
+            "CurrentVersion" => plan with { CurrentVersion = "" },
+            "TargetVersion" => plan with { TargetVersion = "" },
+            "WorkingDirectory" => plan with { WorkingDirectory = "" },
+            _ => plan,
+        };
+        Assert.False(UpdatePlanValidator.Validate(plan).Ok);
+    }
+}

@@ -163,6 +163,19 @@ The file next to the executable. A few keys worth knowing:
 
 - **`Server.Port`** — the port the bridge listens on (default `8765`). If you
   change it, update the `base_url` in your CLI config to match.
+- **`AutoUpdate`** — startup self-update, **on by default**. When you run
+  `copilot-bridge` (or `copilot-bridge serve`), the bridge checks the project's
+  public GitHub Releases **once, synchronously, before it binds the port**; if a
+  newer version exists it prints the release notes and asks
+  `Install this update now? [y/N]`. Only an interactive `y`/`yes` installs — a
+  redirected/non-interactive stdin never installs, and a failed check (offline,
+  rate-limited, timeout) just logs a warning and starts the current version.
+  `EnableAutoUpdate` (default `true`) is the master switch; `AllowBetaUpdates`
+  (default `false`) also considers GitHub prereleases. Maintenance commands
+  (`auth`, `config`, `debug`, `--help`, `--version`) never check, and a local
+  `*-dev` build never self-updates. See
+  [`docs/auto-update.md`](docs/auto-update.md) for the full design (trust
+  boundary, config migration, rollback).
 - **`Tracing.Enabled`** — per-request audit logging, **off by default**. Turn it
   on to dump every request/response as JSON under `request-traces/` when
   debugging — but note the files contain your full prompts, so turn it back off

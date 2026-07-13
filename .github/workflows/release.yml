@@ -83,6 +83,13 @@ jobs:
             -c Release -r ${{ matrix.rid }} `
             "-p:Version=${{ needs.version.outputs.version }}" `
             -o ./publish-aot
+          # The updater ships in every auto-update archive so a running bridge can
+          # replace itself (a Windows exe cannot overwrite itself in place). Same
+          # RID, same Native AOT output directory.
+          dotnet publish src/CopilotBridge.Updater/CopilotBridge.Updater.csproj `
+            -c Release -r ${{ matrix.rid }} `
+            "-p:Version=${{ needs.version.outputs.version }}" `
+            -o ./publish-aot
 
       # Smoke the freshly-built binary before packaging: proves it loads on the
       # real OS and (on unix) that machine-id-derived encryption round-trips with
@@ -91,9 +98,13 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           set -euo pipefail
-          chmod +x ./publish-aot/copilot-bridge
+          chmod +x ./publish-aot/copilot-bridge ./publish-aot/copilot-updater
           ./publish-aot/copilot-bridge --version
           ./publish-aot/copilot-bridge debug selftest-tokenstore
+          # The updater with no plan argument must fail fast (exit 10), proving the
+          # Native AOT binary loads and its entry shell runs.
+          set +e; ./publish-aot/copilot-updater; code=$?; set -e
+          test "$code" = "10" || { echo "updater smoke expected exit 10, got $code"; exit 1; }
 
       - name: Smoke test (windows)
         if: runner.os == 'Windows'
@@ -101,11 +112,13 @@ jobs:
         run: |
           ./publish-aot/copilot-bridge.exe --version
           ./publish-aot/copilot-bridge.exe debug selftest-tokenstore
+          ./publish-aot/copilot-updater.exe
+          if ($LASTEXITCODE -ne 10) { throw "updater smoke expected exit 10, got $LASTEXITCODE" }
 
       # --- Package: Windows → .zip ------------------------------------------
-      # Both files are required at runtime: appsettings.json carries the Routing,
-      # Server (port), and Tracing config the bridge loads with
-      # AddJsonFile(optional:false). Without it the exe fails fast.
+      # All three files are required at runtime: appsettings.json carries the
+      # Routing/Server/Tracing config the bridge loads with AddJsonFile(optional:false),
+      # and copilot-updater is needed for the startup self-update flow.
       - name: Package (Windows zip)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -114,9 +127,9 @@ jobs:
           $rid = "${{ matrix.rid }}"
           $exe = Get-Item ./publish-aot/copilot-bridge.exe
           $sizeMB = [math]::Round($exe.Length / 1MB, 2)
-          Write-Host "Packaging copilot-bridge.exe ($sizeMB MB) + appsettings.json into copilot-bridge-$version-$rid.zip"
+          Write-Host "Packaging copilot-bridge.exe ($sizeMB MB) + copilot-updater.exe + appsettings.json into copilot-bridge-$version-$rid.zip"
           Compress-Archive `
-            -Path ./publish-aot/copilot-bridge.exe, ./publish-aot/appsettings.json `
+            -Path ./publish-aot/copilot-bridge.exe, ./publish-aot/copilot-updater.exe, ./publish-aot/appsettings.json `
             -DestinationPath "copilot-bridge-$version-$rid.zip" `
             -CompressionLevel Optimal
 
@@ -127,17 +140,19 @@ jobs:
           set -euo pipefail
           version="${{ needs.version.outputs.version }}"
           rid="${{ matrix.rid }}"
-          chmod +x ./publish-aot/copilot-bridge
+          chmod +x ./publish-aot/copilot-bridge ./publish-aot/copilot-updater
           tar -czf "copilot-bridge-$version-$rid.tar.gz" \
-            -C ./publish-aot copilot-bridge appsettings.json
+            -C ./publish-aot copilot-bridge copilot-updater appsettings.json
           ls -la "copilot-bridge-$version-$rid.tar.gz"
 
       # --- macOS only: also build an unsigned .pkg installer ----------------
-      # Installs the binary + appsettings.json together into
-      # /usr/local/copilot-bridge and symlinks the binary onto PATH at
+      # Installs the binaries + appsettings.json together into
+      # /usr/local/copilot-bridge and symlinks the bridge onto PATH at
       # /usr/local/bin/copilot-bridge. They must stay co-located because the
       # bridge resolves appsettings.json from AppContext.BaseDirectory (the real
-      # binary dir, symlinks resolved) — not the CWD.
+      # binary dir, symlinks resolved) — not the CWD. The updater is installed too
+      # so package installs share the same future archive-update capability, but
+      # auto-update always consumes the .tar.gz, never the .pkg.
       - name: Package (macOS .pkg)
         if: matrix.rid == 'osx-arm64'
         run: |
@@ -146,8 +161,9 @@ jobs:
           root="pkgroot"
           mkdir -p "$root/usr/local/copilot-bridge" "$root/usr/local/bin"
           cp ./publish-aot/copilot-bridge "$root/usr/local/copilot-bridge/copilot-bridge"
+          cp ./publish-aot/copilot-updater "$root/usr/local/copilot-bridge/copilot-updater"
           cp ./publish-aot/appsettings.json "$root/usr/local/copilot-bridge/appsettings.json"
-          chmod +x "$root/usr/local/copilot-bridge/copilot-bridge"
+          chmod +x "$root/usr/local/copilot-bridge/copilot-bridge" "$root/usr/local/copilot-bridge/copilot-updater"
           ln -s ../copilot-bridge/copilot-bridge "$root/usr/local/bin/copilot-bridge"
           pkgbuild --identifier com.hooyao.copilot-bridge \
             --version "$version" \
@@ -233,3 +249,44 @@ jobs:
             args+=("$f")
           done
           gh "${args[@]}"
+
+      # Prove the runtime's assumption: every auto-update archive is visible
+      # ANONYMOUSLY (no Authorization header — the exact way the installed bridge
+      # will see it) with uploaded state, a positive size, an HTTPS download URL,
+      # and a usable sha256: digest. `gh` is only the authenticated publishing
+      # mechanism above; this check deliberately uses a bare, unauthenticated
+      # HTTP request so an authenticated view can't paper over a missing digest.
+      - name: Verify anonymous asset digests
+        env:
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${{ needs.version.outputs.version }}"
+          api="https://api.github.com/repos/${GH_REPO}/releases/tags/v${version}"
+          # Bounded retry: assets settle to "uploaded" shortly after creation.
+          for attempt in 1 2 3 4 5 6; do
+            # NO Authorization header — anonymous, like the runtime.
+            body=$(curl -fsSL -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" "$api" || true)
+            pending=$(jq -r '[.assets[]
+              | select(.name | test("copilot-bridge-.*\\.(zip|tar\\.gz)$"))
+              | select(.state != "uploaded"
+                       or (.size <= 0)
+                       or (.browser_download_url | startswith("https://") | not)
+                       or (.digest == null)
+                       or (.digest | startswith("sha256:") | not))
+              ] | length' <<<"${body:-{}}" 2>/dev/null || echo 99)
+            count=$(jq -r '[.assets[]
+              | select(.name | test("copilot-bridge-.*\\.(zip|tar\\.gz)$"))] | length' \
+              <<<"${body:-{}}" 2>/dev/null || echo 0)
+            if [ "$pending" = "0" ] && [ "$count" -ge 4 ]; then
+              echo "All $count update archives expose an anonymous sha256: digest."
+              jq -r '.assets[] | select(.name|test("\\.(zip|tar\\.gz)$"))
+                | "  \(.name)  \(.size)  \(.digest)"' <<<"$body"
+              exit 0
+            fi
+            echo "attempt $attempt: $pending archive(s) not yet uploaded/usable (of $count); retrying…"
+            sleep 10
+          done
+          echo "error: update archives did not expose usable anonymous sha256: digests" >&2
+          exit 1

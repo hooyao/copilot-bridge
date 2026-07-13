@@ -221,6 +221,11 @@ internal static class BridgeServiceCollectionExtensions
         services.AddHostedService<SerilogReplacerHostedService>();
         // 2. Auth + routes validation + startup banner.
         services.AddHostedService<BridgeStartupHostedService>();
+        // 3. Update readiness reporter — inert unless this process was launched
+        //    by an updater with a one-launch context. It registers for
+        //    ApplicationStarted and reports Ready only after the listener starts,
+        //    so it must be present in the host to observe that event.
+        services.AddHostedService<Update.UpdateReadinessReporter>();
 
         return services;
     }

@@ -1,9 +1,13 @@
 using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
 using CopilotBridge.Cli.Endpoints.Codex;
+using CopilotBridge.Cli.Hosting.Options;
+using CopilotBridge.Cli.Update;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Hosting;
 
@@ -27,11 +31,24 @@ namespace CopilotBridge.Cli.Hosting;
 internal static class ServeCommand
 {
     public static async Task<int> RunAsync(int? cliPort, CancellationToken ct)
+        => await RunAsync(cliPort, originalArgs: [], ct).ConfigureAwait(false);
+
+    public static async Task<int> RunAsync(int? cliPort, IReadOnlyList<string> originalArgs, CancellationToken ct)
     {
         if (cliPort is { } port && port is < 1 or > 65535)
         {
             throw new BridgeStartupException(
                 $"Invalid --port {port}. Must be in 1..65535.");
+        }
+
+        // Serve-only startup update gate — runs ONCE, synchronously, before the
+        // proxy host is constructed. Every failure is fail-open (logs a Warning
+        // and continues). If the updater takes ownership, this process exits
+        // cleanly without ever starting Kestrel.
+        if (await RunUpdateGateAsync(cliPort, originalArgs, ct).ConfigureAwait(false)
+            == UpdateGateDecision.HandedOffToUpdater)
+        {
+            return 0;
         }
 
         var builder = WebApplication.CreateSlimBuilder();
@@ -67,6 +84,39 @@ internal static class ServeCommand
             // Clean Ctrl+C — host shut itself down.
         }
         return 0;
+    }
+
+    /// <summary>
+    /// Load configuration far enough to bind <see cref="AutoUpdateOptions"/> and
+    /// run the gate. Uses the same web-host-neutral appsettings source the server
+    /// uses, so the check honors the exact file the bridge will serve from. A
+    /// gate failure never blocks startup — it is fail-open by contract.
+    /// </summary>
+    private static async Task<UpdateGateDecision> RunUpdateGateAsync(
+        int? cliPort, IReadOnlyList<string> originalArgs, CancellationToken ct)
+    {
+        _ = cliPort;
+        var config = new ConfigurationBuilder().AddBridgeAppSettings().Build();
+        var options = new AutoUpdateOptions();
+        config.GetSection("AutoUpdate").Bind(options);
+
+        var gate = new StartupUpdateGate(
+            Microsoft.Extensions.Options.Options.Create(options), originalArgs);
+        try
+        {
+            return await gate.RunAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(
+                "Auto-update gate error ({Error}); copilot-bridge will continue with the current version.",
+                ex.GetType().Name);
+            return UpdateGateDecision.ContinueCurrentVersion;
+        }
     }
 
     /// <summary>
