@@ -340,28 +340,39 @@ jobs:
           set -euo pipefail
           version="${{ needs.version.outputs.version }}"
           api="https://api.github.com/repos/${GH_REPO}/releases/tags/v${version}"
+          # Archive selector uses startswith/endswith (pure string ops) rather than a
+          # regex test("...\.(zip|tar\.gz)$"): the escaped dots did not survive the
+          # YAML → bash → jq trip cleanly. And crucially, capture jq's value and exit
+          # code SEPARATELY instead of `jq ... || echo N`: a `|| echo` fallback runs
+          # (and APPENDS) whenever jq exits non-zero EVEN IF jq already printed a
+          # value, producing a two-line "0\n99" that never equals "0" — which failed
+          # every attempt and deleted a perfectly-good release.
+          is_archive='select(.name | startswith("copilot-bridge-")) | select(.name | (endswith(".zip") or endswith(".tar.gz")))'
+          jqval() { # jqval <program> <json>  -> prints result, or "ERR" on jq failure
+            local out
+            if out=$(jq -r "$1" <<<"$2" 2>/dev/null); then printf '%s' "$out"; else printf 'ERR'; fi
+          }
           for attempt in 1 2 3 4 5 6; do
             # NO Authorization header — anonymous, like the runtime.
             body=$(curl -fsSL -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" "$api" || true)
-            pending=$(jq -r '[.assets[]
-              | select(.name | test("copilot-bridge-.*\\.(zip|tar\\.gz)$"))
-              | select(.state != "uploaded"
+            body="${body:-{}}"
+            pending=$(jqval "[.assets[]
+              | $is_archive
+              | select(.state != \"uploaded\"
                        or (.size <= 0)
-                       or (.browser_download_url | startswith("https://") | not)
+                       or (.browser_download_url | startswith(\"https://\") | not)
                        or (.digest == null)
-                       or (.digest | startswith("sha256:") | not))
-              ] | length' <<<"${body:-{}}" 2>/dev/null || echo 99)
-            count=$(jq -r '[.assets[]
-              | select(.name | test("copilot-bridge-.*\\.(zip|tar\\.gz)$"))] | length' \
-              <<<"${body:-{}}" 2>/dev/null || echo 0)
-            if [ "$pending" = "0" ] && [ "$count" -ge 4 ]; then
+                       or (.digest | startswith(\"sha256:\") | not))
+              ] | length" "$body")
+            count=$(jqval "[.assets[] | $is_archive] | length" "$body")
+            if [ "$pending" = "0" ] && [ "$count" != "ERR" ] && [ "$count" -ge 4 ]; then
               echo "All $count update archives expose an anonymous sha256: digest."
-              jq -r '.assets[] | select(.name|test("\\.(zip|tar\\.gz)$"))
-                | "  \(.name)  \(.size)  \(.digest)"' <<<"$body"
+              jq -r "[.assets[] | $is_archive] | .[]
+                | \"  \(.name)  \(.size)  \(.digest)\"" <<<"$body"
               exit 0
             fi
-            echo "attempt $attempt: $pending archive(s) not yet uploaded/usable (of $count); retrying…"
+            echo "attempt $attempt: pending=$pending of count=$count (need pending=0, count>=4); retrying…"
             sleep 10
           done
           echo "error: published release lacks usable anonymous sha256: digests — deleting it" >&2
