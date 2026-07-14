@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A tiny framework-dependent console helper used ONLY by the Playground's
+       real-process update test. It impersonates a bridge that a running updater
+       launches: it reads the one-launch update context from its environment and,
+       depending on a mode argument, either reports Ready over the real named pipe
+       (using the SAME shared wire code the product uses) or exits early to force a
+       rollback. Not shipped; not AOT (speed of build over size for a test aid). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>stub-bridge</AssemblyName>
+    <RootNamespace>CopilotBridge.StubBridge</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\Shared.Update\**\*.cs" LinkBase="Shared.Update" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,82 @@
+namespace CopilotBridge.Update.Wire;
+
+/// <summary>
+/// Path-confinement helpers shared by the CLI (when building a plan) and the
+/// updater (when validating one). Every managed target must resolve inside the
+/// canonical installation root, and every extracted entry must resolve inside
+/// its staging root — release-derived names must never become arbitrary paths.
+/// </summary>
+internal static class UpdatePaths
+{
+    /// <summary>
+    /// True when <paramref name="candidate"/>, fully resolved, is
+    /// <paramref name="root"/> itself or a descendant of it. For a security
+    /// containment check we use the conservative comparison: case-insensitive
+    /// ONLY on Windows (always case-insensitive), and ordinal everywhere else.
+    /// macOS volumes CAN be case-sensitive (APFS case-sensitive, case-sensitive
+    /// HFS+), so treating Unix as case-insensitive could accept a sibling like
+    /// `/tmp/install/x` as inside `/tmp/Install` — ordinal refuses that.
+    /// </summary>
+    public static bool IsInside(string root, string candidate)
+    {
+        var fullRoot = AppendSeparator(Path.GetFullPath(root));
+        var fullCandidate = Path.GetFullPath(candidate);
+        var fullCandidateDir = AppendSeparator(fullCandidate);
+
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        // candidate == root, or candidate is strictly under root/.
+        return fullCandidateDir.Equals(fullRoot, comparison)
+            || fullCandidate.StartsWith(fullRoot, comparison);
+    }
+
+    /// <summary>
+    /// Resolve <paramref name="relativeEntry"/> against <paramref name="root"/>
+    /// and return the full path only when it stays inside root. Rejects absolute
+    /// entries, <c>..</c> traversal, and mixed-separator escapes. Returns null
+    /// on any violation.
+    /// </summary>
+    public static string? ResolveContained(string root, string relativeEntry)
+    {
+        if (string.IsNullOrEmpty(relativeEntry))
+        {
+            return null;
+        }
+
+        // Normalize both separators so a '\' inside a tar entry can't dodge the
+        // '/'-based checks on Windows, and vice versa.
+        var normalized = relativeEntry.Replace('\\', '/');
+
+        // Reject rooted/absolute entries outright (e.g. "/etc/x", "C:/x").
+        if (normalized.StartsWith('/') || Path.IsPathRooted(relativeEntry) || Path.IsPathRooted(normalized))
+        {
+            return null;
+        }
+
+        var combined = Path.Combine(root, normalized);
+        var full = Path.GetFullPath(combined);
+        return IsInside(root, full) ? full : null;
+    }
+
+    private static string AppendSeparator(string path)
+    {
+        return path.EndsWith(Path.DirectorySeparatorChar)
+            ? path
+            : path + Path.DirectorySeparatorChar;
+    }
+
+    /// <summary>
+    /// Canonicalize an installation directory (typically
+    /// <see cref="System.AppContext.BaseDirectory"/>, which has a trailing
+    /// separator) to a comparable, non-trailing form WITHOUT corrupting a
+    /// filesystem root. A naive <c>TrimEnd(separator)</c> turns a root into an
+    /// invalid/noncanonical path ("/" → "", "C:\" → "C:"), which would make a
+    /// bridge installed at a volume root resolve its updater against the working
+    /// directory or fail plan validation. <see cref="Path.TrimEndingDirectorySeparator(string)"/>
+    /// leaves a root intact while trimming a non-root trailing separator.
+    /// </summary>
+    public static string NormalizeInstallRoot(string baseDirectory)
+        => Path.TrimEndingDirectorySeparator(baseDirectory);
+}

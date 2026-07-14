@@ -45,6 +45,13 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <!-- The frozen cross-executable update wire contract, compiled from the SAME
+       shared source as copilot-updater so both executables agree on the
+       plan/control/ready message bytes by construction. -->
+  <ItemGroup>
+    <Compile Include="..\Shared.Update\**\*.cs" LinkBase="Shared.Update" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="System.CommandLine" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" />

@@ -1,9 +1,11 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/CopilotBridge.Cli/CopilotBridge.Cli.csproj" />
+    <Project Path="src/CopilotBridge.Updater/CopilotBridge.Updater.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/CopilotBridge.Playground/CopilotBridge.Playground.csproj" />
     <Project Path="tests/CopilotBridge.UnitTests/CopilotBridge.UnitTests.csproj" />
+    <Project Path="tests/StubBridge/StubBridge.csproj" />
   </Folder>
 </Solution>
