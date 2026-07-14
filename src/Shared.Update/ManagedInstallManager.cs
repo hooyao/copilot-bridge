@@ -559,7 +559,38 @@ internal sealed class ManagedInstallManager
 
     private static void TryDeleteDirectory(string path)
     {
-        try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); }
+        try
+        {
+            if (!Directory.Exists(path))
+            {
+                return;
+            }
+            // The attempt root can hold read-only children (plan.json is hardened
+            // read-only after flush). On Windows Directory.Delete(recursive) throws
+            // UnauthorizedAccessException on a read-only file, which — being
+            // swallowed here — would otherwise leave the capability-bearing plan and
+            // the updater copy on disk after every successful update. Clear the
+            // read-only attribute on every entry first so the recursive delete can
+            // remove them.
+            ClearReadOnlyRecursive(path);
+            Directory.Delete(path, recursive: true);
+        }
         catch { /* best effort */ }
+    }
+
+    private static void ClearReadOnlyRecursive(string dir)
+    {
+        foreach (var file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+        {
+            try
+            {
+                var attrs = File.GetAttributes(file);
+                if ((attrs & FileAttributes.ReadOnly) != 0)
+                {
+                    File.SetAttributes(file, attrs & ~FileAttributes.ReadOnly);
+                }
+            }
+            catch { /* best effort — the delete below will surface a still-locked file */ }
+        }
     }
 }

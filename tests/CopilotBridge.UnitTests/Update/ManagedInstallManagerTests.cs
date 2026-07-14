@@ -308,4 +308,39 @@ public class ManagedInstallManagerTests : IDisposable
         Assert.True(snap.WriteVerifiedCopy(copyPath));
         Assert.Equal(withBom, File.ReadAllBytes(copyPath));
     }
+
+    [Fact]
+    public void CleanupAfterCommit_removes_attempt_root_even_with_readonly_children()
+    {
+        // The gate hardens plan.json read-only after flush. Cleanup after a
+        // committed update must still delete the WHOLE attempt root — otherwise the
+        // capability-bearing plan and the private updater copy linger on disk after
+        // every successful update. A read-only child must not defeat the delete.
+        SeedInstalled("old-bridge", "old-updater", """{ "Server": { "Port": 19000 } }""");
+        SeedStaging("new-bridge", "new-updater", """{ "Server": { "Port": 8765 } }""");
+
+        var attemptRoot = Path.Combine(_root, "attempt");
+        var nested = Path.Combine(attemptRoot, "staging");
+        Directory.CreateDirectory(nested);
+        var planPath = Path.Combine(attemptRoot, "plan.json");
+        File.WriteAllText(planPath, "{}");
+        var nestedReadonly = Path.Combine(nested, "updater-copy.exe");
+        File.WriteAllText(nestedReadonly, "copy");
+        // Harden exactly as the gate does: read-only at the top level AND nested.
+        File.SetAttributes(planPath, File.GetAttributes(planPath) | FileAttributes.ReadOnly);
+        File.SetAttributes(nestedReadonly, File.GetAttributes(nestedReadonly) | FileAttributes.ReadOnly);
+
+        var mgr = Manager();
+        Assert.True(mgr.Prepare().Ok);
+        var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
+        Assert.True(mgr.StageReplacements(merged).Ok);
+        Assert.True(mgr.Cutover().Ok);
+
+        mgr.CleanupAfterCommit(attemptRoot);
+
+        // The entire attempt root is gone — no read-only plan/updater copy left.
+        Assert.False(Directory.Exists(attemptRoot));
+        // And the transaction .bak was swept too.
+        Assert.False(File.Exists(mgr.ConfigBackupPath));
+    }
 }

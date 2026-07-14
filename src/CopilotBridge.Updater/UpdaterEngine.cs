@@ -153,14 +153,24 @@ internal sealed class UpdaterEngine
         }
 
         // ---- OWNERSHIP-TRANSFER WINDOW ----------------------------------------
-        // Authorization has been granted: the parent is exiting (or already gone),
-        // so from here there is soon NO bridge serving. EVERY failure past this
-        // point — cancellation, an I/O race in the drift check, a cutover error, a
-        // failed Ready — must RECOVER service, never escape as a plain fail-open or
-        // a fatal. A single guarded region enforces that: whether or not cutover
-        // has happened, control lands in recovery. Recovery uses CancellationToken.None
-        // so a Ctrl+C in this window cannot also abort the recovery itself.
-        var cutoverDone = false;
+        // Authorization has been granted: the parent has ALREADY returned without
+        // constructing Kestrel and is exiting (or gone), so from here there is soon
+        // NO bridge serving. EVERY outcome past this point must RECOVER service or
+        // report an explicit unrecovered state — never a plain fail-open, which
+        // would exit the updater and relaunch nothing.
+        //
+        // The engine only classifies WHAT happened (an OwnershipOutcome) and whether
+        // the transaction has begun MUTATING the install; OwnershipWindowRouter owns
+        // the policy of which service-restoring action each outcome maps to. That
+        // routing table is the load-bearing contract (a fail-open here strands the
+        // user; recovering without config restores a bridge with no appsettings),
+        // so it lives as a pure, unit-tested function rather than inline branches.
+        //
+        // `transactionMutating` flips true immediately BEFORE Cutover(), which turns
+        // destructive the instant it renames the live appsettings.json — so a throw
+        // *inside* Cutover (e.g. an I/O race hashing the renamed .bak) routes to
+        // rollback (config restored), not recover-without-config.
+        var transactionMutating = false;
         try
         {
             // 5. Wait for the exact parent to positively exit. A tri-state check
@@ -169,33 +179,37 @@ internal sealed class UpdaterEngine
             var exitState = await WaitForParentExitAsync(ct).ConfigureAwait(false);
             if (exitState != IdentityCheck.AbsentOrReused)
             {
-                // Not confirmed gone: nothing installed, and the old bridge may
-                // still be serving. Safe to fail open (recovery not needed).
-                return await FailPreflightAsync(
+                _journal.Write("parent-exit.unconfirmed", exitState.ToString());
+                return await ExecuteRecoveryAsync(
+                    OwnershipOutcome.ParentExitUnconfirmed, transactionMutating, install,
                     exitState == IdentityCheck.InspectionFailed
                         ? "could not confirm parent exit before cutover"
-                        : "parent did not exit before cutover",
-                    ct).ConfigureAwait(false);
+                        : "parent did not exit before cutover").ConfigureAwait(false);
             }
 
             // Parent confirmed gone: service is DOWN. Any failure below recovers.
             if (!install.RevalidateNoDrift())
             {
                 _journal.Write("drift.after-handoff");
-                return await RecoverOldBridgeAsync(install, "install drifted after handoff").ConfigureAwait(false);
+                return await ExecuteRecoveryAsync(
+                    OwnershipOutcome.DriftAfterHandoff, transactionMutating, install,
+                    "install drifted after handoff").ConfigureAwait(false);
             }
 
             // 6. Cutover (rename original config to .bak, atomically move the
-            //    pre-staged replacements into place — no writes here).
+            //    pre-staged replacements into place — no writes here). Mark the
+            //    transaction destructive BEFORE the call: Cutover mutates the
+            //    install as soon as it renames the config, so a throw partway
+            //    through must roll back, not recover-without-config.
+            transactionMutating = true;
             var cutover = install.Cutover();
             if (!cutover.Ok)
             {
                 _journal.Write("cutover.failed", cutover.Reason);
-                // Cutover fails before installing on config drift, but it may have
-                // partially replaced binaries — rollback restores everything.
-                return await RollbackAndReportAsync(install).ConfigureAwait(false);
+                return await ExecuteRecoveryAsync(
+                    OwnershipOutcome.CutoverFailed, transactionMutating, install,
+                    cutover.Reason!).ConfigureAwait(false);
             }
-            cutoverDone = true;
 
             // 7. Launch the replacement and wait for authenticated Ready.
             var ready = await LaunchAndAwaitReadyAsync(
@@ -208,25 +222,42 @@ internal sealed class UpdaterEngine
             }
 
             _journal.Write("target.not-ready");
-            return await RollbackAndReportAsync(install).ConfigureAwait(false);
+            return await ExecuteRecoveryAsync(
+                OwnershipOutcome.TargetNotReady, transactionMutating, install,
+                "replacement did not report ready").ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            _journal.Write(cutoverDone ? "cancelled.after-cutover" : "cancelled.before-cutover");
-            // If cutover happened, the old files are replaced → rollback. If not,
-            // the parent is already gone but nothing was installed → just restart
-            // the old bridge to restore service.
-            return cutoverDone
-                ? await RollbackAndReportAsync(install).ConfigureAwait(false)
-                : await RecoverOldBridgeAsync(install, "cancelled during ownership transfer").ConfigureAwait(false);
+            _journal.Write(transactionMutating ? "cancelled.during-cutover" : "cancelled.before-cutover");
+            return await ExecuteRecoveryAsync(
+                OwnershipOutcome.Cancelled, transactionMutating, install,
+                "cancelled during ownership transfer").ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _journal.Write("ownership-window.io-error", ex.GetType().Name);
-            return cutoverDone
-                ? await RollbackAndReportAsync(install).ConfigureAwait(false)
-                : await RecoverOldBridgeAsync(install, $"I/O error during ownership transfer: {ex.GetType().Name}").ConfigureAwait(false);
+            return await ExecuteRecoveryAsync(
+                OwnershipOutcome.IoError, transactionMutating, install,
+                $"I/O error during ownership transfer: {ex.GetType().Name}").ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Execute the service-restoring action <see cref="OwnershipWindowRouter"/>
+    /// selects for an ownership-window outcome. The router owns the policy (never a
+    /// fail-open after authorization; rollback whenever the transaction began
+    /// mutating); this owns the async process/IPC work each action needs.
+    /// </summary>
+    private async Task<UpdaterExit> ExecuteRecoveryAsync(
+        OwnershipOutcome outcome, bool transactionMutating, ManagedInstallManager install, string reason)
+    {
+        var action = OwnershipWindowRouter.Route(outcome, transactionMutating);
+        return action switch
+        {
+            RecoveryAction.Commit => UpdaterExit.Committed,
+            RecoveryAction.Rollback => await RollbackAndReportAsync(install).ConfigureAwait(false),
+            _ => await RecoverOldBridgeAsync(install, reason).ConfigureAwait(false),
+        };
     }
 
     private async Task<UpdaterExit> RollbackAndReportAsync(ManagedInstallManager install)
