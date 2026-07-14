@@ -129,12 +129,16 @@ internal sealed class StartupUpdateGate
             return UpdateGateDecision.ContinueCurrentVersion;
         }
 
-        // Announce + consent.
+        // Announce + consent. The release type shown to the user must match the
+        // SELECTION logic (ReleaseSelector), which treats a v1.1.0-beta.1 tag as a
+        // prerelease even when the maintainer forgot GitHub's checkbox — otherwise
+        // an accepted beta would be announced as "Stable". SelectedRelease.IsPreRelease
+        // encodes that combined rule as one tested property.
         var consented = UpdatePrompt.Announce(
             _console,
             ProductInfo.Version,
             targetVersion,
-            selected.Candidate.IsPreRelease,
+            selected.IsPreRelease,
             release.Name,
             release.PublishedAt,
             release.Body,

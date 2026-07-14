@@ -164,6 +164,49 @@ public class UpdateLaunchAndPlanTests
     }
 
     [Fact]
+    public void Managed_files_with_a_duplicate_masking_a_missing_target_are_rejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        // Count == 3 and every element IS in the allowlist, yet appsettings.json is
+        // MISSING (copilot-bridge.exe is duplicated). A Count + All(contains) check
+        // would accept this and let cutover run without ever staging the config; an
+        // exact-set-equality check must reject it.
+        var plan = ValidPlan(dir) with
+        {
+            ManagedFiles = ["copilot-bridge.exe", "copilot-bridge.exe", "copilot-updater.exe"],
+        };
+        Assert.False(UpdatePlanValidator.Validate(plan, TrustedRoot(dir)).Ok);
+    }
+
+    [Theory]
+    [InlineData("../evil")]
+    [InlineData("..\\evil")]
+    [InlineData("a/b")]
+    [InlineData("a\\b")]
+    [InlineData("a.b")]          // a dot would make appsettings.json.bak.<attempt> ambiguous
+    [InlineData("")]            // empty is caught by the required-fields check too
+    [InlineData("with space")]
+    public void Attempt_id_that_is_not_a_bounded_filename_safe_token_is_rejected(string attemptId)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        // A traversal/separator in AttemptId would escape the install dir when
+        // concatenated into <managed>.new.<attempt> / appsettings.json.bak.<attempt>.
+        var plan = ValidPlan(dir) with { AttemptId = attemptId };
+        Assert.False(UpdatePlanValidator.Validate(plan, TrustedRoot(dir)).Ok);
+    }
+
+    [Theory]
+    [InlineData("a1")]
+    [InlineData("abcd1234")]
+    [InlineData("e2eDEADBEEF")]
+    [InlineData("0123456789abcdef")] // the CLI's 16-hex mint
+    public void Attempt_id_that_is_a_bounded_alphanumeric_token_passes(string attemptId)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));
+        Assert.True(UpdatePlanValidator.Validate(ValidPlan(dir) with { AttemptId = attemptId }, TrustedRoot(dir)).Ok);
+    }
+
+    [Fact]
     public void Nested_bridge_path_that_differs_from_the_replaced_child_is_rejected()
     {
         var dir = Path.Combine(Path.GetTempPath(), "cb-plan-" + Guid.NewGuid().ToString("N"));

@@ -6,7 +6,7 @@ namespace CopilotBridge.Update.Wire;
 /// incomplete or path-escaping plan is a hard failure, and (because it fails
 /// before cutover) the initiating bridge simply continues serving.
 /// </summary>
-internal static class UpdatePlanValidator
+internal static partial class UpdatePlanValidator
 {
     /// <summary>
     /// Validate schema/version, required fields, and path confinement.
@@ -43,6 +43,17 @@ internal static class UpdatePlanValidator
             || plan.OriginalArgs is null)
         {
             return UpdateStepResult.Fail("plan is missing required fields");
+        }
+
+        // AttemptId is later concatenated into install-dir sibling paths
+        // (<managed>.new.<attempt>, appsettings.json.bak.<attempt>), so it must be a
+        // bounded, filename-safe token — never able to carry a separator or `..`
+        // traversal that would make preflight write, or cutover rename, outside the
+        // install directory. The CLI mints it as lowercase hex; accept the slightly
+        // wider alphanumeric set the tests use, but nothing path-significant.
+        if (!AttemptIdShape().IsMatch(plan.AttemptId))
+        {
+            return UpdateStepResult.Fail("plan attempt id is not a bounded filename-safe token");
         }
 
         if (plan.AssetSize <= 0)
@@ -90,8 +101,14 @@ internal static class UpdatePlanValidator
             // the allowlist is ambiguous.
             return UpdateStepResult.Fail("managed target names are not distinct");
         }
+        // Exact-set equality, not Count + All(contains): the latter accepts a list
+        // like [bridge, bridge, updater] (a duplicate masking a MISSING config),
+        // which would let cutover proceed without ever staging a required target.
+        // Require the distinct set to equal the allowlist AND the raw count to be 3
+        // (so a duplicate that collapses to the right set is still rejected).
+        var providedManaged = new HashSet<string>(plan.ManagedFiles, nameComparer);
         if (plan.ManagedFiles.Count != expectedManaged.Count
-            || !plan.ManagedFiles.All(expectedManaged.Contains))
+            || !providedManaged.SetEquals(expectedManaged))
         {
             return UpdateStepResult.Fail("managed files are not the exact bridge/updater/config allowlist");
         }
@@ -156,4 +173,10 @@ internal static class UpdatePlanValidator
             : StringComparison.Ordinal;
         return string.Equals(expected, actual, comparison);
     }
+
+    // A bounded, filename-safe attempt id: 1–64 ASCII alphanumerics. No separator,
+    // no dot, no `..` — so it can never turn a sibling temp/backup path into a
+    // traversal out of the install directory.
+    [System.Text.RegularExpressions.GeneratedRegex(@"^[A-Za-z0-9]{1,64}$")]
+    private static partial System.Text.RegularExpressions.Regex AttemptIdShape();
 }

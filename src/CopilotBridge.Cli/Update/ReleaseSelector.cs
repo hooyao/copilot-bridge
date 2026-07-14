@@ -79,4 +79,14 @@ internal static class ReleaseSelector
 }
 
 /// <summary>The chosen release plus its parsed version.</summary>
-internal sealed record SelectedRelease(ReleaseCandidate Candidate, SemanticVersion Version);
+internal sealed record SelectedRelease(ReleaseCandidate Candidate, SemanticVersion Version)
+{
+    /// <summary>
+    /// Whether this release is a prerelease for PRESENTATION — true when EITHER
+    /// GitHub's prerelease flag is set OR the parsed SemVer carries a prerelease
+    /// identifier. This mirrors the SELECTION rule (a v1.1.0-beta.1 tag is a
+    /// prerelease even if the maintainer forgot GitHub's checkbox), so the channel
+    /// shown to the user can never label an accepted beta as "Stable".
+    /// </summary>
+    public bool IsPreRelease => Candidate.IsPreRelease || Version.IsPreRelease;
+}

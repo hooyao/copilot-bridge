@@ -125,4 +125,24 @@ public class UpdatePromptTests
         var s = UpdatePrompt.Sanitize("a\tb\nc\r\nd\u0007e");
         Assert.Equal("a\tb\nc\r\nd\\u0007e", s);
     }
+
+    [Theory]
+    [InlineData(true, "Prerelease")]
+    [InlineData(false, "Stable")]
+    public void Channel_label_follows_the_prerelease_flag(bool isPreRelease, string expectedLabel)
+    {
+        // The gate now derives isPreRelease from BOTH GitHub's flag and the parsed
+        // SemVer (fix 8-3, matching selection): whatever it decides, the announced
+        // channel label must reflect it - a mislabeled beta accepted as a prerelease
+        // must NOT be shown to the user as "Stable".
+        var console = new FakeConsole("n");
+        UpdatePrompt.Announce(
+            console, "0.4.13", "0.4.14", isPreRelease,
+            releaseTitle: "t", publishedAt: "p", releaseBody: "b",
+            releaseUrl: "https://example/tag");
+
+        Assert.Contains($"Channel: {expectedLabel}", console.Transcript);
+        var other = isPreRelease ? "Channel: Stable" : "Channel: Prerelease";
+        Assert.DoesNotContain(other, console.Transcript);
+    }
 }

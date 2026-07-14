@@ -144,6 +144,18 @@ internal sealed class UpdaterEngine
             return await FailPreflightAsync("parent identity changed before cutover", ct).ConfigureAwait(false);
         }
 
+        // Revalidate config + managed-binary snapshots IMMEDIATELY before Prepared.
+        // An operator edit during the (potentially long) download/prepare window
+        // must be caught HERE — while the old proxy is still serving — so it fails
+        // open. If we deferred the only drift check to after authorization (when the
+        // parent has already exited), the same edit would instead cause avoidable
+        // downtime and a recovery launch. The post-authorization RevalidateNoDrift
+        // still runs as the last-moment guard; this is the fail-open-able one.
+        if (!install.RevalidateNoDrift())
+        {
+            return await FailPreflightAsync("install drifted during preparation", ct).ConfigureAwait(false);
+        }
+
         _journal.Write("handoff.prepared");
         if (!await SendPreparedAndAwaitAuthorizationAsync(ct).ConfigureAwait(false))
         {

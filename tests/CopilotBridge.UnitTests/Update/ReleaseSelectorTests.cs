@@ -134,6 +134,34 @@ public class ReleaseSelectorTests
     }
 
     [Fact]
+    public void Selected_release_reports_prerelease_for_presentation_from_either_signal()
+    {
+        // 8-3: the channel shown to the user derives from SelectedRelease.IsPreRelease,
+        // which must be true when EITHER GitHub's flag OR the SemVer says prerelease —
+        // so a beta accepted despite a missed checkbox is never announced as Stable.
+        var mislabeled = ReleaseSelector.Select(
+            V("1.0.0"),
+            [new ReleaseCandidate("v1.1.0-beta.1", IsDraft: false, IsPreRelease: false)],
+            allowBeta: true);
+        Assert.NotNull(mislabeled);
+        Assert.True(mislabeled!.IsPreRelease, "SemVer prerelease must count even if GitHub's flag is false");
+
+        var flagged = ReleaseSelector.Select(
+            V("1.0.0"),
+            [new ReleaseCandidate("v1.1.0", IsDraft: false, IsPreRelease: true)],
+            allowBeta: true);
+        Assert.NotNull(flagged);
+        Assert.True(flagged!.IsPreRelease, "GitHub's flag must count even if the SemVer is a release");
+
+        var stable = ReleaseSelector.Select(
+            V("1.0.0"),
+            [Stable("v1.1.0")],
+            allowBeta: false);
+        Assert.NotNull(stable);
+        Assert.False(stable!.IsPreRelease, "a true stable release is not a prerelease");
+    }
+
+    [Fact]
     public void Dev_build_never_self_updates()
     {
         var result = ReleaseSelector.Select(
