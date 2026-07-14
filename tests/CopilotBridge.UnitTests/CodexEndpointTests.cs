@@ -12,6 +12,7 @@ using CopilotBridge.Cli.Pipeline.Routing;
 using CopilotBridge.Cli.Pipeline.Strategies;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Serilog;
@@ -65,7 +66,9 @@ public class CodexEndpointTests
         http.Request.Path = "/codex/responses";
         http.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(requestJson));
         var respStream = new MemoryStream();
-        http.Response.Body = respStream;
+        var responseFeature = new StartTrackingResponseFeature();
+        http.Features.Set<IHttpResponseFeature>(responseFeature);
+        http.Response.Body = new StartTrackingStream(respStream, responseFeature);
 
         var bridgeCtx = new BridgeContext<MessagesRequest>();
 
@@ -174,11 +177,8 @@ public class CodexEndpointTests
     }
 
     /// <summary>
-    /// Contract: a mid-stream stream-idle timeout on the Codex path is surfaced by
-    /// the strategy as an <c>UpstreamStreamFault</c> (it flushes a response.failed
-    /// terminal internally, never throws), so the endpoint keeps the already-sent
-    /// 200, does NOT emit an Anthropic overloaded_error, and records the timeout on
-    /// its summary. Asserts the summary field via a captured summary logger.
+    /// Contract: T4 emits one response.failed for a throwing IR stream, then the
+    /// endpoint retains the already-started 200 and records the timeout summary.
     /// </summary>
     [Fact]
     public async Task MidStreamTimeout_KeepsStatus_RecordsSummary_NoOverloadedError()
@@ -190,7 +190,9 @@ public class CodexEndpointTests
         http.Request.Path = "/codex/responses";
         http.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(ValidRequest));
         var respStream = new MemoryStream();
-        http.Response.Body = respStream;
+        var responseFeature = new StartTrackingResponseFeature();
+        http.Features.Set<IHttpResponseFeature>(responseFeature);
+        http.Response.Body = new StartTrackingStream(respStream, responseFeature);
         var bridgeCtx = new BridgeContext<MessagesRequest>();
 
         await CodexResponsesEndpoint.HandleAsync(
@@ -201,14 +203,7 @@ public class CodexEndpointTests
                 ctx.Target = new RouteTarget(BackendVendor.CopilotResponses, "/responses", "gpt-5.3-codex");
                 ctx.Response.Status = StatusCodes.Status200OK;
                 ctx.Response.Mode = ResponseMode.Streaming;
-                // One real event, then the strategy's fault channel latches the
-                // timeout (as it does after flushing response.failed).
-                ctx.Response.EventStream = ToAsync(new[]
-                {
-                    new SseItem<string>("{\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}", "response.created"),
-                });
-                ctx.Response.UpstreamStreamFault = new CopilotBridge.Cli.Copilot.UpstreamTimeoutException(
-                    CopilotBridge.Cli.Copilot.UpstreamTimeoutPhase.StreamIdle, TimeSpan.FromSeconds(1));
+                ctx.Response.EventStream = PartialThenTimeout();
             }),
             DummyPipeline,
             new ResponsesToIrInboundAdapter(NullLogger<ResponsesToIrInboundAdapter>.Instance),
@@ -220,7 +215,19 @@ public class CodexEndpointTests
         var body = Encoding.UTF8.GetString(respStream.ToArray());
         Assert.Equal(StatusCodes.Status200OK, http.Response.StatusCode); // headers already sent
         Assert.Equal("stream_idle", summaryCapture.UpstreamTimeout);
+        Assert.Equal(1, body.Split("event: response.failed", StringSplitOptions.None).Length - 1);
         Assert.DoesNotContain("overloaded_error", body);
+    }
+
+    private static async IAsyncEnumerable<SseItem<string>> PartialThenTimeout()
+    {
+        yield return new SseItem<string>(
+            "{\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"gpt-5.3-codex\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}",
+            "message_start");
+        await Task.Yield();
+        throw new CopilotBridge.Cli.Copilot.UpstreamTimeoutException(
+            CopilotBridge.Cli.Copilot.UpstreamTimeoutPhase.StreamIdle,
+            TimeSpan.FromSeconds(1));
     }
 
     // Captures the RequestSummary the Codex endpoint logs so a test can read the
@@ -267,6 +274,28 @@ public class CodexEndpointTests
         Assert.Equal(StatusCodes.Status200OK, status);
         // T4's buffered path is passthrough → the Responses JSON reaches the client verbatim.
         Assert.Equal(upstreamJson, body);
+    }
+
+    [Fact]
+    public async Task BufferedTranslatedIr_Unchanged_PreservesOriginalResponsesBytes()
+    {
+        const string original = "{ \"id\": \"resp_exact\", \"object\": \"response\", \"status\": \"completed\", \"output\": [] }";
+        var originalBytes = Encoding.UTF8.GetBytes(original);
+        var irBytes = Encoding.UTF8.GetBytes(
+            "{\"id\":\"resp_exact\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gpt-5.3-codex\",\"content\":[],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}");
+
+        var (status, body) = await Invoke(ValidRequest, ctx =>
+        {
+            ctx.Response.Status = StatusCodes.Status200OK;
+            ctx.Response.Mode = ResponseMode.Buffered;
+            ctx.Response.BufferedBody = irBytes;
+            ctx.Response.InitialBufferedIrBody = irBytes;
+            ctx.Response.BufferedResponsesWireBody = originalBytes;
+            ctx.Response.Headers["Content-Type"] = "application/json";
+        });
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Equal(original, body);
     }
 
     [Fact]
@@ -346,6 +375,42 @@ public class CodexEndpointTests
     {
         foreach (var i in items) yield return i;
         await Task.CompletedTask;
+    }
+
+    private sealed class StartTrackingResponseFeature : IHttpResponseFeature
+    {
+        public int StatusCode { get; set; } = StatusCodes.Status200OK;
+        public string? ReasonPhrase { get; set; }
+        public IHeaderDictionary Headers { get; set; } = new HeaderDictionary();
+        public Stream Body { get; set; } = Stream.Null;
+        public bool HasStarted { get; private set; }
+        public void MarkStarted() => HasStarted = true;
+        public void OnStarting(Func<object, Task> callback, object state) { }
+        public void OnCompleted(Func<object, Task> callback, object state) { }
+    }
+
+    private sealed class StartTrackingStream(Stream inner, StartTrackingResponseFeature feature) : Stream
+    {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => inner.Length;
+        public override long Position { get => inner.Position; set => inner.Position = value; }
+        public override void Flush() => inner.Flush();
+        public override Task FlushAsync(CancellationToken ct) => inner.FlushAsync(ct);
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => inner.SetLength(value);
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            feature.MarkStarted();
+            inner.Write(buffer, offset, count);
+        }
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
+        {
+            feature.MarkStarted();
+            return inner.WriteAsync(buffer, ct);
+        }
     }
 
     /// <summary>Parse the endpoint's raw SSE output and read usage off response.completed.</summary>

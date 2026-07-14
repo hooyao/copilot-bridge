@@ -400,8 +400,12 @@ prompt cache) is never aborted.
   idle timeout the pending read is cancelled and awaited so it never dangles.
   Default 60s sits *below* Claude Code's own opt-in stream watchdog
   (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`, default 90s) so the bridge is the earlier
-  deterministic actor. On expiry `/cc` throws `UpstreamTimeoutException(StreamIdle)`;
-  Codex latches it as a stream fault (see below).
+  deterministic actor. On expiry the upstream strategy throws
+  `UpstreamTimeoutException(StreamIdle)` through the hub stream; the downstream
+  client edge selects the protocol-specific failure surface (see below). The 60s
+  default is unchanged by the downstream-framing fix: an observation cancelled at
+  that deadline is right-censored and cannot establish whether upstream would
+  later have resumed, so timeout tuning remains a separate operator decision.
 
 Each budget disables at `<= 0` (no timer armed, no allocation — the byte-identical
 `/cc` passthrough hot path is unchanged). Surfacing, mapped by the endpoint's one
@@ -410,9 +414,13 @@ Each budget disables at `<= 0` (no timer armed, no allocation — the byte-ident
 - **Before headers** (first-byte): a real `504 Gateway Timeout`.
 - **Mid-stream** (headers already sent, status locked at `200`): by default inject
   the *same* retryable `overloaded_error` SSE event the response guards use
-  (`ResponseDetectionError.JsonWithMessage`) so Claude Code re-attempts the turn —
-  a whole-turn retry under `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` (which the
-  bridge's `config` command writes), a non-streaming fallback re-request otherwise;
+  (`ResponseDetectionError.JsonWithMessage`) so Claude Code discards the partial
+  attempt and issues its `stream:false` recovery request. Buffered T3 translates a
+  successful cross-routed Responses object into Anthropic Messages IR before
+  response detectors run; the `/cc` client edge then remains identity while Codex
+  T4 converts the same IR back to Responses;
+  `config claude-code` removes `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` so this
+  recovery path remains enabled;
   `StreamIdleAction=Truncate` instead ends the stream with no error event. Note the
   detector framework is pull-based (it inspects events that *arrive*), so an idle
   gap — the absence of an event — cannot be a detector; the injection happens at
@@ -423,14 +431,19 @@ helper (`CopilotClient.SendWithFirstByteBudgetAsync`) called by both
 `PostMessagesAsync` (`/cc`) and `PostResponsesAsync` (Codex), so a first-byte
 stall on either path throws `UpstreamTimeoutException(FirstByte)` → `504`. The
 stream-idle budget is applied at each strategy's read site, but the **mid-stream
-surface differs by client protocol**: the Codex path (`CopilotResponsesStrategy.
-TranslateStreamAsync`) does **not** inject an Anthropic `overloaded_error` (the
-Codex client speaks Responses and could not parse it). Instead it latches the
-timeout as `fault` and reuses the strategy's existing mid-stream-fault channel —
-flushing a `response.failed` terminal and surfacing `UpstreamStreamFault` — so the
-Codex client sees a well-formed terminated stream. `CodexResponsesEndpoint` reads
-that fault, records `upstream_timeout=stream_idle`, and folds the error into the
-audit.
+surface is selected by the downstream client protocol, not the upstream backend**.
+This distinction matters on cross-model routes: Claude Code may enter through
+`/cc` while routing selects Copilot `/responses`. The Responses-to-IR translator
+therefore propagates a read fault instead of encoding it as a normal IR terminal.
+At the Claude Code edge, `ClaudeCodeMessagesEndpoint` catches the fault and writes
+the configured Anthropic retryable `event: error` (or truncates, by explicit
+operator choice). At the Codex edge, `IrToResponsesOutboundAdapter` catches the
+same fault, flushes exactly one `response.failed` terminal required by the Codex
+parser, then rethrows so `CodexResponsesEndpoint` records
+`upstream_timeout=stream_idle` and the audit error. A bridge-private failure marker
+must never cross the `/cc` edge as `message_delta.stop_reason`; Claude Code accepts
+unknown stop-reason strings as ordinary terminal metadata and would silently end
+the agent turn instead of entering its streaming retry path.
 
 A client cancellation always wins the race against a timeout: the throw sites only
 convert to `UpstreamTimeoutException` when the linked timer fired **and** the
@@ -635,6 +648,31 @@ strategy = pipeline.Strategies.Resolve(ctx.Target)
 strategy.ForwardAsync(ctx)        executes HTTP call to upstream;
                                   populates ctx.Response.EventStream
 ```
+
+### 5.1 Claude Code sub-agent delegation on a Responses target
+
+Claude Code identifies every request executed by a sub-agent with the inbound
+`x-claude-code-agent-id` header. The first generation does **not** necessarily carry
+`x-claude-code-parent-agent-id`, so the agent-id header alone is the authoritative
+sub-agent signal. The `/cc` endpoint snapshots that signal on the scoped
+`BridgeContext` before `HeadersOutboundStage` removes the private `x-claude-code-*`
+headers.
+
+When routing selects `CopilotResponses:/responses`, T2 treats Claude Code's `Agent`
+tool as a client-specific delegation primitive, not an ordinary repeatable function.
+With `Pipeline:CcToResponses:PreventRecursiveAgentDelegation` enabled (the default),
+T2 omits the exact `Agent` tool from a sub-agent's translated Responses `tools[]` and
+reconciles a forced choice for that removed tool to `auto`. Each actual removal emits
+an operator-visible warning with the
+`Pipeline:CcToResponses:PreventRecursiveAgentDelegation=false` recovery setting.
+Root Claude Code requests retain `Agent`, and the IR is not mutated. Consequently
+native Anthropic `/cc` passthrough and native `/codex` traffic are unaffected;
+disabling the option restores the previous CC-to-Responses translation behavior.
+
+This is deliberately a translation-boundary compatibility policy. Claude Code may
+legitimately expose delegation recursively, but a non-Claude backend can interpret the
+tool as an unrestricted fan-out primitive: many individually valid, bounded responses
+can form a request storm that a per-response runaway detector cannot see.
 
 `CacheControlCleanStage` from research §3.6 rule 1 is intentionally absent —
 the DTO does not model `cache_control.scope`, so the field is silently dropped

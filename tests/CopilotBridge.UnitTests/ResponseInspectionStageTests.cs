@@ -1,5 +1,6 @@
 using System.Net.ServerSentEvents;
 using System.Text;
+using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline;
@@ -87,6 +88,46 @@ public class ResponseInspectionStageTests
         var list = new List<SseItem<string>>();
         await foreach (var e in s) list.Add(e);
         return list;
+    }
+
+    private static async IAsyncEnumerable<SseItem<string>> PrefixThenFault(Exception fault)
+    {
+        yield return new SseItem<string>(
+            """{"type":"message_start","message":{"model":"claude-opus-4-8"}}""",
+            "message_start");
+        yield return new SseItem<string>(
+            """{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""",
+            "content_block_start");
+        yield return new SseItem<string>(
+            """{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}""",
+            "content_block_delta");
+        await Task.Yield();
+        throw fault;
+    }
+
+    [Fact]
+    public async Task WholeResponseBuffering_PreservesFaultForDownstreamClientBoundary()
+    {
+        var fault = new UpstreamTimeoutException(
+            UpstreamTimeoutPhase.StreamIdle, TimeSpan.FromSeconds(60));
+        var ctx = Ctx(PrefixThenFault(fault));
+
+        await Run(ctx, new ResponseLeakGuardOptions
+        {
+            Enabled = true,
+            PreserveStream = false,
+        });
+
+        Assert.Equal(ResponseMode.Streaming, ctx.Response.Mode);
+        var seen = new List<SseItem<string>>();
+        var thrown = await Assert.ThrowsAsync<UpstreamTimeoutException>(async () =>
+        {
+            await foreach (var item in ctx.Response.EventStream!)
+                seen.Add(item);
+        });
+        Assert.Same(fault, thrown);
+        Assert.Contains(seen, item => item.EventType == "content_block_delta"
+            && item.Data.Contains("partial", StringComparison.Ordinal));
     }
 
     private const string Leak =

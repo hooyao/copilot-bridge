@@ -1,6 +1,7 @@
 using System.Net.ServerSentEvents;
 using System.Text;
 using System.Text.Json;
+using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Xunit;
@@ -161,7 +162,7 @@ public class CodexStreamRobustnessTests
     // ── C1: response.failed → honest response.failed (not fake completed) ─────
 
     [Fact]
-    public void ResponseFailed_BecomesHonestFailedTerminal_NotCompleted()
+    public void ResponseFailed_BecomesBoundedTypedFault_NotNormalTerminal()
     {
         var upstream = new List<SseItem<string>>
         {
@@ -171,13 +172,9 @@ public class CodexStreamRobustnessTests
             Sse("response.failed", """{"type":"response.failed","response":{"id":"r","status":"failed","error":{"code":"server_error","message":"boom"}}}"""),
         };
 
-        var outp = T4(T3(upstream));
-
-        var terminal = outp[^1];
-        Assert.Equal("response.failed", TypeOf(terminal));
-        Assert.DoesNotContain(outp, e => TypeOf(e) == "response.completed");
-        using var doc = JsonDocument.Parse(terminal.Data);
-        Assert.Equal("failed", doc.RootElement.GetProperty("response").GetProperty("status").GetString());
+        var ex = Assert.Throws<UpstreamResponseFailedException>(() => T3(upstream));
+        Assert.Equal("server_error", ex.Code);
+        Assert.DoesNotContain("boom", ex.Message);
     }
 
     // ── response.incomplete → terminal status incomplete ─────────────────────
@@ -211,7 +208,7 @@ public class CodexStreamRobustnessTests
         // response.completed (Codex requires a terminal).
         var sm = new ResponsesToAnthropicStream(Model);
         var ir = new List<SseItem<string>>();
-        ir.AddRange(sm.FlushTerminal(failed: false));
+        ir.AddRange(sm.FlushTerminal());
 
         Assert.NotEmpty(ir);
         Assert.Equal("message_start", TypeOf(ir[0]));
@@ -222,18 +219,18 @@ public class CodexStreamRobustnessTests
     }
 
     [Fact]
-    public void FaultedUpstreamStream_FlushTerminalFailed_YieldsFailedTerminal()
+    public void ExplicitResponseFailed_RemainsExceptionalUntilClientBoundary()
     {
-        // The strategy caught a mid-stream throw and called FlushTerminal(failed:true).
+        // Contract: T3 cannot choose a client protocol. An upstream failure stays
+        // exceptional until /cc or T4 selects its native failure envelope.
         var sm = new ResponsesToAnthropicStream(Model);
-        var ir = new List<SseItem<string>>();
-        // simulate a partial stream then a fault terminal
-        ir.AddRange(sm.Translate(Sse("response.created", """{"type":"response.created","response":{"id":"r","status":"in_progress"}}""")));
-        ir.AddRange(sm.FlushTerminal(failed: true));
+        _ = sm.Translate(Sse("response.created", """{"type":"response.created","response":{"id":"r","status":"in_progress"}}""")).ToList();
 
-        var outp = T4(ir);
-        Assert.Equal("response.failed", TypeOf(outp[^1]));
-        Assert.DoesNotContain(outp, e => TypeOf(e) == "response.completed");
+        var ex = Assert.Throws<UpstreamResponseFailedException>(() =>
+            sm.Translate(Sse("response.failed", """{"type":"response.failed","response":{"id":"r","status":"failed","error":{"code":"server_error","message":"generated detail"}}}""")).ToList());
+
+        Assert.Equal("server_error", ex.Code);
+        Assert.DoesNotContain("generated detail", ex.Message);
     }
 
     // ── unparseable event is skipped without corrupting the rest ─────────────

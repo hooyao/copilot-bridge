@@ -198,6 +198,7 @@ internal static class ClaudeCodeMessagesEndpoint
             bridgeCtx.Response = new BridgeResponse();
             bridgeCtx.Ct = ct;
             bridgeCtx.InboundBetas = inboundBetaSet;
+            bridgeCtx.IsClaudeCodeSubagent = IsClaudeCodeSubagent(inboundHeaders);
             bridgeCtx.TraceId = traceId;
 
             await runner.RunAsync(pipeline);
@@ -241,6 +242,9 @@ internal static class ClaudeCodeMessagesEndpoint
             // loop below BEFORE the finally finalizes it; for buffered, the raw
             // pre-rewrite reference is already set.
             pipelineResponse = bridgeCtx.Response;
+
+            if (bridgeCtx.Response.BufferedUpstreamFault is { } bufferedFault)
+                throw bufferedFault;
 
             responseStatus = bridgeCtx.Response.Status;
             foreach (var (k, v) in bridgeCtx.Response.Headers)
@@ -316,10 +320,11 @@ internal static class ClaudeCodeMessagesEndpoint
             var phase = UpstreamTimeoutException.PhaseLabel(ex.Phase);
             summary.UpstreamTimeout = phase;
             endpointError = ex.Message;
-            summary.Error = ex.Message;
+            summary.Error = $"{ex.GetType().Name}: {ex.Message}";
             endpointLog.LogWarning(
-                "endpoint upstream-timeout: phase={Phase} idle={IdleSeconds:0.#}s (tune Pipeline:UpstreamTimeout)",
-                phase, ex.Elapsed.TotalSeconds);
+                "endpoint upstream-timeout: phase={Phase} type={ExceptionType} idle={IdleSeconds:0.#}s "
+                + "(tune Pipeline:UpstreamTimeout)",
+                phase, ex.GetType().Name, ex.Elapsed.TotalSeconds);
 
             if (!httpCtx.Response.HasStarted)
             {
@@ -349,6 +354,7 @@ internal static class ClaudeCodeMessagesEndpoint
                     try
                     {
                         await WriteSseEventAsync(httpCtx.Response, "error", errorJson, CancellationToken.None);
+                        capturedEvents?.Add(new CapturedSseEvent("error", errorJson, Filtered: false));
                     }
                     catch (Exception writeEx)
                     {
@@ -357,6 +363,51 @@ internal static class ClaudeCodeMessagesEndpoint
                     }
                 }
                 // Truncate: nothing more to write — the stream simply ends.
+            }
+        }
+        catch (UpstreamResponseFailedException ex)
+        {
+            endpointError = ex.Message;
+            summary.Error = $"{ex.GetType().Name}: {ex.Message}";
+            endpointLog.LogWarning(
+                "endpoint upstream-response-failed: type={ExceptionType} code={FailureCode}",
+                ex.GetType().Name, ex.Code);
+
+            if (!httpCtx.Response.HasStarted)
+            {
+                responseStatus = StatusCodes.Status502BadGateway;
+                httpCtx.Response.StatusCode = responseStatus;
+                httpCtx.Response.ContentType = "application/json";
+                var error = new ErrorResponse
+                {
+                    Error = new ErrorBody
+                    {
+                        Type = "api_error",
+                        Message = UpstreamResponseFailedMessage,
+                    },
+                };
+                var bytes = JsonSerializer.SerializeToUtf8Bytes(error, JsonContext.Default.ErrorResponse);
+                responseBody = bytes;
+                responseBodyLen = bytes.Length;
+                httpCtx.Response.ContentLength = bytes.Length;
+                await httpCtx.Response.Body.WriteAsync(bytes, CancellationToken.None);
+            }
+            else
+            {
+                responseStatus = httpCtx.Response.StatusCode;
+                var errorJson = ResponseDetectionError.JsonWithMessage(
+                    ResponseDetectionSignal.ApiError, UpstreamResponseFailedMessage);
+                try
+                {
+                    await WriteSseEventAsync(httpCtx.Response, "error", errorJson, CancellationToken.None);
+                    capturedEvents?.Add(new CapturedSseEvent("error", errorJson, Filtered: false));
+                }
+                catch (Exception writeEx)
+                {
+                    endpointLog.LogDebug(
+                        "endpoint upstream-response-failed: could not write error event ({Type})",
+                        writeEx.GetType().Name);
+                }
             }
         }
         catch (UnknownModelException ex)
@@ -404,11 +455,29 @@ internal static class ClaudeCodeMessagesEndpoint
             }
             else
             {
-                // Already sent response headers (mid-stream disconnect); we
-                // cannot rewrite the status, so reflect what the wire sees:
-                // a 200 stream that was cut short. The Warning + summary
-                // error field tell the operator why.
+                // A propagated Responses read fault is client-visible protocol
+                // failure, just like an idle timeout: T3 cannot select the Claude
+                // wire shape, so the /cc boundary must emit the configured
+                // Anthropic retry signal (or intentionally truncate). Native
+                // Anthropic passthrough retains its historical truncation behavior.
                 responseStatus = httpCtx.Response.StatusCode;
+                if (bridgeCtx.Target?.Vendor == BackendVendor.CopilotResponses
+                    && upstreamTimeout.Value.StreamIdleAction == UpstreamTimeoutAction.Retry)
+                {
+                    var errorJson = ResponseDetectionError.JsonWithMessage(
+                        ResponseDetectionSignal.ApiError, UpstreamResponseFailedMessage);
+                    try
+                    {
+                        await WriteSseEventAsync(httpCtx.Response, "error", errorJson, CancellationToken.None);
+                        capturedEvents?.Add(new CapturedSseEvent("error", errorJson, Filtered: false));
+                    }
+                    catch (Exception writeEx)
+                    {
+                        endpointLog.LogDebug(
+                            "endpoint upstream-disconnect: could not write error event ({Type})",
+                            writeEx.GetType().Name);
+                    }
+                }
             }
         }
         catch (Exception ex)
@@ -426,11 +495,28 @@ internal static class ClaudeCodeMessagesEndpoint
             }
             else
             {
-                // Same as the transient branch: headers already sent, we
-                // can only record the wire-visible status so the summary
-                // line doesn't claim a misleading 500 from the initial
-                // default value.
+                // Even an unexpected read/translation fault must not make a
+                // cross-routed Responses turn look like a clean partial Claude
+                // success. Preserve the Error log for diagnosis, but fail closed
+                // at the client protocol boundary with the same bounded signal.
                 responseStatus = httpCtx.Response.StatusCode;
+                if (bridgeCtx.Target?.Vendor == BackendVendor.CopilotResponses
+                    && upstreamTimeout.Value.StreamIdleAction == UpstreamTimeoutAction.Retry)
+                {
+                    var errorJson = ResponseDetectionError.JsonWithMessage(
+                        ResponseDetectionSignal.ApiError, UpstreamResponseFailedMessage);
+                    try
+                    {
+                        await WriteSseEventAsync(httpCtx.Response, "error", errorJson, CancellationToken.None);
+                        capturedEvents?.Add(new CapturedSseEvent("error", errorJson, Filtered: false));
+                    }
+                    catch (Exception writeEx)
+                    {
+                        endpointLog.LogDebug(
+                            "endpoint exception: could not write error event ({Type})",
+                            writeEx.GetType().Name);
+                    }
+                }
             }
         }
         finally
@@ -490,6 +576,15 @@ internal static class ClaudeCodeMessagesEndpoint
         }
     }
 
+    /// <summary>
+    /// Claude Code's authoritative sub-agent signal. First-generation children
+    /// carry an agent id but may omit the parent-agent header, so parent presence
+    /// must never gate the classification.
+    /// </summary>
+    internal static bool IsClaudeCodeSubagent(IReadOnlyDictionary<string, string> headers) =>
+        headers.TryGetValue("x-claude-code-agent-id", out var agentId)
+        && !string.IsNullOrWhiteSpace(agentId);
+
     /// <summary>Client-facing message injected as the retryable error when a
     /// mid-stream idle timeout fires with StreamIdleAction=Retry. No <c>"</c> or
     /// <c>\</c> (embedded in hand-built JSON without escaping, same constraint as
@@ -498,6 +593,9 @@ internal static class ClaudeCodeMessagesEndpoint
         "[copilot-bridge] The upstream model stalled mid-response (no further output within the configured "
         + "stream-idle budget) and the turn was aborted; forcing a clean retry. If this is a false positive on a "
         + "legitimately slow stream, raise Pipeline:UpstreamTimeout:StreamIdleTimeoutSeconds in appsettings.json and restart copilot-bridge.";
+
+    private const string UpstreamResponseFailedMessage =
+        "[copilot-bridge] The upstream model backend failed this streaming turn; forcing a clean retry.";
 
     private static IReadOnlyList<string> ParseOutboundBetas(IReadOnlyDictionary<string, string> headers)
     {

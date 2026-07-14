@@ -28,13 +28,10 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
     /// this value entirely.</summary>
     private const string AuthTokenPlaceholder = "copilot-bridge";
 
-    /// <summary>The env key that disables Claude Code's silent streaming→non-streaming
-    /// fallback so a mid-stream detector abort forces a whole-turn retry.</summary>
+    /// <summary>The legacy env key that disables Claude Code's
+    /// streaming→non-streaming recovery. The bridge now removes it: cross-routed
+    /// buffered Responses bodies are translated at the Claude edge.</summary>
     private const string FallbackKey = "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK";
-
-    /// <summary>Truthy value for <see cref="FallbackKey"/>. Claude Code's check is
-    /// <c>isEnvTruthy</c>, for which <c>"1"</c> is true.</summary>
-    private const string FallbackOn = "1";
 
     private static readonly JsonSerializerOptions WriteOptions = new()
     {
@@ -92,7 +89,7 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         {
             return new ConfigState(ClientId, scope, path, Exists: false,
                 ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
-                ExpectedFallback: connection.NeedNonStreamingFallbackDisabled ? FallbackOn : null,
+                ExpectedFallback: null,
                 CurrentFallback: null, Details: ["not configured (file does not exist)"]);
         }
 
@@ -112,7 +109,7 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         {
             return new ConfigState(ClientId, scope, path, Exists: true,
                 ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
-                ExpectedFallback: connection.NeedNonStreamingFallbackDisabled ? FallbackOn : null,
+                ExpectedFallback: null,
                 CurrentFallback: null,
                 Details: ["file is not a JSON object (cannot read — run the config command to rewrite)"]);
         }
@@ -140,7 +137,7 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         return new ConfigState(ClientId, scope, path, Exists: true,
             ConfiguredForBridge: pointsAtBridge, CurrentBaseUrl: pointsAtBridge ? current : null,
             ExpectedBaseUrl: expected,
-            ExpectedFallback: connection.NeedNonStreamingFallbackDisabled ? FallbackOn : null,
+            ExpectedFallback: null,
             CurrentFallback: pointsAtBridge ? fallback : null, Details: details);
     }
 
@@ -184,17 +181,13 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
             summary.Add($"kept env.{AuthTokenKey} (already set)");
         }
 
-        // fallback env — write "1" when a detector can abort mid-stream, else remove
-        // the key so the written config self-heals to the current appsettings state.
-        if (connection.NeedNonStreamingFallbackDisabled)
-        {
-            env[FallbackKey] = FallbackOn;
-            summary.Add($"set env.{FallbackKey} = {FallbackOn}");
-        }
-        else if (env.ContainsKey(FallbackKey))
+        // Always remove the legacy disable switch. Claude Code's recovery from a
+        // mid-stream SSE error is a stream:false fallback request; disabling it
+        // turns the fault into a terminal API error instead of continuing the turn.
+        if (env.ContainsKey(FallbackKey))
         {
             env.Remove(FallbackKey);
-            summary.Add($"removed env.{FallbackKey} (no detector preserves the stream)");
+            summary.Add($"removed env.{FallbackKey} (bridge supports non-streaming recovery)");
         }
 
         return summary;

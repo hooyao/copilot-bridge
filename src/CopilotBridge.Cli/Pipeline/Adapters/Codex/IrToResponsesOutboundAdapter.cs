@@ -45,7 +45,7 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         // EOF, common on long streams), a plain `await foreach` would skip Flush
         // and hand Codex a headless stream that hangs. So iterate manually,
         // capture any fault, ALWAYS flush a terminal (response.failed on fault,
-        // response.completed otherwise), then rethrow a non-transient fault.
+        // response.completed otherwise), then rethrow it for endpoint accounting.
         await using var e = irStream.GetAsyncEnumerator(ct);
         Exception? fault = null;
         while (true)
@@ -63,7 +63,7 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
 
         if (fault is not null)
         {
-            _log.LogWarning("adapter {Name}: upstream IR stream faulted mid-relay ({Type}: {Message}); "
+            _log.LogDebug("adapter {Name}: upstream IR stream faulted mid-relay ({Type}: {Message}); "
                 + "emitted a terminal response.failed before propagating",
                 Name, fault.GetType().Name, fault.Message);
             // Cancellation is expected on client disconnect — don't wrap it.
@@ -79,12 +79,25 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         byte[] irBody,
         CancellationToken ct)
     {
-        // Non-streaming path. On the Codex→/responses cell the strategy buffers
-        // the raw Responses JSON (or error envelope) — it never round-tripped
-        // through the Anthropic IR body, so it's already Responses-shaped and is
-        // returned as-is. (Codex always streams in practice; this is the
-        // error/edge path.)
-        _log.LogDebug("adapter {Name}: buffered passthrough bytes={Bytes}", Name, irBody.Length);
+        if (ReferenceEquals(irBody, _ctx.Response.InitialBufferedIrBody)
+            && _ctx.Response.BufferedResponsesWireBody is { } original)
+        {
+            _log.LogDebug("adapter {Name}: buffered Responses byte-preserving passthrough bytes={Bytes}",
+                Name, original.Length);
+            return ValueTask.FromResult(original);
+        }
+
+        var translated = BufferedAnthropicToResponses.TryTranslate(irBody);
+        if (translated is not null)
+        {
+            _log.LogDebug("adapter {Name}: buffered IR→Responses in_bytes={InBytes} out_bytes={OutBytes}",
+                Name, irBody.Length, translated.Length);
+            return ValueTask.FromResult(translated);
+        }
+
+        // Upstream non-success envelopes and detector-generated error bodies do
+        // not represent successful response IR; preserve their existing surface.
+        _log.LogDebug("adapter {Name}: buffered non-message passthrough bytes={Bytes}", Name, irBody.Length);
         return ValueTask.FromResult(irBody);
     }
 }
@@ -99,6 +112,7 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
 /// </summary>
 internal sealed class AnthropicToResponsesStream
 {
+    private const string FailedStopReason = "error";
     private readonly string _model;
     private readonly ILogger? _log;
     private int _seq;
@@ -227,8 +241,8 @@ internal sealed class AnthropicToResponsesStream
     /// </summary>
     public IEnumerable<SseItem<string>> FlushTerminal(bool failed)
     {
-        if (failed && _stopReason != Strategies.Codex.ResponsesToAnthropicStream.ErrorStopReason)
-            _stopReason = Strategies.Codex.ResponsesToAnthropicStream.ErrorStopReason;
+        if (failed && _stopReason != FailedStopReason)
+            _stopReason = FailedStopReason;
         if (!_created)
         {
             _created = true;
@@ -416,7 +430,7 @@ internal sealed class AnthropicToResponsesStream
         + $"\"output_tokens\":{_outputTokens},\"output_tokens_details\":{{\"reasoning_tokens\":{_reasoningOutputTokens}}},"
         + $"\"total_tokens\":{_inputTokens + _outputTokens}}}";
 
-    private bool IsFailed() => _stopReason == Strategies.Codex.ResponsesToAnthropicStream.ErrorStopReason;
+    private bool IsFailed() => _stopReason == FailedStopReason;
 
     private string MapStatus() => _stopReason == "max_tokens" ? "incomplete" : "completed";
 

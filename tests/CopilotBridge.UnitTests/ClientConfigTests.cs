@@ -116,14 +116,14 @@ public class ClientConfigTests
     private static BridgeConnection Conn(int port = 8765, bool fallback = true) => new(port, fallback);
 
     [Fact]
-    public void ClaudeCode_sets_base_url_and_fallback_when_needed()
+    public void ClaudeCode_sets_base_url_and_leaves_recovery_fallback_enabled()
     {
         var (content, _) = ClaudeCodeConfigurator.BuildContent(null, Conn(fallback: true));
         var root = System.Text.Json.Nodes.JsonNode.Parse(content)!;
         var env = root["env"]!;
 
         Assert.Equal("http://localhost:8765/cc", (string?)env["ANTHROPIC_BASE_URL"]);
-        Assert.Equal("1", (string?)env["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"]);
+        Assert.Null((string?)env["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"]);
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public class ClientConfigTests
     }
 
     [Fact]
-    public void ClaudeCode_removes_fallback_env_when_not_needed()
+    public void ClaudeCode_removes_legacy_fallback_disable_regardless_of_detector_state()
     {
         var original = """
         { "env": { "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": "1", "ANTHROPIC_AUTH_TOKEN": "x" } }
@@ -158,6 +158,10 @@ public class ClientConfigTests
         var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!.AsObject();
 
         Assert.False(env.ContainsKey("CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"));
+
+        var (withDetectors, _) = ClaudeCodeConfigurator.BuildContent(original, Conn(fallback: true));
+        var detectorEnv = System.Text.Json.Nodes.JsonNode.Parse(withDetectors)!["env"]!.AsObject();
+        Assert.False(detectorEnv.ContainsKey("CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"));
     }
 
     [Fact]
@@ -333,8 +337,8 @@ public class ClientConfigTests
     [Fact]
     public void Status_reports_fallback_drift_even_when_base_url_matches()
     {
-        // A ConfigState whose base URL matches but whose fallback-env does not (e.g.
-        // appsettings later turned a detector off) must be reported as drifted.
+        // A ConfigState whose base URL matches but which still carries the legacy
+        // fallback-disable env must be reported as drifted.
         var drifted = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
             ConfiguredForBridge: true,
             CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
@@ -672,4 +676,3 @@ public class ClientConfigWriteTests : IDisposable
         Assert.Empty(provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>());
     }
 }
-

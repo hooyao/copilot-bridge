@@ -1,5 +1,6 @@
 using System.Net.ServerSentEvents;
 using System.Text.Json;
+using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using Microsoft.Extensions.Logging;
 
@@ -53,9 +54,83 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
         byte[] irBody,
         CancellationToken ct)
     {
-        _log.LogDebug("adapter {Name}: identity-buffered  bytes={Bytes}", Name, irBody.Length);
-        return ValueTask.FromResult(irBody);
+        var scrubbed = ScrubBufferedMarkers(irBody);
+        _log.LogDebug("adapter {Name}: identity-buffered (with CC-edge marker scrub) bytes={Bytes}",
+            Name, scrubbed.Length);
+        return ValueTask.FromResult(scrubbed);
     }
+
+    private static byte[] ScrubBufferedMarkers(byte[] body)
+    {
+        if (body.AsSpan().IndexOf(GrammarMarkerBytes) < 0
+            && body.AsSpan().IndexOf(NamespaceMarkerBytes) < 0)
+            return body;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("content", out var content)
+                || content.ValueKind != JsonValueKind.Array)
+                return body;
+
+            var found = false;
+            foreach (var block in content.EnumerateArray())
+            {
+                if (block.ValueKind == JsonValueKind.Object
+                    && (block.TryGetProperty(GrammarMarker, out _)
+                        || block.TryGetProperty(NamespaceMarker, out _)))
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return body;
+
+            using var buffer = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(buffer))
+            {
+                writer.WriteStartObject();
+                foreach (var property in root.EnumerateObject())
+                {
+                    if (!property.NameEquals("content"))
+                    {
+                        property.WriteTo(writer);
+                        continue;
+                    }
+
+                    writer.WritePropertyName("content");
+                    writer.WriteStartArray();
+                    foreach (var block in property.Value.EnumerateArray())
+                    {
+                        if (block.ValueKind != JsonValueKind.Object)
+                        {
+                            block.WriteTo(writer);
+                            continue;
+                        }
+                        writer.WriteStartObject();
+                        foreach (var inner in block.EnumerateObject())
+                        {
+                            if (!inner.NameEquals(GrammarMarker) && !inner.NameEquals(NamespaceMarker))
+                                inner.WriteTo(writer);
+                        }
+                        writer.WriteEndObject();
+                    }
+                    writer.WriteEndArray();
+                }
+                writer.WriteEndObject();
+            }
+            return buffer.ToArray();
+        }
+        catch (JsonException)
+        {
+            return body;
+        }
+    }
+
+    private static ReadOnlySpan<byte> GrammarMarkerBytes => "bridge_input_is_grammar_text"u8;
+    private static ReadOnlySpan<byte> NamespaceMarkerBytes => "bridge_tool_namespace"u8;
 
     /// <summary>
     /// Return the event unchanged unless its data carries a bridge marker; if it does,
@@ -65,6 +140,13 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
     private SseItem<string> ScrubMarkers(SseItem<string> evt)
     {
         var data = evt.Data;
+        // A bridge-private failure stop is never a legal Claude-facing terminal.
+        // T3 now propagates typed faults, but fail closed here as a final invariant
+        // in case a future translator accidentally reintroduces the old marker.
+        if (IsPrivateFailureMarker(evt))
+        {
+            throw new UpstreamResponseFailedException("bridge_private_marker");
+        }
         // Fast path: no marker name present → return the exact same item (no parse,
         // no allocation). This is every event on a real Copilot Anthropic backend, and
         // every non-content_block_start event on the CC→gpt route.
@@ -123,6 +205,28 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
             // text. Leave the event untouched rather than risk corrupting it; the
             // marker names are distinctive enough that a false positive here is benign.
             return evt;
+        }
+    }
+
+    private static bool IsPrivateFailureMarker(SseItem<string> evt)
+    {
+        if (evt.EventType != "message_delta"
+            || !evt.Data.Contains("stop_reason", StringComparison.Ordinal)
+            || !evt.Data.Contains("error", StringComparison.Ordinal))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(evt.Data);
+            return doc.RootElement.TryGetProperty("delta", out var delta)
+                && delta.ValueKind == JsonValueKind.Object
+                && delta.TryGetProperty("stop_reason", out var reason)
+                && reason.ValueKind == JsonValueKind.String
+                && reason.GetString() == "error";
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 }
