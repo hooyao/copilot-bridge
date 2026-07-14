@@ -80,7 +80,15 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         CancellationToken ct)
     {
         if (ReferenceEquals(irBody, _ctx.Response.InitialBufferedIrBody)
-            && _ctx.Response.BufferedResponsesWireBody is { } original)
+            && _ctx.Response.BufferedResponsesWireBody is { } original
+            // The byte-preserving shortcut sends the ORIGINAL upstream bytes back to
+            // Codex verbatim. That's correct only when its custom_tool_call ids already
+            // begin with `ctc`; if the upstream buffered a custom_tool_call with a
+            // non-`ctc` id, passing it through unchanged reintroduces the echo-turn 400.
+            // In that case fall through to the IR→Responses translation, which
+            // guarantees a `ctc`-prefixed id (buffered T3 only carried the marker for a
+            // real `ctc_` id, so the translation synthesizes one here).
+            && !HasNonCtcCustomToolCallId(original))
         {
             _log.LogDebug("adapter {Name}: buffered Responses byte-preserving passthrough bytes={Bytes}",
                 Name, original.Length);
@@ -99,6 +107,45 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         // not represent successful response IR; preserve their existing surface.
         _log.LogDebug("adapter {Name}: buffered non-message passthrough bytes={Bytes}", Name, irBody.Length);
         return ValueTask.FromResult(irBody);
+    }
+
+    /// <summary>
+    /// True when the original upstream Responses body has a <c>custom_tool_call</c>
+    /// output item whose <c>id</c> does NOT begin with <c>ctc</c> — the only case
+    /// where the byte-preserving passthrough would ship a non-conforming id back to
+    /// Codex and reproduce the echo-turn 400. Cheap substring pre-filter avoids a JSON
+    /// parse for the overwhelmingly common case (no custom tool call at all).
+    /// </summary>
+    private static bool HasNonCtcCustomToolCallId(byte[] original)
+    {
+        if (original.AsSpan().IndexOf("custom_tool_call"u8) < 0)
+            return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(original);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("output", out var output)
+                || output.ValueKind != JsonValueKind.Array)
+                return false;
+            foreach (var item in output.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.Object
+                    && item.TryGetProperty("type", out var t)
+                    && t.ValueKind == JsonValueKind.String
+                    && t.GetString() == "custom_tool_call")
+                {
+                    var id = item.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                        ? idEl.GetString() : null;
+                    if (id is null || !id.StartsWith("ctc", StringComparison.Ordinal))
+                        return true;
+                }
+            }
+            return false;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 }
 
