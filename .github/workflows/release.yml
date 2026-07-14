@@ -110,9 +110,24 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          ./publish-aot/copilot-bridge.exe --version
-          ./publish-aot/copilot-bridge.exe debug selftest-tokenstore
-          ./publish-aot/copilot-updater.exe
+          # Two pwsh defaults on the runner turn a NORMAL updater exit into a step
+          # failure: GitHub injects `$ErrorActionPreference='Stop'`, and PowerShell
+          # 7.4+ defaults `$PSNativeCommandUseErrorActionPreference=$true` — together
+          # they throw `ProgramExitedWithNonZeroCode` the moment a native command
+          # exits non-zero (the updater intentionally exits 10 with no plan arg),
+          # BEFORE the `if ($LASTEXITCODE...)` check ever runs. Disable the native-
+          # command error coupling and relax the preference so we can gate purely on
+          # the exit code. (2>&1 also folds the updater's stderr notice into the
+          # captured stream so it can't trip the pipeline either.)
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          ./publish-aot/copilot-bridge.exe --version 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "bridge --version failed with $LASTEXITCODE" }
+          ./publish-aot/copilot-bridge.exe debug selftest-tokenstore 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "token-store selftest failed with $LASTEXITCODE" }
+          # The updater with no plan argument must fail fast (exit 10), proving the
+          # Native AOT binary loads and its entry shell runs.
+          ./publish-aot/copilot-updater.exe 2>&1
           if ($LASTEXITCODE -ne 10) { throw "updater smoke expected exit 10, got $LASTEXITCODE" }
 
       # --- Package: Windows → .zip ------------------------------------------
