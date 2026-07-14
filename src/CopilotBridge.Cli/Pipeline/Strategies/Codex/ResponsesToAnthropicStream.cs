@@ -50,6 +50,18 @@ internal sealed class ResponsesToAnthropicStream
     // when the stream sent no deltas — avoiding a double-emit when it did. Reset
     // each time a new output item opens.
     private bool _blockSawArgsDelta;
+    // The upstream custom_tool_call's real item id — a `ctc_`-prefixed Responses
+    // item id. It is NOT on output_item.added (that carries a rolling ENCRYPTED
+    // blob, and output_item.done carries a DIFFERENT blob); the plaintext `ctc_`
+    // id appears ONLY on the custom_tool_call_input.delta/.done events' item_id.
+    // Captured for the current block and re-emitted on content_block_stop as the
+    // bridge-internal marker bridge_custom_tool_call_id, so T4 can stamp it on the
+    // Codex-facing custom_tool_call item. Codex echoes THAT id next turn, and
+    // Copilot's /responses REQUIRES the echoed custom_tool_call id to begin with
+    // `ctc` (else 400 "Expected an ID that begins with 'ctc'"). Reset per block;
+    // "" for a text/function block, or a custom tool whose id we never observed
+    // (T4 then falls back to a deterministic ctc_-prefixed synthesis).
+    private string _customToolCallId = "";
     private string _stopReason = "end_turn";
     // Usage carried off the upstream terminal (response.completed/incomplete), so
     // the IR message_delta reports Copilot's real counts instead of zeros.
@@ -160,6 +172,7 @@ internal sealed class ResponsesToAnthropicStream
                 // are dropped and Codex receives arguments:"" → aborts every call.
                 // The delta field is "delta" (same as function_call_arguments.delta).
                 case "response.custom_tool_call_input.delta":
+                    CaptureCustomToolCallId(root);
                     if (root.TryGetProperty("delta", out var cd) && cd.ValueKind == JsonValueKind.String)
                     {
                         _blockSawArgsDelta = true;
@@ -175,6 +188,7 @@ internal sealed class ResponsesToAnthropicStream
                 // tool call is never empty. Guard on _blockSawArgsDelta to avoid a
                 // double-emit on the normal delta path.
                 case "response.custom_tool_call_input.done":
+                    CaptureCustomToolCallId(root);
                     if (!_blockSawArgsDelta && _blockOpen
                         && root.TryGetProperty("input", out var ci) && ci.ValueKind == JsonValueKind.String
                         && ci.GetString() is { Length: > 0 } fullInput)
@@ -188,7 +202,7 @@ internal sealed class ResponsesToAnthropicStream
                     if (_blockOpen)
                     {
                         _blockOpen = false;
-                        yield return Sse("content_block_stop", $"{{\"type\":\"content_block_stop\",\"index\":{_blockIndex}}}");
+                        yield return Sse("content_block_stop", BlockStopJson(_blockIndex));
                     }
                     break;
 
@@ -224,7 +238,7 @@ internal sealed class ResponsesToAnthropicStream
         if (_blockOpen)
         {
             _blockOpen = false;
-            yield return Sse("content_block_stop", $"{{\"type\":\"content_block_stop\",\"index\":{_blockIndex}}}");
+            yield return Sse("content_block_stop", BlockStopJson(_blockIndex));
         }
         if (_stopReason is not null)
         {
@@ -274,12 +288,13 @@ internal sealed class ResponsesToAnthropicStream
         // Close a previous still-open block defensively.
         if (_blockOpen)
         {
-            yield return Sse("content_block_stop", $"{{\"type\":\"content_block_stop\",\"index\":{_blockIndex}}}");
+            yield return Sse("content_block_stop", BlockStopJson(_blockIndex));
             _blockOpen = false;
         }
 
         _blockIndex++;
         _blockSawArgsDelta = false;   // fresh block: no argument deltas seen yet
+        _customToolCallId = "";        // fresh block: no upstream ctc_ id observed yet
         if (itemType is "function_call" or "custom_tool_call")
         {
             _stopReason = "tool_use";
@@ -377,6 +392,42 @@ internal sealed class ResponsesToAnthropicStream
 
     private static string BlockDeltaJson(int index, string deltaJson) =>
         $"{{\"type\":\"content_block_delta\",\"index\":{index},\"delta\":{deltaJson}}}";
+
+    /// <summary>
+    /// Build the content_block_stop event. When the just-closed block captured an
+    /// upstream custom_tool_call id (a `ctc_`-prefixed Responses item id), ride it
+    /// out on the bridge-internal marker <c>bridge_custom_tool_call_id</c> so T4 can
+    /// stamp it on the Codex-facing custom_tool_call item — Codex echoes that id next
+    /// turn and Copilot REQUIRES the echoed custom_tool_call id to begin with `ctc`.
+    /// Absent (text/function block, or a custom tool whose id was never observed) →
+    /// the plain stop, byte-identical to before, and T4 synthesizes a ctc_ fallback.
+    /// Like the other bridge markers this is stripped at both client edges (Codex T4
+    /// rebuilds the item from typed fields; the CC→gpt route scrubs it).
+    /// </summary>
+    private string BlockStopJson(int index) =>
+        _customToolCallId.Length > 0
+            ? $"{{\"type\":\"content_block_stop\",\"index\":{index},\"bridge_custom_tool_call_id\":{JsonEncode(_customToolCallId)}}}"
+            : $"{{\"type\":\"content_block_stop\",\"index\":{index}}}";
+
+    /// <summary>
+    /// Capture the upstream custom_tool_call's real `ctc_` item id from a
+    /// custom_tool_call_input.delta/.done event's <c>item_id</c> field. The
+    /// output_item.added/.done item ids are rolling encrypted blobs; only these
+    /// input events carry the stable plaintext id. First non-empty value wins
+    /// (every delta repeats the same id). Gated on the <c>ctc</c> prefix: only a
+    /// real Copilot item id is the value the echo turn must reproduce — an opaque
+    /// or synthetic non-`ctc` item_id is NOT carried (T4 then synthesizes a
+    /// conforming id), so the emitted completed id always begins with `ctc`.
+    /// </summary>
+    private void CaptureCustomToolCallId(JsonElement root)
+    {
+        if (_customToolCallId.Length == 0
+            && root.TryGetProperty("item_id", out var iid)
+            && iid.ValueKind == JsonValueKind.String
+            && iid.GetString() is { Length: > 0 } id
+            && id.StartsWith("ctc", StringComparison.Ordinal))
+            _customToolCallId = id;
+    }
 
     private static string StopReasonFor(string? eventType, JsonElement root)
     {

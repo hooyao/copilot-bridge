@@ -8,6 +8,7 @@ internal static class BufferedAnthropicToResponses
 {
     private const string GrammarMarker = "bridge_input_is_grammar_text";
     private const string NamespaceMarker = "bridge_tool_namespace";
+    private const string CustomToolCallIdMarker = "bridge_custom_tool_call_id";
 
     public static byte[]? TryTranslate(byte[] body)
     {
@@ -103,7 +104,15 @@ internal static class BufferedAnthropicToResponses
 
         writer.WriteStartObject();
         writer.WriteString("type", custom ? "custom_tool_call" : "function_call");
-        writer.WriteString("id", $"item_{index}");
+        // A custom_tool_call's id MUST begin with `ctc` or Copilot 400s the echo turn.
+        // Prefer the real upstream id T3 captured on the marker; else synthesize a
+        // deterministic `ctc_` id from the call_id. A plain function/message item keeps
+        // the item_N id (T2 rebuilds it without an id, so it never leaks upstream).
+        writer.WriteString("id", custom
+            ? (ReadString(block, CustomToolCallIdMarker) is { Length: > 0 } realId
+                ? realId
+                : SynthesizeCtcId(callId))
+            : $"item_{index}");
         writer.WriteString("call_id", callId);
         if (ReadString(block, NamespaceMarker) is { Length: > 0 } toolNamespace)
             writer.WriteString("namespace", toolNamespace);
@@ -160,6 +169,20 @@ internal static class BufferedAnthropicToResponses
         element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
+
+    /// <summary>
+    /// Deterministically synthesize a <c>ctc_</c>-prefixed id for a custom_tool_call
+    /// when no real upstream id was captured. Mirrors the streaming T4 fallback: the
+    /// call_id (unique per call) makes it stable and collision-free without an RNG, and
+    /// Copilot only checks the <c>ctc</c> prefix on the echoed id, not the exact value.
+    /// </summary>
+    private static string SynthesizeCtcId(string callId)
+    {
+        var suffix = callId.StartsWith("call_", StringComparison.Ordinal)
+            ? callId["call_".Length..]
+            : callId;
+        return suffix.Length > 0 ? "ctc_" + suffix : "ctc_bridge";
+    }
 
     private static long ReadNonNegativeInt64(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.TryGetInt64(out var number)
