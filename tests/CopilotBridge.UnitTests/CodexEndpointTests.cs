@@ -304,15 +304,17 @@ public class CodexEndpointTests
         // The byte-preserving buffered shortcut must NOT ship an upstream
         // custom_tool_call whose id is non-`ctc` back to Codex verbatim — Codex would
         // echo it and Copilot 400s ("Expected an ID that begins with 'ctc'"). The
-        // production outbound adapter must divert to the IR→Responses translation,
-        // which emits a `ctc`-prefixed id. Drives the REAL IrToResponsesOutboundAdapter
-        // via the endpoint (per review feedback — the unit-level BufferedAnthropicToResponses
-        // test alone never exercises this shortcut).
+        // production outbound adapter must rewrite ONLY that id to a `ctc`-prefixed one.
+        // Crucially the rewrite is LOSSLESS: a sibling `reasoning` item (encrypted
+        // content the IR does not model) and unknown fields MUST survive unchanged —
+        // the shortcut's whole reason for existing. Drives the REAL
+        // IrToResponsesOutboundAdapter via the endpoint.
         var originalBytes = Encoding.UTF8.GetBytes(
             "{\"id\":\"resp_ct\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"gpt-5.3-codex\","
-            + "\"output\":[{\"type\":\"custom_tool_call\",\"id\":\"item_1\",\"call_id\":\"call_exec\",\"name\":\"exec\",\"input\":\"return 1;\",\"status\":\"completed\"}]}");
-        // The IR (as buffered T3 would produce for a NON-ctc upstream id: no
-        // bridge_custom_tool_call_id marker, so T4 synthesizes a ctc_ id from call_id).
+            + "\"output\":["
+            + "{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"BLOB123\",\"summary\":[]},"
+            + "{\"type\":\"custom_tool_call\",\"id\":\"item_1\",\"call_id\":\"call_exec\",\"name\":\"exec\",\"input\":\"return 1;\",\"status\":\"completed\"}"
+            + "]}");
         var irBytes = Encoding.UTF8.GetBytes(
             "{\"id\":\"resp_ct\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gpt-5.3-codex\",\"stop_reason\":\"tool_use\","
             + "\"content\":[{\"type\":\"tool_use\",\"id\":\"call_exec\",\"name\":\"exec\",\"input\":\"return 1;\",\"bridge_input_is_grammar_text\":true}],"
@@ -330,11 +332,21 @@ public class CodexEndpointTests
 
         Assert.Equal(StatusCodes.Status200OK, status);
         using var doc = JsonDocument.Parse(body);
-        var item = Assert.Single(doc.RootElement.GetProperty("output").EnumerateArray());
-        Assert.Equal("custom_tool_call", item.GetProperty("type").GetString());
-        var id = item.GetProperty("id").GetString()!;
+        var output = doc.RootElement.GetProperty("output");
+        Assert.Equal(2, output.GetArrayLength());
+        // The reasoning item (and its encrypted blob) survives the rewrite untouched.
+        var reasoning = output[0];
+        Assert.Equal("reasoning", reasoning.GetProperty("type").GetString());
+        Assert.Equal("rs_1", reasoning.GetProperty("id").GetString());
+        Assert.Equal("BLOB123", reasoning.GetProperty("encrypted_content").GetString());
+        // The custom_tool_call keeps everything except its now-ctc id.
+        var tool = output[1];
+        Assert.Equal("custom_tool_call", tool.GetProperty("type").GetString());
+        var id = tool.GetProperty("id").GetString()!;
         Assert.StartsWith("ctc", id, StringComparison.Ordinal);
         Assert.NotEqual("item_1", id);
+        Assert.Equal("call_exec", tool.GetProperty("call_id").GetString());
+        Assert.Equal("return 1;", tool.GetProperty("input").GetString());
     }
 
     [Fact]
