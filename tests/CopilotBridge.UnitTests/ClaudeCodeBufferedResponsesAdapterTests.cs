@@ -180,6 +180,28 @@ public class ClaudeCodeBufferedResponsesAdapterTests
     }
 
     [Fact]
+    public void BufferedT4_NonCtcMarker_IsRejected_FallsBackToSynthesizedCtcId()
+    {
+        // Defense in depth at the CONSUMPTION boundary: buffered T4 must enforce the
+        // `ctc` prefix on the marker itself. An IR tool_use block whose
+        // bridge_custom_tool_call_id is non-conforming ("item_1") must fall back to the
+        // synthesized ctc_ id, never emit the bad value — else the echo turn 400s.
+        var ir = Encoding.UTF8.GetBytes("""
+        {"type":"message","role":"assistant","model":"gpt-5.6-sol","stop_reason":"tool_use",
+         "content":[{"type":"tool_use","id":"call_exec","name":"exec","input":"return 1;",
+                     "bridge_input_is_grammar_text":true,"bridge_custom_tool_call_id":"item_1"}],
+         "usage":{"input_tokens":1,"output_tokens":1}}
+        """);
+
+        var responses = BufferedT4(ir);
+        using var doc = JsonDocument.Parse(responses);
+        var item = Assert.Single(doc.RootElement.GetProperty("output").EnumerateArray());
+        var id = item.GetProperty("id").GetString()!;
+        Assert.StartsWith("ctc", id, StringComparison.Ordinal);
+        Assert.NotEqual("item_1", id);
+    }
+
+    [Fact]
     public async Task BufferedCustomToolCallIdMarker_IsRemovedAtClaudeEdge()
     {
         // The bridge_custom_tool_call_id marker T3 stamps on the tool_use block must be

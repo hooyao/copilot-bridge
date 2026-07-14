@@ -358,12 +358,17 @@ internal sealed class AnthropicToResponsesStream
             // Lift the real upstream ctc_ id T3 captured (rode out on the
             // content_block_stop marker). It becomes the COMPLETED item's id — the id
             // Codex echoes next turn, which Copilot requires to begin with `ctc`.
-            // Absent (defensive Flush close with no event, or older upstream) → keep
-            // the deterministic ctc_ synthesis already in _itemId.
+            // Enforce the `ctc` prefix HERE, at the consumption boundary, not just at
+            // T3's capture: this adapter's invariant is that it never emits a non-`ctc`
+            // custom-tool id, so a malformed/replayed IR event carrying a non-conforming
+            // marker (e.g. `item_1`) must NOT override the safe synthesized id and
+            // reintroduce the follow-up 400. Non-conforming or absent → keep the
+            // deterministic ctc_ synthesis already in _itemId.
             if (root.ValueKind == JsonValueKind.Object
                 && root.TryGetProperty("bridge_custom_tool_call_id", out var ctc)
                 && ctc.ValueKind == JsonValueKind.String
-                && ctc.GetString() is { Length: > 0 } realId)
+                && ctc.GetString() is { Length: > 0 } realId
+                && realId.StartsWith("ctc", StringComparison.Ordinal))
                 _customToolCallId = realId;
             var completedItemId = _customToolCallId.Length > 0 ? _customToolCallId : _itemId;
             if (_toolIsCustom)

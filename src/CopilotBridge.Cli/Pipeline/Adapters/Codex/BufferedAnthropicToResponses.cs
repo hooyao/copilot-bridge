@@ -105,11 +105,15 @@ internal static class BufferedAnthropicToResponses
         writer.WriteStartObject();
         writer.WriteString("type", custom ? "custom_tool_call" : "function_call");
         // A custom_tool_call's id MUST begin with `ctc` or Copilot 400s the echo turn.
-        // Prefer the real upstream id T3 captured on the marker; else synthesize a
-        // deterministic `ctc_` id from the call_id. A plain function/message item keeps
-        // the item_N id (T2 rebuilds it without an id, so it never leaks upstream).
+        // Prefer the real upstream id T3 captured on the marker — but validate the `ctc`
+        // prefix HERE too (not only at T3's capture): a malformed/replayed IR whose
+        // marker is non-conforming (e.g. `item_1`) must fall back to the synthesized
+        // ctc_ id, never emit the bad value. Else synthesize a deterministic `ctc_` id
+        // from the call_id. A plain function/message item keeps the item_N id (T2
+        // rebuilds it without an id, so it never leaks upstream).
         writer.WriteString("id", custom
             ? (ReadString(block, CustomToolCallIdMarker) is { Length: > 0 } realId
+                && realId.StartsWith("ctc", StringComparison.Ordinal)
                 ? realId
                 : SynthesizeCtcId(callId))
             : $"item_{index}");

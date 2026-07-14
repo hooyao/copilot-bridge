@@ -145,6 +145,36 @@ public class CodexCustomToolCallIdRoundTripTests
         Assert.NotEqual("item_1", item["id"]!.GetValue<string>());
     }
 
+    [Fact]
+    public void T4_NonCtcMarkerOnBlockStop_IsRejected_CompletedIdStaysCtc()
+    {
+        // Defense in depth at the CONSUMPTION boundary: T4 must enforce the `ctc`
+        // prefix on the marker itself, not trust T3 to have gated it. A malformed or
+        // replayed IR event whose content_block_stop carries
+        // bridge_custom_tool_call_id="item_1" must NOT override the safe synthesized id
+        // — otherwise it reintroduces the exact follow-up 400 this change prevents.
+        var ir = new List<SseItem<string>>
+        {
+            new("{\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"role\":\"assistant\",\"content\":[]}}", "message_start"),
+            new("{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_poison\",\"name\":\"exec\",\"input\":{},\"bridge_input_is_grammar_text\":true}}", "content_block_start"),
+            new("{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"x\"}}", "content_block_delta"),
+            // Poisoned marker: a non-ctc id that must be rejected at T4.
+            new("{\"type\":\"content_block_stop\",\"index\":0,\"bridge_custom_tool_call_id\":\"item_1\"}", "content_block_stop"),
+            new("{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}", "message_delta"),
+            new("{\"type\":\"message_stop\"}", "message_stop"),
+        };
+        var t4 = new AnthropicToResponsesStream("gpt-5.6-sol");
+        var outp = new List<SseItem<string>>();
+        foreach (var e in ir) outp.AddRange(t4.Translate(e));
+        outp.AddRange(t4.Flush());
+
+        var item = FindCustomToolCallItem(outp, status: "completed");
+        Assert.NotNull(item);
+        var id = item!["id"]!.GetValue<string>();
+        Assert.StartsWith("ctc", id, StringComparison.Ordinal);
+        Assert.NotEqual("item_1", id);
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────────
 
     /// <summary>
