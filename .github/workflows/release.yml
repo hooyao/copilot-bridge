@@ -110,25 +110,27 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Two pwsh defaults on the runner turn a NORMAL updater exit into a step
-          # failure: GitHub injects `$ErrorActionPreference='Stop'`, and PowerShell
-          # 7.4+ defaults `$PSNativeCommandUseErrorActionPreference=$true` — together
-          # they throw `ProgramExitedWithNonZeroCode` the moment a native command
-          # exits non-zero (the updater intentionally exits 10 with no plan arg),
-          # BEFORE the `if ($LASTEXITCODE...)` check ever runs. Disable the native-
-          # command error coupling and relax the preference so we can gate purely on
-          # the exit code. (2>&1 also folds the updater's stderr notice into the
-          # captured stream so it can't trip the pipeline either.)
-          $ErrorActionPreference = 'Continue'
-          $PSNativeCommandUseErrorActionPreference = $false
-          ./publish-aot/copilot-bridge.exe --version 2>&1
-          if ($LASTEXITCODE -ne 0) { throw "bridge --version failed with $LASTEXITCODE" }
-          ./publish-aot/copilot-bridge.exe debug selftest-tokenstore 2>&1
-          if ($LASTEXITCODE -ne 0) { throw "token-store selftest failed with $LASTEXITCODE" }
-          # The updater with no plan argument must fail fast (exit 10), proving the
-          # Native AOT binary loads and its entry shell runs.
-          ./publish-aot/copilot-updater.exe 2>&1
-          if ($LASTEXITCODE -ne 10) { throw "updater smoke expected exit 10, got $LASTEXITCODE" }
+          # The updater intentionally exits 10 (PreflightFailed) when run with no
+          # plan argument — that non-zero exit is the SUCCESS signal (it proves the
+          # AOT binary loads and its managed entry point runs). But a bare native
+          # call trips the runner's pwsh error handling: GitHub injects
+          # `$ErrorActionPreference='Stop'` and PowerShell 7.4+ defaults
+          # `$PSNativeCommandUseErrorActionPreference=$true`, so a non-zero exit
+          # throws `ProgramExitedWithNonZeroCode` before the exit-code check runs.
+          # Toggling those preferences proved unreliable across runner pwsh builds,
+          # so invoke through Start-Process instead: it's a managed API, the child's
+          # stderr never enters PowerShell's error stream, the native-command error
+          # coupling does not apply, and the exit code is read cleanly from .ExitCode.
+          function Invoke-Exit([string]$path, [string[]]$argv) {
+            $p = Start-Process -FilePath $path -ArgumentList $argv -NoNewWindow -Wait -PassThru
+            return $p.ExitCode
+          }
+          $c = Invoke-Exit "./publish-aot/copilot-bridge.exe" @('--version')
+          if ($c -ne 0) { throw "bridge --version failed with $c" }
+          $c = Invoke-Exit "./publish-aot/copilot-bridge.exe" @('debug','selftest-tokenstore')
+          if ($c -ne 0) { throw "token-store selftest failed with $c" }
+          $c = Invoke-Exit "./publish-aot/copilot-updater.exe" @()
+          if ($c -ne 10) { throw "updater smoke expected exit 10, got $c" }
 
       # --- Package: Windows → .zip ------------------------------------------
       # All three files are required at runtime: appsettings.json carries the
