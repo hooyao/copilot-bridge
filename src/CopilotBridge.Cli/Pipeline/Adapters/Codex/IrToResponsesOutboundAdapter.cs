@@ -114,12 +114,19 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
     /// <summary>
     /// Return <paramref name="original"/> unchanged unless it carries a
     /// <c>custom_tool_call</c> output item whose <c>id</c> is not <c>ctc</c>-prefixed;
-    /// in that case return a copy with ONLY those ids rewritten to a deterministic
-    /// <c>ctc_</c> id (synthesized from the item's <c>call_id</c>), every other item and
-    /// property preserved byte-faithfully. This keeps the buffered byte-shortcut
-    /// lossless (reasoning/encrypted_content and unknown fields survive) while ensuring
-    /// the id Codex echoes next turn begins with <c>ctc</c>. Cheap substring pre-filter
-    /// makes the common (no custom tool call) case a pure passthrough with no JSON work.
+    /// in that case return a copy with those ids rewritten to a deterministic
+    /// <c>ctc_</c> id (synthesized from the item's <c>call_id</c>). Every other item,
+    /// property, and unknown field is preserved with full VALUE fidelity —
+    /// reasoning/encrypted_content blobs and unmodeled fields survive intact, so no
+    /// data is lost. Fidelity is semantic, not byte-for-byte: the rewrite branch
+    /// re-serializes via <see cref="Utf8JsonWriter"/>, which may normalize insignificant
+    /// JSON whitespace/escaping in untouched fields. That is acceptable — this branch
+    /// only fires on the rare corrective path where the upstream itself sent a
+    /// non-conforming id (which would otherwise 400 the echo turn), Codex re-parses the
+    /// JSON regardless, and the common (no custom tool call, or already-<c>ctc</c>) case
+    /// still returns the exact original bytes byte-for-byte (the cheap substring
+    /// pre-filter and the no-rewrite-needed early return both short-circuit to
+    /// <paramref name="original"/>).
     /// </summary>
     private static byte[] RewriteNonCtcCustomToolCallIds(byte[] original)
     {

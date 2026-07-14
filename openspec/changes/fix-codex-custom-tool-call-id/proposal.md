@@ -73,5 +73,10 @@ conforming id need not equal the original.
 - Tests: new `CodexCustomToolCallIdRoundTripTests`; additions to
   `ClaudeCodeBufferedResponsesAdapterTests`.
 - No new dependency, no wire change for `message`/`function_call`/text paths
-  (byte-identical); the only wire delta is the `custom_tool_call` item id, now
-  `ctc`-prefixed instead of `item_N`.
+  (byte-identical). The semantic wire delta is the `custom_tool_call` item id, now
+  `ctc`-prefixed instead of `item_N`. The buffered byte-preserving shortcut stays
+  byte-for-byte for the common case; on the rare corrective path where the upstream
+  itself sent a non-`ctc` id, it rewrites that id in place and re-serializes the
+  response with full value fidelity (all other items/fields preserved), which may
+  normalize insignificant JSON whitespace/escaping — acceptable, since Codex
+  re-parses the JSON and the id would otherwise 400 the echo turn.
