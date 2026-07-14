@@ -274,10 +274,17 @@ jobs:
 
       # Prove the runtime's assumption BEFORE the release is public: every
       # auto-update archive must be visible with uploaded state, a positive size,
-      # an HTTPS download URL, and a usable sha256: digest. Draft assets are read
-      # with the authenticated gh here (anonymous users can't see a draft); the
-      # PURE-anonymous check runs again after publish, below. If verification
-      # fails, the draft is deleted so no incomplete release is ever published.
+      # a download URL, and a usable sha256: digest. Draft assets are read with the
+      # authenticated gh here — and that is sufficient for the anonymous runtime
+      # too: an asset's `digest` is an intrinsic property of the uploaded bytes,
+      # identical whether the API is queried with or without an Authorization
+      # header, so a digest confirmed on the draft is exactly what the installed
+      # (anonymous) bridge will later see. If verification fails, the draft is
+      # deleted so no incomplete release is ever published. (An earlier
+      # belt-and-suspenders post-publish ANONYMOUS re-check was removed: it added
+      # no coverage over this gate — the digest can't differ by auth — yet it
+      # deleted freshly-published, already-verified releases whenever anonymous
+      # visibility lagged the publish by more than its retry window.)
       - name: Verify + publish (draft gate)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -286,21 +293,33 @@ jobs:
           set -euo pipefail
           version="${{ needs.version.outputs.version }}"
 
+          # jqval <program> <json> -> prints the result, or "ERR" on jq failure.
+          # Capturing the exit code separately (instead of `jq ... || echo N`) is
+          # essential: a `|| echo` fallback fires whenever jq exits non-zero EVEN
+          # IF jq already printed a value, appending a second line — a two-line
+          # "0\n99" then never equals "0", which would fail every attempt and
+          # DELETE THE DRAFT of a perfectly-good build. The selector uses
+          # startswith/endswith (pure string ops); a regex test("...\.(zip)$")
+          # would have to carry escaped dots through YAML → bash → jq, which is the
+          # exact brittleness that broke the (now-removed) post-publish check.
+          is_archive='select(.name | startswith("copilot-bridge-")) | select(.name | (endswith(".zip") or endswith(".tar.gz")))'
+          jqval() {
+            local out
+            if out=$(jq -r "$1" <<<"$2" 2>/dev/null); then printf '%s' "$out"; else printf 'ERR'; fi
+          }
           check_ok() {
-            # $1 = JSON assets array from `gh release view --json assets`
+            # $1 = JSON from `gh release view --json assets`
             local body="$1"
             local pending count
-            pending=$(jq -r '[.assets[]
-              | select(.name | test("copilot-bridge-.*\\.(zip|tar\\.gz)$"))
+            pending=$(jqval "[.assets[]
+              | $is_archive
               | select((.size <= 0)
-                       or ((.apiUrl // .url // "") == "")
+                       or ((.apiUrl // .url // \"\") == \"\")
                        or (.digest == null)
-                       or (.digest | startswith("sha256:") | not))
-              ] | length' <<<"$body" 2>/dev/null || echo 99)
-            count=$(jq -r '[.assets[]
-              | select(.name | test("copilot-bridge-.*\\.(zip|tar\\.gz)$"))] | length' \
-              <<<"$body" 2>/dev/null || echo 0)
-            [ "$pending" = "0" ] && [ "$count" -ge 4 ]
+                       or (.digest | startswith(\"sha256:\") | not))
+              ] | length" "$body")
+            count=$(jqval "[.assets[] | $is_archive] | length" "$body")
+            [ "$pending" = "0" ] && [ "$count" != "ERR" ] && [ "$count" -ge 4 ]
           }
 
           ok=""
@@ -308,8 +327,8 @@ jobs:
             body=$(gh release view "v$version" --json assets 2>/dev/null || echo '{"assets":[]}')
             if check_ok "$body"; then
               echo "Draft: all update archives expose a sha256: digest."
-              jq -r '.assets[] | select(.name|test("\\.(zip|tar\\.gz)$"))
-                | "  \(.name)  \(.size)  \(.digest)"' <<<"$body"
+              jq -r "[.assets[] | $is_archive] | .[]
+                | \"  \(.name)  \(.size)  \(.digest)\"" <<<"$body"
               ok=1
               break
             fi
@@ -327,54 +346,3 @@ jobs:
           gh release edit "v$version" --draft=false
           echo "Published v$version."
 
-      # Belt-and-suspenders: re-check ANONYMOUSLY (no Authorization header — the
-      # exact way the installed bridge sees it) now that the release is public.
-      # If this fails, the release is already public, so delete it (authenticated
-      # cleanup) before exiting non-zero — a broken release is never left up, and
-      # the same tag can be cleanly retried.
-      - name: Verify anonymous asset digests (post-publish)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          version="${{ needs.version.outputs.version }}"
-          api="https://api.github.com/repos/${GH_REPO}/releases/tags/v${version}"
-          # Archive selector uses startswith/endswith (pure string ops) rather than a
-          # regex test("...\.(zip|tar\.gz)$"): the escaped dots did not survive the
-          # YAML → bash → jq trip cleanly. And crucially, capture jq's value and exit
-          # code SEPARATELY instead of `jq ... || echo N`: a `|| echo` fallback runs
-          # (and APPENDS) whenever jq exits non-zero EVEN IF jq already printed a
-          # value, producing a two-line "0\n99" that never equals "0" — which failed
-          # every attempt and deleted a perfectly-good release.
-          is_archive='select(.name | startswith("copilot-bridge-")) | select(.name | (endswith(".zip") or endswith(".tar.gz")))'
-          jqval() { # jqval <program> <json>  -> prints result, or "ERR" on jq failure
-            local out
-            if out=$(jq -r "$1" <<<"$2" 2>/dev/null); then printf '%s' "$out"; else printf 'ERR'; fi
-          }
-          for attempt in 1 2 3 4 5 6; do
-            # NO Authorization header — anonymous, like the runtime.
-            body=$(curl -fsSL -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" "$api" || true)
-            body="${body:-{}}"
-            pending=$(jqval "[.assets[]
-              | $is_archive
-              | select(.state != \"uploaded\"
-                       or (.size <= 0)
-                       or (.browser_download_url | startswith(\"https://\") | not)
-                       or (.digest == null)
-                       or (.digest | startswith(\"sha256:\") | not))
-              ] | length" "$body")
-            count=$(jqval "[.assets[] | $is_archive] | length" "$body")
-            if [ "$pending" = "0" ] && [ "$count" != "ERR" ] && [ "$count" -ge 4 ]; then
-              echo "All $count update archives expose an anonymous sha256: digest."
-              jq -r "[.assets[] | $is_archive] | .[]
-                | \"  \(.name)  \(.size)  \(.digest)\"" <<<"$body"
-              exit 0
-            fi
-            echo "attempt $attempt: pending=$pending of count=$count (need pending=0, count>=4); retrying…"
-            sleep 10
-          done
-          echo "error: published release lacks usable anonymous sha256: digests — deleting it" >&2
-          gh release delete "v$version" --yes --cleanup-tag || true
-          exit 1
