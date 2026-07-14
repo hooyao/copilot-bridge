@@ -37,9 +37,21 @@
 - [x] 3.2 `ClaudeCodeBufferedResponsesAdapterTests`: buffered real-`ctc_` id
   survives to the item; buffered no-ctc synthesizes `ctc_`; buffered marker
   scrubbed at the Claude edge.
-- [x] 3.3 Mutation-verified: reverting T4 to `item_N` reddens the id tests;
+- [x] 3.3 Request side (T1→T2, the exact failing follow-up path):
+  `EchoedCustomToolCall_WithCtcId_RoundTripsTheIdVerbatim` — a Codex echo of a
+  `custom_tool_call` WITH its `ctc_` id survives the round trip verbatim to the
+  upstream wire (mutation-checked: stripping the id from the passthrough reddens it).
+- [x] 3.4 Production-adapter regression (`CodexEndpointTests`): the buffered
+  byte-preserving shortcut is diverted for a non-`ctc` `custom_tool_call` id
+  (rewritten to `ctc`) and preserved for a `ctc` one — driving the real
+  `IrToResponsesOutboundAdapter` via the endpoint.
+- [x] 3.5 Consumption-boundary hardening (`CodexCustomToolCallIdRoundTripTests`,
+  `ClaudeCodeBufferedResponsesAdapterTests`): a non-`ctc` marker at T4 is rejected
+  (falls back to the synthesized `ctc_` id), streaming and buffered.
+- [x] 3.6 Mutation-verified: reverting T4 to `item_N` reddens the id tests;
   disabling the scrub reddens the scrub test; dropping the T3 marker reddens the
-  real-id round-trip.
+  real-id round-trip; dropping the byte-shortcut divert reddens the endpoint test;
+  removing the T4 prefix guard reddens the poisoned-marker test.
 
 ## 4. Real-client verification (the mandate)
 - [x] 4.1 Real `codex.exe` 0.144.3 multi-turn exec task (`gpt-5.6-sol`,
