@@ -343,4 +343,37 @@ public class ManagedInstallManagerTests : IDisposable
         // And the transaction .bak was swept too.
         Assert.False(File.Exists(mgr.ConfigBackupPath));
     }
+
+    [Fact]
+    public void StageReplacements_failure_leaves_no_debris_temp_in_the_install_dir()
+    {
+        // Contract: a *.new.<attempt> temp is recorded BEFORE it is written, so if
+        // the write of THAT file fails midway (disk-full etc.), the partial temp
+        // already on disk in the live install dir is still tracked and removable by
+        // the failure-path cleanup — never left as debris beside the managed files.
+        SeedInstalled("old-bridge", "old-updater", """{ "Server": { "Port": 19000 } }""");
+        SeedStaging("new-bridge", "new-updater", """{ "Server": { "Port": 8765 } }""");
+
+        var mgr = Manager();
+        Assert.True(mgr.Prepare().Ok);
+        var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
+
+        // Make the FIRST managed file's staging fail as its own write begins: occupy
+        // the bridge's temp path with a directory so the CreateNew FileStream throws
+        // WHILE staging that file. ManagedFiles order is [bridge, updater, config].
+        var bridgeTemp = Path.Combine(_install, BridgeName + ".new.att1");
+        Directory.CreateDirectory(bridgeTemp);
+
+        var stage = mgr.StageReplacements(merged);
+        Assert.False(stage.Ok);
+
+        // The temp of the file that FAILED mid-write must be tracked (recorded
+        // before the write). Under the old code it was recorded only after a
+        // successful write, so this file would be absent and leak.
+        Assert.Contains(bridgeTemp, mgr.StagedTempPaths);
+
+        // And the standard failure cleanup can therefore act on it.
+        mgr.RemoveStagedReplacementTemps();
+        Assert.Empty(mgr.StagedTempPaths);
+    }
 }

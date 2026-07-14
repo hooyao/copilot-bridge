@@ -217,6 +217,14 @@ internal sealed class UpdaterEngine
             if (ready)
             {
                 _journal.Write("commit");
+                // Move our working directory OUT of the attempt root before deleting
+                // it. The gate launches this updater with its cwd set to the attempt
+                // root, and on Windows a process's cwd is locked open — so the
+                // recursive delete below would silently fail (and be swallowed),
+                // leaving the capability-bearing plan + updater copy behind on every
+                // successful update. The install dir is a stable location that always
+                // exists and is never the delete target.
+                TryChangeDirectory(_plan.InstallDir);
                 install.CleanupAfterCommit(_trustedRoot);
                 return UpdaterExit.Committed;
             }
@@ -489,6 +497,26 @@ internal sealed class UpdaterEngine
                     child.Dispose();
                 }
             }
+        }
+    }
+
+    // Move the process's working directory to a stable location outside the
+    // attempt root so the root can be deleted (Windows locks a live process's cwd).
+    // Best-effort: if it fails, cleanup is simply best-effort too, never fatal.
+    private static void TryChangeDirectory(string dir)
+    {
+        try
+        {
+            if (Directory.Exists(dir))
+            {
+                Environment.CurrentDirectory = dir;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            // Leaving the cwd where it is only means cleanup may not fully remove
+            // the attempt root on Windows — a diagnostic-only shortfall, not a
+            // correctness failure. Never let it derail a committed update.
         }
     }
 

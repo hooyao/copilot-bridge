@@ -53,4 +53,38 @@ public class UpdatePathsTests
         Assert.True(UpdatePaths.IsInside(root, Path.Combine(root, "a", "b.txt")));
         Assert.False(UpdatePaths.IsInside(root, Path.Combine(Path.GetTempPath(), "cb-inside-sibling", "x")));
     }
+
+    [Fact]
+    public void NormalizeInstallRoot_preserves_a_filesystem_root()
+    {
+        // The bug this guards: a plain TrimEnd(separator) corrupts a volume root
+        // ("C:\" -> "C:", "/" -> ""), so a bridge installed at a root can't find
+        // its updater. Normalization must leave a root a valid, rooted path.
+        if (OperatingSystem.IsWindows())
+        {
+            var norm = UpdatePaths.NormalizeInstallRoot(@"C:\");
+            Assert.True(Path.IsPathRooted(norm));
+            Assert.NotEqual("C:", norm); // the exact corruption we refuse
+            Assert.Equal(@"C:\", norm);
+        }
+        else
+        {
+            var norm = UpdatePaths.NormalizeInstallRoot("/");
+            Assert.True(Path.IsPathRooted(norm));
+            Assert.NotEqual("", norm);
+            Assert.Equal("/", norm);
+        }
+    }
+
+    [Fact]
+    public void NormalizeInstallRoot_trims_a_non_root_trailing_separator()
+    {
+        // A normal install dir (AppContext.BaseDirectory has a trailing separator)
+        // is canonicalized to its non-trailing form so it compares equal to the
+        // same path without the separator.
+        var withSep = Path.Combine(Path.GetTempPath(), "app") + Path.DirectorySeparatorChar;
+        var norm = UpdatePaths.NormalizeInstallRoot(withSep);
+        Assert.Equal(Path.Combine(Path.GetTempPath(), "app"), norm);
+        Assert.False(norm.EndsWith(Path.DirectorySeparatorChar));
+    }
 }

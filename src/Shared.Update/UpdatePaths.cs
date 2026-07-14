@@ -66,4 +66,17 @@ internal static class UpdatePaths
             ? path
             : path + Path.DirectorySeparatorChar;
     }
+
+    /// <summary>
+    /// Canonicalize an installation directory (typically
+    /// <see cref="System.AppContext.BaseDirectory"/>, which has a trailing
+    /// separator) to a comparable, non-trailing form WITHOUT corrupting a
+    /// filesystem root. A naive <c>TrimEnd(separator)</c> turns a root into an
+    /// invalid/noncanonical path ("/" → "", "C:\" → "C:"), which would make a
+    /// bridge installed at a volume root resolve its updater against the working
+    /// directory or fail plan validation. <see cref="Path.TrimEndingDirectorySeparator(string)"/>
+    /// leaves a root intact while trimming a non-root trailing separator.
+    /// </summary>
+    public static string NormalizeInstallRoot(string baseDirectory)
+        => Path.TrimEndingDirectorySeparator(baseDirectory);
 }

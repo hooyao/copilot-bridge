@@ -165,7 +165,12 @@ internal sealed class StartupUpdateGate
     private async Task<UpdateGateDecision> HandoffAsync(
         SemanticVersion installed, SelectedRelease selected, ResolvedAsset asset, string targetVersion, CancellationToken ct)
     {
-        var installDir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+        // Normalize with the root-preserving shared helper: a plain
+        // TrimEnd(separator) would turn a filesystem root into a non-canonical/
+        // invalid path ("/" -> "", "C:\" -> "C:"), so a bridge installed at a
+        // volume root would resolve its updater against the wrong directory or fail
+        // plan validation.
+        var installDir = UpdatePaths.NormalizeInstallRoot(AppContext.BaseDirectory);
         var exePath = Environment.ProcessPath
             ?? throw new InvalidOperationException("no process path");
         var updaterName = OperatingSystem.IsWindows() ? "copilot-updater.exe" : "copilot-updater";

@@ -105,6 +105,92 @@ public class ArchiveExtractorTests : IDisposable
     }
 
     [Fact]
+    public void Zip_unix_symlink_entry_is_rejected_before_materializing()
+    {
+        // A ZIP entry authored on Unix carries its st_mode in the high 16 bits of
+        // ExternalAttributes. A symlink (S_IFLNK) must be rejected — the update
+        // contract forbids links/reparse/unexpected types before cutover — even
+        // though .NET's ZIP reader would otherwise write it as an ordinary file.
+        const int sIflnk = 0xA000;
+        var zip = WriteZip(z =>
+        {
+            var e = z.CreateEntry("copilot-bridge.exe");
+            using (var s = e.Open())
+            {
+                var bytes = Encoding.UTF8.GetBytes("/etc/passwd");
+                s.Write(bytes, 0, bytes.Length);
+            }
+            e.ExternalAttributes = sIflnk << 16;
+        });
+
+        var result = ArchiveExtractor.Extract(zip, UpdateWire.ArchiveZip, Staging);
+
+        Assert.False(result.Ok);
+        Assert.Contains("symlink", result.Reason, System.StringComparison.OrdinalIgnoreCase);
+        // Nothing was materialized.
+        Assert.False(File.Exists(Path.Combine(Staging, "copilot-bridge.exe")));
+    }
+
+    [Fact]
+    public void Zip_unix_device_node_entry_is_rejected()
+    {
+        // S_IFCHR (character device) — any non-regular Unix type must be refused.
+        const int sIfchr = 0x2000;
+        var zip = WriteZip(z =>
+        {
+            var e = z.CreateEntry("dev-entry");
+            using (var s = e.Open()) { s.WriteByte(0); }
+            e.ExternalAttributes = sIfchr << 16;
+        });
+
+        var result = ArchiveExtractor.Extract(zip, UpdateWire.ArchiveZip, Staging);
+
+        Assert.False(result.Ok);
+        Assert.Contains("non-regular", result.Reason, System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Zip_windows_reparse_point_entry_is_rejected()
+    {
+        // FILE_ATTRIBUTE_REPARSE_POINT (0x400) in the DOS/Windows attribute bits.
+        const int reparse = 0x400;
+        var zip = WriteZip(z =>
+        {
+            var e = z.CreateEntry("copilot-bridge.exe");
+            using (var s = e.Open()) { s.WriteByte(0); }
+            e.ExternalAttributes = reparse;
+        });
+
+        var result = ArchiveExtractor.Extract(zip, UpdateWire.ArchiveZip, Staging);
+
+        Assert.False(result.Ok);
+        Assert.Contains("reparse", result.Reason, System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Zip_regular_file_with_unix_mode_still_extracts()
+    {
+        // A Unix-authored ZIP entry with a normal S_IFREG mode must NOT be rejected
+        // by the new type check (guards against over-rejecting real archives).
+        const int sIfreg = 0x8000;
+        var zip = WriteZip(z =>
+        {
+            var e = z.CreateEntry("copilot-bridge");
+            using (var s = e.Open())
+            {
+                var bytes = Encoding.UTF8.GetBytes("bridge");
+                s.Write(bytes, 0, bytes.Length);
+            }
+            e.ExternalAttributes = (sIfreg | 0x1ED) << 16; // 0755
+        });
+
+        var result = ArchiveExtractor.Extract(zip, UpdateWire.ArchiveZip, Staging);
+
+        Assert.True(result.Ok);
+        Assert.Equal("bridge", File.ReadAllText(Path.Combine(Staging, "copilot-bridge")));
+    }
+
+    [Fact]
     public void TarGz_symlink_entry_is_rejected()
     {
         var path = Path.Combine(_root, "sym.tar.gz");

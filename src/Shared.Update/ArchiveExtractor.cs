@@ -156,6 +156,19 @@ internal static class ArchiveExtractor
                 continue;
             }
 
+            // Reject anything that is not a plain regular file BEFORE materializing
+            // it. ZIP has no EntryType like TAR, but the high 16 bits of
+            // ExternalAttributes carry the Unix st_mode for Unix-authored archives,
+            // and the low bits carry MS-DOS/Windows FileAttributes — so a symlink,
+            // device node, or reparse-point entry is detectable here. This mirrors
+            // the TAR path's non-regular rejection and satisfies the update
+            // contract (links/reparse/unexpected types rejected before cutover).
+            var reject = NonRegularZipEntryReason(entry);
+            if (reject is not null)
+            {
+                return UpdateStepResult.Fail(reject);
+            }
+
             var target = UpdatePaths.ResolveContained(stagingDir, name);
             if (target is null)
             {
@@ -223,6 +236,48 @@ internal static class ArchiveExtractor
             }
         }
         return UpdateStepResult.Success();
+    }
+
+    // Inspect a ZIP entry's ExternalAttributes and return a rejection reason if it
+    // is anything other than a plain regular file, else null. Two encodings live
+    // in ExternalAttributes: the high 16 bits hold the Unix st_mode when the
+    // archive was authored on a Unix host (host byte 3), and the low 8 bits hold
+    // MS-DOS/Windows FileAttributes. We reject Unix symlinks and any non-regular
+    // Unix file type, and Windows reparse points — the entry types the update
+    // contract forbids. A zero/absent Unix mode (common in Windows-authored ZIPs)
+    // is treated as a regular file and allowed.
+    private static string? NonRegularZipEntryReason(ZipArchiveEntry entry)
+    {
+        var attrs = entry.ExternalAttributes;
+
+        // Windows reparse point (junction/symlink surrogate) in the DOS attr bits.
+        const int fileAttributeReparsePoint = 0x400;
+        if ((attrs & fileAttributeReparsePoint) != 0)
+        {
+            return "archive contains a reparse-point entry";
+        }
+
+        // Unix st_mode in the high 16 bits (only meaningful when non-zero).
+        var unixMode = (attrs >> 16) & 0xFFFF;
+        if (unixMode != 0)
+        {
+            const int sIfmt = 0xF000;   // file-type mask
+            const int sIflnk = 0xA000;  // symbolic link
+            const int sIfreg = 0x8000;  // regular file
+            var fileType = unixMode & sIfmt;
+            if (fileType == sIflnk)
+            {
+                return "archive contains a symlink entry";
+            }
+            // Any encoded type that is neither regular nor "unset" (0) is a device
+            // node, fifo, socket, etc. — reject it.
+            if (fileType != sIfreg && fileType != 0)
+            {
+                return $"archive contains a non-regular entry (mode 0x{unixMode:X})";
+            }
+        }
+
+        return null;
     }
 
     private static string NormalizeKey(string root, string fullPath)

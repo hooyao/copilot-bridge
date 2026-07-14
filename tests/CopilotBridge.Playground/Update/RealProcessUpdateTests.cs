@@ -253,6 +253,13 @@ public sealed class RealProcessUpdateTests : IDisposable
         Assert.Contains("19000", config);
         Assert.Contains("NewKey", config);
         Assert.DoesNotContain("RemovedLegacyOption", config);
+
+        // The whole attempt directory is gone after a committed update — the final
+        // journal write must NOT resurrect it (regression guard for the post-commit
+        // Directory.CreateDirectory that defeated cleanup). No capability-bearing
+        // plan.json or transaction.log lingers.
+        Assert.False(Directory.Exists(attemptDir),
+            "attempt directory must not survive a committed update");
     }
 
     [Fact]

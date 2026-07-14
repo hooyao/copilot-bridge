@@ -213,6 +213,13 @@ internal sealed class ManagedInstallManager
                     f.Name, Path.GetFileName(_plan.ConfigPath), StringComparison.OrdinalIgnoreCase);
                 var temp = $"{f.InstallPath}.new.{_plan.AttemptId}";
 
+                // Record the temp path BEFORE writing it. If WriteAllBytesFlushed /
+                // CopyFlushed fails midway (e.g. disk-full), the partial *.new.<attempt>
+                // file is already on disk in the live install dir; recording it first
+                // means RemoveStagedReplacementTemps (run on any preflight failure)
+                // can delete it instead of leaving debris beside the managed files.
+                _stagedReplacements[f.Name] = temp;
+
                 if (isConfig)
                 {
                     WriteAllBytesFlushed(temp, System.Text.Encoding.UTF8.GetBytes(mergedConfigText));
@@ -221,6 +228,7 @@ internal sealed class ManagedInstallManager
                 {
                     if (!File.Exists(f.StagingPath))
                     {
+                        _stagedReplacements.Remove(f.Name); // nothing staged for this name
                         continue; // nothing to install for this name
                     }
                     CopyFlushed(f.StagingPath, temp);
@@ -230,7 +238,6 @@ internal sealed class ManagedInstallManager
                         return UpdateStepResult.Fail($"staged replacement verify failed: {f.Name}");
                     }
                 }
-                _stagedReplacements[f.Name] = temp;
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -439,6 +446,12 @@ internal sealed class ManagedInstallManager
 
     public string ConfigBackupPath => _configBakPath;
     public string PrivateConfigCopyPath => _privateConfigCopy;
+
+    // Snapshot of the *.new.<attempt> temp paths recorded so far. Every path here
+    // is one the failure-path cleanup (RemoveStagedReplacementTemps) will remove;
+    // exposed so a test can assert the temp of a file that failed MID-write is
+    // tracked (recorded before the write), not just the ones that completed.
+    public IReadOnlyCollection<string> StagedTempPaths => _stagedReplacements.Values.ToArray();
 
     private static string HashFile(string path)
     {

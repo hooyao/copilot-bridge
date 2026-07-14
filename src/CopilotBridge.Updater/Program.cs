@@ -75,7 +75,16 @@ try
 {
     var engine = new UpdaterEngine(plan, journal, Console.Error, trustedRoot);
     var outcome = await engine.RunAsync(cts.Token);
-    journal.Write("updater.exit", outcome.ToString());
+    // Do NOT journal after a Committed outcome: RunAsync already wrote "commit"
+    // and then deleted the whole attempt root (CleanupAfterCommit). A write here
+    // would call Directory.CreateDirectory and RESURRECT the just-deleted attempt
+    // directory (plus a fresh transaction.log), defeating the commit cleanup on
+    // every successful update. Every non-committed outcome leaves the attempt
+    // root in place for diagnostics, so journaling its exit is correct.
+    if (outcome != UpdaterExit.Committed)
+    {
+        journal.Write("updater.exit", outcome.ToString());
+    }
     return (int)outcome;
 }
 catch (OperationCanceledException)
