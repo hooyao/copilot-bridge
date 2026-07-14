@@ -411,6 +411,24 @@ internal sealed class ManagedInstallManager
     }
 
     /// <summary>
+    /// Best-effort cleanup after a PREFLIGHT failure (the installation was never
+    /// changed). Removes the staging tree, the downloaded archive, any
+    /// same-directory <c>*.new.&lt;attempt&gt;</c> replacement temporaries, AND the
+    /// managed-binary backups: with nothing installed there is nothing to roll back
+    /// to, so the backups (full copies of both executables — tens of MB) are dead
+    /// weight that would otherwise accumulate one set per rejected attempt. Recovery
+    /// backups are retained only when a cutover actually happened and rollback is in
+    /// play — that path does NOT call this.
+    /// </summary>
+    public void CleanupAfterPreflightFailure()
+    {
+        RemoveStagedReplacementTemps();
+        TryDeleteDirectory(_plan.StagingDir);
+        TryDeleteDirectory(_plan.BackupDir);
+        TryDelete(_plan.ArchivePath);
+    }
+
+    /// <summary>
     /// Best-effort removal of the <c>*.old.&lt;rand&gt;</c> siblings the image-lock
     /// fallback created. Safe to call after commit or rollback; a file still held
     /// by the OS is simply retried-never (left for a future cleanup), never fatal.

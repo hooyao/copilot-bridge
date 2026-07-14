@@ -376,4 +376,34 @@ public class ManagedInstallManagerTests : IDisposable
         mgr.RemoveStagedReplacementTemps();
         Assert.Empty(mgr.StagedTempPaths);
     }
+
+    [Fact]
+    public void CleanupAfterPreflightFailure_removes_backups_staging_and_archive()
+    {
+        // A preflight failure never changed the install, so the managed-binary
+        // backups are dead weight. Cleanup must remove BackupDir (full exe copies),
+        // the staging tree, and the downloaded archive — otherwise repeated rejected
+        // updates accumulate tens of MB per attempt. It must NOT touch the install.
+        SeedInstalled("old-bridge", "old-updater", """{ "Server": { "Port": 19000 } }""");
+        SeedStaging("new-bridge", "new-updater", """{ "Server": { "Port": 8765 } }""");
+        File.WriteAllText(Path.Combine(_root, "a.zip"), "archive-bytes");
+
+        var mgr = Manager();
+        Assert.True(mgr.Prepare().Ok); // creates BackupDir with backups of both binaries
+
+        // Preconditions: the backups + staging + archive all exist.
+        Assert.True(File.Exists(Path.Combine(_backup, BridgeName)));
+        Assert.True(Directory.Exists(_staging));
+        Assert.True(File.Exists(Path.Combine(_root, "a.zip")));
+
+        mgr.CleanupAfterPreflightFailure();
+
+        // All transient material is gone...
+        Assert.False(Directory.Exists(_backup));
+        Assert.False(Directory.Exists(_staging));
+        Assert.False(File.Exists(Path.Combine(_root, "a.zip")));
+        // ...but the live installation is untouched.
+        Assert.Equal("old-bridge", File.ReadAllText(Path.Combine(_install, BridgeName)));
+        Assert.Equal("""{ "Server": { "Port": 19000 } }""", File.ReadAllText(Path.Combine(_install, ConfigName)));
+    }
 }

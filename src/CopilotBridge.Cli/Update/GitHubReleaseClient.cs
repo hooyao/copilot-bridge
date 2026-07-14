@@ -146,18 +146,10 @@ internal sealed class GitHubReleaseClient
 
                 using var perReq = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 perReq.CancelAfter(effectiveTimeout);
-                try
-                {
-                    using var req = BuildRequest(next);
-                    resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, perReq.Token)
-                        .ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (perReq.IsCancellationRequested && !ct.IsCancellationRequested)
-                {
-                    // The per-request budget (or the remaining overall budget)
-                    // fired, not shutdown — fail open.
-                    return ReleaseDiscoveryResult.Fail("update-check request timeout");
-                }
+
+                using var req = BuildRequest(next);
+                resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, perReq.Token)
+                    .ConfigureAwait(false);
 
                 using (resp)
                 {
@@ -170,6 +162,10 @@ internal sealed class GitHubReleaseClient
                         return ReleaseDiscoveryResult.Fail($"GitHub API returned HTTP {(int)resp.StatusCode}");
                     }
 
+                    // Read the body under the SAME per-request budget. With
+                    // ResponseHeadersRead the server can return headers and then
+                    // stall the body — the perReq timeout must cover this read too,
+                    // else its OperationCanceledException escapes the fail-open path.
                     page = await resp.Content
                         .ReadFromJsonAsync(JsonContext.Default.ListGitHubRelease, perReq.Token)
                         .ConfigureAwait(false);
@@ -193,6 +189,13 @@ internal sealed class GitHubReleaseClient
             {
                 // Application shutdown — do NOT swallow.
                 throw;
+            }
+            catch (OperationCanceledException)
+            {
+                // The per-request budget (or the remaining overall budget) fired on
+                // EITHER the header send or the body read — not shutdown (guarded
+                // above) — so fail open with the current version.
+                return ReleaseDiscoveryResult.Fail("update-check request timeout");
             }
             catch (Exception ex) when (ex is HttpRequestException or System.Text.Json.JsonException or IOException)
             {

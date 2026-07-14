@@ -50,7 +50,12 @@ internal static class UpdateWire
 /// </summary>
 internal sealed record UpdatePlan
 {
+    // Required on the wire: an incoming plan MUST carry protocol_version explicitly.
+    // The initializer supplies the value we WRITE; [JsonRequired] forces the member
+    // to be PRESENT when reading, so an unversioned (or tampered-to-omit) plan is
+    // rejected at deserialization rather than silently treated as current v1.
     [JsonPropertyName("protocol_version")]
+    [JsonRequired]
     public int ProtocolVersion { get; init; } = UpdateWire.ProtocolVersion;
 
     [JsonPropertyName("attempt_id")]
@@ -149,6 +154,7 @@ internal sealed record UpdatePlan
 internal sealed record UpdateControlMessage
 {
     [JsonPropertyName("protocol_version")]
+    [JsonRequired]
     public int ProtocolVersion { get; init; } = UpdateWire.ProtocolVersion;
 
     [JsonPropertyName("kind")]
@@ -176,9 +182,11 @@ internal sealed record UpdateControlMessage
 internal sealed record UpdateReadyMessage
 {
     [JsonPropertyName("protocol_version")]
+    [JsonRequired]
     public int ProtocolVersion { get; init; } = UpdateWire.ProtocolVersion;
 
     [JsonPropertyName("kind")]
+    [JsonRequired]
     public string Kind { get; init; } = UpdateWire.MsgReady;
 
     [JsonPropertyName("attempt_id")]

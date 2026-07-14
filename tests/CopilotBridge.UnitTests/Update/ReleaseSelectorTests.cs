@@ -104,6 +104,36 @@ public class ReleaseSelectorTests
     }
 
     [Fact]
+    public void Mislabeled_prerelease_tag_is_excluded_on_the_stable_channel()
+    {
+        // A maintainer tags v1.1.0-beta.1 but forgets GitHub's "prerelease"
+        // checkbox (IsPreRelease: false). The SemVer string is authoritative: a
+        // stable-channel user (allowBeta: false) must NOT be offered it, so the
+        // stable v1.0.1 wins instead.
+        var result = ReleaseSelector.Select(
+            V("1.0.0"),
+            [Stable("v1.0.1"), new ReleaseCandidate("v1.1.0-beta.1", IsDraft: false, IsPreRelease: false)],
+            allowBeta: false);
+
+        Assert.NotNull(result);
+        Assert.Equal("v1.0.1", result!.Candidate.Tag);
+    }
+
+    [Fact]
+    public void Mislabeled_prerelease_tag_is_still_offered_on_the_beta_channel()
+    {
+        // The same mislabeled build IS eligible when the user opted into betas —
+        // the SemVer-prerelease exclusion only applies to the stable channel.
+        var result = ReleaseSelector.Select(
+            V("1.0.0"),
+            [Stable("v1.0.1"), new ReleaseCandidate("v1.1.0-beta.1", IsDraft: false, IsPreRelease: false)],
+            allowBeta: true);
+
+        Assert.NotNull(result);
+        Assert.Equal("v1.1.0-beta.1", result!.Candidate.Tag);
+    }
+
+    [Fact]
     public void Dev_build_never_self_updates()
     {
         var result = ReleaseSelector.Select(

@@ -51,11 +51,16 @@ internal static class ReleaseSelector
             {
                 continue;
             }
-            if (candidate.IsPreRelease && !allowBeta)
+            if (!SemanticVersion.TryParse(candidate.Tag, out var version))
             {
                 continue;
             }
-            if (!SemanticVersion.TryParse(candidate.Tag, out var version))
+            // Exclude prereleases on the stable channel by BOTH signals: GitHub's
+            // `prerelease` flag AND the SemVer tag itself. A maintainer who tags
+            // v2.0.0-beta.1 but forgets the prerelease checkbox must not have that
+            // build offered to AllowBetaUpdates=false users — the version string is
+            // authoritative for what the release actually is.
+            if ((candidate.IsPreRelease || version.IsPreRelease) && !allowBeta)
             {
                 continue;
             }

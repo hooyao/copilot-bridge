@@ -155,6 +155,85 @@ public class UpdateWireContractTests
     }
 
     [Fact]
+    public void Plan_without_protocol_version_is_rejected_not_defaulted_to_v1()
+    {
+        // Strict versioned-plan contract: an unversioned plan must NOT silently
+        // deserialize to protocol v1. protocol_version is [JsonRequired], so its
+        // absence is a deserialization failure, not a default.
+        var full = JsonSerializer.Serialize(SamplePlan(), UpdateWireJsonContext.Default.UpdatePlan);
+        Assert.Contains("\"protocol_version\"", full); // sanity: it IS written
+
+        // Remove the protocol_version member and confirm the read fails.
+        using var doc = JsonDocument.Parse(full);
+        var withoutPv = new Dictionary<string, JsonElement>();
+        foreach (var p in doc.RootElement.EnumerateObject())
+        {
+            if (p.Name != "protocol_version")
+            {
+                withoutPv[p.Name] = p.Value.Clone();
+            }
+        }
+        var mangled = JsonSerializer.Serialize(withoutPv);
+
+        Assert.Throws<JsonException>(() =>
+            JsonSerializer.Deserialize(mangled, UpdateWireJsonContext.Default.UpdatePlan));
+    }
+
+    [Fact]
+    public void Control_message_without_protocol_version_is_rejected()
+    {
+        var control = new UpdateControlMessage
+        {
+            Kind = UpdateWire.MsgCutoverAuthorized,
+            AttemptId = "a1",
+            Token = "t1",
+            SenderPid = 7,
+        };
+        var json = JsonSerializer.Serialize(control, UpdateWireJsonContext.Default.UpdateControlMessage);
+        var mangled = StripMember(json, "protocol_version");
+
+        Assert.Throws<JsonException>(() =>
+            JsonSerializer.Deserialize(mangled, UpdateWireJsonContext.Default.UpdateControlMessage));
+    }
+
+    [Fact]
+    public void Ready_message_without_protocol_version_or_kind_is_rejected()
+    {
+        var ready = new UpdateReadyMessage
+        {
+            AttemptId = "a1",
+            Role = UpdateWire.RoleTarget,
+            Token = "t2",
+            Pid = 9,
+            Version = "0.4.14",
+        };
+        var json = JsonSerializer.Serialize(ready, UpdateWireJsonContext.Default.UpdateReadyMessage);
+
+        // Both protocol_version and kind are required — omitting EITHER fails, so a
+        // frame that omits the frozen protocol/kind can't pass as a valid Ready.
+        Assert.Throws<JsonException>(() =>
+            JsonSerializer.Deserialize(StripMember(json, "protocol_version"), UpdateWireJsonContext.Default.UpdateReadyMessage));
+        Assert.Throws<JsonException>(() =>
+            JsonSerializer.Deserialize(StripMember(json, "kind"), UpdateWireJsonContext.Default.UpdateReadyMessage));
+    }
+
+    // Serialize a JSON object with one member removed, for "absent required member"
+    // tests. Uses JsonDocument so we drop exactly one top-level property.
+    private static string StripMember(string json, string member)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var kept = new Dictionary<string, JsonElement>();
+        foreach (var p in doc.RootElement.EnumerateObject())
+        {
+            if (p.Name != member)
+            {
+                kept[p.Name] = p.Value.Clone();
+            }
+        }
+        return JsonSerializer.Serialize(kept);
+    }
+
+    [Fact]
     public void Oversize_message_is_rejected_by_the_codec()
     {
         var huge = new string('x', UpdatePipeCodec.MaxBytes + 10);

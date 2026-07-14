@@ -11,7 +11,7 @@ namespace CopilotBridge.Update.Wire;
 /// configuration contents. This is a best-effort diagnostic aid, not a
 /// crash-recovery coordinator.
 /// </summary>
-internal sealed class TransactionJournal
+internal sealed partial class TransactionJournal
 {
     private readonly string _path;
     private readonly Func<DateTimeOffset> _now;
@@ -47,10 +47,22 @@ internal sealed class TransactionJournal
         }
     }
 
-    // Defense-in-depth: even though callers pass only phase/reason phrases, strip
-    // anything that looks token-shaped so a stray value can't land in the journal.
+    // Defense-in-depth: callers pass only phase/reason phrases, but Write accepts
+    // arbitrary text, so scrub anything token-shaped before it is persisted — the
+    // journal's contract is that it NEVER records a capability/bearer secret. We
+    // redact long unbroken runs of token-alphabet characters (hex, base64/64url):
+    // capability and handoff tokens are 64-hex, GitHub/bearer tokens are long
+    // base64-ish blobs. Short words (phase names, type names) are well under the
+    // threshold and untouched. Then bound the length.
     private static string Redact(string detail)
     {
-        return detail.Length > 512 ? detail[..512] : detail;
+        var scrubbed = TokenShaped().Replace(detail, "[redacted]");
+        return scrubbed.Length > 512 ? scrubbed[..512] : scrubbed;
     }
+
+    // 32+ consecutive token-alphabet chars (A–Z a–z 0–9 + / - _). 32 clears every
+    // ordinary identifier/phrase we log while catching 64-hex capabilities and
+    // base64 bearer tokens.
+    [System.Text.RegularExpressions.GeneratedRegex(@"[A-Za-z0-9+/\-_]{32,}")]
+    private static partial System.Text.RegularExpressions.Regex TokenShaped();
 }

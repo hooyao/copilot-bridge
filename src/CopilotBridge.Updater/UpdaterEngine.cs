@@ -544,13 +544,14 @@ internal sealed class UpdaterEngine
             // The parent may already be serving; that's fine.
         }
 
-        // Clean up private temporaries (never the install dir), plus any
-        // same-directory *.new.<attempt> replacement temporaries a completed
-        // StageReplacements left in the install dir (a pre-cutover failure after
-        // staging would otherwise leave them behind).
-        _install?.RemoveStagedReplacementTemps();
-        TryDeleteDirectory(_plan.StagingDir);
-        TryDelete(_plan.ArchivePath);
+        // Clean up on a preflight failure: the install was never changed, so remove
+        // the staging tree, downloaded archive, any *.new.<attempt> replacement
+        // temporaries, AND the managed-binary backups — the latter are full copies
+        // of both executables that would otherwise accumulate one set per rejected
+        // attempt (tens of MB). Nothing is installed to roll back to, so keeping the
+        // backups serves no recovery purpose. (ManagedInstallManager owns the
+        // filesystem policy; the engine just invokes it.)
+        _install?.CleanupAfterPreflightFailure();
         return UpdaterExit.PreflightFailed;
     }
 
@@ -569,15 +570,5 @@ internal sealed class UpdaterEngine
         _stderr.WriteLine("  1. Stop any running copilot-bridge from this installation.");
         _stderr.WriteLine("  2. Copy the backed-up executables and original config back into the install directory.");
         _stderr.WriteLine("  3. Start copilot-bridge with your original command.");
-    }
-
-    private static void TryDelete(string path)
-    {
-        try { if (File.Exists(path)) File.Delete(path); } catch { /* best effort */ }
-    }
-
-    private static void TryDeleteDirectory(string path)
-    {
-        try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); } catch { /* best effort */ }
     }
 }

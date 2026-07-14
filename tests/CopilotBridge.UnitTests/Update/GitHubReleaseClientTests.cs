@@ -159,6 +159,24 @@ public class GitHubReleaseClientTests
     }
 
     [Fact]
+    public async Task Body_read_cancellation_after_headers_fails_open_not_escapes()
+    {
+        // With ResponseHeadersRead, headers arrive and THEN the body read can be
+        // cancelled by the per-request budget (a stalled body). That
+        // OperationCanceledException originates in ReadFromJsonAsync, NOT SendAsync.
+        // The fail-open path must cover it; before the fix only the send was
+        // guarded, so a body-read OCE escaped DiscoverAsync. Here the content throws
+        // OCE on read (unrelated to the caller's ct), standing in for the per-request
+        // timeout firing mid-body — DiscoverAsync must still fail open, not throw.
+        var handler = new FakeHttpMessageHandler((_, _) =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new CancelOnReadContent() });
+        var result = await Client(handler).DiscoverAsync(CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.NotNull(result.FailureReason);
+    }
+
+    [Fact]
     public async Task Application_shutdown_cancellation_propagates()
     {
         using var cts = new CancellationTokenSource();
@@ -167,5 +185,30 @@ public class GitHubReleaseClientTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => Client(handler).DiscoverAsync(cts.Token));
+    }
+}
+
+/// <summary>
+/// HttpContent whose body read throws <see cref="OperationCanceledException"/> —
+/// stands in for the per-request timeout firing during the body read (after
+/// headers were already returned under ResponseHeadersRead). Not tied to the
+/// caller's token, so it exercises the fail-open branch, not the shutdown rethrow.
+/// </summary>
+internal sealed class CancelOnReadContent : HttpContent
+{
+    protected override Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context)
+        => throw new OperationCanceledException("per-request body-read timeout");
+
+    protected override Task SerializeToStreamAsync(
+        Stream stream, System.Net.TransportContext? context, CancellationToken cancellationToken)
+        => throw new OperationCanceledException("per-request body-read timeout");
+
+    protected override Task<Stream> CreateContentReadStreamAsync()
+        => throw new OperationCanceledException("per-request body-read timeout");
+
+    protected override bool TryComputeLength(out long length)
+    {
+        length = 0;
+        return false;
     }
 }
