@@ -82,9 +82,21 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         if (ReferenceEquals(irBody, _ctx.Response.InitialBufferedIrBody)
             && _ctx.Response.BufferedResponsesWireBody is { } original)
         {
-            _log.LogDebug("adapter {Name}: buffered Responses byte-preserving passthrough bytes={Bytes}",
-                Name, original.Length);
-            return ValueTask.FromResult(original);
+            // The byte-preserving shortcut sends the ORIGINAL upstream bytes back to
+            // Codex verbatim — LOSSLESS, which is its whole point (a buffered response
+            // can carry reasoning/encrypted_content and fields the IR does not model).
+            // The one exception: a custom_tool_call whose id is not `ctc`-prefixed would,
+            // passed through unchanged, be echoed next turn and 400 ("Expected an ID
+            // that begins with 'ctc'"). So rewrite only that id in place, preserving
+            // every other item/property/unknown field with full VALUE fidelity (that
+            // rewrite branch re-serializes, so insignificant whitespace/escaping in
+            // untouched fields may be normalized — semantic, not byte-for-byte; Codex
+            // re-parses the JSON regardless). The far more common no-custom-tool /
+            // already-`ctc` case returns the exact original bytes, byte-for-byte.
+            var patched = RewriteNonCtcCustomToolCallIds(original);
+            _log.LogDebug("adapter {Name}: buffered Responses byte-preserving passthrough bytes={Bytes}{Note}",
+                Name, patched.Length, ReferenceEquals(patched, original) ? "" : " (custom_tool_call id rewritten to ctc)");
+            return ValueTask.FromResult(patched);
         }
 
         var translated = BufferedAnthropicToResponses.TryTranslate(irBody);
@@ -99,6 +111,116 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         // not represent successful response IR; preserve their existing surface.
         _log.LogDebug("adapter {Name}: buffered non-message passthrough bytes={Bytes}", Name, irBody.Length);
         return ValueTask.FromResult(irBody);
+    }
+
+    /// <summary>
+    /// Return <paramref name="original"/> unchanged unless it carries a
+    /// <c>custom_tool_call</c> output item whose <c>id</c> is not <c>ctc</c>-prefixed;
+    /// in that case return a copy with those ids rewritten to a deterministic
+    /// <c>ctc_</c> id (synthesized from the item's <c>call_id</c>). Every other item,
+    /// property, and unknown field is preserved with full VALUE fidelity —
+    /// reasoning/encrypted_content blobs and unmodeled fields survive intact, so no
+    /// data is lost. Fidelity is semantic, not byte-for-byte: the rewrite branch
+    /// re-serializes via <see cref="Utf8JsonWriter"/>, which may normalize insignificant
+    /// JSON whitespace/escaping in untouched fields. That is acceptable — this branch
+    /// only fires on the rare corrective path where the upstream itself sent a
+    /// non-conforming id (which would otherwise 400 the echo turn), Codex re-parses the
+    /// JSON regardless, and the common (no custom tool call, or already-<c>ctc</c>) case
+    /// still returns the exact original bytes byte-for-byte (the cheap substring
+    /// pre-filter and the no-rewrite-needed early return both short-circuit to
+    /// <paramref name="original"/>).
+    /// </summary>
+    private static byte[] RewriteNonCtcCustomToolCallIds(byte[] original)
+    {
+        if (original.AsSpan().IndexOf("custom_tool_call"u8) < 0)
+            return original;
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(original); }
+        catch (JsonException) { return original; }
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("output", out var output)
+                || output.ValueKind != JsonValueKind.Array)
+                return original;
+
+            // First pass: is any rewrite actually needed? If not, return the exact
+            // original bytes (byte-identical passthrough contract holds).
+            var needsRewrite = false;
+            foreach (var item in output.EnumerateArray())
+            {
+                if (IsNonCtcCustomToolCall(item)) { needsRewrite = true; break; }
+            }
+            if (!needsRewrite) return original;
+
+            using var buffer = new MemoryStream(original.Length + 64);
+            using (var w = new Utf8JsonWriter(buffer))
+            {
+                w.WriteStartObject();
+                foreach (var prop in root.EnumerateObject())
+                {
+                    if (!prop.NameEquals("output"))
+                    {
+                        prop.WriteTo(w);   // verbatim: id/model/usage/status/unknowns
+                        continue;
+                    }
+                    w.WritePropertyName("output");
+                    w.WriteStartArray();
+                    foreach (var item in prop.Value.EnumerateArray())
+                    {
+                        if (!IsNonCtcCustomToolCall(item))
+                        {
+                            item.WriteTo(w);   // verbatim: reasoning, messages, ctc-ok tools
+                            continue;
+                        }
+                        // Copy the offending custom_tool_call, replacing ONLY its id.
+                        var callId = item.TryGetProperty("call_id", out var cid) && cid.ValueKind == JsonValueKind.String
+                            ? cid.GetString() ?? "" : "";
+                        w.WriteStartObject();
+                        foreach (var f in item.EnumerateObject())
+                        {
+                            if (f.NameEquals("id"))
+                                w.WriteString("id", SynthesizeCtcId(callId));
+                            else
+                                f.WriteTo(w);
+                        }
+                        // If the item had no id property at all, add a conforming one.
+                        if (!item.TryGetProperty("id", out _))
+                            w.WriteString("id", SynthesizeCtcId(callId));
+                        w.WriteEndObject();
+                    }
+                    w.WriteEndArray();
+                }
+                w.WriteEndObject();
+            }
+            return buffer.ToArray();
+        }
+    }
+
+    private static bool IsNonCtcCustomToolCall(JsonElement item)
+    {
+        if (item.ValueKind != JsonValueKind.Object
+            || !item.TryGetProperty("type", out var t)
+            || t.ValueKind != JsonValueKind.String
+            || t.GetString() != "custom_tool_call")
+            return false;
+        var id = item.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String
+            ? idEl.GetString() : null;
+        return id is null || !id.StartsWith("ctc", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Deterministically synthesize a <c>ctc_</c>-prefixed id from a call_id (unique per
+    /// call → stable, collision-free, no RNG). Mirrors the streaming T4 fallback; Copilot
+    /// only checks the <c>ctc</c> prefix on the echoed id, not the exact value.
+    /// </summary>
+    private static string SynthesizeCtcId(string callId)
+    {
+        var suffix = callId.StartsWith("call_", StringComparison.Ordinal)
+            ? callId["call_".Length..]
+            : callId;
+        return suffix.Length > 0 ? "ctc_" + suffix : "ctc_bridge";
     }
 }
 
@@ -137,6 +259,15 @@ internal sealed class AnthropicToResponsesStream
     // dispatch. So a marked block must re-emit the native custom_tool_call shape, NOT
     // function_call. Reset per block in OnBlockStart/OnBlockStop.
     private bool _toolIsCustom;
+    // The REAL upstream custom_tool_call id (a `ctc_`-prefixed Responses item id)
+    // that T3 captured and rode out on the content_block_stop marker
+    // bridge_custom_tool_call_id. Stamped on the COMPLETED custom_tool_call item
+    // (output_item.done + response.completed output[]) — the id Codex stores and
+    // echoes next turn, which Copilot REQUIRES to begin with `ctc`. Empty when T3
+    // never observed one (older upstream / non-streaming edge); T4 then keeps the
+    // deterministic `ctc_`-synthesized _itemId, still prefix-conformant. Set at
+    // block-stop, reset per block.
+    private string _customToolCallId = "";
     private string _argsBuffer = "";
     private string _textBuffer = "";
     private string _stopReason = "end_turn";
@@ -192,7 +323,7 @@ internal sealed class AnthropicToResponsesStream
                     break;
 
                 case "content_block_stop":
-                    foreach (var s in OnBlockStop()) yield return s;
+                    foreach (var s in OnBlockStop(root)) yield return s;
                     break;
 
                 case "message_delta":
@@ -288,9 +419,20 @@ internal sealed class AnthropicToResponsesStream
                     "T4: tool 'exec' arrived WITHOUT the grammar marker — emitting it as a "
                     + "function_call, which codex rejects as an incompatible payload. Upstream "
                     + "may have changed the exec item shape (call_id={CallId}).", _toolCallId);
-            _itemId = "item_" + _outputIndex;
+            // A CUSTOM tool's item id MUST begin with `ctc` — Copilot's /responses
+            // 400s otherwise once Codex echoes the item back next turn ("Expected an
+            // ID that begins with 'ctc'"). The real upstream ctc_ id only arrives on
+            // the content_block_stop marker (T3 captures it late, from the input.*
+            // events), so the added item + input deltas use a DETERMINISTIC ctc_
+            // synthesis from the call_id; block-stop then overrides _itemId with the
+            // real captured id for the completed item. Both are ctc-prefixed, so the
+            // echo is accepted whichever id Codex keys off. A plain function/message
+            // item is unaffected — it keeps the item_N id (T2 rebuilds it without an
+            // id, so it never leaks upstream).
+            _itemId = _toolIsCustom ? SynthesizeCtcId(_toolCallId) : "item_" + _outputIndex;
+            _customToolCallId = "";
             yield return Ev("response.output_item.added",
-                $"{{\"type\":\"response.output_item.added\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{ToolCallItem(status: "in_progress")}}}");
+                $"{{\"type\":\"response.output_item.added\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{ToolCallItem(status: "in_progress", itemId: _itemId)}}}");
         }
         else
         {
@@ -330,25 +472,41 @@ internal sealed class AnthropicToResponsesStream
         }
     }
 
-    private IEnumerable<SseItem<string>> OnBlockStop()
+    private IEnumerable<SseItem<string>> OnBlockStop(JsonElement root = default)
     {
         if (_currentBlockType is null) yield break;
         if (_currentBlockType == "tool_use")
         {
+            // Lift the real upstream ctc_ id T3 captured (rode out on the
+            // content_block_stop marker). It becomes the COMPLETED item's id — the id
+            // Codex echoes next turn, which Copilot requires to begin with `ctc`.
+            // Enforce the `ctc` prefix HERE, at the consumption boundary, not just at
+            // T3's capture: this adapter's invariant is that it never emits a non-`ctc`
+            // custom-tool id, so a malformed/replayed IR event carrying a non-conforming
+            // marker (e.g. `item_1`) must NOT override the safe synthesized id and
+            // reintroduce the follow-up 400. Non-conforming or absent → keep the
+            // deterministic ctc_ synthesis already in _itemId.
+            if (root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("bridge_custom_tool_call_id", out var ctc)
+                && ctc.ValueKind == JsonValueKind.String
+                && ctc.GetString() is { Length: > 0 } realId
+                && realId.StartsWith("ctc", StringComparison.Ordinal))
+                _customToolCallId = realId;
+            var completedItemId = _customToolCallId.Length > 0 ? _customToolCallId : _itemId;
             if (_toolIsCustom)
             {
                 // Custom (grammar) tool — exec: close with custom_tool_call_input.done
                 // (field `input`) + a custom_tool_call output item (codex requires the
                 // Custom payload shape, else "incompatible payload").
                 yield return Ev("response.custom_tool_call_input.done",
-                    $"{{\"type\":\"response.custom_tool_call_input.done\",\"sequence_number\":{_seq++},\"item_id\":{Enc(_itemId)},\"output_index\":{_outputIndex},\"input\":{Enc(_argsBuffer)}}}");
+                    $"{{\"type\":\"response.custom_tool_call_input.done\",\"sequence_number\":{_seq++},\"item_id\":{Enc(completedItemId)},\"output_index\":{_outputIndex},\"input\":{Enc(_argsBuffer)}}}");
             }
             else
             {
                 yield return Ev("response.function_call_arguments.done",
-                    $"{{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":{_seq++},\"item_id\":{Enc(_itemId)},\"output_index\":{_outputIndex},\"arguments\":{Enc(_argsBuffer)}}}");
+                    $"{{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":{_seq++},\"item_id\":{Enc(completedItemId)},\"output_index\":{_outputIndex},\"arguments\":{Enc(_argsBuffer)}}}");
             }
-            var toolItem = ToolCallItem(status: "completed");
+            var toolItem = ToolCallItem(status: "completed", itemId: completedItemId);
             _completedItems.Add(toolItem);
             yield return Ev("response.output_item.done",
                 $"{{\"type\":\"response.output_item.done\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{toolItem}}}");
@@ -370,6 +528,7 @@ internal sealed class AnthropicToResponsesStream
         _textBuffer = "";
         _toolNamespace = "";
         _toolIsCustom = false;
+        _customToolCallId = "";
     }
 
     private string MessageItem(string status, string? text)
@@ -391,13 +550,35 @@ internal sealed class AnthropicToResponsesStream
     /// Today exec is never namespaced, so the custom+namespace combination doesn't arise;
     /// but emitting it on both forms means a future namespaced custom tool round-trips its
     /// namespace instead of silently dropping it (which would 400 the echo turn).
+    /// <paramref name="itemId"/> is the item's <c>id</c>: a deterministic <c>ctc_</c>
+    /// synthesis on the in-progress event (the real id isn't known until block-stop) and
+    /// the REAL captured upstream <c>ctc_</c> id on the completed event — the id Codex
+    /// stores and echoes next turn, which Copilot requires to begin with <c>ctc</c>.
     /// </summary>
-    private string ToolCallItem(string status)
+    private string ToolCallItem(string status, string itemId)
     {
         var nsField = _toolNamespace.Length > 0 ? $"\"namespace\":{Enc(_toolNamespace)}," : "";
         return _toolIsCustom
-            ? $"{{\"type\":\"custom_tool_call\",\"id\":{Enc(_itemId)},\"call_id\":{Enc(_toolCallId)},{nsField}\"name\":{Enc(_toolName)},\"input\":{Enc(_argsBuffer)},\"status\":{Enc(status)}}}"
-            : $"{{\"type\":\"function_call\",\"id\":{Enc(_itemId)},\"call_id\":{Enc(_toolCallId)},{nsField}\"name\":{Enc(_toolName)},\"arguments\":{Enc(_argsBuffer)},\"status\":{Enc(status)}}}";
+            ? $"{{\"type\":\"custom_tool_call\",\"id\":{Enc(itemId)},\"call_id\":{Enc(_toolCallId)},{nsField}\"name\":{Enc(_toolName)},\"input\":{Enc(_argsBuffer)},\"status\":{Enc(status)}}}"
+            : $"{{\"type\":\"function_call\",\"id\":{Enc(itemId)},\"call_id\":{Enc(_toolCallId)},{nsField}\"name\":{Enc(_toolName)},\"arguments\":{Enc(_argsBuffer)},\"status\":{Enc(status)}}}";
+    }
+
+    /// <summary>
+    /// Deterministically synthesize a `ctc_`-prefixed item id for a custom_tool_call
+    /// when T3 captured no real upstream id. Derived from the call_id (already unique
+    /// per tool call) so the value is stable and collision-free without any RNG
+    /// (which AOT + resumable determinism forbid). Copilot's /responses only checks
+    /// the `ctc` PREFIX on the echoed id, not that it equals the original, so a
+    /// synthesized id is accepted. The `call_` prefix (if present) is stripped to
+    /// avoid a redundant token; a bare or empty call_id still yields a `ctc_`-prefixed
+    /// value.
+    /// </summary>
+    private static string SynthesizeCtcId(string callId)
+    {
+        var suffix = callId.StartsWith("call_", StringComparison.Ordinal)
+            ? callId["call_".Length..]
+            : callId;
+        return suffix.Length > 0 ? "ctc_" + suffix : "ctc_bridge";
     }
 
     private string ResponseEnvelope(string eventType, string status) =>

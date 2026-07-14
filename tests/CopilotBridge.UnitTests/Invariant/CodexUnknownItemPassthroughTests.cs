@@ -161,6 +161,29 @@ public class CodexUnknownItemPassthroughTests
     }
 
     [Fact]
+    public void EchoedCustomToolCall_WithCtcId_RoundTripsTheIdVerbatim_ToTheUpstreamWire()
+    {
+        // The EXACT production follow-up path (the response-side T3→T4 fix guarantees a
+        // ctc_-prefixed id reaches Codex; THIS is the request side): on the next turn
+        // Codex echoes that custom_tool_call back WITH its ctc_ id, and T1→T2 must
+        // forward the id verbatim to the upstream wire. Copilot 400s the turn if the
+        // echoed id does not begin with `ctc` ("Expected an ID that begins with 'ctc'"),
+        // so the id must survive the request round trip, not just the response one.
+        const string execJs = "const r = await tools.shell_command({command:\"ls\"});\ntext(r);";
+        var echo = $$"""
+          {"type":"custom_tool_call","id":"ctc_0679bd5b187491ee","call_id":"call_exec_1","name":"exec","input":{{Enc(execJs)}}}
+          """;
+
+        var item = FindItem(CodexRoundTrip.RoundTrip(BodyWith(echo)).AsObject()["input"]!.AsArray(),
+            "custom_tool_call");
+        Assert.NotNull(item);
+        // The ctc_ id survives T1→T2 verbatim — this is what keeps the echo turn from 400ing.
+        Assert.Equal("ctc_0679bd5b187491ee", item!["id"]!.GetValue<string>());
+        Assert.StartsWith("ctc", item["id"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.Equal("call_exec_1", item["call_id"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void PassthroughItems_PreserveOrderRelativeToMessages()
     {
         // agent_message BETWEEN two user messages must stay between them in the output

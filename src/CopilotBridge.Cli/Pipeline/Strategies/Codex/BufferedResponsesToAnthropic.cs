@@ -12,6 +12,10 @@ internal static class BufferedResponsesToAnthropic
 {
     private const string GrammarMarker = "bridge_input_is_grammar_text";
     private const string NamespaceMarker = "bridge_tool_namespace";
+    // Carries the upstream custom_tool_call's real `ctc_` item id to T4, which stamps
+    // it on the Codex-facing item so Copilot accepts the echo (id must begin `ctc`).
+    // Mirrors the streaming path's content_block_stop marker.
+    private const string CustomToolCallIdMarker = "bridge_custom_tool_call_id";
 
     public static byte[]? TryTranslate(byte[] body)
     {
@@ -158,6 +162,14 @@ internal static class BufferedResponsesToAnthropic
         writer.WriteString("name", ReadRequiredString(item, "name"));
         writer.WriteString("input", ReadRequiredString(item, "input"));
         writer.WriteBoolean(GrammarMarker, true);
+        // Carry the upstream item id ONLY when it's a real `ctc_`-prefixed Responses
+        // id — that's the value Copilot will require Codex to echo back. The
+        // output_item's id can also be a rolling encrypted blob (non-ctc); dropping it
+        // then lets T4 synthesize a conforming `ctc_` id rather than round-tripping a
+        // value Copilot would reject.
+        if (ReadString(item, "id") is { Length: > 0 } upstreamId
+            && upstreamId.StartsWith("ctc", StringComparison.Ordinal))
+            writer.WriteString(CustomToolCallIdMarker, upstreamId);
         WriteNamespace(writer, item);
         writer.WriteEndObject();
     }

@@ -299,6 +299,85 @@ public class CodexEndpointTests
     }
 
     [Fact]
+    public async Task BufferedCustomToolCall_NonCtcId_ByteShortcutDiverted_EmitsCtcId()
+    {
+        // The byte-preserving buffered shortcut must NOT ship an upstream
+        // custom_tool_call whose id is non-`ctc` back to Codex verbatim — Codex would
+        // echo it and Copilot 400s ("Expected an ID that begins with 'ctc'"). The
+        // production outbound adapter must rewrite ONLY that id to a `ctc`-prefixed one.
+        // Crucially the rewrite is LOSSLESS: a sibling `reasoning` item (encrypted
+        // content the IR does not model) and unknown fields MUST survive unchanged —
+        // the shortcut's whole reason for existing. Drives the REAL
+        // IrToResponsesOutboundAdapter via the endpoint.
+        var originalBytes = Encoding.UTF8.GetBytes(
+            "{\"id\":\"resp_ct\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"gpt-5.3-codex\","
+            + "\"output\":["
+            + "{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"BLOB123\",\"summary\":[]},"
+            + "{\"type\":\"custom_tool_call\",\"id\":\"item_1\",\"call_id\":\"call_exec\",\"name\":\"exec\",\"input\":\"return 1;\",\"status\":\"completed\"}"
+            + "]}");
+        var irBytes = Encoding.UTF8.GetBytes(
+            "{\"id\":\"resp_ct\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gpt-5.3-codex\",\"stop_reason\":\"tool_use\","
+            + "\"content\":[{\"type\":\"tool_use\",\"id\":\"call_exec\",\"name\":\"exec\",\"input\":\"return 1;\",\"bridge_input_is_grammar_text\":true}],"
+            + "\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}");
+
+        var (status, body) = await Invoke(ValidRequest, ctx =>
+        {
+            ctx.Response.Status = StatusCodes.Status200OK;
+            ctx.Response.Mode = ResponseMode.Buffered;
+            ctx.Response.BufferedBody = irBytes;
+            ctx.Response.InitialBufferedIrBody = irBytes;
+            ctx.Response.BufferedResponsesWireBody = originalBytes;
+            ctx.Response.Headers["Content-Type"] = "application/json";
+        });
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        using var doc = JsonDocument.Parse(body);
+        var output = doc.RootElement.GetProperty("output");
+        Assert.Equal(2, output.GetArrayLength());
+        // The reasoning item (and its encrypted blob) survives the rewrite untouched.
+        var reasoning = output[0];
+        Assert.Equal("reasoning", reasoning.GetProperty("type").GetString());
+        Assert.Equal("rs_1", reasoning.GetProperty("id").GetString());
+        Assert.Equal("BLOB123", reasoning.GetProperty("encrypted_content").GetString());
+        // The custom_tool_call keeps everything except its now-ctc id.
+        var tool = output[1];
+        Assert.Equal("custom_tool_call", tool.GetProperty("type").GetString());
+        var id = tool.GetProperty("id").GetString()!;
+        Assert.StartsWith("ctc", id, StringComparison.Ordinal);
+        Assert.NotEqual("item_1", id);
+        Assert.Equal("call_exec", tool.GetProperty("call_id").GetString());
+        Assert.Equal("return 1;", tool.GetProperty("input").GetString());
+    }
+
+    [Fact]
+    public async Task BufferedCustomToolCall_CtcId_StillByteShortcut()
+    {
+        // Control: an upstream custom_tool_call whose id is ALREADY `ctc`-prefixed must
+        // keep the byte-preserving passthrough (no needless re-translation).
+        var originalBytes = Encoding.UTF8.GetBytes(
+            "{\"id\":\"resp_ct2\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"gpt-5.3-codex\","
+            + "\"output\":[{\"type\":\"custom_tool_call\",\"id\":\"ctc_real123\",\"call_id\":\"call_exec\",\"name\":\"exec\",\"input\":\"return 1;\",\"status\":\"completed\"}]}");
+        var original = Encoding.UTF8.GetString(originalBytes);
+        var irBytes = Encoding.UTF8.GetBytes(
+            "{\"id\":\"resp_ct2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gpt-5.3-codex\",\"stop_reason\":\"tool_use\","
+            + "\"content\":[{\"type\":\"tool_use\",\"id\":\"call_exec\",\"name\":\"exec\",\"input\":\"return 1;\",\"bridge_input_is_grammar_text\":true,\"bridge_custom_tool_call_id\":\"ctc_real123\"}],"
+            + "\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}");
+
+        var (status, body) = await Invoke(ValidRequest, ctx =>
+        {
+            ctx.Response.Status = StatusCodes.Status200OK;
+            ctx.Response.Mode = ResponseMode.Buffered;
+            ctx.Response.BufferedBody = irBytes;
+            ctx.Response.InitialBufferedIrBody = irBytes;
+            ctx.Response.BufferedResponsesWireBody = originalBytes;
+            ctx.Response.Headers["Content-Type"] = "application/json";
+        });
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Equal(original, body);   // byte-identical passthrough preserved
+    }
+
+    [Fact]
     public async Task BufferedUpstreamError_PropagatesStatusAndBody()
     {
         // A 4xx from Copilot is buffered (error envelope) and passed through with

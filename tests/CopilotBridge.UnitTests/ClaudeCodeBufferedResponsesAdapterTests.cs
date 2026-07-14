@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
+using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -131,5 +132,87 @@ public class ClaudeCodeBufferedResponsesAdapterTests
         using var doc = JsonDocument.Parse(output);
         var tool = Assert.Single(doc.RootElement.GetProperty("content").EnumerateArray());
         Assert.Equal("return 1;", tool.GetProperty("input").GetString());
+    }
+
+    // ── custom_tool_call id round-trip (buffered) ────────────────────────────────
+    // Contract: Copilot's /responses requires the echoed custom_tool_call id to begin
+    // with `ctc`. Buffered T3 must carry the upstream `ctc_` id through the IR, and
+    // buffered T4 must re-emit an id that begins with `ctc` (never the old item_N).
+
+    private static byte[] BufferedT4(byte[] ir) =>
+        BufferedAnthropicToResponses.TryTranslate(ir)
+        ?? throw new Xunit.Sdk.XunitException("expected a successful IR message");
+
+    [Fact]
+    public void BufferedRoundTrip_RealCtcId_SurvivesToTheCodexFacingItem()
+    {
+        // Upstream custom_tool_call carries its real ctc_ id. Buffered T3 (into IR) then
+        // buffered T4 (back to Responses) MUST re-emit that exact id on the item — the
+        // value Copilot requires Codex to echo next turn.
+        var ir = Adapt("""
+        {"id":"resp_custom","object":"response","status":"completed","model":"gpt-5.6-sol",
+         "output":[{"type":"custom_tool_call","id":"ctc_0679bd5b187491ee","call_id":"call_exec","name":"exec","input":"return 1;"}]}
+        """);
+
+        var responses = BufferedT4(ir);
+        using var doc = JsonDocument.Parse(responses);
+        var item = Assert.Single(doc.RootElement.GetProperty("output").EnumerateArray());
+        Assert.Equal("custom_tool_call", item.GetProperty("type").GetString());
+        Assert.Equal("ctc_0679bd5b187491ee", item.GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public void BufferedRoundTrip_NoCtcId_SynthesizesCtcPrefixedId()
+    {
+        // Upstream item id is an opaque non-ctc blob (or absent). Buffered T3 drops it;
+        // buffered T4 MUST synthesize a ctc-prefixed id, never emit item_N.
+        var ir = Adapt("""
+        {"id":"resp_custom","object":"response","status":"completed","model":"gpt-5.6-sol",
+         "output":[{"type":"custom_tool_call","id":"OPAQUEBLOB","call_id":"call_exec","name":"exec","input":"return 1;"}]}
+        """);
+
+        var responses = BufferedT4(ir);
+        using var doc = JsonDocument.Parse(responses);
+        var item = Assert.Single(doc.RootElement.GetProperty("output").EnumerateArray());
+        var id = item.GetProperty("id").GetString()!;
+        Assert.StartsWith("ctc", id, StringComparison.Ordinal);
+        Assert.DoesNotContain("item_", id, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BufferedT4_NonCtcMarker_IsRejected_FallsBackToSynthesizedCtcId()
+    {
+        // Defense in depth at the CONSUMPTION boundary: buffered T4 must enforce the
+        // `ctc` prefix on the marker itself. An IR tool_use block whose
+        // bridge_custom_tool_call_id is non-conforming ("item_1") must fall back to the
+        // synthesized ctc_ id, never emit the bad value — else the echo turn 400s.
+        var ir = Encoding.UTF8.GetBytes("""
+        {"type":"message","role":"assistant","model":"gpt-5.6-sol","stop_reason":"tool_use",
+         "content":[{"type":"tool_use","id":"call_exec","name":"exec","input":"return 1;",
+                     "bridge_input_is_grammar_text":true,"bridge_custom_tool_call_id":"item_1"}],
+         "usage":{"input_tokens":1,"output_tokens":1}}
+        """);
+
+        var responses = BufferedT4(ir);
+        using var doc = JsonDocument.Parse(responses);
+        var item = Assert.Single(doc.RootElement.GetProperty("output").EnumerateArray());
+        var id = item.GetProperty("id").GetString()!;
+        Assert.StartsWith("ctc", id, StringComparison.Ordinal);
+        Assert.NotEqual("item_1", id);
+    }
+
+    [Fact]
+    public async Task BufferedCustomToolCallIdMarker_IsRemovedAtClaudeEdge()
+    {
+        // The bridge_custom_tool_call_id marker T3 stamps on the tool_use block must be
+        // scrubbed before reaching claude.exe on the CC→gpt buffered route.
+        var ir = Adapt("""
+        {"id":"resp_custom","object":"response","status":"completed","model":"gpt-5.6-sol",
+         "output":[{"type":"custom_tool_call","id":"ctc_0679bd5b187491ee","call_id":"call_exec","name":"exec","input":"return 1;"}]}
+        """);
+        Assert.Contains("bridge_custom_tool_call_id", Encoding.UTF8.GetString(ir));
+
+        var output = await Adapter.AdaptBufferedAsync(ir, default);
+        Assert.DoesNotContain("bridge_custom_tool_call_id", Encoding.UTF8.GetString(output));
     }
 }
