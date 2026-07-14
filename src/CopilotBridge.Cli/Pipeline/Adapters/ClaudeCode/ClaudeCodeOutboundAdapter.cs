@@ -144,8 +144,11 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
 
     /// <summary>
     /// Return the event unchanged unless its data carries a bridge marker; if it does,
-    /// re-emit the same event with the two marker keys removed from the tool_use
-    /// content_block. Byte-identical (same instance) for every marker-free event.
+    /// re-emit the same event with the marker removed. Two shapes are scrubbed: the
+    /// grammar/namespace markers nested in a <c>content_block_start</c>'s
+    /// <c>tool_use</c> content_block, and the <c>bridge_custom_tool_call_id</c> marker
+    /// carried as a top-level key on <c>content_block_stop</c>. Byte-identical (same
+    /// instance) for every marker-free event.
     /// </summary>
     private SseItem<string> ScrubMarkers(SseItem<string> evt)
     {
