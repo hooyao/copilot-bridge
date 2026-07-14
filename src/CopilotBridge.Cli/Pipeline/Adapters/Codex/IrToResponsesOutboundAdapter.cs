@@ -87,10 +87,12 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
             // can carry reasoning/encrypted_content and fields the IR does not model).
             // The one exception: a custom_tool_call whose id is not `ctc`-prefixed would,
             // passed through unchanged, be echoed next turn and 400 ("Expected an ID
-            // that begins with 'ctc'"). So SURGICALLY rewrite only that id in place —
-            // every other item, property, and unknown field is copied byte-for-byte.
-            // The far more common no-custom-tool / already-`ctc` case returns the exact
-            // original bytes (no rewrite).
+            // that begins with 'ctc'"). So rewrite only that id in place, preserving
+            // every other item/property/unknown field with full VALUE fidelity (that
+            // rewrite branch re-serializes, so insignificant whitespace/escaping in
+            // untouched fields may be normalized — semantic, not byte-for-byte; Codex
+            // re-parses the JSON regardless). The far more common no-custom-tool /
+            // already-`ctc` case returns the exact original bytes, byte-for-byte.
             var patched = RewriteNonCtcCustomToolCallIds(original);
             _log.LogDebug("adapter {Name}: buffered Responses byte-preserving passthrough bytes={Bytes}{Note}",
                 Name, patched.Length, ReferenceEquals(patched, original) ? "" : " (custom_tool_call id rewritten to ctc)");
