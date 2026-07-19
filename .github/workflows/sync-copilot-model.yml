@@ -1,6 +1,9 @@
 name: Sync Copilot model
 
 on:
+  push:
+    branches:
+      - copilot/auth-copilot-action
   workflow_dispatch:
     inputs:
       model:
