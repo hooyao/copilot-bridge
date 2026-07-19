@@ -75,6 +75,46 @@ public class CopilotGapProbes
     }
 
     /// <summary>
+    /// Probes Anthropic's <c>web_search_20250305</c> server tool against the
+    /// <b>native</b> <c>api.anthropic.com</c> endpoint. The Copilot-side probe
+    /// above confirmed that Copilot rejects the tool with HTTP 400
+    /// <c>unsupported_value</c> at the gateway level. This test answers the
+    /// complementary question: does the feature work on the native API so we
+    /// can characterise what a working response looks like (and decide whether
+    /// the bridge could ever relay it)?
+    ///
+    /// Requires <c>AnthropicApiKey</c> in <c>appsettings.local.json</c>;
+    /// skips cleanly if the key is absent.
+    /// </summary>
+    [Theory]
+    [InlineData("claude-sonnet-4-6")]
+    [InlineData("claude-haiku-4-5")]
+    public async Task WebSearchTool_ProbeNativeAnthropicAcceptance(string model)
+    {
+        if (LocalConfig.AnthropicApiKey is null)
+        {
+            _output.WriteLine("Skipped — AnthropicApiKey not set in appsettings.local.json");
+            return;
+        }
+
+        var payload = $$"""
+          {
+            "model": "{{model}}",
+            "messages": [{ "role": "user", "content": "What was the top story on Hacker News today? Use web_search." }],
+            "max_tokens": 512,
+            "tools": [
+              { "type": "web_search_20250305", "name": "web_search", "max_uses": 1 }
+            ]
+          }
+          """;
+
+        using var client = new AnthropicNativeClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[{model}] HTTP {(int)status} {status}");
+        _output.WriteLine(PlaygroundClient.PrettyJson(body));
+    }
+
+    /// <summary>
     /// Probes <c>GET /v1/files</c>. Claude Code's <c>filesApi.ts</c> uses
     /// raw axios (not the SDK) to upload/download files via
     /// <c>ANTHROPIC_BASE_URL</c>, so these requests would land at the bridge
