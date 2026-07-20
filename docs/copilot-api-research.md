@@ -1425,4 +1425,22 @@ Prompted by GitHub's changelog *"[Improved web search in Copilot on github.com](
 - `copilot-search-a` returns `400 model_not_supported` on all three inference surfaces — `/v1/messages`, `/chat/completions`, `/responses` (`NativeSearchModel_ProbeEndpointAcceptance`).
 - Trying alternate `Copilot-Integration-Id`s (`NativeSearchModel_ProbeAlternateIntegrationIds`) doesn't unlock it: `vscode-chat` & `code-oss` → `model_not_supported`; `vscode-nl` → not even whitelisted (`model_not_available_for_integrator`, smaller list); `copilot-search` / `vscode-chat-dev` → `unknown Copilot-Integration-Id`. The id is authorized-but-unserved on the widest integrator and absent everywhere else — i.e. a backend-internal target Copilot's own agent loop routes to, never exposed as a callable CAPI model.
 
-**Bridge action: none.** Nothing new is reachable via the Anthropic (`/cc`) path — keep the §16.8 friendly-400 + MCP guidance. If a "web search on Copilot" feature is ever wanted for a Codex-backed model, the wire-truth path is `/responses` with a `{"type":"web_search"}` tool (200, real search) — but that is a Codex-backend capability, not something the Claude Code `/cc` route can offer, and no work is proposed here. Probes retained in `CopilotGapProbes.cs` for re-verification.
+**Bridge action, by client route:**
+- **Anthropic (`/cc`) — none.** Nothing new is reachable via the Anthropic path; keep the §16.8
+  friendly-400 + MCP guidance. The `copilot-search-*` ids are backend-internal, and Claude Code's
+  `web_search_*` server tool is still rejected upstream.
+- **Codex (`/codex/responses`) — IMPLEMENTED (PR #49, 2026-07-20).** The wire-truth path is a
+  `{"type":"web_search"}` tool on `/responses` (200, real server-side search), which a
+  non-responses-lite gpt model (gpt-5.5 / 5.4 / 5.2 — NOT the gpt-5.6 family, which codex 0.144.6
+  marks `use_responses_lite=true` and suppresses hosted tools for, client-side) emits by default.
+  The bridge's Codex response translation (T3/T4) previously SWALLOWED the `web_search_call`
+  lifecycle and mis-mapped the items to empty text; it now RELAYS them to codex via a
+  bridge-internal marker (`bridge_web_search_call` / `bridge_web_search_call_result`), rebuilt on
+  the Codex edge and scrubbed on the CC→gpt edge. See `docs/codex-implementation-design.md` §4 and
+  `CodexWebSearchRoundTripTests` / `CodexWebSearchHeadlessTests`.
+  - **Deferred:** `url_citation` annotation carry — no real codex web-search run has been observed
+    emitting them (the annotations seen in this section's direct `/responses` probes used a
+    different prompt shape than codex's site:-scoped search). Revisit if a real codex capture
+    exhibits them; the repo does not guess wire shape.
+
+Probes retained in `CopilotGapProbes.cs` for re-verification.

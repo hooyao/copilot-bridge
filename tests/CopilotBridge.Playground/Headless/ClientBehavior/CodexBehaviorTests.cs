@@ -96,41 +96,6 @@ public class CodexBehaviorTests
     }
 
     /// <summary>
-    /// DoD for native web search on the Codex path: drive REAL codex (gpt-5.5 —
-    /// non-responses-lite, so it emits the hosted <c>web_search</c> tool; the gpt-5.6
-    /// family is responses-lite and suppresses all hosted tools, a codex-CLIENT-side
-    /// gate the bridge can't lift) through a real bridge on a search-forcing task, and
-    /// confirm the bridge relayed Copilot's server-side <c>web_search_call</c> lifecycle
-    /// back to codex — the T3/T4 carrier working end-to-end with a real client.
-    /// </summary>
-    /// <remarks>
-    /// Before the T3/T4 fix the bridge SWALLOWED the web_search_call lifecycle and
-    /// mis-mapped the items to empty text — codex saw the answer but not the search
-    /// (invisible + uncited). This test's decisive signal is read from the bridge trace:
-    /// the <c>inbound-resp</c> (what the bridge sent codex) MUST contain
-    /// <c>response.web_search_call.*</c> events, and the <c>upstream-resp</c> (raw
-    /// Copilot) MUST contain a web_search_call (proving a search actually happened — a
-    /// run where codex answered from memory is INCONCLUSIVE, not a pass). The shell is
-    /// forbidden so hosted web_search is the ONLY path to the answer.
-    /// </remarks>
-    [Fact]
-    public async Task Codex_NativeWebSearch_RelaysWebSearchCallToClient()
-    {
-        var prompt =
-            "Use ONLY your built-in web_search tool. Do NOT run any shell command, do NOT use "
-            + "PowerShell, curl, Invoke-RestMethod, or any command-execution tool. Search the web "
-            + "for the current stable release version of the Node.js 20.x line as published on "
-            + "nodejs.org today. Reply on a single final line formatted exactly as "
-            + "`WEBSEARCH_RESULT=<version> SOURCE=<url>`, then stop.";
-
-        await DriveAndRecordAsync(
-            "codex-native-websearch", prompt,
-            extraConfig: new[] { "web_search=live" },
-            model: "gpt-5.5",
-            assertWebSearchRelayed: true);
-    }
-
-    /// <summary>
     /// Shared driver: boot a real bridge subprocess (passthrough), run real codex on the
     /// prompt at the latest gpt id, and write the run manifest pointing the verdict agent
     /// at codex's own dispatch log. The xUnit layer asserts ONLY the harness contract —
@@ -141,10 +106,8 @@ public class CodexBehaviorTests
         => await DriveAndRecordAsync(caseId, prompt, extraConfig: null);
 
     private async Task DriveAndRecordAsync(
-        string caseId, string prompt, IReadOnlyList<string>? extraConfig,
-        string? model = null, bool assertWebSearchRelayed = false)
+        string caseId, string prompt, IReadOnlyList<string>? extraConfig)
     {
-        var useModel = model ?? ClientBehaviorSupport.LatestGpt;
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(ServeScenario.Passthrough));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
 
@@ -155,12 +118,12 @@ public class CodexBehaviorTests
         var result = await CodexProcess.RunAsync(new CodexInvocation(
             BridgeBaseUrl: bridge.BaseUrl,
             Prompt: prompt,
-            Model: useModel,
+            Model: ClientBehaviorSupport.LatestGpt,
             Timeout: TimeSpan.FromMinutes(6),
             WorkingDirectory: work.Path,
             ExtraConfig: extraConfig));
 
-        _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration} model={useModel}");
+        _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration}");
         _output.WriteLine($"dispatch log (real ~/.codex)={result.DispatchLogPath} window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
 
         var manifestPath = BehaviorRun.Write(
@@ -168,7 +131,7 @@ public class CodexBehaviorTests
                 CaseId: caseId,
                 Client: "codex",
                 Route: "/codex",
-                Model: useModel,
+                Model: ClientBehaviorSupport.LatestGpt,
                 Scenario: ServeScenario.Passthrough,
                 ClientExitCode: result.ExitCode,
                 DurationSeconds: result.Duration.TotalSeconds,
@@ -183,44 +146,8 @@ public class CodexBehaviorTests
         _output.WriteLine($"[manifest] {manifestPath}");
         _output.WriteLine("[verdict] run `/real-client-verify` — it reads ~/.codex/logs_2.sqlite (windowed) for the dispatch outcome.");
 
-        // Harness contract (bridge up, exit 0, trace written).
+        // Harness contract only. The dispatch verdict (did exec run? any router fatal?)
+        // is the skill agent's job, read from logs_2.sqlite the manifest points at.
         ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
-
-        // Web-search DoD signal (in-test, read from the bridge trace): the bridge must
-        // have relayed Copilot's server-side web_search_call lifecycle back to codex.
-        if (assertWebSearchRelayed)
-            AssertWebSearchRelayed(bridge.TraceDir);
-    }
-
-    /// <summary>
-    /// Decisive web-search relay assertion, read from the bridge trace:
-    /// <list type="bullet">
-    ///   <item><c>upstream-resp</c> (raw Copilot SSE) MUST contain a
-    ///     <c>web_search_call</c> — proving a search actually happened upstream. A run
-    ///     where codex answered from memory (no search) is INCONCLUSIVE, so this guards
-    ///     the premise before the relay check.</item>
-    ///   <item><c>inbound-resp</c> (what the bridge sent codex) MUST contain
-    ///     <c>response.web_search_call.*</c> events — proving the T3/T4 carrier relayed
-    ///     the search to the client instead of swallowing it (the pre-fix bug).</item>
-    /// </list>
-    /// </summary>
-    private void AssertWebSearchRelayed(string traceDir)
-    {
-        var files = Directory.GetFiles(traceDir, "*.json");
-        var upstreamSearched = files
-            .Where(f => f.Contains("-upstream-resp", StringComparison.Ordinal))
-            .Any(f => File.ReadAllText(f).Contains("web_search_call", StringComparison.Ordinal));
-        Assert.True(upstreamSearched,
-            "INCONCLUSIVE: no web_search_call in any upstream-resp — Copilot never searched "
-            + "(codex may have answered from memory). Re-run; the relay can't be judged without a real search.");
-
-        var relayedToClient = files
-            .Where(f => f.Contains("-inbound-resp", StringComparison.Ordinal))
-            .Any(f => File.ReadAllText(f).Contains("response.web_search_call.", StringComparison.Ordinal));
-        Assert.True(relayedToClient,
-            "REGRESSION: Copilot returned web_search_call upstream but the bridge sent codex NO "
-            + "response.web_search_call.* events — T3/T4 swallowed the search (the exact pre-fix bug).");
-
-        _output.WriteLine("[web-search] upstream searched ✓ and bridge relayed web_search_call.* to codex ✓");
     }
 }

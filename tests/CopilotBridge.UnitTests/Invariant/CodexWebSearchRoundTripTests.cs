@@ -76,14 +76,27 @@ public class CodexWebSearchRoundTripTests
     {
         // The bug being fixed: T3 used to mis-map the web_search_call item to an empty
         // text block, so T4 emitted a bogus empty assistant message per search. After
-        // the fix, the codex-facing stream carries the web_search_call lifecycle
-        // (in_progress + completed) and NO empty-text message stands in for a search.
+        // the fix, the codex-facing stream carries the FULL web_search_call lifecycle
+        // (in_progress + searching + completed) and NO empty-text message stands in for
+        // a search.
         var roundTripped = RunT3ThenT4(LoadFixture());
 
-        var inProgress = roundTripped.Count(e => EventType(e) == "response.web_search_call.in_progress");
-        var completedLc = roundTripped.Count(e => EventType(e) == "response.web_search_call.completed");
-        Assert.Equal(ExpectedWebSearchCalls, inProgress);
-        Assert.Equal(ExpectedWebSearchCalls, completedLc);
+        // Full lifecycle — all three phases, each once per search. Asserting only two
+        // of the three would let a dropped `searching` phase pass unnoticed.
+        Assert.Equal(ExpectedWebSearchCalls,
+            roundTripped.Count(e => EventType(e) == "response.web_search_call.in_progress"));
+        Assert.Equal(ExpectedWebSearchCalls,
+            roundTripped.Count(e => EventType(e) == "response.web_search_call.searching"));
+        Assert.Equal(ExpectedWebSearchCalls,
+            roundTripped.Count(e => EventType(e) == "response.web_search_call.completed"));
+
+        // The core regression guard: NO completed message item may be an EMPTY assistant
+        // message — that empty text block is exactly what a swallowed web_search_call
+        // used to become. (The one real message item in the fixture carries the answer
+        // text; the 7 searches must NOT add empty ones.)
+        var emptyMessages = FindCompletedMessageItems(roundTripped)
+            .Count(m => string.IsNullOrEmpty(MessageText(m)));
+        Assert.Equal(0, emptyMessages);
     }
 
     [Fact]
@@ -121,6 +134,33 @@ public class CodexWebSearchRoundTripTests
             Assert.DoesNotContain(StartMarker, e.Data, StringComparison.Ordinal);
             Assert.DoesNotContain(ResultMarker, e.Data, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public void CcToGpt_Buffered_Markers_ScrubbedBeforeReachingClaude()
+    {
+        // The BUFFERED CC-edge (ClaudeCodeOutboundAdapter.AdaptBufferedAsync) also scrubs
+        // the web-search marker — but the streaming test above only exercises
+        // AdaptStreamAsync. Without this, a buffered marker leak to claude.exe could
+        // regress unnoticed (the buffered T3→T4 test exercises Codex T4, not the CC edge).
+        // Build a buffered T3 body carrying bridge_web_search_call, feed it through the
+        // buffered CC edge, and assert both marker names are gone.
+        const string responsesObject =
+            "{\"object\":\"response\",\"status\":\"completed\",\"id\":\"resp_1\",\"model\":\"gpt-5.5\","
+            + "\"usage\":{\"input_tokens\":1,\"output_tokens\":1},"
+            + "\"output\":[{\"type\":\"web_search_call\",\"id\":\"ws_1\",\"status\":\"completed\","
+            + "\"action\":{\"type\":\"open_page\",\"url\":\"https://nodejs.org/dist/latest-v20.x/\"}},"
+            + "{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}]}";
+        var bufferedIr = BufferedResponsesToAnthropic.TryTranslate(Enc(responsesObject));
+        Assert.NotNull(bufferedIr);
+        // Sanity: the marker is really in the buffered IR body (else the scrub is a no-op).
+        Assert.Contains(StartMarker, System.Text.Encoding.UTF8.GetString(bufferedIr!), StringComparison.Ordinal);
+
+        var adapter = NewClaudeAdapter();
+        var scrubbed = adapter.AdaptBufferedAsync(bufferedIr!, default).AsTask().GetAwaiter().GetResult();
+        var scrubbedText = System.Text.Encoding.UTF8.GetString(scrubbed);
+        Assert.DoesNotContain(StartMarker, scrubbedText, StringComparison.Ordinal);
+        Assert.DoesNotContain(ResultMarker, scrubbedText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -224,6 +264,33 @@ public class CodexWebSearchRoundTripTests
                 found.Add(item);
         }
         return found;
+    }
+
+    private static List<JsonObject> FindCompletedMessageItems(List<SseItem<string>> stream)
+    {
+        var found = new List<JsonObject>();
+        foreach (var e in stream)
+        {
+            JsonObject node;
+            try { node = JsonNode.Parse(e.Data)!.AsObject(); }
+            catch { continue; }
+            if (node["type"]?.GetValue<string>() != "response.output_item.done") continue;
+            if (node["item"] is JsonObject item
+                && item["type"]?.GetValue<string>() == "message")
+                found.Add(item);
+        }
+        return found;
+    }
+
+    /// <summary>Concatenated output_text of a message item (empty when it carries none).</summary>
+    private static string MessageText(JsonObject messageItem)
+    {
+        if (messageItem["content"] is not JsonArray content) return "";
+        var sb = new System.Text.StringBuilder();
+        foreach (var part in content)
+            if (part?["type"]?.GetValue<string>() == "output_text")
+                sb.Append(part["text"]?.GetValue<string>() ?? "");
+        return sb.ToString();
     }
 
     private static string? EventType(SseItem<string> e)
