@@ -198,6 +198,38 @@ public class CodexWebSearchRoundTripTests
 
     private static byte[] Enc(string s) => System.Text.Encoding.UTF8.GetBytes(s);
 
+    [Fact]
+    public void T4_InterruptedSearch_NoCompletedMarker_DoesNotFabricateCompletion()
+    {
+        // Contract: when a web-search block is closed WITHOUT a completed item — the
+        // content_block_stop carries NO bridge_web_search_call_result (T3.Flush closing an
+        // open block on response.incomplete, i.e. an interrupted search) — T4 must NOT tell
+        // codex the search completed. It must emit neither response.web_search_call.completed
+        // nor an output_item.done whose item claims status:"completed". Fabricating a
+        // completed lifecycle from the in-progress item is a protocol lie (codex would render
+        // a finished search that never finished).
+        var ir = new List<SseItem<string>>
+        {
+            new("{\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"role\":\"assistant\",\"content\":[]}}", "message_start"),
+            // Web-search block opened with the in-progress item (status:in_progress, no action)…
+            new("{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\","
+                + "\"bridge_web_search_call\":{\"type\":\"web_search_call\",\"id\":\"ws_1\",\"status\":\"in_progress\"}}}", "content_block_start"),
+            // …then closed by a PLAIN stop (no bridge_web_search_call_result) — the interrupted path.
+            new("{\"type\":\"content_block_stop\",\"index\":0}", "content_block_stop"),
+            new("{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}", "message_delta"),
+            new("{\"type\":\"message_stop\"}", "message_stop"),
+        };
+        var t4 = new AnthropicToResponsesStream("gpt-5.5");
+        var outp = new List<SseItem<string>>();
+        foreach (var e in ir) outp.AddRange(t4.Translate(e));
+        outp.AddRange(t4.Flush());
+
+        // No fabricated completion event.
+        Assert.DoesNotContain(outp, e => EventType(e) == "response.web_search_call.completed");
+        // No output_item.done claiming the search completed.
+        Assert.Empty(FindWebSearchCallItems(outp, status: "completed"));
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────────
 
     private static List<SseItem<string>> LoadFixture()

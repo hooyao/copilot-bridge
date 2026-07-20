@@ -513,25 +513,43 @@ internal sealed class AnthropicToResponsesStream
         if (_currentBlockType is null) yield break;
         if (_blockIsWebSearch)
         {
-            // Close the web_search_call lifecycle: .searching → .completed →
-            // output_item.done with the COMPLETED item (carrying its `action` — the
-            // search queries / opened url — which T3 captured on the block-stop marker
-            // bridge_web_search_call_result). Fall back to the in-progress item if the
-            // marker is absent (older IR / buffered edge). The completed item joins
-            // _completedItems so it appears in response.completed's output[].
-            var completedItem =
+            // Close the web_search_call lifecycle. The completed item (carrying its
+            // `action` — search queries / opened url) rides out on T3's block-stop
+            // marker bridge_web_search_call_result. Two cases:
+            //  • marker PRESENT (the normal output_item.done path) → emit the full
+            //    lifecycle .searching → .completed → output_item.done with the real
+            //    completed item.
+            //  • marker ABSENT → the search block was closed WITHOUT a completed item
+            //    (T3.Flush closing an open block on response.incomplete: an interrupted
+            //    search). Do NOT fabricate `.completed` + an output_item.done that
+            //    claims status:"completed"/"in_progress" as done — that would tell Codex
+            //    a search finished that did not. Emit output_item.done with the item in
+            //    its ACTUAL (in-progress) state and NO .completed event. Codex tolerates
+            //    a partial web_search_call (its parser degrades a missing/partial action
+            //    to `Other`), so an honest interrupted item is safe; a fabricated
+            //    completion is not.
+            var hasCompleted =
                 root.ValueKind == JsonValueKind.Object
                 && root.TryGetProperty("bridge_web_search_call_result", out var wsDone)
-                && wsDone.ValueKind == JsonValueKind.Object
-                    ? wsDone.GetRawText()
-                    : _webSearchItemAdded;
-            yield return Ev("response.web_search_call.searching",
-                $"{{\"type\":\"response.web_search_call.searching\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item_id\":{Enc(_itemId)}}}");
-            yield return Ev("response.web_search_call.completed",
-                $"{{\"type\":\"response.web_search_call.completed\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item_id\":{Enc(_itemId)}}}");
-            _completedItems.Add(completedItem);
-            yield return Ev("response.output_item.done",
-                $"{{\"type\":\"response.output_item.done\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{completedItem}}}");
+                && wsDone.ValueKind == JsonValueKind.Object;
+            if (hasCompleted)
+            {
+                var completedItem = root.GetProperty("bridge_web_search_call_result").GetRawText();
+                yield return Ev("response.web_search_call.searching",
+                    $"{{\"type\":\"response.web_search_call.searching\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item_id\":{Enc(_itemId)}}}");
+                yield return Ev("response.web_search_call.completed",
+                    $"{{\"type\":\"response.web_search_call.completed\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item_id\":{Enc(_itemId)}}}");
+                _completedItems.Add(completedItem);
+                yield return Ev("response.output_item.done",
+                    $"{{\"type\":\"response.output_item.done\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{completedItem}}}");
+            }
+            else if (_webSearchItemAdded.Length > 0)
+            {
+                // Interrupted search: close the item as-is (in-progress), no .completed.
+                _completedItems.Add(_webSearchItemAdded);
+                yield return Ev("response.output_item.done",
+                    $"{{\"type\":\"response.output_item.done\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{_webSearchItemAdded}}}");
+            }
             _currentBlockType = null;
             _blockIsWebSearch = false;
             _webSearchItemAdded = "";

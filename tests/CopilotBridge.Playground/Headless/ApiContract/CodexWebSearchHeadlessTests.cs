@@ -65,9 +65,12 @@ public class CodexWebSearchHeadlessTests : IClassFixture<BridgeFixture>
             // non-responses-lite model then emits the {type:web_search} tool.
             ExtraConfig: new[] { "web_search=live" }));
 
-        // Poll (bounded) until the async BridgeIoSink flush settles on the signal we
-        // assert — an upstream web_search_call — or the deadline passes.
-        var entries = await PollUntilUpstreamSearchedAsync(reader, TimeSpan.FromSeconds(15));
+        // Poll (bounded) until the async BridgeIoSink flush settles on BOTH signals we
+        // assert — the upstream web_search_call AND the inbound response.web_search_call.*
+        // relay — or the deadline passes. Waiting only on upstream is a race: the endpoint
+        // enqueues inbound-resp AFTER upstream-resp and the sink writes them asynchronously,
+        // so a poll that stops at upstream can observe the relay events not-yet-flushed.
+        var entries = await PollUntilRelaySettledAsync(reader, TimeSpan.FromSeconds(20));
 
         _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration} model=gpt-5.5");
         _output.WriteLine($"bridge /responses entries: {entries.Count}");
@@ -115,7 +118,7 @@ public class CodexWebSearchHeadlessTests : IClassFixture<BridgeFixture>
             ? evs.Select(ev => ev?["event"]?.GetValue<string>() ?? "").Where(n => n.Length > 0)
             : Array.Empty<string>();
 
-    private static async Task<IReadOnlyList<BridgeLogEntry>> PollUntilUpstreamSearchedAsync(
+    private static async Task<IReadOnlyList<BridgeLogEntry>> PollUntilRelaySettledAsync(
         BridgeLogReader reader, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
@@ -123,7 +126,13 @@ public class CodexWebSearchHeadlessTests : IClassFixture<BridgeFixture>
         while (DateTime.UtcNow < deadline)
         {
             entries = reader.ReadNew();
-            if (entries.Any(e => RawUpstreamSse(e).Contains("web_search_call", StringComparison.Ordinal)))
+            var upstreamSearched = entries.Any(e =>
+                RawUpstreamSse(e).Contains("web_search_call", StringComparison.Ordinal));
+            var relayed = entries.Any(e =>
+                InboundEventNames(e).Any(n => n.StartsWith("response.web_search_call.", StringComparison.Ordinal)));
+            // Leave only once BOTH the upstream search and its inbound relay are flushed,
+            // so the assertions below never race the async sink writing inbound-resp.
+            if (upstreamSearched && relayed)
                 break;
             await Task.Delay(500);
         }
