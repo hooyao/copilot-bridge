@@ -103,6 +103,10 @@ public class CodexBehaviorTests
     /// job from <c>~/.codex/logs_2.sqlite</c>.
     /// </summary>
     private async Task DriveAndRecordAsync(string caseId, string prompt)
+        => await DriveAndRecordAsync(caseId, prompt, extraConfig: null);
+
+    private async Task DriveAndRecordAsync(
+        string caseId, string prompt, IReadOnlyList<string>? extraConfig)
     {
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(ServeScenario.Passthrough));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
@@ -116,7 +120,8 @@ public class CodexBehaviorTests
             Prompt: prompt,
             Model: ClientBehaviorSupport.LatestGpt,
             Timeout: TimeSpan.FromMinutes(6),
-            WorkingDirectory: work.Path));
+            WorkingDirectory: work.Path,
+            ExtraConfig: extraConfig));
 
         _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration}");
         _output.WriteLine($"dispatch log (real ~/.codex)={result.DispatchLogPath} window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");

@@ -9,6 +9,9 @@ internal static class BufferedAnthropicToResponses
     private const string GrammarMarker = "bridge_input_is_grammar_text";
     private const string NamespaceMarker = "bridge_tool_namespace";
     private const string CustomToolCallIdMarker = "bridge_custom_tool_call_id";
+    // A text block stamped with this marker is a hosted web_search_call carrier (see
+    // buffered T3): re-emit it as a web_search_call output item, not an empty message.
+    private const string WebSearchMarker = "bridge_web_search_call";
 
     public static byte[]? TryTranslate(byte[] body)
     {
@@ -73,6 +76,16 @@ internal static class BufferedAnthropicToResponses
 
     private static void WriteTextItem(Utf8JsonWriter writer, JsonElement block, int index)
     {
+        // A text block carrying the web-search marker is a hosted web_search_call
+        // carrier — re-emit the original web_search_call output item verbatim (with its
+        // `action`), not an empty assistant message.
+        if (block.TryGetProperty(WebSearchMarker, out var wsItem)
+            && wsItem.ValueKind == JsonValueKind.Object)
+        {
+            wsItem.WriteTo(writer);
+            return;
+        }
+
         var text = ReadString(block, "text") ?? throw InvalidIr();
         writer.WriteStartObject();
         writer.WriteString("type", "message");

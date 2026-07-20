@@ -1411,3 +1411,36 @@ HTTP 400 Bad Request
 The message points users at the supported alternative: **MCP servers**. Claude Code's MCP loader is transport-agnostic — stdio, SSE, http — and the bridge sees MCP-namespaced tools (`mcp__<server>__<tool>`) as ordinary `tools[]` entries with no special handling. Verified end-to-end by `tests/CopilotBridge.Playground/Headless/McpToolUseTests.cs`: a stdio echo MCP server, Claude Code via `--mcp-config`, sonnet-4.6 model, full `tool_use → tool_result → final text` round-trip with the canary string reaching Claude Code's stdout.
 
 Implementation: `src/CopilotBridge.Cli/Endpoints/ClaudeCode/ClaudeCodeMessagesEndpoint.cs` runs `TryGetUnsupportedServerTool` immediately after deserializing the request body. The `Tool.Type` field was added to the DTO so this check can read the discriminator. Pipeline + upstream are never invoked for rejected requests. Verified by `WebSearchRejectionTests` (both `web_search_20250305` and `web_search_20260209`).
+
+### 16.9 "Model native search" recheck: Anthropic path still 400s; the reachable path is gpt `/responses` + `web_search` (2026-07-19)
+
+Prompted by GitHub's changelog *"[Improved web search in Copilot on github.com](https://github.blog/changelog/2026-02-25-improved-web-search-in-copilot-on-github-com/)"* (2026-02-25), whose opt-out setting is worded exactly **"Copilot can search the web using model native search"** — the question was whether Anthropic's server-side web search now works through Copilot's native `/v1/messages`. Re-probed live; three independent findings:
+
+**① Anthropic `web_search_*` is still rejected — no change from §16.8.** `CopilotGapProbes.WebSearchTool_ProbeCopilotAcceptance` against `claude-haiku-4.5`, `claude-sonnet-4.6`, `claude-opus-4.7` all return `400 unsupported_value` / *"The use of the web search tool is not supported."* The §16.8 friendly-400 guard remains correct. **Claude Code's built-in `WebSearch` still cannot work over Copilot.**
+
+**② The changelog feature is the MODEL's own built-in search on the gpt/Codex family, surfaced via `/responses` + a `web_search` tool — and it genuinely works.** `CopilotGapProbes.GptResponses_WebSearchTool_ProbeNativeSearch` posts `{"model":"gpt-5.6-sol"|"gpt-5.5", "input":"…current events…", "tools":[{"type":"web_search"}]}` to `/responses` → **200 OK**, and the model actually executes live search: the output stream carries `web_search_call` items (`action.type: open_page`/`search` with real URLs + queries), and the final `output_text` message carries `url_citation` annotations pointing at fetched pages, with fresh real-world content (verified: top-HN-story-today answers with correct current data). This matches the changelog exactly — "the model's built-in web search", GPT-5.x/Codex family. It is an **OpenAI-Responses tool**, distinct from Anthropic's server tool: `{"type":"web_search"}` (no date suffix, on `/responses`) works; `{"type":"web_search_20250305"}` (on `/v1/messages`) does not.
+
+**③ The `copilot-search-*` / `exec-agent-*` ids are internal orchestration, unreachable by any client surface.** An invalid-model request leaks Copilot's per-integrator model whitelist via `model_not_available_for_integrator`; on `vscode-chat` that list now includes `copilot-search-a/b/c` and `exec-agent-a/b/c`. But they are **not** first-class:
+- `GET /models` enumerates 39 models; **none** of the `copilot-search-*` / `exec-agent-*` ids appear (no capabilities/endpoint block).
+- `copilot-search-a` returns `400 model_not_supported` on all three inference surfaces — `/v1/messages`, `/chat/completions`, `/responses` (`NativeSearchModel_ProbeEndpointAcceptance`).
+- Trying alternate `Copilot-Integration-Id`s (`NativeSearchModel_ProbeAlternateIntegrationIds`) doesn't unlock it: `vscode-chat` & `code-oss` → `model_not_supported`; `vscode-nl` → not even whitelisted (`model_not_available_for_integrator`, smaller list); `copilot-search` / `vscode-chat-dev` → `unknown Copilot-Integration-Id`. The id is authorized-but-unserved on the widest integrator and absent everywhere else — i.e. a backend-internal target Copilot's own agent loop routes to, never exposed as a callable CAPI model.
+
+**Bridge action, by client route:**
+- **Anthropic (`/cc`) — none.** Nothing new is reachable via the Anthropic path; keep the §16.8
+  friendly-400 + MCP guidance. The `copilot-search-*` ids are backend-internal, and Claude Code's
+  `web_search_*` server tool is still rejected upstream.
+- **Codex (`/codex/responses`) — IMPLEMENTED (PR #49, 2026-07-20).** The wire-truth path is a
+  `{"type":"web_search"}` tool on `/responses` (200, real server-side search), which a
+  non-responses-lite gpt model (gpt-5.5 / 5.4 / 5.2 — NOT the gpt-5.6 family, which codex 0.144.6
+  marks `use_responses_lite=true` and suppresses hosted tools for, client-side) emits by default.
+  The bridge's Codex response translation (T3/T4) previously SWALLOWED the `web_search_call`
+  lifecycle and mis-mapped the items to empty text; it now RELAYS them to codex via a
+  bridge-internal marker (`bridge_web_search_call` / `bridge_web_search_call_result`), rebuilt on
+  the Codex edge and scrubbed on the CC→gpt edge. See `docs/codex-implementation-design.md` §4 and
+  `CodexWebSearchRoundTripTests` / `CodexWebSearchHeadlessTests`.
+  - **Deferred:** `url_citation` annotation carry — no real codex web-search run has been observed
+    emitting them (the annotations seen in this section's direct `/responses` probes used a
+    different prompt shape than codex's site:-scoped search). Revisit if a real codex capture
+    exhibits them; the repo does not guess wire shape.
+
+Probes retained in `CopilotGapProbes.cs` for re-verification.

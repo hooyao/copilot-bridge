@@ -268,6 +268,17 @@ internal sealed class AnthropicToResponsesStream
     // deterministic `ctc_`-synthesized _itemId, still prefix-conformant. Set at
     // block-stop, reset per block.
     private string _customToolCallId = "";
+    // True while the current block is a web_search_call carrier — a text block T3
+    // stamped with bridge_web_search_call. Such a block re-emits the Copilot
+    // server-tool lifecycle (output_item.added + web_search_call.in_progress/
+    // .searching/.completed + output_item.done) so codex sees the search it ran,
+    // instead of an empty text message. Reset per block.
+    private bool _blockIsWebSearch;
+    // The full web_search_call item JSON T3 carried on the block-start marker
+    // (bridge_web_search_call, status:in_progress at open) and later the completed
+    // item on the block-stop marker (bridge_web_search_call_result, with `action`).
+    // Re-emitted verbatim as the Codex-facing output item. Reset per block.
+    private string _webSearchItemAdded = "";
     private string _argsBuffer = "";
     private string _textBuffer = "";
     private string _stopReason = "end_turn";
@@ -392,6 +403,31 @@ internal sealed class AnthropicToResponsesStream
         _currentBlockType = blockType;
         _argsBuffer = "";
         _textBuffer = "";
+        _blockIsWebSearch = false;
+        _webSearchItemAdded = "";
+
+        // A web_search_call carrier: T3 opened a text block stamped with
+        // bridge_web_search_call (the in-progress item). Re-emit Copilot's server-tool
+        // lifecycle to codex — output_item.added(web_search_call) +
+        // web_search_call.in_progress — instead of a text message. The item's own id
+        // is preserved (codex keys the lifecycle events off it). The completed item
+        // (with `action`) rides out on OnBlockStop from bridge_web_search_call_result.
+        if (blockType == "text"
+            && cb.ValueKind == JsonValueKind.Object
+            && cb.TryGetProperty("bridge_web_search_call", out var wsItem)
+            && wsItem.ValueKind == JsonValueKind.Object)
+        {
+            _blockIsWebSearch = true;
+            _webSearchItemAdded = wsItem.GetRawText();
+            _itemId = wsItem.TryGetProperty("id", out var wid) && wid.ValueKind == JsonValueKind.String
+                ? wid.GetString() ?? ("item_" + _outputIndex)
+                : "item_" + _outputIndex;
+            yield return Ev("response.output_item.added",
+                $"{{\"type\":\"response.output_item.added\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{_webSearchItemAdded}}}");
+            yield return Ev("response.web_search_call.in_progress",
+                $"{{\"type\":\"response.web_search_call.in_progress\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item_id\":{Enc(_itemId)}}}");
+            yield break;
+        }
 
         if (blockType == "tool_use")
         {
@@ -475,6 +511,50 @@ internal sealed class AnthropicToResponsesStream
     private IEnumerable<SseItem<string>> OnBlockStop(JsonElement root = default)
     {
         if (_currentBlockType is null) yield break;
+        if (_blockIsWebSearch)
+        {
+            // Close the web_search_call lifecycle. The completed item (carrying its
+            // `action` — search queries / opened url) rides out on T3's block-stop
+            // marker bridge_web_search_call_result. Two cases:
+            //  • marker PRESENT (the normal output_item.done path) → emit the full
+            //    lifecycle .searching → .completed → output_item.done with the real
+            //    completed item.
+            //  • marker ABSENT → the search block was closed WITHOUT a completed item
+            //    (T3.Flush closing an open block on response.incomplete: an interrupted
+            //    search). Do NOT fabricate `.completed` + an output_item.done that
+            //    claims status:"completed"/"in_progress" as done — that would tell Codex
+            //    a search finished that did not. Emit output_item.done with the item in
+            //    its ACTUAL (in-progress) state and NO .completed event. Codex tolerates
+            //    a partial web_search_call (its parser degrades a missing/partial action
+            //    to `Other`), so an honest interrupted item is safe; a fabricated
+            //    completion is not.
+            var hasCompleted =
+                root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("bridge_web_search_call_result", out var wsDone)
+                && wsDone.ValueKind == JsonValueKind.Object;
+            if (hasCompleted)
+            {
+                var completedItem = root.GetProperty("bridge_web_search_call_result").GetRawText();
+                yield return Ev("response.web_search_call.searching",
+                    $"{{\"type\":\"response.web_search_call.searching\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item_id\":{Enc(_itemId)}}}");
+                yield return Ev("response.web_search_call.completed",
+                    $"{{\"type\":\"response.web_search_call.completed\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item_id\":{Enc(_itemId)}}}");
+                _completedItems.Add(completedItem);
+                yield return Ev("response.output_item.done",
+                    $"{{\"type\":\"response.output_item.done\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{completedItem}}}");
+            }
+            else if (_webSearchItemAdded.Length > 0)
+            {
+                // Interrupted search: close the item as-is (in-progress), no .completed.
+                _completedItems.Add(_webSearchItemAdded);
+                yield return Ev("response.output_item.done",
+                    $"{{\"type\":\"response.output_item.done\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{_webSearchItemAdded}}}");
+            }
+            _currentBlockType = null;
+            _blockIsWebSearch = false;
+            _webSearchItemAdded = "";
+            yield break;
+        }
         if (_currentBlockType == "tool_use")
         {
             // Lift the real upstream ctc_ id T3 captured (rode out on the

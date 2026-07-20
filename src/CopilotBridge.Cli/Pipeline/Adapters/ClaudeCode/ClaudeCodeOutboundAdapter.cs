@@ -36,6 +36,13 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
     // custom_tool_call `ctc_` id, captured late from the input.* events). Same rule:
     // it exists only for T4 and must never reach a Claude Code client.
     private const string CustomToolCallIdMarker = "bridge_custom_tool_call_id";
+    // Stamped by T3 for the hosted web_search_call carrier: bridge_web_search_call
+    // is nested in the content_block on content_block_start (the in-progress item);
+    // bridge_web_search_call_result is a top-level key on content_block_stop (the
+    // completed item with its `action`). Both exist only for the Codex T4 to rebuild
+    // the web_search_call output item, and must never reach a Claude Code client.
+    private const string WebSearchMarker = "bridge_web_search_call";
+    private const string WebSearchResultMarker = "bridge_web_search_call_result";
 
     private readonly ILogger<ClaudeCodeOutboundAdapter> _log;
 
@@ -69,7 +76,8 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
     {
         if (body.AsSpan().IndexOf(GrammarMarkerBytes) < 0
             && body.AsSpan().IndexOf(NamespaceMarkerBytes) < 0
-            && body.AsSpan().IndexOf(CustomToolCallIdMarkerBytes) < 0)
+            && body.AsSpan().IndexOf(CustomToolCallIdMarkerBytes) < 0
+            && body.AsSpan().IndexOf(WebSearchMarkerBytes) < 0)
             return body;
 
         try
@@ -87,7 +95,9 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                 if (block.ValueKind == JsonValueKind.Object
                     && (block.TryGetProperty(GrammarMarker, out _)
                         || block.TryGetProperty(NamespaceMarker, out _)
-                        || block.TryGetProperty(CustomToolCallIdMarker, out _)))
+                        || block.TryGetProperty(CustomToolCallIdMarker, out _)
+                        || block.TryGetProperty(WebSearchMarker, out _)
+                        || block.TryGetProperty(WebSearchResultMarker, out _)))
                 {
                     found = true;
                     break;
@@ -121,7 +131,9 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                         {
                             if (!inner.NameEquals(GrammarMarker)
                                 && !inner.NameEquals(NamespaceMarker)
-                                && !inner.NameEquals(CustomToolCallIdMarker))
+                                && !inner.NameEquals(CustomToolCallIdMarker)
+                                && !inner.NameEquals(WebSearchMarker)
+                                && !inner.NameEquals(WebSearchResultMarker))
                                 inner.WriteTo(writer);
                         }
                         writer.WriteEndObject();
@@ -141,6 +153,9 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
     private static ReadOnlySpan<byte> GrammarMarkerBytes => "bridge_input_is_grammar_text"u8;
     private static ReadOnlySpan<byte> NamespaceMarkerBytes => "bridge_tool_namespace"u8;
     private static ReadOnlySpan<byte> CustomToolCallIdMarkerBytes => "bridge_custom_tool_call_id"u8;
+    // "bridge_web_search_call" is a prefix of "bridge_web_search_call_result", so this
+    // one span is a sufficient fast-filter for BOTH web-search markers.
+    private static ReadOnlySpan<byte> WebSearchMarkerBytes => "bridge_web_search_call"u8;
 
     /// <summary>
     /// Return the event unchanged unless its data carries a bridge marker; if it does,
@@ -165,7 +180,8 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
         // every non-content_block_start/stop event on the CC→gpt route.
         if (data.IndexOf(GrammarMarker, StringComparison.Ordinal) < 0
             && data.IndexOf(NamespaceMarker, StringComparison.Ordinal) < 0
-            && data.IndexOf(CustomToolCallIdMarker, StringComparison.Ordinal) < 0)
+            && data.IndexOf(CustomToolCallIdMarker, StringComparison.Ordinal) < 0
+            && data.IndexOf(WebSearchMarker, StringComparison.Ordinal) < 0)
             return evt;
 
         try
@@ -175,17 +191,19 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
             if (root.ValueKind != JsonValueKind.Object)
                 return evt;
 
-            // The bridge_custom_tool_call_id marker rides as a TOP-LEVEL property on
-            // content_block_stop (the other two are nested in content_block on start).
-            // Strip it there. GrammarMarker/NamespaceMarker are a substring of neither
-            // name, so this branch is unambiguous.
+            // Two bridge markers ride as TOP-LEVEL properties on content_block_stop:
+            // bridge_custom_tool_call_id and bridge_web_search_call_result (the other
+            // markers are nested in content_block on start). Strip whichever is present.
             if (root.TryGetProperty("type", out var evType)
                 && evType.ValueKind == JsonValueKind.String
                 && evType.GetString() == "content_block_stop")
             {
-                if (!root.TryGetProperty(CustomToolCallIdMarker, out _))
-                    return evt;   // substring matched a value, not the marker property
-                return new SseItem<string>(RewriteWithout(root, topLevelKey: CustomToolCallIdMarker), evt.EventType);
+                var hasCtc = root.TryGetProperty(CustomToolCallIdMarker, out _);
+                var hasWs = root.TryGetProperty(WebSearchResultMarker, out _);
+                if (!hasCtc && !hasWs)
+                    return evt;   // substring matched a value, not a marker property
+                var key = hasCtc ? CustomToolCallIdMarker : WebSearchResultMarker;
+                return new SseItem<string>(RewriteWithout(root, topLevelKey: key), evt.EventType);
             }
 
             if (!root.TryGetProperty("content_block", out var cb)
@@ -197,7 +215,9 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
             // "bridge_tool_namespace" in prose). Only rewrite when the content_block
             // actually has one of the markers as a PROPERTY — otherwise return the
             // original event so the byte-identical pass-through contract holds.
-            if (!cb.TryGetProperty(GrammarMarker, out _) && !cb.TryGetProperty(NamespaceMarker, out _))
+            if (!cb.TryGetProperty(GrammarMarker, out _)
+                && !cb.TryGetProperty(NamespaceMarker, out _)
+                && !cb.TryGetProperty(WebSearchMarker, out _))
                 return evt;
 
             using var buffer = new MemoryStream();
@@ -212,7 +232,9 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                         w.WriteStartObject();
                         foreach (var inner in prop.Value.EnumerateObject())
                         {
-                            if (inner.NameEquals(GrammarMarker) || inner.NameEquals(NamespaceMarker))
+                            if (inner.NameEquals(GrammarMarker)
+                                || inner.NameEquals(NamespaceMarker)
+                                || inner.NameEquals(WebSearchMarker))
                                 continue; // drop the bridge-internal marker
                             inner.WriteTo(w);
                         }
