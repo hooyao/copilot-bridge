@@ -24,12 +24,20 @@ namespace CopilotBridge.UnitTests;
 /// so the correct state is: zero watching file sources.
 /// </para>
 /// <para>
-/// The fix (<see cref="BridgeConfigurationExtensions.DisableConfigFileWatchingArgs"/>,
-/// applied by <c>ServeCommand</c> via <see cref="WebApplicationOptions.Args"/>) is
-/// exercised through its real entry point — a slim builder constructed with those
-/// args — and the tests assert the observable outcome on the real builder, both at
-/// the source-flag level and at the live-watcher-object level. No process
+/// The fix is exercised through its real construction seam
+/// (<see cref="BridgeConfigurationExtensions.CreateServeHostBuilder"/>, the ONE
+/// method <c>ServeCommand</c> builds the host with) so a regression to a bare
+/// <c>CreateSlimBuilder()</c> turns these tests red. Assertions observe the real
+/// builder at two levels: the source flag and the live watcher object. No process
 /// environment is mutated: the switch is code-scoped host configuration.
+/// </para>
+/// <para>
+/// The "watching-on" positive controls deliberately create the recursive watcher,
+/// so they MUST NOT root it at the test process's working directory — a macOS
+/// checkout under iCloud/Google Drive would otherwise let the unit suite itself
+/// reproduce the very prompts this change removes. They root the builder at an
+/// isolated EMPTY temp directory and dispose the live watcher deterministically
+/// (see <see cref="ForcedWatchOnHost"/>), never leaving it to GC.
 /// </para>
 /// </summary>
 public class ConfigFileWatchingContractTests
@@ -54,18 +62,58 @@ public class ConfigFileWatchingContractTests
     }
 
     /// <summary>
-    /// The fix, exercised through its real entry point: a slim builder constructed
-    /// with the production <see cref="BridgeConfigurationExtensions.DisableConfigFileWatchingArgs"/>
-    /// registers no file source that watches for changes — so no recursive working-
-    /// directory watcher, and no idle macOS cloud-storage prompt.
+    /// A slim builder with config file-watching forced ON, rooted at an isolated
+    /// EMPTY temporary content root — so the recursive watcher this creates can
+    /// never descend into the developer's iCloud/Google-Drive domains — and
+    /// disposable so the live watcher is torn down deterministically at end of test
+    /// rather than surviving to nondeterministic GC. Used only by the positive
+    /// controls that need the pre-fix hazard reproduced in a hermetic sandbox.
+    /// </summary>
+    private sealed class ForcedWatchOnHost : IDisposable
+    {
+        public string ContentRoot { get; }
+        public WebApplicationBuilder Builder { get; }
+
+        public ForcedWatchOnHost()
+        {
+            ContentRoot = Path.Combine(Path.GetTempPath(), "cb-watchtest-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(ContentRoot);
+            Builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
+            {
+                Args = ForceWatchingOnArgs,
+                // Root the eager recursive watcher at the empty sandbox, NOT the
+                // test process CWD (which on a macOS checkout may be under iCloud).
+                ContentRootPath = ContentRoot,
+            });
+        }
+
+        public void Dispose()
+        {
+            // The live PhysicalFilesWatcher → FileSystemWatcher is owned by the
+            // source's PhysicalFileProvider. Dispose those file providers so the OS
+            // watch is released deterministically before the temp root is removed
+            // (rather than surviving to nondeterministic GC).
+            foreach (var source in ((IConfigurationBuilder)Builder.Configuration).Sources)
+            {
+                if (source is FileConfigurationSource { FileProvider: IDisposable fileProvider })
+                {
+                    fileProvider.Dispose();
+                }
+            }
+            try { Directory.Delete(ContentRoot, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>
+    /// The fix, exercised through its real construction seam
+    /// (<see cref="BridgeConfigurationExtensions.CreateServeHostBuilder"/>): the
+    /// serve host registers no file source that watches for changes — so no
+    /// recursive working-directory watcher, and no idle macOS cloud-storage prompt.
     /// </summary>
     [Fact]
-    public void ServeArgs_LeaveNoWatchingFileSource()
+    public void ServeHostBuilder_LeavesNoWatchingFileSource()
     {
-        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
-        {
-            Args = BridgeConfigurationExtensions.DisableConfigFileWatchingArgs,
-        });
+        var builder = BridgeConfigurationExtensions.CreateServeHostBuilder();
 
         Assert.False(
             AnyFileSourceWatches(builder),
@@ -83,13 +131,10 @@ public class ConfigFileWatchingContractTests
     [Fact]
     public void WatchingOn_DoesRegisterWatchingFileSource_soTheContractIsMeaningful()
     {
-        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
-        {
-            Args = ForceWatchingOnArgs,
-        });
+        using var host = new ForcedWatchOnHost();
 
         Assert.True(
-            AnyFileSourceWatches(builder),
+            AnyFileSourceWatches(host.Builder),
             "Expected watching-on to register at least one watching file source — if it "
             + "no longer does, the disable switch (and its contract test) guards nothing.");
     }
@@ -101,10 +146,10 @@ public class ConfigFileWatchingContractTests
     // ReloadOnChange=true calls source.FileProvider.Watch(...) in its constructor,
     // which lazily materializes a cached PhysicalFilesWatcher (an enabled,
     // subdirectory-recursive FileSystemWatcher rooted at the content root) on the
-    // PhysicalFileProvider._fileWatcher field. These two tests build the REAL slim
-    // host and observe whether that watcher object materialized on the live
-    // providers — the runtime proof that the fix removes the thing, not just the
-    // flag. (See dotnet/runtime FileConfigurationProvider ctor + PhysicalFileProvider.)
+    // PhysicalFileProvider._fileWatcher field. These tests build the REAL slim host
+    // and observe whether that watcher object materialized on the live providers —
+    // the runtime proof that the fix removes the thing, not just the flag. (See
+    // dotnet/runtime FileConfigurationProvider ctor + PhysicalFileProvider.)
 
     // True when at least one built configuration provider is watching a physical
     // file — i.e. its source's PhysicalFileProvider has materialized its lazy
@@ -138,18 +183,15 @@ public class ConfigFileWatchingContractTests
     }
 
     /// <summary>
-    /// Runtime proof of the fix: a host built with the production disable args has
-    /// no configuration provider that materialized a live file watcher — so the
-    /// process holds no recursive working-directory FileSystemWatcher and macOS
-    /// raises no idle cloud-storage prompt.
+    /// Runtime proof of the fix: the serve host (built through the real seam) has no
+    /// configuration provider that materialized a live file watcher — so the process
+    /// holds no recursive working-directory FileSystemWatcher and macOS raises no
+    /// idle cloud-storage prompt.
     /// </summary>
     [Fact]
-    public void BuiltHost_WithFix_MaterializesNoLiveFileWatcher()
+    public void ServeHostBuilder_MaterializesNoLiveFileWatcher()
     {
-        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
-        {
-            Args = BridgeConfigurationExtensions.DisableConfigFileWatchingArgs,
-        });
+        var builder = BridgeConfigurationExtensions.CreateServeHostBuilder();
 
         Assert.False(
             AnyProviderMaterializedAFileWatcher(builder.Configuration),
@@ -162,49 +204,41 @@ public class ConfigFileWatchingContractTests
     /// host DOES materialize a live file watcher. This proves
     /// <see cref="AnyProviderMaterializedAFileWatcher"/> actually observes the
     /// artifact (correct field, right timing) — otherwise the fix test above would
-    /// be a false negative that could never fail.
+    /// be a false negative that could never fail. The watcher is created over an
+    /// isolated temp root and disposed deterministically, never over the real CWD.
     /// </summary>
     [Fact]
-    public void BuiltHost_WatchingOn_MaterializesALiveFileWatcher()
+    public void WatchingOn_MaterializesALiveFileWatcher()
     {
-        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
-        {
-            Args = ForceWatchingOnArgs,
-        });
+        using var host = new ForcedWatchOnHost();
 
         Assert.True(
-            AnyProviderMaterializedAFileWatcher(builder.Configuration),
+            AnyProviderMaterializedAFileWatcher(host.Builder.Configuration),
             "Expected watching-on to materialize a live PhysicalFilesWatcher; if it does "
             + "not, the runtime observation guards nothing (or the reflected field name "
             + "drifted — re-ground against PhysicalFileProvider).");
     }
 
     /// <summary>
-    /// Proves the switch is genuinely code-scoped: passing it through
-    /// <see cref="WebApplicationOptions.Args"/> overrides an opposite value in the
-    /// <c>DOTNET_</c> host-config environment variable — command-line host config
-    /// wins. This is why the fix does not need (and deliberately avoids) mutating
-    /// the process environment, and why the force-on args above are deterministic
-    /// even on a box that exported the disable variable.
+    /// Proves the switch is genuinely code-scoped: passing it through the serve seam
+    /// overrides an opposite value in the <c>DOTNET_</c> host-config environment
+    /// variable — command-line host config wins. This is why the fix does not need
+    /// (and deliberately avoids) mutating the process environment.
     /// </summary>
     [Fact]
-    public void ArgsSwitch_TakesPrecedenceOverEnvironment()
+    public void ServeHostBuilder_TakesPrecedenceOverEnvironment()
     {
         const string envVar = "DOTNET_hostBuilder__reloadConfigOnChange";
         var original = Environment.GetEnvironmentVariable(envVar);
         Environment.SetEnvironmentVariable(envVar, "true"); // env says WATCH
         try
         {
-            var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
-            {
-                // args say DON'T watch
-                Args = BridgeConfigurationExtensions.DisableConfigFileWatchingArgs,
-            });
+            var builder = BridgeConfigurationExtensions.CreateServeHostBuilder();
 
             Assert.False(
                 AnyFileSourceWatches(builder),
-                "Command-line host config must override the DOTNET_ env var — the args "
-                + "switch is expected to win so the fix never has to touch the environment.");
+                "Command-line host config must override the DOTNET_ env var — the seam's "
+                + "args switch is expected to win so the fix never has to touch the environment.");
         }
         finally
         {

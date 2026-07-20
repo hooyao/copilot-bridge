@@ -51,18 +51,17 @@ internal static class ServeCommand
             return 0;
         }
 
-        // Construct the host with config file-watching turned OFF. Left on,
-        // CreateSlimBuilder registers appsettings.json / user-secrets with
-        // reloadOnChange:true and eagerly starts a recursive FileSystemWatcher over
-        // the working directory — which on macOS raises an iCloud/Google-Drive access
-        // prompt while the bridge sits idle with no client. The switch must be passed
-        // at construction (the host reads it while bootstrapping and the watcher is
-        // created inside the builder); the bridge never hot-reloads config, so nothing
-        // is lost. See BridgeConfigurationExtensions.DisableConfigFileWatchingArgs.
-        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
-        {
-            Args = BridgeConfigurationExtensions.DisableConfigFileWatchingArgs,
-        });
+        // Construct the host through the single serve-host seam, which turns config
+        // file-watching OFF. Left on, CreateSlimBuilder registers appsettings.json /
+        // user-secrets with reloadOnChange:true and eagerly starts a recursive
+        // FileSystemWatcher over the working directory — which on macOS raises an
+        // iCloud/Google-Drive access prompt while the bridge sits idle with no client.
+        // The switch must be passed at construction (the host reads it while
+        // bootstrapping and the watcher is created inside the builder); the bridge
+        // never hot-reloads config, so nothing is lost. The seam is what the
+        // ConfigFileWatchingContractTests exercise, so a regression to a bare
+        // CreateSlimBuilder() here fails those tests.
+        var builder = BridgeConfigurationExtensions.CreateServeHostBuilder();
 
         // Validate the DI graph at build time and enforce scope rules always (not
         // only in Development): a captive dependency — a singleton that injects the

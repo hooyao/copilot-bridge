@@ -62,6 +62,22 @@ internal static class BridgeConfigurationExtensions
     public static string[] DisableConfigFileWatchingArgs { get; } = [DisableConfigReloadArg];
 
     /// <summary>
+    /// The single construction seam for the <c>serve</c> web host: a slim builder
+    /// with the framework's default configuration file-watching disabled (via
+    /// <see cref="DisableConfigFileWatchingArgs"/>). <c>ServeCommand</c> builds the
+    /// host exclusively through this method, and the config-file-watching contract
+    /// tests exercise THIS method — so reverting it to a bare
+    /// <c>WebApplication.CreateSlimBuilder()</c>, which re-enables the recursive
+    /// working-directory watcher and the idle macOS cloud-storage prompt, turns
+    /// those tests red instead of passing unnoticed.
+    /// </summary>
+    public static WebApplicationBuilder CreateServeHostBuilder() =>
+        WebApplication.CreateSlimBuilder(new WebApplicationOptions
+        {
+            Args = DisableConfigFileWatchingArgs,
+        });
+
+    /// <summary>
     /// Add the standard configuration sources to a <see cref="WebApplicationBuilder"/>:
     /// <c>appsettings.json</c> (required) is rebased to <see cref="AppContext.BaseDirectory"/>
     /// so the file is found next to the published .exe rather than in the
