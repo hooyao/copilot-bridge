@@ -16,6 +16,12 @@ internal static class BufferedResponsesToAnthropic
     // it on the Codex-facing item so Copilot accepts the echo (id must begin `ctc`).
     // Mirrors the streaming path's content_block_stop marker.
     private const string CustomToolCallIdMarker = "bridge_custom_tool_call_id";
+    // Carries a hosted web_search_call item (server-side search notification) across
+    // the IR as a bridge-internal marker on a text block, so buffered T4 rebuilds the
+    // Codex-facing web_search_call output item. Mirrors the streaming path's
+    // bridge_web_search_call. (Codex always streams, so this buffered path is a
+    // defensive parity backstop for a non-stream edge.)
+    private const string WebSearchMarker = "bridge_web_search_call";
 
     public static byte[]? TryTranslate(byte[] body)
     {
@@ -83,6 +89,10 @@ internal static class BufferedResponsesToAnthropic
                         case "custom_tool_call":
                             WriteCustomToolCall(writer, item);
                             hasToolUse = true;
+                            break;
+
+                        case "web_search_call":
+                            WriteWebSearchCall(writer, item);
                             break;
                     }
                 }
@@ -171,6 +181,22 @@ internal static class BufferedResponsesToAnthropic
             && upstreamId.StartsWith("ctc", StringComparison.Ordinal))
             writer.WriteString(CustomToolCallIdMarker, upstreamId);
         WriteNamespace(writer, item);
+        writer.WriteEndObject();
+    }
+
+    private static void WriteWebSearchCall(Utf8JsonWriter writer, JsonElement item)
+    {
+        // A hosted web_search_call is a server-side search NOTIFICATION (no client
+        // round-trip), so it is not a tool_use. Carry the whole item verbatim on a text
+        // block's bridge_web_search_call marker; buffered T4 rebuilds the Codex-facing
+        // web_search_call output item from it. The buffered item already carries the
+        // completed `action` (search queries / opened url), unlike the streaming
+        // output_item.added, so a single marker suffices (no separate _result marker).
+        writer.WriteStartObject();
+        writer.WriteString("type", "text");
+        writer.WriteString("text", "");
+        writer.WritePropertyName(WebSearchMarker);
+        item.WriteTo(writer);
         writer.WriteEndObject();
     }
 

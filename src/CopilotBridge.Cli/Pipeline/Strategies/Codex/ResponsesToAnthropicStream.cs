@@ -62,6 +62,21 @@ internal sealed class ResponsesToAnthropicStream
     // "" for a text/function block, or a custom tool whose id we never observed
     // (T4 then falls back to a deterministic ctc_-prefixed synthesis).
     private string _customToolCallId = "";
+    // True while the current content block is a web_search_call carrier (a text
+    // block stamped with the bridge_web_search_call marker). The web_search_call
+    // item is a Copilot server-tool NOTIFICATION (the search ran server-side); it
+    // has no Anthropic equivalent, so it rides the IR as a bridge-internal marker
+    // on a text block and is reconstructed at the Codex edge (T4) — or scrubbed at
+    // the Claude edge (CC→gpt). Its final `action`/status (search queries or the
+    // opened URL) appears on output_item.done, not output_item.added, so the block
+    // is opened on .added and the full item is carried out on .done's
+    // content_block_stop as bridge_web_search_call_result. Reset per block.
+    private bool _blockIsWebSearch;
+    // The full web_search_call item JSON (from output_item.done) for the current
+    // web-search block, carried out on content_block_stop so T4 can rebuild the
+    // Codex-facing web_search_call output item verbatim. "" when the current block
+    // isn't a web search or its done item wasn't seen.
+    private string _webSearchDoneItem = "";
     private string _stopReason = "end_turn";
     // Usage carried off the upstream terminal (response.completed/incomplete), so
     // the IR message_delta reports Copilot's real counts instead of zeros.
@@ -201,6 +216,14 @@ internal sealed class ResponsesToAnthropicStream
                 case "response.output_item.done":
                     if (_blockOpen)
                     {
+                        // For a web-search carrier block, capture the FINAL item (it now
+                        // carries the completed `action` — search queries / opened url —
+                        // absent on output_item.added) so content_block_stop can ride it
+                        // out as bridge_web_search_call_result for T4 to rebuild.
+                        if (_blockIsWebSearch
+                            && root.TryGetProperty("item", out var wsDone)
+                            && wsDone.ValueKind == JsonValueKind.Object)
+                            _webSearchDoneItem = wsDone.GetRawText();
                         _blockOpen = false;
                         yield return Sse("content_block_stop", BlockStopJson(_blockIndex));
                     }
@@ -295,6 +318,29 @@ internal sealed class ResponsesToAnthropicStream
         _blockIndex++;
         _blockSawArgsDelta = false;   // fresh block: no argument deltas seen yet
         _customToolCallId = "";        // fresh block: no upstream ctc_ id observed yet
+        _blockIsWebSearch = false;     // fresh block: not a web-search carrier unless set below
+        _webSearchDoneItem = "";
+        if (itemType == "web_search_call")
+        {
+            // Copilot's hosted web search ran SERVER-SIDE; this item only NOTIFIES the
+            // client a search happened (queries / opened URL), and needs no client
+            // round-trip (unlike a function/custom tool). Anthropic has no equivalent
+            // block, so carry the item across the IR as a bridge-internal marker on a
+            // TEXT block (not tool_use — a tool_use here would make T4 expect a
+            // matching tool_result and would trip ToolInputValidationDetector). The
+            // .added item carries only status:in_progress; the final item with its
+            // `action` (search queries or open_page url) arrives on output_item.done,
+            // which BlockStopJson rides out as bridge_web_search_call_result. T4
+            // rebuilds the Codex-facing web_search_call output item from it; the CC→gpt
+            // edge scrubs the marker so it never reaches a Claude client. Does NOT set
+            // _stopReason (a server-tool notification is not a turn-ending tool_use).
+            _blockOpen = true;
+            _blockIsWebSearch = true;
+            var itemJson = item.GetRawText();
+            yield return Sse("content_block_start",
+                $"{{\"type\":\"content_block_start\",\"index\":{_blockIndex},\"content_block\":{{\"type\":\"text\",\"text\":\"\",\"bridge_web_search_call\":{itemJson}}}}}");
+            yield break;
+        }
         if (itemType is "function_call" or "custom_tool_call")
         {
             _stopReason = "tool_use";
@@ -394,20 +440,26 @@ internal sealed class ResponsesToAnthropicStream
         $"{{\"type\":\"content_block_delta\",\"index\":{index},\"delta\":{deltaJson}}}";
 
     /// <summary>
-    /// Build the content_block_stop event. When the just-closed block captured an
-    /// upstream custom_tool_call id (a `ctc_`-prefixed Responses item id), ride it
-    /// out on the bridge-internal marker <c>bridge_custom_tool_call_id</c> so T4 can
-    /// stamp it on the Codex-facing custom_tool_call item — Codex echoes that id next
-    /// turn and Copilot REQUIRES the echoed custom_tool_call id to begin with `ctc`.
-    /// Absent (text/function block, or a custom tool whose id was never observed) →
-    /// the plain stop, byte-identical to before, and T4 synthesizes a ctc_ fallback.
-    /// Like the other bridge markers this is stripped at both client edges (Codex T4
-    /// rebuilds the item from typed fields; the CC→gpt route scrubs it).
+    /// Build the content_block_stop event. Rides out at most one bridge-internal
+    /// marker for the just-closed block:
+    /// <list type="bullet">
+    ///   <item><c>bridge_web_search_call_result</c> — the full web_search_call item
+    ///     (with its completed <c>action</c>) for a web-search carrier block, so T4
+    ///     rebuilds the Codex-facing web_search_call output item.</item>
+    ///   <item><c>bridge_custom_tool_call_id</c> — the upstream `ctc_` id for a
+    ///     custom tool block, so T4 stamps the id Copilot REQUIRES on the echo turn.</item>
+    /// </list>
+    /// A block is at most one kind, so the two markers are mutually exclusive.
+    /// Absent (plain text/function block) → the plain stop, byte-identical to before.
+    /// Both markers are stripped at both client edges (Codex T4 rebuilds from typed
+    /// fields; the CC→gpt route scrubs them).
     /// </summary>
     private string BlockStopJson(int index) =>
-        _customToolCallId.Length > 0
-            ? $"{{\"type\":\"content_block_stop\",\"index\":{index},\"bridge_custom_tool_call_id\":{JsonEncode(_customToolCallId)}}}"
-            : $"{{\"type\":\"content_block_stop\",\"index\":{index}}}";
+        _blockIsWebSearch && _webSearchDoneItem.Length > 0
+            ? $"{{\"type\":\"content_block_stop\",\"index\":{index},\"bridge_web_search_call_result\":{_webSearchDoneItem}}}"
+            : _customToolCallId.Length > 0
+                ? $"{{\"type\":\"content_block_stop\",\"index\":{index},\"bridge_custom_tool_call_id\":{JsonEncode(_customToolCallId)}}}"
+                : $"{{\"type\":\"content_block_stop\",\"index\":{index}}}";
 
     /// <summary>
     /// Capture the upstream custom_tool_call's real `ctc_` item id from a

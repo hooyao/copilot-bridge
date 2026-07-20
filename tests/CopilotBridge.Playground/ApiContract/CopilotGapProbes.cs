@@ -1,3 +1,7 @@
+using System.Runtime.Versioning;
+using System.Text;
+using CopilotBridge.Cli.Auth;
+using CopilotBridge.Cli.Copilot;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -243,5 +247,203 @@ public class CopilotGapProbes
         var preview = body.Length > 240 ? body[..240] + "…" : body;
         _output.WriteLine($"effort={effort ?? "<absent>"} thinking={thinkingType ?? "<absent>"} → {(int)status} {status}");
         _output.WriteLine($"  body: {preview}");
+    }
+
+    /// <summary>
+    /// Dumps Copilot's FULL <c>/models</c> id list (not just <c>claude-*</c>) and
+    /// the complete capability block for any <c>copilot-search-*</c> /
+    /// <c>exec-agent-*</c> entry. Motivated by the discovery (2026-07) that an
+    /// invalid-model request surfaces a <c>model_not_available_for_integrator</c>
+    /// error whose "Available models" list now includes
+    /// <c>copilot-search-a/b/c</c> and <c>exec-agent-a/b/c</c> — candidates for
+    /// GitHub's "Copilot can search the web using model native search" feature.
+    /// This probe answers: are those models actually enumerated by <c>/models</c>
+    /// (i.e. first-class, with a capabilities/endpoint block), or only reachable
+    /// as internal orchestration targets? The capability block — if present —
+    /// names the endpoint + wire shape, which the repo requires before any
+    /// catalog entry (never guess a model's shape from its name).
+    /// </summary>
+    [Fact]
+    public async Task DumpAllModelIds_AndNativeSearchCapabilities()
+    {
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryRequestAsync(HttpMethod.Get, "/models");
+        _output.WriteLine($"GET /models → {(int)status} {status}");
+        Assert.Equal(System.Net.HttpStatusCode.OK, status);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var data = doc.RootElement.GetProperty("data");
+
+        var allIds = new List<string>();
+        var interesting = new List<System.Text.Json.JsonElement>();
+        foreach (var m in data.EnumerateArray())
+        {
+            var id = m.GetProperty("id").GetString() ?? "";
+            allIds.Add(id);
+            if (id.StartsWith("copilot-search", StringComparison.OrdinalIgnoreCase)
+                || id.StartsWith("exec-agent", StringComparison.OrdinalIgnoreCase))
+                interesting.Add(m);
+        }
+
+        _output.WriteLine($"Total models enumerated by /models: {allIds.Count}");
+        _output.WriteLine("All ids: " + string.Join(" ", allIds));
+        _output.WriteLine("");
+        _output.WriteLine($"copilot-search-* / exec-agent-* present in /models data: {interesting.Count}");
+        _output.WriteLine("");
+
+        foreach (var m in interesting)
+        {
+            _output.WriteLine($"=== {m.GetProperty("id").GetString()} ===");
+            _output.WriteLine(System.Text.Json.JsonSerializer.Serialize(
+                m, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            _output.WriteLine("");
+        }
+    }
+
+    /// <summary>
+    /// Probes which endpoint + wire shape <c>copilot-search-a</c> accepts. The
+    /// integrator error list proves the id is authorized for <c>vscode-chat</c>,
+    /// but not which surface serves it. Fires a minimal request at all three
+    /// candidate endpoints — Anthropic <c>/v1/messages</c>, OpenAI
+    /// <c>/chat/completions</c>, and <c>/responses</c> — and logs each status +
+    /// body. A 200 (or even a shape-specific 400 that isn't
+    /// <c>model_not_available</c>) tells us the endpoint owns the model; a
+    /// <c>model_not_available_for_integrator</c> means "wrong surface." This is
+    /// pure reconnaissance — no assertion beyond "we reached the gateway."
+    /// </summary>
+    [Fact]
+    public async Task NativeSearchModel_ProbeEndpointAcceptance()
+    {
+        using var client = new PlaygroundClient();
+
+        // ── Anthropic /v1/messages shape ──
+        var anthropicBody = """
+          {
+            "model": "copilot-search-a",
+            "max_tokens": 64,
+            "messages": [{ "role": "user", "content": "What is the top story on Hacker News right now?" }]
+          }
+          """;
+        var (aStatus, aBody) = await client.TryPostMessagesAsync(anthropicBody);
+        _output.WriteLine($"[/v1/messages] copilot-search-a → {(int)aStatus} {aStatus}");
+        _output.WriteLine(PlaygroundClient.PrettyJson(aBody));
+        _output.WriteLine("");
+
+        // ── OpenAI /chat/completions shape ──
+        var openAiBody = """
+          {
+            "model": "copilot-search-a",
+            "messages": [{ "role": "user", "content": "What is the top story on Hacker News right now?" }]
+          }
+          """;
+        var (cStatus, cBody) = await client.TryRequestAsync(HttpMethod.Post, "/chat/completions", openAiBody);
+        _output.WriteLine($"[/chat/completions] copilot-search-a → {(int)cStatus} {cStatus}");
+        _output.WriteLine(PlaygroundClient.PrettyJson(cBody));
+        _output.WriteLine("");
+
+        // ── OpenAI /responses shape ──
+        var responsesBody = """
+          {
+            "model": "copilot-search-a",
+            "input": "What is the top story on Hacker News right now?"
+          }
+          """;
+        var (rStatus, rBody) = await client.TryPostResponsesAsync(responsesBody);
+        _output.WriteLine($"[/responses] copilot-search-a → {(int)rStatus} {rStatus}");
+        _output.WriteLine(PlaygroundClient.PrettyJson(rBody));
+    }
+
+    /// <summary>
+    /// Does <c>copilot-search-a</c> unlock under a DIFFERENT
+    /// <c>Copilot-Integration-Id</c>? The default probe sends <c>vscode-chat</c>
+    /// (prod VS Code Chat). Research doc §3.0.4 enumerates the other integrator
+    /// ids the official package can send (<c>code-oss</c>, <c>vscode-nl</c>,
+    /// <c>vscode-chat-dev</c>, plus private HMAC ids). The
+    /// <c>model_not_supported</c> (as opposed to
+    /// <c>model_not_available_for_integrator</c>) we saw on <c>vscode-chat</c>
+    /// suggests the id is authorized but the endpoint doesn't serve it — this
+    /// probe rules in/out a "wrong integrator surface" explanation by trying the
+    /// public non-HMAC ids against <c>/v1/messages</c>. HMAC-gated private ids
+    /// (<c>vscode-chat-dev</c> needs a <c>Request-Hmac</c> we can't forge) are
+    /// expected to fail auth, logged for completeness.
+    /// </summary>
+    [Theory]
+    [InlineData("code-oss")]
+    [InlineData("vscode-nl")]
+    [InlineData("vscode-chat-dev")]
+    [InlineData("copilot-cli")]
+    [InlineData("copilot-search")]
+    public async Task NativeSearchModel_ProbeAlternateIntegrationIds(string integrationId)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        // GitHub's token-exchange endpoint 403s ("User-Agent required") without
+        // one — PlaygroundClient sets this; a hand-rolled client must too.
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-playground/0.1");
+        var auth = new AuthService(http);
+        try
+        {
+            var token = await auth.GetCopilotTokenAsync();
+            var baseUrl = auth.CopilotApiBaseUrl
+                ?? throw new InvalidOperationException("CopilotApiBaseUrl unknown after token fetch.");
+
+            var headers = new CopilotHeaderFactory();
+            var body = """
+              {
+                "model": "copilot-search-a",
+                "max_tokens": 64,
+                "messages": [{ "role": "user", "content": "What is the top story on Hacker News right now?" }]
+              }
+              """;
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages");
+            // Override the default vscode-chat integration id with the candidate.
+            headers.ApplyTo(req, token, overrides: new Dictionary<string, string?>
+            {
+                ["Copilot-Integration-Id"] = integrationId,
+            });
+            req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+            using var resp = await http.SendAsync(req);
+            var respBody = await resp.Content.ReadAsStringAsync();
+            _output.WriteLine($"[integration-id={integrationId}] copilot-search-a → {(int)resp.StatusCode} {resp.StatusCode}");
+            _output.WriteLine(PlaygroundClient.PrettyJson(respBody));
+        }
+        finally
+        {
+            auth.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// The 2026-02-25 GitHub changelog frames "model native search" as the
+    /// MODEL's own built-in web search (GPT-5.1 / Codex family), not a separate
+    /// search model — surfaced on github.com Copilot Chat, with an opt-out
+    /// setting worded exactly "Copilot can search the web using model native
+    /// search." That points at the gpt <c>/responses</c> path + a
+    /// <c>web_search</c> tool (which docs record as 200 on Copilot's Responses
+    /// surface, unlike Anthropic's server tool). This probe fires a gpt model at
+    /// <c>/responses</c> WITH a <c>web_search</c> tool and a query that demands
+    /// fresh info, then logs whether the model actually emitted a web_search
+    /// call / real content. If it does, THAT is the reachable "native search"
+    /// path for the bridge (via a Codex-backed model), and the copilot-search-*
+    /// ids are just internal orchestration we never touch.
+    /// </summary>
+    [Theory]
+    [InlineData("gpt-5.6-sol")]
+    [InlineData("gpt-5.5")]
+    public async Task GptResponses_WebSearchTool_ProbeNativeSearch(string model)
+    {
+        var payload = $$"""
+          {
+            "model": "{{model}}",
+            "input": "What is today's top story on Hacker News? Use web search to check.",
+            "tools": [{ "type": "web_search" }],
+            "stream": false
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostResponsesAsync(payload);
+        _output.WriteLine($"[{model}] /responses + web_search tool → {(int)status} {status}");
+        _output.WriteLine(PlaygroundClient.PrettyJson(body));
     }
 }

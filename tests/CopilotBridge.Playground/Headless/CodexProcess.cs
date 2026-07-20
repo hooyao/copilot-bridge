@@ -25,7 +25,13 @@ internal sealed record CodexInvocation(
     // When set, codex runs with this as its working directory. Tasks that write relative
     // filenames MUST pass a disposable dir so the real client cannot create/overwrite
     // files in the test runner's CWD (the checkout). null = inherit the runner's dir.
-    string? WorkingDirectory = null);
+    string? WorkingDirectory = null,
+    // Extra `-c key=value` config overrides appended AFTER the provider overrides, so a
+    // test can toggle a codex config knob without touching the user's config.toml. E.g.
+    // ["web_search=live"] forces codex's hosted web-search into live-fetch mode (default
+    // is "cached") so a native-search test actually hits the network. Each entry becomes a
+    // separate `-c <entry>` pair.
+    IReadOnlyList<string>? ExtraConfig = null);
 
 internal sealed record CodexResult(
     int ExitCode, string Stdout, string Stderr, TimeSpan Duration, string CodexHome,
@@ -80,6 +86,20 @@ internal static class CodexProcess
             "--dangerously-bypass-approvals-and-sandbox",
             inv.Prompt,
         };
+
+        // Append any extra -c overrides (e.g. web_search=live). Inserted before the
+        // positional prompt would also work, but codex accepts flags after the prompt too;
+        // keep them grouped with the other -c pairs by inserting ahead of -m. Simplest and
+        // order-safe: rebuild with the extras placed just before the model flag.
+        if (inv.ExtraConfig is { Count: > 0 } extra)
+        {
+            // Find the "-m" marker and splice the extra -c pairs in front of it so the
+            // final arg order stays "<overrides> <extra overrides> -m <model> --bypass <prompt>".
+            var insertAt = args.IndexOf("-m");
+            var spliced = new List<string>(extra.Count * 2);
+            foreach (var kv in extra) { spliced.Add("-c"); spliced.Add(kv); }
+            args.InsertRange(insertAt, spliced);
+        }
 
         var psi = new ProcessStartInfo
         {
