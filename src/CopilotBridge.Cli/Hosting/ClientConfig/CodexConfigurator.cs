@@ -88,6 +88,8 @@ internal sealed class CodexConfigurator : IClientConfigurator
             return new ConfigState(ClientId, scope, path, Exists: false,
                 ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
                 ExpectedFallback: null, CurrentFallback: null,
+                ExpectedAssume1m: null, CurrentAssume1m: null,
+                ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
                 Details: ["not configured (file does not exist)"]);
         }
 
@@ -101,6 +103,8 @@ internal sealed class CodexConfigurator : IClientConfigurator
             return new ConfigState(ClientId, scope, path, Exists: true,
                 ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
                 ExpectedFallback: null, CurrentFallback: null,
+                ExpectedAssume1m: null, CurrentAssume1m: null,
+                ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
                 Details: ["file has TOML syntax errors (cannot read — fix or remove it, then re-run)"]);
         }
 
@@ -117,6 +121,8 @@ internal sealed class CodexConfigurator : IClientConfigurator
         return new ConfigState(ClientId, scope, path, Exists: true,
             ConfiguredForBridge: configured, CurrentBaseUrl: configured ? baseUrl : null,
             ExpectedBaseUrl: expected, ExpectedFallback: null, CurrentFallback: null,
+            ExpectedAssume1m: null, CurrentAssume1m: null,
+            ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
             Details: details);
     }
 

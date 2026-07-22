@@ -193,6 +193,50 @@ public class ClientConfigTests
         Assert.Equal(first, second);
     }
 
+    // ---- 1M-context env keys (spec: "Claude Code 1M-context environment") ----
+
+    [Fact]
+    public void ClaudeCode_writes_the_1m_context_env_keys()
+    {
+        // A bridge base URL fails Claude Code's first-party host check, so its native-1M
+        // capability gate needs ASSUME_FIRST_PARTY asserted; DISABLE_ERROR_REPORTING
+        // neutralizes the telemetry that assertion would otherwise enable.
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(null, Conn());
+        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
+
+        Assert.Equal("1", (string?)env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"]);
+        Assert.Equal("1", (string?)env["DISABLE_ERROR_REPORTING"]);
+    }
+
+    [Fact]
+    public void ClaudeCode_force_overwrites_stale_1m_context_env_values()
+    {
+        // Force-write: a pre-existing non-managed value must be overwritten to "1" so the
+        // pair is always consistent (a stale value would silently disable 1M or re-enable
+        // telemetry).
+        var original = """
+        { "env": {
+            "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "0",
+            "DISABLE_ERROR_REPORTING": "false"
+        } }
+        """;
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
+        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
+
+        Assert.Equal("1", (string?)env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"]);
+        Assert.Equal("1", (string?)env["DISABLE_ERROR_REPORTING"]);
+    }
+
+    [Fact]
+    public void Codex_config_carries_no_1m_context_env_keys()
+    {
+        // The 1M-context env keys are Claude-Code-only; the Codex TOML must never carry them.
+        var (content, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn());
+
+        Assert.DoesNotContain("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL", content);
+        Assert.DoesNotContain("DISABLE_ERROR_REPORTING", content);
+    }
+
     // ---- Codex TOML merge (spec: "Surgical merge preserves all unrelated content", "Overwrite policy") ----
 
     private const string DenseCodexToml = """
@@ -342,7 +386,10 @@ public class ClientConfigTests
         var drifted = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
             ConfiguredForBridge: true,
             CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
-            ExpectedFallback: null, CurrentFallback: "1", Details: []);
+            ExpectedFallback: null, CurrentFallback: "1",
+            ExpectedAssume1m: "1", CurrentAssume1m: "1",
+            ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            Details: []);
         Assert.True(drifted.Drifted);
     }
 
@@ -352,7 +399,10 @@ public class ClientConfigTests
         var ok = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
             ConfiguredForBridge: true,
             CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
-            ExpectedFallback: "1", CurrentFallback: "1", Details: []);
+            ExpectedFallback: "1", CurrentFallback: "1",
+            ExpectedAssume1m: "1", CurrentAssume1m: "1",
+            ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            Details: []);
         Assert.False(ok.Drifted);
     }
 
@@ -363,8 +413,33 @@ public class ClientConfigTests
         var codexLike = new ConfigState("codex", ConfigScope.Global, "x", Exists: true,
             ConfiguredForBridge: true,
             CurrentBaseUrl: "http://localhost:8765/codex", ExpectedBaseUrl: "http://localhost:8765/codex",
-            ExpectedFallback: null, CurrentFallback: null, Details: []);
+            ExpectedFallback: null, CurrentFallback: null,
+            ExpectedAssume1m: null, CurrentAssume1m: null,
+            ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+            Details: []);
         Assert.False(codexLike.Drifted);
+    }
+
+    [Fact]
+    public void Status_reports_1m_context_env_drift_when_key_missing()
+    {
+        // Base URL and fallback match, but a 1M-context key the bridge force-writes is
+        // absent (null current vs expected "1") → drift.
+        var missingAssume = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
+            ConfiguredForBridge: true,
+            CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
+            ExpectedFallback: null, CurrentFallback: null,
+            ExpectedAssume1m: "1", CurrentAssume1m: null,
+            ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            Details: []);
+        Assert.True(missingAssume.Drifted);
+
+        var missingDisable = missingAssume with
+        {
+            CurrentAssume1m = "1",
+            CurrentDisableErrorReporting = null,
+        };
+        Assert.True(missingDisable.Drifted);
     }
 
     // ---- Review round 2: RunawayGuard contributes to fallback need ----

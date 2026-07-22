@@ -1,17 +1,21 @@
 # Context windows, 1M, and Sonnet/Haiku routing
 
 > Why the bridge can route Sonnet/Haiku correctly but **cannot** make Claude
-> Code "know" a model's context window from a response, what actually happens
-> when a user enables 1M on a model Copilot caps at 200k, and the one resume
-> caveat we deliberately do **not** paper over. Grounded in live experiments
-> against `claude.exe` 2.1.159 + Copilot Enterprise; cross-checked against the
-> decompiled Claude Code source (`Q:\MyProjects\claude-code-sourcemap`).
+> Code "know" a model's context window from a *response*, what actually happens
+> when a user enables 1M on a model Copilot caps at 200k, and how the `config`
+> command restores 1M after `--resume` via two client env vars. Grounded in live
+> experiments against `claude.exe` 2.1.159 + Copilot Enterprise; the resume
+> mechanism (§5) is re-grounded against the **running 2.1.216 binary** — the
+> decompiled source (`Q:\MyProjects\claude-code-sourcemap`) is 2.1.88/2.1.159 and
+> is stale for the window-decision logic, so §5 was reverse-engineered from the
+> shipped exe.
 
 ## TL;DR
 
 - **The context window is decided 100% client-side**, before the request is
-  sent, from whether the model string carries a `[1m]` suffix. There is **no
-  server-side lever** — nothing the bridge returns changes it.
+  sent. No *response* the bridge returns changes it — but a *client-config* lever
+  does: the `config claude-code` command writes two env vars that make Claude
+  Code grant 1M and keep it across `--resume` (see §5).
 - **Plain Sonnet/Haiku already works perfectly**: Claude Code uses 200k, Copilot
   base is 200k (4.5 / haiku) or 1M (sonnet-4.6, re-probed). No special handling
   needed for the plain path.
@@ -29,10 +33,12 @@
   always did; opus-4.6/4.7 base ids were upgraded to 1M and their dedicated
   `-1m` / `-1m-internal` variants retired in the 2026 reconciliation). No model
   swap, no beta strip; Claude Code's 1M belief is met by the base model.
-- **Resume caveat**: after `--resume`, Opus reverts to 200k (the `[1m]` tag is
-  not persisted). We do **not** fix this by injecting `[1m]` into the response —
-  the real Anthropic API never does that, and faithfulness wins. Re-select
-  `opus[1m]` to get 1M back.
+- **Resume now keeps 1M**: on 2.1.216 the window comes from a bundled
+  `native_1m` capability gated on the request being first-party, so a bridge base
+  URL reverts to 200k after `--resume`. `config claude-code` fixes this by writing
+  `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` (+ `DISABLE_ERROR_REPORTING=1` to
+  neutralize the one side effect). No `[1m]` suffix needed; the transcript model
+  stays clean. See §5.
 
 ## 1. Where the context window comes from — the client, not the server
 
@@ -48,6 +54,12 @@ the decision collapses to:
    `USER_TYPE === 'ant'` **and** a first-party Anthropic base URL.
    `refreshModelCapabilities()` returns early before it even fetches.
 3. Otherwise → **200,000** default.
+
+> **2.1.216 update:** the running client adds a step between 1 and 3 — a
+> `native_1m` **capability** branch (from a bundled model table) gated on the
+> request being first-party. It changes the resume story, not this section's
+> response-side conclusion. §5 has the full 2.1.216 decision path; §1's point —
+> that no *response* the bridge returns sets the window — still holds.
 
 **Empirical confirmation (claude.exe 2.1.159):** running a plain
 `claude-sonnet-4.6` turn, the bridge sees **zero** `/v1/models` requests — Claude
@@ -182,38 +194,85 @@ Opus 4.7 base / 4.8 / sonnet-5 accept `low..max` directly, so a derived
 `high`/`xhigh` is now kept as-is rather than stripped or routed to a sibling.)
 See `ProfileAdjusterTests`.
 
-## 5. The resume caveat (deliberately not "fixed")
+## 5. Restoring 1M after `--resume` (the firstParty capability gate)
 
-`ResponseModelRewrite` rewrites the response `model` back to the **client-
-requested** id, so Claude Code's session log / ccusage report (e.g.)
-`claude-opus-4-8` instead of the backend `claude-opus-4.7-1m-internal`. Claude
-Code persists *that response model* and restores it on `--resume`.
+**Symptom.** On the running client (2.1.216) a bridge user's opus-4.8 session
+starts at 1M but, after `--resume` with no explicit `--model`, reverts to a
+200,000 window — Claude Code's auto-compaction then fires at 200k for the rest of
+the session even though Copilot's backend still serves 1M.
 
-Measured:
+**Why (2.1.216, reverse-engineered from the shipped exe — the decompiled 2.1.159
+source is stale here).** Claude Code's window function now reads a **bundled,
+static model-capability table** and no longer relies on the `[1m]` suffix:
 
-| Moment | model Claude Code restores | window |
+```
+X4c(model, betas):                              // getContextWindowForModel
+  if has1mContext(model) return 1e6             // ① literal [1m] in the string
+  if betas.includes("context-1m-…") && supports_1m_beta(model) return 1e6   // ②
+  if nO(model) return 1e6                        // ③ native_1m capability  ← the new one
+  … return 200000
+
+nO(model):
+  cap = capabilityTable[canonical(model)].context   // static, bundled — NOT fetched
+  if !cap.native_1m return false                     // opus-4-8 entry: native_1m: true
+  if provider==="firstParty" && Wd() return true     // ← the gate bridge users fail
+  …
+
+Wd():                                             // "is this a real first-party host?"
+  if process.env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL return true   // ← escape hatch
+  return host(ANTHROPIC_BASE_URL) === "api.anthropic.com"
+```
+
+For a bridge user, `ANTHROPIC_BASE_URL` is `http://localhost:8765/cc`, so `Wd()`
+is false → branch ③ doesn't fire → the window falls through to 200k. On the first
+turn the `[1m]` suffix from `--model opus[1m]` still trips branch ①, but the
+persisted transcript `message.model` is the bare `claude-opus-4-8` (CC does not
+persist the `[1m]` suffix), so `--resume` re-derives 200k from branch ③ — which is
+gated off. **This is why the earlier idea of injecting `[1m]` into the response
+`model` does not work on 2.1.216: it's the wrong lever, and CC discards the suffix
+on persist** (verified — the injection left the transcript bare and resume still
+showed 200,000).
+
+**The fix — two client env vars, written by `config claude-code`.** The escape
+hatch `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` makes `Wd()` true, so branch ③
+fires for a bridge base URL. `config claude-code` force-writes it (and its
+companion) into `settings.json` `env`, next to `ANTHROPIC_BASE_URL`:
+
+| env key | value | why |
 | --- | --- | --- |
-| first run, `--model opus[1m]` | `claude-opus-4-8[1m]` | 1,000,000 |
-| `--resume` (no `--model`) | `claude-opus-4-8` | **1,000,000 (all of opus-4.6/4.7/4.8 are native 1M since the 2026 reconciliation)** |
+| `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` | `1` | asserts first-party so the `native_1m` capability applies to the bridge base URL |
+| `DISABLE_ERROR_REPORTING` | `1` | neutralizes the one side effect: asserting first-party also flips CC's error-reporting (Datadog) telemetry on; this keeps it off |
 
-The rewrite fixes the *version* on resume (no longer the 4.7 variant) but the
-`[1m]` tag is not part of the persisted model string, so for 4.7 the **window
-reverts to 200k**. For opus-4.8 the resumed window is actually still 1M —
-because Claude Code's 1M decision is `has1mContext(model)` (the `[1m]` tag),
-which fails on resume, but Copilot's 4.8 serves whatever fits regardless, and
-the bridge no longer downgrades. The session log says 200k but the backend
-will still accept up to 1M; Claude Code's auto-compaction will trigger at 200k
-unless re-selected as `opus[1m]`.
+Measured end-to-end against real `claude.exe` 2.1.216 (plain `claude-opus-4-8`, no
+`[1m]`):
 
-For sonnet-4.6 the same applies — Copilot serves 1M either way; the client
-believes 200k after resume but `--model sonnet[1m]` re-instates the 1M belief.
+| Moment | env set? | `contextWindow` |
+| --- | --- | --- |
+| first run | no | 200,000 (bug reproduced) |
+| first run | **yes** | 1,000,000 |
+| **`--resume` (no `--model`)** | **yes** | **1,000,000 ← the fix** |
+| `--resume` (same session) | no | 200,000 (proves the env is the lever) |
 
-We deliberately **do not** fix this by emitting `claude-opus-4-8[1m]` in the
-response `model`: the real Anthropic API never puts `[1m]` there, and the bridge
-stays faithful to the API (a fabricated value risks Claude Code's display /
-cost / canonical-name parsing). The accepted workaround: after `--resume`,
-re-select `opus[1m]` to restore 1M. For Sonnet/Haiku, reverting to 200k on resume
-is in fact the *correct* outcome.
+No `[1m]` suffix, no bridge response rewrite; the transcript model stays
+`claude-opus-4-8`, so ccusage / cost tracking are unaffected. This applies to every
+native-1M model (opus-4.6/4.7/4.8, sonnet-4.6, sonnet-5). For sonnet-4.5 /
+haiku-4.5 the capability table has no `native_1m`, so branch ③ never fires and they
+correctly stay 200k — the env does not (and should not) change that.
+
+**Side effects of asserting first-party (audited, 116 `Wd()`-gated functions +
+real-client wire capture).** The env only flips `Wd()`-gated behavior (a bridge
+user is already `firstParty`); inference traffic still targets the bridge base URL,
+never `api.anthropic.com`; claude.ai-only paths (Teleport, Files API, subscription
+features) stay closed for an API-key user. The single real side effect is the
+error-reporting telemetry, which is why `DISABLE_ERROR_REPORTING=1` is written with
+it. A tempting worry — that first-party would enable the tool-search beta Copilot
+rejects — was disproven by wire capture: CC does not send it; the only two extra
+betas on the wire (`advanced-tool-use-2025-11-20`, `cache-diagnosis-2026-04-07`)
+are both accepted by Copilot. `config status` reports and drift-detects both keys.
+
+**Wire faithfulness.** Unlike the rejected `[1m]`-injection idea, this changes no
+response bytes and fabricates no model string — it is a client-side configuration
+signal, so the bridge stays byte-faithful to the Anthropic API on the wire.
 
 ## 6. Re-verifying
 
@@ -232,5 +291,12 @@ is in fact the *correct* outcome.
 - **What window does Claude Code compute?** Drive `claude.exe --bare -p ...
   --model <m> --output-format json` at the bridge and read
   `modelUsage.<m>.contextWindow`.
+- **Does the resume fix hold?** Drive a plain `claude-opus-4-8` turn through the
+  bridge with `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` set, then `--resume`
+  the session with no `--model`; `modelUsage.<m>.contextWindow` must read
+  `1000000` on both. Drop the env and the same resume reads `200000` — the
+  control proving the env is the lever. (Note: the user's own
+  `~/.claude/settings.json` `env.ANTHROPIC_BASE_URL` overrides a shell env; pass a
+  `--settings` file to point a test run at a non-8765 bridge.)
 - **Does Claude Code fetch `/models`?** Watch the bridge log during a turn — for
   a non-`ant` user it never requests `/cc/v1/models`.
