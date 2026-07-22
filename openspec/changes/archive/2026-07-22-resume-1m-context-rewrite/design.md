@@ -114,9 +114,13 @@ explicit expected/current fields for each (matching the existing
 `ExpectedFallback`/`CurrentFallback` pair), keeping `Drifted` a plain equality
 chain; Codex passes null for all, so it never drifts on them.
 
-*Alternative considered (fill-if-absent):* rejected for the unlock key (a stale
-non-`"1"` value would silently disable 1M) and for the telemetry key (a half-set
-pair could leave telemetry on); the user chose always-on for both.
+*Alternative considered (fill-if-absent):* rejected in favor of force-writing both
+keys to the canonical `"1"`. Claude Code reads both as truthiness, so a pre-existing
+non-`"1"` value (e.g. `"0"`) would still be in effect — force-writing is not about
+correcting a functional failure but about keeping the bridge's managed state
+canonical and drift-detectable (a fill-if-absent policy would leave arbitrary
+pre-existing values that `config status` could not meaningfully report as drift).
+The user chose always-on for both.
 
 ### D4 — Revert the dead `[1m]` code
 

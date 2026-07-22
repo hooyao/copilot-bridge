@@ -226,9 +226,11 @@ public class ClientConfigTests
     [Fact]
     public void ClaudeCode_force_overwrites_stale_1m_context_env_values()
     {
-        // Force-write: a pre-existing non-managed value must be overwritten to "1" so the
-        // pair is always consistent (a stale value would silently disable 1M or re-enable
-        // telemetry).
+        // Force-write normalizes both keys to the canonical managed value "1" regardless
+        // of any pre-existing value, so the bridge's managed state is consistent and
+        // drift-detectable. (Claude Code reads these as truthiness, so a non-"1" non-empty
+        // value like "0"/"false" would still be in effect — force-writing is about
+        // canonical managed state, not correcting a functional failure.)
         var original = """
         { "env": {
             "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "0",
