@@ -156,15 +156,17 @@ only touch it to tune. Each detector row is toggled by its own `Enabled` flag
 | **`Server.Port`** | `8765` | Listen port. Change it and update `base_url` in your CLI config to match. |
 | **`AutoUpdate.EnableAutoUpdate`** | `true` | Check GitHub Releases once, synchronously, before binding the port; prompts `Install this update now? [y/N]` and installs only on an interactive `y`. Offline/non-interactive just logs and starts current. `AllowBetaUpdates` (`false`) also considers prereleases. Maintenance commands and `*-dev` builds never check. → [`docs/auto-update.md`](docs/auto-update.md) |
 | **`Tracing.Enabled`** | `false` | Dump every request/response as JSON under `request-traces/`. Contains full prompts — turn back off after debugging. |
-| **`Pipeline:Detectors:ResponseLeakGuard`** | on | Auto-repairs a leaked tool call / Claude Code control envelope by forcing a clean retry. Turn off individual `Signatures` (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`, `SystemReminder`) to clear a false positive — the retry error names the exact switch. `Signal` (`OverloadedError`/`ApiError`) picks the retry error surface. `BufferScannableBlocks: true` withholds each block until scanned (airtight; default relays until detection). |
+| **`Pipeline:Detectors:ResponseLeakGuard`** | on | Auto-repairs a leaked tool call / Claude Code control envelope by forcing a clean retry. Turn off individual `Signatures` (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`, `SystemReminder`) to clear a false positive — the retry error names the exact switch. `Signal` (`OverloadedError`/`ApiError`) picks the retry error surface. `BufferScannableBlocks: true` withholds each `text`/`thinking` block until scanned so a leak in one never reaches the client (`tool_use` blocks still stream live; default relays until detection). |
 | **`Pipeline:Detectors:RunawayGuard`** | on | Circuit-breaker for degenerate output; forces a retryable `overloaded_error`. Thresholds: `MaxDeltaBytes` (12 MiB), `MaxDeltaCount` (20000), `RepetitionWindow`/`RepetitionMinUniqueRatio` (500 / 0.05), `RepetitionMaxConsecutiveRepeat` (50). Fix a false trip by **raising** the threshold, not disabling. |
 | **`Pipeline:UpstreamTimeout`** | on | Two *idle* timers (not total caps; `<= 0` disables): `FirstByteTimeoutSeconds` (240) for response headers, `StreamIdleTimeoutSeconds` (60) for the gap between streamed events. `StreamIdleAction` (`Retry`/`Truncate`) and `StreamIdleSignal` (`OverloadedError`/`ApiError`) govern mid-stream surfacing. |
 | **`Pipeline:Detectors:ToolInputValidation`** | observe-only | Validates `tool_use` input against the tool schema and flags `tool_input_invalid=true`, but does **not** abort — Claude Code self-heals. Set `MalformedJsonAction` / `SchemaViolationAction` to `AbortOverloaded`/`AbortApiError` only for a backend that doesn't; `PreserveStream` then picks delta-before-error (`true`) vs buffer-for-a-real-HTTP-error (`false`). |
 | **`Routing.Locations`** | `[]` | nginx-style per-request model/header rewrites. See below. |
 
 **`Routing.Locations`** ships empty. `appsettings.json` carries a disabled example
-under `_Locations_disabled` (a key the binder ignores) — rename it to `Locations`
-to enable:
+under `_Locations_disabled` (a key the binder ignores). To enable it, rename
+`_Locations_disabled` to `Locations` **and** rename the existing active
+`"Locations": []` to something else (e.g. `_Locations_off`) — exactly one
+`Locations` key may be active, or the config provider rejects the file:
 
 ```jsonc
 {
