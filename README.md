@@ -34,7 +34,8 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   rejects (e.g. `advisor-tool-2026-03-01`) and reshapes each request to the
   reasoning-effort, thinking, and context limits the *target* model actually
   accepts — which often differ from its docs. A new Claude model with no profile
-  yet still forwards under the closest known one.
+  yet forwards under the closest known one if it's similar enough; a too-unfamiliar
+  id gets a clear 400 instead.
 - **Keeps a flaky backend from hanging your client.** The bridge auto-repairs
   leaked tool calls / control markers, breaks degenerate runaways (endless or
   repeated output), and caps the wait on a stalled Copilot with inactivity
