@@ -25,7 +25,7 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 - **The full Claude line-up, with native 1M context.** opus-4.6/4.7/**4.8**,
   sonnet-4.5/4.6/**5**, haiku-4.5 — 1M on everything except sonnet-4.5 and
   haiku-4.5. Codex runs on Copilot's gpt-5.x, up to the newest **gpt-5.6**
-  (`luna`/`sol`/`terra`).
+  (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`).
 - **Run Claude Code on a GPT model.** One `Routing.Locations` rule points
   `claude-opus-4.8` at `gpt-5.6-sol`; the bridge translates the full Anthropic
   tool-use protocol to and from the Responses API, so an agentic session runs end
@@ -146,7 +146,9 @@ wire_api = "responses"
 ## Configuration (`appsettings.json`)
 
 The file next to the executable. Everything below has a sensible default — you
-only touch it to tune. **Changes take effect on restart.**
+only touch it to tune. Each detector row is toggled by its own `Enabled` flag
+(default `true`); set `Enabled: false` to turn that detector off entirely.
+**Changes take effect on restart.**
 
 | Key | Default | What it does |
 | --- | --- | --- |
