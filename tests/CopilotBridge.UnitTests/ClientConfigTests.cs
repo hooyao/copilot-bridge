@@ -6,10 +6,25 @@ using Xunit;
 namespace CopilotBridge.UnitTests;
 
 /// <summary>
+/// Serializes the client-config tests against the rest of the suite. Several of
+/// these tests mutate the process-wide <see cref="System.Environment.CurrentDirectory"/>
+/// (repo-scope config resolves paths relative to it), which would redirect any other
+/// test that resolves a relative path if it ran in parallel. xUnit runs different
+/// collections in parallel by default; <c>DisableParallelization</c> on this
+/// collection makes it the exclusive occupant while it runs, removing the race.
+/// </summary>
+[CollectionDefinition(ClientConfigCollection.Name, DisableParallelization = true)]
+public sealed class ClientConfigCollection
+{
+    public const string Name = "ClientConfig (mutates CWD)";
+}
+
+/// <summary>
 /// Contract tests for the <c>config</c> command family. Each asserts a required
 /// behavior from the client-autoconfiguration spec — derived from the spec, not read
 /// back from the implementation.
 /// </summary>
+[Collection(ClientConfigCollection.Name)]
 public class ClientConfigTests
 {
     // ---- Connection derivation (spec: "Connection facts derived from appsettings") ----
@@ -193,6 +208,52 @@ public class ClientConfigTests
         Assert.Equal(first, second);
     }
 
+    // ---- 1M-context env keys (spec: "Claude Code 1M-context environment") ----
+
+    [Fact]
+    public void ClaudeCode_writes_the_1m_context_env_keys()
+    {
+        // A bridge base URL fails Claude Code's first-party host check, so its native-1M
+        // capability gate needs ASSUME_FIRST_PARTY asserted; DISABLE_ERROR_REPORTING
+        // neutralizes the telemetry that assertion would otherwise enable.
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(null, Conn());
+        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
+
+        Assert.Equal("1", (string?)env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"]);
+        Assert.Equal("1", (string?)env["DISABLE_ERROR_REPORTING"]);
+    }
+
+    [Fact]
+    public void ClaudeCode_force_overwrites_stale_1m_context_env_values()
+    {
+        // Force-write normalizes both keys to the canonical managed value "1" regardless
+        // of any pre-existing value, so the bridge's managed state is consistent and
+        // drift-detectable. (Claude Code reads these as truthiness, so a non-"1" non-empty
+        // value like "0"/"false" would still be in effect — force-writing is about
+        // canonical managed state, not correcting a functional failure.)
+        var original = """
+        { "env": {
+            "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "0",
+            "DISABLE_ERROR_REPORTING": "false"
+        } }
+        """;
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
+        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
+
+        Assert.Equal("1", (string?)env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"]);
+        Assert.Equal("1", (string?)env["DISABLE_ERROR_REPORTING"]);
+    }
+
+    [Fact]
+    public void Codex_config_carries_no_1m_context_env_keys()
+    {
+        // The 1M-context env keys are Claude-Code-only; the Codex TOML must never carry them.
+        var (content, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn());
+
+        Assert.DoesNotContain("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL", content);
+        Assert.DoesNotContain("DISABLE_ERROR_REPORTING", content);
+    }
+
     // ---- Codex TOML merge (spec: "Surgical merge preserves all unrelated content", "Overwrite policy") ----
 
     private const string DenseCodexToml = """
@@ -342,7 +403,10 @@ public class ClientConfigTests
         var drifted = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
             ConfiguredForBridge: true,
             CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
-            ExpectedFallback: null, CurrentFallback: "1", Details: []);
+            ExpectedFallback: null, CurrentFallback: "1",
+            ExpectedAssume1m: "1", CurrentAssume1m: "1",
+            ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            Details: []);
         Assert.True(drifted.Drifted);
     }
 
@@ -352,7 +416,10 @@ public class ClientConfigTests
         var ok = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
             ConfiguredForBridge: true,
             CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
-            ExpectedFallback: "1", CurrentFallback: "1", Details: []);
+            ExpectedFallback: "1", CurrentFallback: "1",
+            ExpectedAssume1m: "1", CurrentAssume1m: "1",
+            ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            Details: []);
         Assert.False(ok.Drifted);
     }
 
@@ -363,8 +430,33 @@ public class ClientConfigTests
         var codexLike = new ConfigState("codex", ConfigScope.Global, "x", Exists: true,
             ConfiguredForBridge: true,
             CurrentBaseUrl: "http://localhost:8765/codex", ExpectedBaseUrl: "http://localhost:8765/codex",
-            ExpectedFallback: null, CurrentFallback: null, Details: []);
+            ExpectedFallback: null, CurrentFallback: null,
+            ExpectedAssume1m: null, CurrentAssume1m: null,
+            ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+            Details: []);
         Assert.False(codexLike.Drifted);
+    }
+
+    [Fact]
+    public void Status_reports_1m_context_env_drift_when_key_missing()
+    {
+        // Base URL and fallback match, but a 1M-context key the bridge force-writes is
+        // absent (null current vs expected "1") → drift.
+        var missingAssume = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
+            ConfiguredForBridge: true,
+            CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
+            ExpectedFallback: null, CurrentFallback: null,
+            ExpectedAssume1m: "1", CurrentAssume1m: null,
+            ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            Details: []);
+        Assert.True(missingAssume.Drifted);
+
+        var missingDisable = missingAssume with
+        {
+            CurrentAssume1m = "1",
+            CurrentDisableErrorReporting = null,
+        };
+        Assert.True(missingDisable.Drifted);
     }
 
     // ---- Review round 2: RunawayGuard contributes to fallback need ----
@@ -448,8 +540,73 @@ public class ClientConfigTests
         }
     }
 
-    // ---- Review round 2: TOML append never glues onto a file lacking a trailing newline ----
+    [Theory]
+    // Filesystem-backed Read: guards the actual Read wiring (env lookups + current-field
+    // assignment), which the direct-ConfigState drift tests do not exercise. A real
+    // bridge-pointed file with both 1M keys = "1" must read as NOT drifted; missing or
+    // non-"1" values must read as drifted — so a swapped/omitted lookup is caught.
+    [InlineData("\"1\"", "\"1\"", false)]     // both present and "1" → not drifted
+    [InlineData(null, "\"1\"", true)]          // assume-1m missing → drift
+    [InlineData("\"1\"", null, true)]          // disable-error-reporting missing → drift
+    [InlineData("\"0\"", "\"1\"", true)]       // assume-1m non-"1" → drift
+    [InlineData("\"1\"", "\"false\"", true)]   // disable-error-reporting non-"1" → drift
+    public void ClaudeCode_read_detects_1m_env_drift_from_disk(string? assume1m, string? disableEr, bool expectDrift)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
+        var keys = new System.Collections.Generic.List<string>
+        {
+            "\"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\"",
+        };
+        if (assume1m is not null) keys.Add($"\"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL\": {assume1m}");
+        if (disableEr is not null) keys.Add($"\"DISABLE_ERROR_REPORTING\": {disableEr}");
+        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
+            "{ \"env\": { " + string.Join(", ", keys) + " } }");
 
+        var old = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = dir;
+            var state = new ClaudeCodeConfigurator().Read(Conn(port: 8765), ConfigScope.Repo);
+            Assert.True(state.ConfiguredForBridge);   // base URL matches, so it's a bridge config
+            Assert.Equal(expectDrift, state.Drifted);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = old;
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void ClaudeCode_read_maps_each_1m_env_key_to_its_own_field()
+    {
+        // Guards against a swapped lookup in Read: give the two keys DISTINCT values so
+        // reading the wrong one is observable. (The drift-from-disk theory can't catch a
+        // swap when both are "1".) Each Current field must reflect ITS key's value.
+        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
+        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
+            "{ \"env\": { \"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\", " +
+            "\"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL\": \"AAA\", " +
+            "\"DISABLE_ERROR_REPORTING\": \"BBB\" } }");
+
+        var old = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = dir;
+            var state = new ClaudeCodeConfigurator().Read(Conn(port: 8765), ConfigScope.Repo);
+            Assert.Equal("AAA", state.CurrentAssume1m);
+            Assert.Equal("BBB", state.CurrentDisableErrorReporting);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = old;
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    // ---- Review round 2: TOML append never glues onto a file lacking a trailing newline ----
     [Fact]
     public void Codex_appends_cleanly_when_file_has_no_trailing_newline()
     {
@@ -556,6 +713,7 @@ public class ClientConfigTests
 /// Effectful-edge contract tests: safe-write plumbing (backup, atomic write,
 /// idempotence on disk), the isolated composition root, and the writer's no-op path.
 /// </summary>
+[Collection(ClientConfigCollection.Name)]
 public class ClientConfigWriteTests : IDisposable
 {
     private readonly string _dir;

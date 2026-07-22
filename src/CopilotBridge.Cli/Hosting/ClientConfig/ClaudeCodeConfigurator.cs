@@ -33,6 +33,29 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
     /// buffered Responses bodies are translated at the Claude edge.</summary>
     private const string FallbackKey = "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK";
 
+    /// <summary>
+    /// Makes Claude Code treat the bridge base URL as first-party. Claude Code
+    /// 2.1.216 decides the context window from a bundled model-capability table
+    /// (<c>context.native_1m</c>, true for opus-4.6/4.7/4.8, sonnet-4.6, sonnet-5)
+    /// gated on the request being first-party (<c>firstParty &amp;&amp; Wd()</c>);
+    /// a custom base URL fails <c>Wd()</c> (host ≠ <c>api.anthropic.com</c>) and
+    /// falls back to 200k — including after <c>--resume</c>. Asserting first-party
+    /// lets the native-1M capability apply. Client-side signal only: inference
+    /// traffic still targets the bridge base URL. See <c>docs/context-window.md</c>.
+    /// </summary>
+    private const string Assume1mKey = "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL";
+
+    /// <summary>
+    /// Disables Claude Code's error-reporting (Datadog) telemetry. Written together
+    /// with <see cref="Assume1mKey"/> because asserting first-party also flips that
+    /// telemetry from off to on for a custom-base-URL user; keeping it off means
+    /// enabling the 1M window changes exactly one thing.
+    /// </summary>
+    private const string DisableErrorReportingKey = "DISABLE_ERROR_REPORTING";
+
+    /// <summary>The managed value both 1M-context env keys are force-written to.</summary>
+    private const string ManagedFlagOn = "1";
+
     private static readonly JsonSerializerOptions WriteOptions = new()
     {
         WriteIndented = true,
@@ -90,7 +113,10 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
             return new ConfigState(ClientId, scope, path, Exists: false,
                 ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
                 ExpectedFallback: null,
-                CurrentFallback: null, Details: ["not configured (file does not exist)"]);
+                CurrentFallback: null,
+                ExpectedAssume1m: null, CurrentAssume1m: null,
+                ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+                Details: ["not configured (file does not exist)"]);
         }
 
         // Read must stay tolerant — `config status` should never crash on a malformed
@@ -111,12 +137,16 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
                 ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
                 ExpectedFallback: null,
                 CurrentFallback: null,
+                ExpectedAssume1m: null, CurrentAssume1m: null,
+                ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
                 Details: ["file is not a JSON object (cannot read — run the config command to rewrite)"]);
         }
 
         var env = root["env"] as JsonObject;
         var current = AsStringOrNull(env?[BaseUrlKey]);
         var fallback = AsStringOrNull(env?[FallbackKey]);
+        var assume1m = AsStringOrNull(env?[Assume1mKey]);
+        var disableErrorReporting = AsStringOrNull(env?[DisableErrorReportingKey]);
 
         // "Configured for bridge" means the base URL points at THIS bridge's Claude Code
         // route (the `/cc` prefix), not merely that ANTHROPIC_BASE_URL is set — a config
@@ -133,12 +163,27 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         details.Add(fallback is null
             ? $"{FallbackKey}: (unset)"
             : $"{FallbackKey}: {fallback}");
+        details.Add(assume1m is null
+            ? $"{Assume1mKey}: (unset)"
+            : $"{Assume1mKey}: {assume1m}");
+        details.Add(disableErrorReporting is null
+            ? $"{DisableErrorReportingKey}: (unset)"
+            : $"{DisableErrorReportingKey}: {disableErrorReporting}");
 
         return new ConfigState(ClientId, scope, path, Exists: true,
             ConfiguredForBridge: pointsAtBridge, CurrentBaseUrl: pointsAtBridge ? current : null,
             ExpectedBaseUrl: expected,
             ExpectedFallback: null,
-            CurrentFallback: pointsAtBridge ? fallback : null, Details: details);
+            CurrentFallback: pointsAtBridge ? fallback : null,
+            // The bridge force-writes both 1M-context keys to "1"; a bridge-pointed
+            // config missing either (or holding another value) is drift. Current values
+            // are only meaningful when pointed at the bridge — a non-bridge config passes
+            // null current so it never counts as drift.
+            ExpectedAssume1m: ManagedFlagOn,
+            CurrentAssume1m: pointsAtBridge ? assume1m : null,
+            ExpectedDisableErrorReporting: ManagedFlagOn,
+            CurrentDisableErrorReporting: pointsAtBridge ? disableErrorReporting : null,
+            Details: details);
     }
 
     /// <summary>
@@ -169,6 +214,15 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         // base_url — always force-written (this is the point of the command).
         env[BaseUrlKey] = connection.ClaudeCodeBaseUrl;
         summary.Add($"set env.{BaseUrlKey} = {connection.ClaudeCodeBaseUrl}");
+
+        // 1M-context unlock — force-written as a consistent pair (see the key docs).
+        // ASSUME_FIRST_PARTY makes Claude Code's native-1M capability gate fire for
+        // the bridge base URL; DISABLE_ERROR_REPORTING neutralizes the telemetry
+        // that first-party assertion would otherwise enable.
+        env[Assume1mKey] = ManagedFlagOn;
+        summary.Add($"set env.{Assume1mKey} = {ManagedFlagOn} (1M context on native-1M models, survives --resume)");
+        env[DisableErrorReportingKey] = ManagedFlagOn;
+        summary.Add($"set env.{DisableErrorReportingKey} = {ManagedFlagOn} (keep error-reporting telemetry off)");
 
         // auth token — fill only if absent; preserve any existing value.
         if (env[AuthTokenKey] is null)
