@@ -20,51 +20,26 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 
 ## Why use it
 
-- **One Copilot subscription, two coding agents.** Point Claude Code at `/cc`
-  and Codex at `/codex` — both run on your existing Copilot plan. Cost counts
-  against Copilot, not an Anthropic/OpenAI bill.
-- **The full current Claude model set.** opus-4.6 / opus-4.7 / **opus-4.8**,
-  sonnet-4.5 / sonnet-4.6 / **sonnet-5**, haiku-4.5 — with **native 1M context**
-  on opus-4.6/4.7/4.8 and sonnet-4.6/sonnet-5 (all but sonnet-4.5 / haiku-4.5).
-  Codex runs on Copilot's gpt-5.x, including the newest **gpt-5.6** models
-  (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`).
-- **Run Claude Code on a GPT model — including gpt-5.6-sol.** Point Claude Code at
-  one of Copilot's reasoning GPTs instead of a Claude model: a one-line
-  `Routing.Locations` rule routes `claude-opus-4.8` traffic to **`gpt-5.6-sol`**
-  (Copilot's newest Codex model). The bridge translates the full Anthropic
-  tool-use protocol — tool calls, tool results, streaming — to and from the
-  Responses API, so a complete agentic session runs end to end. See the
-  `Routing.Locations` example under [Configuration](#configuration-appsettingsjson).
-- **Works with Claude Code 4.8 out of the box.** Claude Code sends beta headers
-  Copilot rejects (e.g. `advisor-tool-2026-03-01`, which 400s on every model).
-  The bridge strips the ones Copilot refuses so your session doesn't error.
-- **Every model's real limits are respected.** Which reasoning-effort levels,
-  thinking shapes, and context windows each Copilot model actually accepts differs
-  from what its docs claim. The bridge reshapes each request to what the target
-  model accepts. A newer *Claude* model with no exact profile yet is still
-  forwarded under the closest known one (real id on the wire), so it works before
-  the bridge is updated; an id it can't relate to any known model gets a clear
-  error. (A brand-new *Codex/GPT* model is the one case that needs a one-line
-  allowlist update first — until then it isn't routed to Copilot's Responses API.)
-- **Auto-repairs tool-call and control-envelope leaks.** Copilot-served models
-  occasionally emit a tool call — or one of Claude Code's internal control markers
-  — as literal text instead of a real structured block. The bridge detects this
-  and makes the client retry the turn cleanly, so it doesn't get stuck. An opt-in
-  airtight mode suppresses a leak before any leaked byte reaches the client.
-- **Stops degenerate runaways before they hang your client.** A Copilot model can
-  get stuck generating — an unbounded stream of tiny fragments, or one token
-  repeated tens of thousands of times up to `max_tokens` — which would otherwise
-  stream at you for minutes and burn quota for nothing. The bridge detects this on
-  both streaming and one-shot responses and forces a clean retry the moment output
-  goes degenerate.
-- **Bounds the wait on an unresponsive Copilot.** Two independent *inactivity*
-  budgets — one for the first response byte, one for the gap between streamed
-  events — cap how long the bridge hangs on a stalled backend. They're idle
-  timers, not a total-duration cap, so a legitimately slow-but-progressing request
-  (a near-full-1M prompt whose first byte takes minutes) is never cut off. A
-  stall before headers returns a real `504`; a mid-stream stall on Claude Code
-  drives the same clean retry as the guards above (Codex gets a terminal
-  `response.failed`, which its client understands).
+- **One Copilot subscription, two agents.** Point Claude Code at `/cc` and Codex
+  at `/codex`; both bill against your Copilot plan, not an Anthropic/OpenAI account.
+- **The full Claude line-up, with native 1M context.** opus-4.6/4.7/**4.8**,
+  sonnet-4.5/4.6/**5**, haiku-4.5 — 1M on everything except sonnet-4.5 and
+  haiku-4.5. Codex runs on Copilot's gpt-5.x, up to the newest **gpt-5.6**
+  (`luna`/`sol`/`terra`).
+- **Run Claude Code on a GPT model.** One `Routing.Locations` rule points
+  `claude-opus-4.8` at `gpt-5.6-sol`; the bridge translates the full Anthropic
+  tool-use protocol to and from the Responses API, so an agentic session runs end
+  to end. See [Configuration](#configuration-appsettingsjson).
+- **Handles the wire-shape mismatches for you.** It strips beta headers Copilot
+  rejects (e.g. `advisor-tool-2026-03-01`) and reshapes each request to the
+  reasoning-effort, thinking, and context limits the *target* model actually
+  accepts — which often differ from its docs. A new Claude model with no profile
+  yet still forwards under the closest known one.
+- **Keeps a flaky backend from hanging your client.** The bridge auto-repairs
+  leaked tool calls / control markers, breaks degenerate runaways (endless or
+  repeated output), and caps the wait on a stalled Copilot with inactivity
+  timeouts — each becoming a clean client retry instead of a hang. Tunable under
+  `Pipeline:Detectors` (below).
 
 ## Install & run
 
@@ -101,18 +76,16 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 ```pwsh
 copilot-bridge config claude-code --scope global   # ~/.claude/settings.json
 copilot-bridge config claude-code --scope repo     # ./.claude/settings.local.json (this repo only)
+
+copilot-bridge config claude-code --dry-run        # preview only the keys it would change
+copilot-bridge config claude-code --port 9000      # override the port from appsettings.json
+copilot-bridge config status                       # show where each client points + any drift
 ```
 
-This merges the bridge's keys into your existing settings **without touching any
-other setting** — the port comes from `appsettings.json` (`Server.Port`). The
-command removes the legacy `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` override so
-Claude Code can recover from a streaming fault with its `stream:false` fallback;
-the bridge translates that response on cross-model routes. Add `--dry-run` to
-preview the change, or `--port N` to override. `--dry-run` prints only the keys the command changes;
-add `--show-content` to also print the full merged file (which includes your
-preserved settings, so avoid it in shared logs). Run `copilot-bridge config
-status` to see where each client currently points and whether it has drifted from
-`appsettings.json`.
+It merges the bridge's keys into your existing settings **without touching
+anything else**; the port comes from `appsettings.json` (`Server.Port`) unless you
+pass `--port`. (Add `--show-content` to a `--dry-run` to print the full merged
+file — it includes your other settings, so avoid it in shared logs.)
 
 **Or do it by hand** — add an `env` block to `.claude/settings.local.json` (or
 your global `~/.claude/settings.json`). Claude Code reads this file as **strict
@@ -129,15 +102,15 @@ JSON**, so it must not contain comments:
 }
 ```
 
-The last two keys give native-1M models (opus-4.6/4.7/4.8, sonnet-4.6, sonnet-5)
-their full 1M context window — including after `--resume`. Claude Code 2.1.216
-gates the 1M capability on the base URL being first-party; these assert that for
-the bridge and keep its error-reporting telemetry off (see
-`docs/context-window.md` §5). `ANTHROPIC_AUTH_TOKEN` is unused (the bridge
-authenticates to Copilot with your GitHub token) but Claude Code requires
-*something* to be set. Pick any Claude model in Claude Code as usual — the bridge
-maps it to the matching Copilot model. The `config claude-code` command writes all
-four of these keys for you.
+- `ANTHROPIC_AUTH_TOKEN` — unused (the bridge authenticates with your GitHub
+  token), but Claude Code requires *something* set.
+- `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` + `DISABLE_ERROR_REPORTING` — unlock
+  the full 1M window for native-1M models (opus-4.6/4.7/4.8, sonnet-4.6/5),
+  including after `--resume`, and keep telemetry off. See
+  `docs/context-window.md` §5.
+
+Then pick any Claude model in Claude Code as usual — the bridge maps it to the
+matching Copilot model.
 
 ## Point Codex at the bridge
 
@@ -169,89 +142,35 @@ wire_api = "responses"
 
 ## Configuration (`appsettings.json`)
 
-The file next to the executable. A few keys worth knowing:
+The file next to the executable. Everything below has a sensible default — you
+only touch it to tune. **Changes take effect on restart.**
 
-- **`Server.Port`** — the port the bridge listens on (default `8765`). If you
-  change it, update the `base_url` in your CLI config to match.
-- **`AutoUpdate`** — startup self-update, **on by default**. When you run
-  `copilot-bridge` (or `copilot-bridge serve`), the bridge checks the project's
-  public GitHub Releases **once, synchronously, before it binds the port**; if a
-  newer version exists it prints the release notes and asks
-  `Install this update now? [y/N]`. Only an interactive `y`/`yes` installs — a
-  redirected/non-interactive stdin never installs, and a failed check (offline,
-  rate-limited, timeout) just logs a warning and starts the current version.
-  `EnableAutoUpdate` (default `true`) is the master switch; `AllowBetaUpdates`
-  (default `false`) also considers GitHub prereleases. Maintenance commands
-  (`auth`, `config`, `debug`, `--help`, `--version`) never check, and a local
-  `*-dev` build never self-updates. See
-  [`docs/auto-update.md`](docs/auto-update.md) for the full design (trust
-  boundary, config migration, rollback).
-- **`Tracing.Enabled`** — per-request audit logging, **off by default**. Turn it
-  on to dump every request/response as JSON under `request-traces/` when
-  debugging — but note the files contain your full prompts, so turn it back off
-  afterward.
-- **`Pipeline:Detectors:ResponseLeakGuard`** — the response-leak auto-repair
-  (catches a leaked tool call or a leaked Claude Code control envelope;
-  `Enabled`, `Signal`). On by default; leave it unless you want to tune the
-  retry signal. Individual leak signatures can be turned off under `Signatures`
-  (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`,
-  `CrossSessionMessage`, `Tick`, `SystemReminder` — all on by default) to clear a
-  false positive, e.g. when you're discussing this markup with the model and a
-  sample reply gets caught. The retry error and the log both name the exact switch
-  to flip. Set `BufferScannableBlocks` to `true` for airtight suppression — each
-  text/thinking block is withheld until scanned and relayed only if clean, so a
-  leak never reaches the client (default `false` relays until detection).
-  A **restart** is required after changing any of these.
-- **`Pipeline:Detectors:RunawayGuard`** — the degenerate-generation
-  circuit-breaker. On by default; aborts a runaway on any of four signals and
-  forces a retryable `overloaded_error`. Tune the thresholds only if a legitimate
-  output trips one: `MaxDeltaBytes` (cumulative delta payload, default 12 MiB),
-  `MaxDeltaCount` (per-block delta events, default 20000), `RepetitionWindow` +
-  `RepetitionMinUniqueRatio` (sliding-window unique-token ratio, default 500 /
-  0.05), and `RepetitionMaxConsecutiveRepeat` (same token in a row, default 50).
-  A repetitive-but-legitimate output is fixed by **raising** the offending
-  threshold, not by disabling the guard. A **restart** is required after changing a
-  value.
-- **`Pipeline:UpstreamTimeout`** — the two inactivity budgets on the upstream
-  forward paths. `FirstByteTimeoutSeconds` (default 240) bounds the wait for
-  response headers per send attempt; `StreamIdleTimeoutSeconds` (default 60)
-  bounds the gap between streamed events (sits just below Claude Code's own 90 s
-  watchdog so the bridge acts first). Each is an *idle* timer, not a total cap, and
-  `<= 0` disables that phase. `StreamIdleAction` (`Retry` / `Truncate`) and
-  `StreamIdleSignal` (`OverloadedError` / `ApiError`) govern the mid-stream
-  surfacing. A **restart** is required after changing a value.
-- **`Pipeline:Detectors:ToolInputValidation`** — validates real `tool_use`
-  input JSON against the declared tool schema after the tool block closes and
-  records `tool_input_invalid=true` on the summary line. **Observe-only by
-  default** (it does *not* abort): Claude Code already recovers from an invalid
-  tool call natively — it parses the input, falls back to an empty object on
-  malformed JSON, and on a schema failure re-prompts the model with an error
-  tool_result. Aborting was found to cut off that self-heal (e.g. an
-  `AskUserQuestion` missing its required `question` field surfaced "Server error
-  mid-response" instead of a clean retry). Set `MalformedJsonAction` /
-  `SchemaViolationAction` to `AbortOverloaded` (or `AbortApiError`) only for a
-  backend/tool where CC does *not* self-heal; `PreserveStream` then governs
-  mid-stream vs real-HTTP-status delivery. A **restart** is required after
-  changing it.
-- **`Routing.Locations`** — optional nginx-style rules to remap a model or tweak
-  headers per request. Ships **empty** (`"Locations": []`) — no rewrites by
-  default. `appsettings.json` also carries a disabled example under
-  `_Locations_disabled` (a key the config binder ignores) that you can enable by
-  renaming it to `Locations`:
+| Key | Default | What it does |
+| --- | --- | --- |
+| **`Server.Port`** | `8765` | Listen port. Change it and update `base_url` in your CLI config to match. |
+| **`AutoUpdate.EnableAutoUpdate`** | `true` | Check GitHub Releases once, synchronously, before binding the port; prompts `Install this update now? [y/N]` and installs only on an interactive `y`. Offline/non-interactive just logs and starts current. `AllowBetaUpdates` (`false`) also considers prereleases. Maintenance commands and `*-dev` builds never check. → [`docs/auto-update.md`](docs/auto-update.md) |
+| **`Tracing.Enabled`** | `false` | Dump every request/response as JSON under `request-traces/`. Contains full prompts — turn back off after debugging. |
+| **`Pipeline:Detectors:ResponseLeakGuard`** | on | Auto-repairs a leaked tool call / Claude Code control envelope by forcing a clean retry. Turn off individual `Signatures` (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`, `SystemReminder`) to clear a false positive — the retry error names the exact switch. `BufferScannableBlocks: true` withholds each block until scanned (airtight; default relays until detection). |
+| **`Pipeline:Detectors:RunawayGuard`** | on | Circuit-breaker for degenerate output; forces a retryable `overloaded_error`. Thresholds: `MaxDeltaBytes` (12 MiB), `MaxDeltaCount` (20000), `RepetitionWindow`/`RepetitionMinUniqueRatio` (500 / 0.05), `RepetitionMaxConsecutiveRepeat` (50). Fix a false trip by **raising** the threshold, not disabling. |
+| **`Pipeline:UpstreamTimeout`** | on | Two *idle* timers (not total caps; `<= 0` disables): `FirstByteTimeoutSeconds` (240) for response headers, `StreamIdleTimeoutSeconds` (60) for the gap between streamed events. `StreamIdleAction` (`Retry`/`Truncate`) and `StreamIdleSignal` (`OverloadedError`/`ApiError`) govern mid-stream surfacing. |
+| **`Pipeline:Detectors:ToolInputValidation`** | observe-only | Validates `tool_use` input against the tool schema and flags `tool_input_invalid=true`, but does **not** abort — Claude Code self-heals. Set `MalformedJsonAction` / `SchemaViolationAction` to `AbortOverloaded`/`AbortApiError` only for a backend that doesn't. |
+| **`Routing.Locations`** | `[]` | nginx-style per-request model/header rewrites. See below. |
 
-  ```jsonc
-  {
-    "When": { "Model": "claude-opus-4.8" },
-    "Use":  { "Model": "gpt-5.6-sol", "EffortMap": { "max": "xhigh" } }
-  }
-  ```
+**`Routing.Locations`** ships empty. `appsettings.json` carries a disabled example
+under `_Locations_disabled` (a key the binder ignores) — rename it to `Locations`
+to enable:
 
-  which routes Claude Code's `claude-opus-4.8` traffic to Copilot's newest Codex
-  model, **`gpt-5.6-sol`**. The `EffortMap` here is a deliberate down-tier: unlike
-  gpt-5.5, gpt-5.6-sol *does* accept `max`, so without the map Claude Code's `max`
-  effort would pass through unchanged — the map caps it at `xhigh` instead (drop
-  the `EffortMap` to send `max` through). See [`docs/routing.md`](docs/routing.md)
-  for the full match/rewrite syntax.
+```jsonc
+{
+  "When": { "Model": "claude-opus-4.8" },
+  "Use":  { "Model": "gpt-5.6-sol", "EffortMap": { "max": "xhigh" } }
+}
+```
+
+This routes Claude Code's `claude-opus-4.8` to Copilot's `gpt-5.6-sol`. The
+`EffortMap` down-tiers `max` → `xhigh` (gpt-5.6-sol accepts `max`, so drop the map
+to pass it through). Full match/rewrite syntax in
+[`docs/routing.md`](docs/routing.md).
 
 ## Limitations
 
