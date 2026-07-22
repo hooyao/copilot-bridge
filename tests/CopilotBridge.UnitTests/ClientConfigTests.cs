@@ -523,8 +523,73 @@ public class ClientConfigTests
         }
     }
 
-    // ---- Review round 2: TOML append never glues onto a file lacking a trailing newline ----
+    [Theory]
+    // Filesystem-backed Read: guards the actual Read wiring (env lookups + current-field
+    // assignment), which the direct-ConfigState drift tests do not exercise. A real
+    // bridge-pointed file with both 1M keys = "1" must read as NOT drifted; missing or
+    // non-"1" values must read as drifted — so a swapped/omitted lookup is caught.
+    [InlineData("\"1\"", "\"1\"", false)]     // both present and "1" → not drifted
+    [InlineData(null, "\"1\"", true)]          // assume-1m missing → drift
+    [InlineData("\"1\"", null, true)]          // disable-error-reporting missing → drift
+    [InlineData("\"0\"", "\"1\"", true)]       // assume-1m non-"1" → drift
+    [InlineData("\"1\"", "\"false\"", true)]   // disable-error-reporting non-"1" → drift
+    public void ClaudeCode_read_detects_1m_env_drift_from_disk(string? assume1m, string? disableEr, bool expectDrift)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
+        var keys = new System.Collections.Generic.List<string>
+        {
+            "\"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\"",
+        };
+        if (assume1m is not null) keys.Add($"\"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL\": {assume1m}");
+        if (disableEr is not null) keys.Add($"\"DISABLE_ERROR_REPORTING\": {disableEr}");
+        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
+            "{ \"env\": { " + string.Join(", ", keys) + " } }");
 
+        var old = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = dir;
+            var state = new ClaudeCodeConfigurator().Read(Conn(port: 8765), ConfigScope.Repo);
+            Assert.True(state.ConfiguredForBridge);   // base URL matches, so it's a bridge config
+            Assert.Equal(expectDrift, state.Drifted);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = old;
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void ClaudeCode_read_maps_each_1m_env_key_to_its_own_field()
+    {
+        // Guards against a swapped lookup in Read: give the two keys DISTINCT values so
+        // reading the wrong one is observable. (The drift-from-disk theory can't catch a
+        // swap when both are "1".) Each Current field must reflect ITS key's value.
+        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
+        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
+            "{ \"env\": { \"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\", " +
+            "\"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL\": \"AAA\", " +
+            "\"DISABLE_ERROR_REPORTING\": \"BBB\" } }");
+
+        var old = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = dir;
+            var state = new ClaudeCodeConfigurator().Read(Conn(port: 8765), ConfigScope.Repo);
+            Assert.Equal("AAA", state.CurrentAssume1m);
+            Assert.Equal("BBB", state.CurrentDisableErrorReporting);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = old;
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    // ---- Review round 2: TOML append never glues onto a file lacking a trailing newline ----
     [Fact]
     public void Codex_appends_cleanly_when_file_has_no_trailing_newline()
     {

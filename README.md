@@ -115,27 +115,29 @@ status` to see where each client currently points and whether it has drifted fro
 `appsettings.json`.
 
 **Or do it by hand** — add an `env` block to `.claude/settings.local.json` (or
-your global `~/.claude/settings.json`):
+your global `~/.claude/settings.json`). Claude Code reads this file as **strict
+JSON**, so it must not contain comments:
 
-```jsonc
+```json
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
     "ANTHROPIC_AUTH_TOKEN": "dummy",
-    // Give native-1M models (opus-4.6/4.7/4.8, sonnet-4.6, sonnet-5) their full
-    // 1M context window — including after `--resume`. Claude Code 2.1.216 gates the
-    // 1M capability on the base URL being first-party; these assert that for the
-    // bridge and keep its error-reporting telemetry off. See docs/context-window.md §5.
     "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1",
     "DISABLE_ERROR_REPORTING": "1"
   }
 }
 ```
 
-`ANTHROPIC_AUTH_TOKEN` is unused (the bridge authenticates to Copilot with your
-GitHub token) but Claude Code requires *something* to be set. Pick any Claude
-model in Claude Code as usual — the bridge maps it to the matching Copilot model.
-The `config claude-code` command writes all four of these keys for you.
+The last two keys give native-1M models (opus-4.6/4.7/4.8, sonnet-4.6, sonnet-5)
+their full 1M context window — including after `--resume`. Claude Code 2.1.216
+gates the 1M capability on the base URL being first-party; these assert that for
+the bridge and keep its error-reporting telemetry off (see
+`docs/context-window.md` §5). `ANTHROPIC_AUTH_TOKEN` is unused (the bridge
+authenticates to Copilot with your GitHub token) but Claude Code requires
+*something* to be set. Pick any Claude model in Claude Code as usual — the bridge
+maps it to the matching Copilot model. The `config claude-code` command writes all
+four of these keys for you.
 
 ## Point Codex at the bridge
 
