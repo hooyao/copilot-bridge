@@ -6,10 +6,25 @@ using Xunit;
 namespace CopilotBridge.UnitTests;
 
 /// <summary>
+/// Serializes the client-config tests against the rest of the suite. Several of
+/// these tests mutate the process-wide <see cref="System.Environment.CurrentDirectory"/>
+/// (repo-scope config resolves paths relative to it), which would redirect any other
+/// test that resolves a relative path if it ran in parallel. xUnit runs different
+/// collections in parallel by default; <c>DisableParallelization</c> on this
+/// collection makes it the exclusive occupant while it runs, removing the race.
+/// </summary>
+[CollectionDefinition(ClientConfigCollection.Name, DisableParallelization = true)]
+public sealed class ClientConfigCollection
+{
+    public const string Name = "ClientConfig (mutates CWD)";
+}
+
+/// <summary>
 /// Contract tests for the <c>config</c> command family. Each asserts a required
 /// behavior from the client-autoconfiguration spec — derived from the spec, not read
 /// back from the implementation.
 /// </summary>
+[Collection(ClientConfigCollection.Name)]
 public class ClientConfigTests
 {
     // ---- Connection derivation (spec: "Connection facts derived from appsettings") ----
@@ -696,6 +711,7 @@ public class ClientConfigTests
 /// Effectful-edge contract tests: safe-write plumbing (backup, atomic write,
 /// idempotence on disk), the isolated composition root, and the writer's no-op path.
 /// </summary>
+[Collection(ClientConfigCollection.Name)]
 public class ClientConfigWriteTests : IDisposable
 {
     private readonly string _dir;
