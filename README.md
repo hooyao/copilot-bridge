@@ -38,8 +38,8 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 - **Keeps a flaky backend from hanging your client.** The bridge auto-repairs
   leaked tool calls / control markers, breaks degenerate runaways (endless or
   repeated output), and caps the wait on a stalled Copilot with inactivity
-  timeouts — each becoming a clean client retry instead of a hang. Tunable under
-  `Pipeline:Detectors` (below).
+  timeouts — surfacing each as a clean retry, a `504`, or a terminal error the
+  client understands, rather than a hang. Tunable under `Pipeline` (below).
 
 ## Install & run
 
@@ -82,10 +82,13 @@ copilot-bridge config claude-code --port 9000      # override the port from apps
 copilot-bridge config status                       # show where each client points + any drift
 ```
 
-It merges the bridge's keys into your existing settings **without touching
-anything else**; the port comes from `appsettings.json` (`Server.Port`) unless you
-pass `--port`. (Add `--show-content` to a `--dry-run` to print the full merged
-file — it includes your other settings, so avoid it in shared logs.)
+It merges the bridge's keys into your existing settings, leaving your unrelated
+settings intact; the port comes from `appsettings.json` (`Server.Port`) unless you
+pass `--port`. (It does clear one legacy key — the old
+`CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` override — so Claude Code can use its
+`stream:false` recovery on a mid-stream fault, which the bridge translates on
+cross-model routes.) Add `--show-content` to a `--dry-run` to print the full
+merged file — it includes your other settings, so avoid it in shared logs.
 
 **Or do it by hand** — add an `env` block to `.claude/settings.local.json` (or
 your global `~/.claude/settings.json`). Claude Code reads this file as **strict
@@ -150,10 +153,10 @@ only touch it to tune. **Changes take effect on restart.**
 | **`Server.Port`** | `8765` | Listen port. Change it and update `base_url` in your CLI config to match. |
 | **`AutoUpdate.EnableAutoUpdate`** | `true` | Check GitHub Releases once, synchronously, before binding the port; prompts `Install this update now? [y/N]` and installs only on an interactive `y`. Offline/non-interactive just logs and starts current. `AllowBetaUpdates` (`false`) also considers prereleases. Maintenance commands and `*-dev` builds never check. → [`docs/auto-update.md`](docs/auto-update.md) |
 | **`Tracing.Enabled`** | `false` | Dump every request/response as JSON under `request-traces/`. Contains full prompts — turn back off after debugging. |
-| **`Pipeline:Detectors:ResponseLeakGuard`** | on | Auto-repairs a leaked tool call / Claude Code control envelope by forcing a clean retry. Turn off individual `Signatures` (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`, `SystemReminder`) to clear a false positive — the retry error names the exact switch. `BufferScannableBlocks: true` withholds each block until scanned (airtight; default relays until detection). |
+| **`Pipeline:Detectors:ResponseLeakGuard`** | on | Auto-repairs a leaked tool call / Claude Code control envelope by forcing a clean retry. Turn off individual `Signatures` (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`, `SystemReminder`) to clear a false positive — the retry error names the exact switch. `Signal` (`OverloadedError`/`ApiError`) picks the retry error surface. `BufferScannableBlocks: true` withholds each block until scanned (airtight; default relays until detection). |
 | **`Pipeline:Detectors:RunawayGuard`** | on | Circuit-breaker for degenerate output; forces a retryable `overloaded_error`. Thresholds: `MaxDeltaBytes` (12 MiB), `MaxDeltaCount` (20000), `RepetitionWindow`/`RepetitionMinUniqueRatio` (500 / 0.05), `RepetitionMaxConsecutiveRepeat` (50). Fix a false trip by **raising** the threshold, not disabling. |
 | **`Pipeline:UpstreamTimeout`** | on | Two *idle* timers (not total caps; `<= 0` disables): `FirstByteTimeoutSeconds` (240) for response headers, `StreamIdleTimeoutSeconds` (60) for the gap between streamed events. `StreamIdleAction` (`Retry`/`Truncate`) and `StreamIdleSignal` (`OverloadedError`/`ApiError`) govern mid-stream surfacing. |
-| **`Pipeline:Detectors:ToolInputValidation`** | observe-only | Validates `tool_use` input against the tool schema and flags `tool_input_invalid=true`, but does **not** abort — Claude Code self-heals. Set `MalformedJsonAction` / `SchemaViolationAction` to `AbortOverloaded`/`AbortApiError` only for a backend that doesn't. |
+| **`Pipeline:Detectors:ToolInputValidation`** | observe-only | Validates `tool_use` input against the tool schema and flags `tool_input_invalid=true`, but does **not** abort — Claude Code self-heals. Set `MalformedJsonAction` / `SchemaViolationAction` to `AbortOverloaded`/`AbortApiError` only for a backend that doesn't; `PreserveStream` then picks delta-before-error (`true`) vs buffer-for-a-real-HTTP-error (`false`). |
 | **`Routing.Locations`** | `[]` | nginx-style per-request model/header rewrites. See below. |
 
 **`Routing.Locations`** ships empty. `appsettings.json` carries a disabled example
