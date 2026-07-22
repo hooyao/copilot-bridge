@@ -57,8 +57,8 @@ SHALL be kept.
 #### Scenario: Existing auth token is preserved
 
 - **WHEN** `~/.claude/settings.json` already has an `ANTHROPIC_AUTH_TOKEN` value
-- **THEN** the bridge leaves that value unchanged and only updates
-  `ANTHROPIC_BASE_URL`
+- **THEN** the bridge leaves that value unchanged while force-writing its managed
+  keys (`ANTHROPIC_BASE_URL` and the two 1M-context env keys)
 
 #### Scenario: Missing auth token is filled with a copilot-bridge value
 

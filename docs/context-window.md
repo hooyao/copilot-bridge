@@ -18,7 +18,10 @@
   Code grant 1M and keep it across `--resume` (see §5).
 - **Plain Sonnet/Haiku already works perfectly**: Claude Code uses 200k, Copilot
   base is 200k (4.5 / haiku) or 1M (sonnet-4.6, re-probed). No special handling
-  needed for the plain path.
+  needed for the plain path. (Once the fix env vars from §5 are installed, plain
+  `sonnet-4.6` — being a `native_1m` model — is assigned 1M by Claude Code rather
+  than 200k, matching what Copilot serves; plain 4.5 / haiku stay 200k, which is
+  correct.)
 - **`sonnet-4.5[1m]` / `haiku[1m]` is a client-side trap**: Claude Code believes
   1M, but those models really are 200k on Copilot. This **degrades gracefully on
   its own** — when the conversation overfills 200k, Copilot returns a `prompt is
@@ -196,10 +199,14 @@ See `ProfileAdjusterTests`.
 
 ## 5. Restoring 1M after `--resume` (the firstParty capability gate)
 
-**Symptom.** On the running client (2.1.216) a bridge user's opus-4.8 session
-starts at 1M but, after `--resume` with no explicit `--model`, reverts to a
-200,000 window — Claude Code's auto-compaction then fires at 200k for the rest of
-the session even though Copilot's backend still serves 1M.
+**Symptom.** On the running client (2.1.216) a bridge user starts an opus-4.8
+session at 1M — either by selecting `opus[1m]` (the `[1m]` suffix trips branch ①
+below on the first turn) or by installing the fix env vars from this section —
+but after `--resume` with no explicit `--model` the window reverts to a 200,000
+window. Claude Code's auto-compaction then fires at 200k for the rest of the
+session even though Copilot's backend still serves 1M. (A plain
+`claude-opus-4-8` selection with neither the `[1m]` suffix nor the env vars
+starts at 200k in the first place — see the measurement table below.)
 
 **Why (2.1.216, reverse-engineered from the shipped exe — the decompiled 2.1.159
 source is stale here).** Claude Code's window function now reads a **bundled,
