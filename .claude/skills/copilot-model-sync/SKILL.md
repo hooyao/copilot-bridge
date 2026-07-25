@@ -89,24 +89,73 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    Read the `→ HTTP N` lines: `200` = accepted, `400` = rejected. **Do not skip
    a probe because the model "looks like" a known family** — sonnet-5's contract
    matched opus-4.8, not its own sonnet-4.6 predecessor.
-3. **Write the `ModelProfile`** in `ModelProfileCatalog.BuildDefault()` (or a
+3. **Fidelity check — re-confirm every REWRITE-causing finding on real captured
+   client bytes.** The probes above are hand-written minimal requests (~150 bytes,
+   no system blocks, no betas, non-streaming). A real Claude Code request is ~20×
+   larger and carries 3 system blocks, ~8 `anthropic-beta` tokens, tool
+   definitions, `cache_control`, and `stream:true`. So a minimal-request result
+   answers "does Copilot accept this shape *in isolation*" — **not** "does this
+   rule still hold on what the client actually sends."
+
+   That gap only matters for findings the bridge acts on. Sort your results:
+
+   | Finding | Bridge does | Fidelity check |
+   | --- | --- | --- |
+   | Model accepts X | nothing (passthrough) | not needed — a wrong "accept" surfaces as Copilot's own visible 400 |
+   | Model **rejects** X → profile makes the bridge **strip / clamp / coerce** | rewrites the request | **REQUIRED** |
+
+   The asymmetry is the point: a false *accept* fails loudly upstream, but a
+   false *reject* makes the bridge silently downgrade a request the backend would
+   have taken — the user loses capability with no error anywhere. That is
+   unobservable in production, so it must be ruled out before shipping.
+
+   Replay a real captured body, mutating **only the axis under test**:
+
+   ```csharp
+   // Bodies land in tests/behavior-runs/<serve-dir>/*-upstream-req.json after any
+   // Kind=ClientBehavior run (tracing is forced on). Take one, change one field,
+   // POST it straight at Copilot via PlaygroundClient — bypassing the bridge.
+   var body = JsonNode.Parse(captured["body"]!.GetValue<string>())!.AsObject();
+   body["output_config"] = new JsonObject { ["effort"] = effort };   // the ONE axis
+   var beta = captured["headers"]?["anthropic-beta"]?.GetValue<string>();
+   var (status, resp) = await client.TryPostMessagesAsync(body.ToJsonString(), anthropicBeta: beta);
+   ```
+
+   Same verdict on both = the rule is model-level and your profile's scope is
+   right. **Divergence = the minimal probe misled you** — a beta, a system block,
+   or streaming changed the answer, and the profile would encode a rule that does
+   not apply to real traffic. Worked example: opus-5's `thinking:disabled` ×
+   `xhigh`/`max` rejection, confirmed byte-identical (2756 B, 3 system blocks, 8
+   betas) before the clamp shipped.
+
+   If no capture exists yet (a brand-new model with no traffic), run one
+   `Kind=ClientBehavior` case first to produce one — that run is needed for step 7
+   anyway.
+4. **Write the `ModelProfile`** in `ModelProfileCatalog.BuildDefault()` (or a
    `CodexModelProfile` in `CodexModelProfileCatalog`) with every field grounded
    in a probe result, and a code comment citing the probe method name for each
    non-obvious field. Fields: `AcceptedEfforts`, `EffortOnUnsupported`,
    `Thinking` (`AdaptiveOnly` / `EnabledOnly` / `All`), `MaxThinkingBudget`,
    `AcceptsMidConversationSystem`, `StripBetas`.
-4. **Routing check.** Vendor dispatch is prefix-only (`claude-*` → `/v1/messages`,
+5. **Routing check.** Vendor dispatch is prefix-only (`claude-*` → `/v1/messages`,
    gpt/mai-code in `ResponsesModelIds` → `/responses`), so a claude id needs no
    registry change. A new Codex id must be **added to `ResponsesModelIds`** in
    `CopilotModelRegistry` or it falls through to the OpenAI-chat branch. Add a
    `Routing.Locations` entry in `appsettings.json` only if the model needs a
    deliberate remap (e.g. a context-window alias like `gpt-5.5-1m`).
-5. **Tests (from the contract, not the code).** Add from-contract unit tests
+6. **Tests (from the contract, not the code).** Add from-contract unit tests
    asserting the profile's behavior (see `ProfileAdjusterTests`,
    `CodexRoutingAndCatalogTests`) and **mutation-check** each new assertion:
    break the product value, confirm the test goes red. A new test that passes on
    the first run guards nothing.
-6. **Load-task smoke — MANDATORY for a Codex (`gpt-*` / `mai-code-*`) model.** A
+
+   **A rewrite rule needs a BACKEND-fact guard too, not just a behavior test.** A
+   unit test pinning "the bridge clamps" stays green forever if Copilot drops the
+   constraint — and the bridge keeps silently downgrading. Sweep the finding into
+   `AnthropicContractSweep` so the committed snapshot detects the backend ADDING
+   the rule elsewhere (B2) and the catalog-vs-live assertion detects it being
+   DROPPED (B3, compared as an exact set in both directions).
+7. **Load-task smoke — MANDATORY for a Codex (`gpt-*` / `mai-code-*`) model.** A
    liveness/effort probe and a plain one-word turn do **not** exercise a real Codex
    client tool loop — multi-call `function_call`/`function_call_output` round-trips
    and reasoning echoes only appear when the real `codex.exe` runs an actual
@@ -133,7 +182,7 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    `CodexAdditionalToolsHeadlessTests`), so add one whenever you model a new
    desktop-only inbound shape. For a Claude model the `claude.exe` headless smoke
    (`CcOnGpt5*HeadlessTests`/`HeadlessSmokeTests`) is the equivalent load task.
-7. **Docs + memory.** Update `docs/pipeline-design.md` (§7 catalog),
+8. **Docs + memory.** Update `docs/pipeline-design.md` (§7 catalog),
    `docs/context-window.md`, and the model-count references; add a dated entry to
    `docs/design.md`. Update the user-account memory if the available set changed.
 
@@ -181,7 +230,7 @@ Full worked example (opus-4.6-1m, the -internal/-high/-xhigh variants):
     (`CodexLoadTaskSmokeTests`, model via `CODEX_SMOKE_MODEL`). Exercises a real
     Codex client tool loop (multi-call `function_call`/`function_call_output`
     round-trips + model routing) — a probe or plain turn does not. Required for
-    every added/reconciled Codex id (step 6). It does NOT cover the desktop app's
+    every added/reconciled Codex id (step 7). It does NOT cover the desktop app's
     `additional_tools` preamble (the `codex exec` CLI doesn't emit it) — that shape
     is checked by the HTTP-edge replay `CodexAdditionalToolsHeadlessTests`.
 
@@ -190,6 +239,16 @@ Full worked example (opus-4.6-1m, the -internal/-high/-xhigh variants):
 - **Probe before you edit.** No catalog change without a cited probe result.
 - **Never delete on `/models` absence alone** — require a live 400.
 - **Match the nearest model by CONTRACT, not by name** — probe every axis.
+- **Re-confirm every REWRITE-causing finding on real captured client bytes**
+  (step 3). A minimal synthetic probe proves the shape works *in isolation*; it
+  does not prove the rule survives 3 system blocks, 8 betas and streaming. Only
+  *reject* findings need this, and the asymmetry is why: a false accept fails
+  loudly upstream, a false reject makes the bridge silently downgrade a request
+  Copilot would have taken — invisible in production.
+- **Pair every rewrite rule with a BACKEND-fact guard, not just a behavior test.**
+  A unit test pinning "the bridge clamps" stays green forever if Copilot drops the
+  constraint. Sweep the finding into `AnthropicContractSweep` so B2 catches the
+  backend adding it elsewhere and B3 catches it being dropped.
 - **A Codex model isn't done until a real `codex.exe` load task passes on it.**
   Probes and plain turns don't exercise a real client tool loop; the load-task
   smoke (`CodexLoadTaskSmokeTests`, `CODEX_SMOKE_MODEL=<id>`) catches tool-loop and
