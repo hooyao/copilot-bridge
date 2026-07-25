@@ -899,6 +899,16 @@ public partial class ModelProfileProbe
     /// on its own. If Copilot enforces Anthropic's rule, the catalog needs a new
     /// mechanism (this profile shape cannot express a cross-field constraint) —
     /// so the probe decides whether that work is required at all.</para>
+    /// <para>This probe is <b>print-only</b> — it records the status of each cell
+    /// for a human reading the matrix. The ASSERTING guard lives in
+    /// <see cref="B_AnthropicContract_SweepAssertAndDetectDrift"/>, which sweeps the
+    /// same interaction into the committed contract snapshot (B2 fails on drift)
+    /// and compares it against
+    /// <see cref="ModelProfile.EffortsRejectedWhenThinkingDisabled"/> as an exact
+    /// set in both directions (B3). Both directions matter: Copilot ADDING this
+    /// rule to another model would 400 live traffic, and Copilot DROPPING it from
+    /// opus-5 would leave the bridge silently clamping requests the backend now
+    /// accepts — a quiet capability regression no single-axis check can see.</para>
     /// </summary>
     [Theory]
     [InlineData("low")]

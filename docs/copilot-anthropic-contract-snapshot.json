@@ -27,7 +27,8 @@
           "adaptive"
         ]
       },
-      "mid_conv_system": false
+      "mid_conv_system": false,
+      "effort_rejected_when_thinking_disabled": []
     },
     "claude-sonnet-4.6": {
       "effort": {
@@ -49,7 +50,8 @@
         ],
         "rejected": []
       },
-      "mid_conv_system": false
+      "mid_conv_system": false,
+      "effort_rejected_when_thinking_disabled": []
     },
     "claude-sonnet-5": {
       "effort": {
@@ -71,7 +73,8 @@
           "enabled"
         ]
       },
-      "mid_conv_system": true
+      "mid_conv_system": true,
+      "effort_rejected_when_thinking_disabled": []
     },
     "claude-opus-4.6": {
       "effort": {
@@ -93,7 +96,8 @@
         ],
         "rejected": []
       },
-      "mid_conv_system": false
+      "mid_conv_system": false,
+      "effort_rejected_when_thinking_disabled": []
     },
     "claude-opus-4.7": {
       "effort": {
@@ -115,7 +119,8 @@
           "enabled"
         ]
       },
-      "mid_conv_system": false
+      "mid_conv_system": false,
+      "effort_rejected_when_thinking_disabled": []
     },
     "claude-opus-4.8": {
       "effort": {
@@ -137,7 +142,8 @@
           "enabled"
         ]
       },
-      "mid_conv_system": true
+      "mid_conv_system": true,
+      "effort_rejected_when_thinking_disabled": []
     },
     "claude-opus-5": {
       "effort": {
@@ -159,7 +165,11 @@
           "enabled"
         ]
       },
-      "mid_conv_system": true
+      "mid_conv_system": true,
+      "effort_rejected_when_thinking_disabled": [
+        "xhigh",
+        "max"
+      ]
     }
   }
 }
