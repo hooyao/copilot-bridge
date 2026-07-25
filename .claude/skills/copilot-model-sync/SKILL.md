@@ -182,12 +182,31 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    id, either retarget the constant (only once the catalog knows the id — see
    `real-client-verify`'s `models.md`) or add a candidate-targeted behavior case.
    Then run it to generate the capture.
+
+   **A new Codex id needs routing before it can produce a capture at all.**
+   Pointing a behavior case at the id is not enough: until it is in
+   `ResponsesModelIds`, `CopilotModelRegistry` sends it to the unimplemented
+   chat-completions branch (`CopilotModelRegistry.cs:51-64`), so no `/responses`
+   capture is written — and if no catalog entry fuzzy-matches, `ModelRouterStage`
+   fails the request outright before any upstream call. So for a Codex candidate
+   the order is: allowlist the id (+ a provisional `CodexModelProfile` if nothing
+   close matches) → run the behavior case → come back and do this fidelity check
+   → only then finalize the profile in step 4. The provisional entry is scaffolding
+   to obtain evidence, not a probed fact; it must be replaced by probed values
+   before you ship.
 4. **Write the `ModelProfile`** in `ModelProfileCatalog.BuildDefault()` (or a
    `CodexModelProfile` in `CodexModelProfileCatalog`) with every field grounded
    in a probe result, and a code comment citing the probe method name for each
    non-obvious field. Fields: `AcceptedEfforts`, `EffortOnUnsupported`,
-   `Thinking` (`AdaptiveOnly` / `EnabledOnly` / `All`), `MaxThinkingBudget`,
-   `AcceptsMidConversationSystem`, `StripBetas`.
+   `Thinking` (`AdaptiveOnly` / `AdaptiveOrDisabled` / `EnabledOnly` / `All`),
+   `MaxThinkingBudget`, `AcceptsMidConversationSystem`, `StripBetas`.
+
+   > Pick the thinking policy from the probe's *rejections*, not from the family.
+   > If only `enabled` was rejected, the model takes `disabled` too and the policy
+   > is **`AdaptiveOrDisabled`** — choosing `AdaptiveOnly` there silently coerces a
+   > user's explicit `thinking:disabled` back to adaptive (re-enabling and billing
+   > reasoning they turned off) and makes any disabled-thinking constraint
+   > unreachable. That is exactly opus-5's case.
 5. **Routing check.** Vendor dispatch is prefix-only (`claude-*` → `/v1/messages`,
    gpt/mai-code in `ResponsesModelIds` → `/responses`), so a claude id needs no
    registry change. A new Codex id must be **added to `ResponsesModelIds`** in
