@@ -38,7 +38,7 @@ directions — never trust them, always probe the live endpoint.**
 
 So: **a model's absence from `/models` is NOT sufficient grounds to delete its
 profile, and its presence is NOT sufficient grounds to add one.** The ground
-truth is always a live probe (`tests/CopilotBridge.Playground/ModelProfileProbe.cs`
+truth is always a live probe (`tests/CopilotBridge.Playground/ApiContract/ModelProfileProbe.cs`
 for Anthropic `/v1/messages`, `ResponsesProbe.cs` for Codex `/responses`). The
 whole catalog exists because guessing a wire shape produces a silent Copilot 400
 the user can't diagnose. Honor that: probe first, edit second, cite the probe in
@@ -194,8 +194,11 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
 
    | Sweep | B2 snapshot | B3 catalog-vs-live |
    | --- | --- | --- |
-   | `AnthropicContractSweep` | effort, thinking, mid-conv-system, effort×thinking-disabled | same four; `AcceptedEfforts` and `EffortsRejectedWhenThinkingDisabled` are exact-set both ways, `Thinking` is catalog→live only |
-   | `ResponsesContractSweep` | effort, tools | **none** — the Codex catalog/coercions post-date it |
+   | `AnthropicContractSweep` | effort (accepted+rejected), thinking (accepted+rejected), mid-conv-system, effort×thinking-disabled | same four; `AcceptedEfforts` and `EffortsRejectedWhenThinkingDisabled` are exact-set both ways, `Thinking` is catalog→live only |
+   | `ResponsesContractSweep` | effort (accepted+rejected), `fields_rejected`, `tools_rejected`, plus a backend-wide `sse_event_types` | **none** — the Codex catalog/coercions post-date it |
+
+   Read that B2 column before adding a probe: if the axis is already snapshotted,
+   the work is adding the **B3 comparison**, not re-probing the field.
 
    Not covered by any B3: **`StripBetas`**, **`MaxThinkingBudget`**, every Codex
    (`CodexModelProfile`) field, and the live→catalog direction of `Thinking`. If

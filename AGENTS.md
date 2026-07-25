@@ -234,8 +234,8 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
   snippets cited in code comments. Missing/mismatched values cause *silent*
   Copilot rejections.
 - **Model profiles are playground-derived facts, not guesses.**
-  `Pipeline/Routing/ModelProfileCatalog.cs` is sourced from
-  `tests/CopilotBridge.Playground/ModelProfileProbe.cs`. Re-run that probe after
+  `src/CopilotBridge.Cli/Pipeline/Routing/ModelProfileCatalog.cs` is sourced from
+  `tests/CopilotBridge.Playground/ApiContract/ModelProfileProbe.cs`. Re-run that probe after
   Copilot ships or changes a model; don't extrapolate from family names (sibling
   models surprise you — haiku-4.5 ≠ sonnet-4.6 on thinking). Two follow-ons apply
   when a probe result makes the bridge **rewrite** a request (strip / clamp /
