@@ -83,7 +83,7 @@ effort only when thinking is disabled; vision rejects images under ~100×100; et
 - [x] **GitHub OAuth (device-code flow)** — `copilot-bridge auth login` round-trip
 - [x] **DPAPI-encrypted token persistence** — `Auth/TokenStore.cs`
 - [x] **Copilot token exchange + auto-refresh** — `Auth/CopilotTokenClient.cs`
-- [x] **Model discovery** — `copilot-bridge debug list-models`; 11 Claude models on Enterprise
+- [x] **Model discovery** — `copilot-bridge debug list-models`; 7 Claude models on Enterprise (2026-07 reconciliation; was 11 before Copilot retired opus-4.5, sonnet-4.5, opus-4.6-1m and the opus-4.7 -high/-xhigh/-1m-internal variants)
 - [x] **Adaptive thinking + reasoning_effort** — `EffortLevelsTests` (4 levels on opus-4.7)
 - [x] **Explicit thinking budget** — `ExplicitThinkingTests` (sonnet-4.6, budget=2048)
 - [x] **Prompt caching, 5m TTL** — `PromptCachingTests` (sonnet, haiku); 5303 tokens cached, exact round-trip

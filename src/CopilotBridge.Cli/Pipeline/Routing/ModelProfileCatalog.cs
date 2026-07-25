@@ -325,7 +325,9 @@ internal sealed class ModelProfileCatalog
         // ── claude-opus-5 ────────────────────────────────────────────────
         // Copilot's newest Opus (added to /models 2026-07). Every field below
         // is live-probed (ModelProfileProbe.Opus5_*) rather than inherited from
-        // opus-4.8, and one axis genuinely differs — see the cross-field note.
+        // opus-4.8, and TWO axes genuinely differ from it: the thinking policy
+        // (AdaptiveOrDisabled, not AdaptiveOnly) and the cross-field
+        // disabled-thinking effort constraint. Both are detailed below.
         //   • Thinking: adaptive AND disabled accepted; only enabled → 400
         //     ("not supported for this model. Use thinking.type.adaptive and
         //     output_config.effort"). Opus5_Thinking_ProbeAcceptance:

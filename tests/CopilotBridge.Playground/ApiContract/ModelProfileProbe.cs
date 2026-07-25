@@ -986,6 +986,13 @@ public partial class ModelProfileProbe
     /// gateway honors it rather than 400ing "prompt is too long", which decides
     /// whether the profile needs a <c>StripBetas=["context-1m-*"]</c> entry (as
     /// haiku-4.5 does) or passes the beta through (as opus-4.8 / sonnet-5 do).
+    /// <para><b>Measured size:</b> the ~600k-char incompressible padding bills as
+    /// <b>677,407 input tokens</b> — read from Copilot's own <c>copilot_usage</c>
+    /// in the 200 response, not estimated. The ratio is above 1 token/char because
+    /// the repeated pseudo-random unit (mixed case, digits, punctuation) is
+    /// deliberately hostile to the tokenizer's merges; a natural-language body of
+    /// the same byte count would land far lower. Do not infer the token count from
+    /// the character count here.</para>
     /// </summary>
     [Theory]
     [InlineData(null)]

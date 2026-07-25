@@ -332,9 +332,11 @@ public class ProfileAdjusterTests
     }
 
     /// <summary>
-    /// opus-5 is adaptive-only: <c>thinking.type.enabled</c> → 400 ("Use
+    /// opus-5 rejects ONLY <c>thinking.type.enabled</c> → 400 ("Use
     /// thinking.type.adaptive and output_config.effort" —
-    /// <c>Opus5_Thinking_ProbeAcceptance</c>). Inbound enabled must be coerced to
+    /// <c>Opus5_Thinking_ProbeAcceptance</c>); <c>adaptive</c> and <c>disabled</c>
+    /// are both accepted, which is why its policy is <c>AdaptiveOrDisabled</c> and
+    /// not the <c>AdaptiveOnly</c> that opus-4.7/4.8 carry. Inbound enabled must be coerced to
     /// adaptive with the reasoning depth carried across as effort. budget 64000 →
     /// <c>BudgetToEffort</c> → "xhigh", which opus-5 accepts — and because the
     /// coerced shape is adaptive (not disabled), the cross-field clamp must NOT
