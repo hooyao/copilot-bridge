@@ -57,7 +57,7 @@ public class CopilotGapProbes
     [Theory]
     [InlineData("claude-sonnet-4.6")]            // → Bedrock
     [InlineData("claude-opus-4.7")]              // → Anthropic Direct
-    [InlineData("claude-opus-4.7-1m-internal")]  // → Vertex
+    [InlineData("claude-opus-5")]                // newest opus
     [InlineData("claude-haiku-4.5")]             // → Bedrock
     public async Task WebSearchTool_ProbeCopilotAcceptance(string model)
     {
@@ -162,27 +162,30 @@ public class CopilotGapProbes
     }
 
     /// <summary>
-    /// Probes the thinking-shape constraint on <c>claude-opus-4.7-1m-internal</c>.
-    /// Base <c>claude-opus-4.7</c> only accepts <c>thinking.type=adaptive</c>
-    /// (rule #4 in appsettings.json exists for exactly that). Open question:
-    /// does the 1M variant inherit the same constraint, or accept
-    /// <c>enabled</c> too? Result drives whether we need a compound routing
-    /// rule when a request carries both thinking:enabled AND the 1M beta.
+    /// Probes the thinking-shape constraint across the opus family. Base
+    /// <c>claude-opus-4.7</c> only accepts <c>thinking.type=adaptive</c>. The
+    /// original question here was whether the <c>-1m-internal</c> variant
+    /// inherited that constraint; Copilot has since retired that id (see
+    /// <c>ModelProfileProbe.RetiredCandidate_LivenessProbe</c>), so those rows
+    /// were replaced with the base id in the 2026-07 reconciliation.
     ///
-    /// Also probes the same matrix for <c>claude-opus-4.8</c>, since user just
-    /// learned Claude Code 2.1.x ships opus-4.8 and Copilot serves it only as
-    /// the base 200k model (no 1M variant, no -high/-xhigh variants per the
-    /// model catalog). Routing opus-4.8 + 1M beta → 1m-internal needs the same
-    /// answer.
+    /// Also probes the same matrix for <c>claude-opus-4.8</c> and
+    /// <c>claude-opus-5</c>. Note opus-5 differs from the rest of the family:
+    /// it accepts <c>disabled</c> (only <c>enabled</c> 400s), which is why its
+    /// catalog profile uses <c>ThinkingPolicy.AdaptiveOrDisabled</c> — see
+    /// <c>ModelProfileProbe.Opus5_Thinking_ProbeAcceptance</c>.
     /// </summary>
     [Theory]
-    [InlineData("claude-opus-4.7-1m-internal", "adaptive",  null)]
-    [InlineData("claude-opus-4.7-1m-internal", "enabled",   8192)]
-    [InlineData("claude-opus-4.7-1m-internal", "disabled",  null)]
-    [InlineData("claude-opus-4.7-1m-internal", null,        null)]
+    [InlineData("claude-opus-4.7",             "adaptive",  null)]
+    [InlineData("claude-opus-4.7",             "enabled",   8192)]
+    [InlineData("claude-opus-4.7",             "disabled",  null)]
+    [InlineData("claude-opus-4.7",             null,        null)]
     [InlineData("claude-opus-4.8",             "adaptive",  null)]
     [InlineData("claude-opus-4.8",             "enabled",   8192)]
     [InlineData("claude-opus-4.8",             null,        null)]
+    [InlineData("claude-opus-5",               "adaptive",  null)]
+    [InlineData("claude-opus-5",               "enabled",   8192)]
+    [InlineData("claude-opus-5",               "disabled",  null)]
     public async Task ThinkingShape_ProbeAcceptance(string model, string? thinkingType, int? budgetTokens)
     {
         var thinkingBlock = thinkingType switch
@@ -207,47 +210,16 @@ public class CopilotGapProbes
         _output.WriteLine($"  body: {preview}");
     }
 
-    /// <summary>
-    /// Cross-version 1M fallback probe. Simulates the request shape Claude Code
-    /// would send for <c>claude-opus-4.8</c> with the 1M-context toggle enabled,
-    /// after the bridge has rewritten <c>body.model</c> to
-    /// <c>claude-opus-4.7-1m-internal</c> (the closest 1M-capable model Copilot
-    /// serves). Answers: does Copilot accept the substitution? Note that
-    /// "substitution" is purely a bridge concern — Copilot only sees the
-    /// rewritten body and doesn't care that opus-4.8 was the original choice.
-    /// </summary>
-    [Theory]
-    // matrix: (effort, thinking_type) — opus-4.8 catalog says reasoning_effort=[medium]
-    // and adaptive_thinking=true, so these are the shapes CC plausibly sends.
-    [InlineData(null,     "adaptive")]
-    [InlineData("medium", "adaptive")]
-    [InlineData(null,     null)]
-    [InlineData("medium", null)]
-    public async Task CrossVersion1mFallback_ProbeUpstreamAcceptance(string? effort, string? thinkingType)
-    {
-        var effortBlock = effort is null
-            ? ""
-            : $$$""","output_config":{"effort":"{{{effort}}}"}""";
-        var thinkingBlock = thinkingType switch
-        {
-            null => "",
-            _ => $$$""","thinking":{"type":"{{{thinkingType}}}"}""",
-        };
-        var payload = $$"""
-          {
-            "model": "claude-opus-4.7-1m-internal",
-            "max_tokens": 32,
-            "messages": [{"role":"user","content":"reply: ok"}]{{effortBlock}}{{thinkingBlock}}
-          }
-          """;
-
-        using var client = new PlaygroundClient();
-        var (status, body) = await client.TryPostMessagesAsync(payload);
-
-        var preview = body.Length > 240 ? body[..240] + "…" : body;
-        _output.WriteLine($"effort={effort ?? "<absent>"} thinking={thinkingType ?? "<absent>"} → {(int)status} {status}");
-        _output.WriteLine($"  body: {preview}");
-    }
+    // NOTE: `CrossVersion1mFallback_ProbeUpstreamAcceptance` was DELETED in the
+    // 2026-07 reconciliation. It simulated the request the bridge produced after
+    // rewriting an opus-4.8 + 1M-beta request to `claude-opus-4.7-1m-internal`.
+    // Both halves of its premise are gone: Copilot retired that variant id (400 —
+    // `ModelProfileProbe.RetiredCandidate_LivenessProbe`), and the opus base ids
+    // now serve 1M natively, so the bridge no longer performs any cross-version
+    // 1M substitution (the redirect was removed from appsettings.json). Nothing
+    // replaces it — the behavior it probed no longer exists. Native 1M on the
+    // base ids is covered by `ModelProfileProbe.OpusBase_LargePrompt_Probe…` /
+    // `Opus5_LargePrompt_Probe…`.
 
     /// <summary>
     /// Dumps Copilot's FULL <c>/models</c> id list (not just <c>claude-*</c>) and

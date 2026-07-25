@@ -8,14 +8,13 @@ namespace CopilotBridge.Playground.Headless;
 /// <summary>
 /// Matrix: for each (model, effort) combination Claude Code can express,
 /// drive <c>claude.exe -p</c> end-to-end and assert the bridge transforms
-/// the request into a shape Copilot accepts. The truth tables come from
-/// the live <c>/models</c> capabilities dump
-/// (<see cref="CopilotGapProbes.DumpClaudeModelsAndCapabilities"/>):
+/// the request into a shape Copilot accepts. The truth tables come from the live
+/// probes in <see cref="ModelProfileProbe"/> (NOT from <c>/models</c>, which has
+/// been wrong in both directions):
 ///
-/// - sonnet-4.6 / opus-4.6 / opus-4.6-1m: <c>reasoning_effort: [low, medium, high]</c> — pass-through
-/// - opus-4.7-1m-internal: <c>[low, medium, high, xhigh]</c> — pass-through
-/// - opus-4.7 (base): <c>[medium]</c> only — effort != medium ⇒ rewrite to <c>-{effort}</c> variant
-/// - sonnet-4.5 / opus-4.5 / haiku-4.5: no reasoning_effort capability — strip
+/// - sonnet-4.6 / opus-4.6: <c>[low, medium, high, max]</c> — pass-through (they reject `xhigh`)
+/// - opus-4.7 / opus-4.8 / opus-5: <c>[low, medium, high, xhigh, max]</c> — pass-through
+/// - haiku-4.5: no reasoning_effort capability — strip
 ///
 /// Each test verifies:
 /// 1. claude.exe exits 0
@@ -23,6 +22,20 @@ namespace CopilotBridge.Playground.Headless;
 /// 3. Bridge's outgoing upstream body has the expected (model, effort handling)
 /// 4. Copilot returns 2xx
 /// </summary>
+/// <remarks>
+/// <para><b>The variant-rewrite and dedicated-1M cases were deleted in the 2026-07
+/// reconciliation.</b> They drove <c>claude-opus-4.7-high</c>, <c>-xhigh</c>,
+/// <c>claude-opus-4.7-1m-internal</c>, and <c>claude-opus-4.6-1m</c> — ids Copilot
+/// has since retired (all 400; <see cref="ModelProfileProbe.RetiredCandidate_LivenessProbe"/>)
+/// — and asserted an <c>EffortHandling.RouteToVariant</c> rewrite that no profile
+/// performs any more: the opus-4.7 base was widened to accept every effort tier
+/// directly, so there is no sibling to route to. Both the target ids and the
+/// behavior under test are gone, which is why these are deleted rather than
+/// retargeted.</para>
+/// <para>The coverage they provided — "opus-4.7 + a high effort reaches Copilot
+/// intact" — now lives in <see cref="PassThrough_NativelySupportedEffort"/> as
+/// ordinary pass-through, which is what the contract actually is today.</para>
+/// </remarks>
 [SupportedOSPlatform("windows")]
 [Trait("Category", "Integration")]
 [Trait("Kind", "ApiContract")]
@@ -46,6 +59,13 @@ public class EffortRoutingTests : IClassFixture<BridgeFixture>
     [InlineData("claude-opus-4-6",   "low",    "claude-opus-4.6",   "low",    false)]
     [InlineData("claude-opus-4-6",   "medium", "claude-opus-4.6",   "medium", false)]
     [InlineData("claude-opus-4-6",   "high",   "claude-opus-4.6",   "high",   false)]
+    // opus-4.7 base: the 2026-06-05 re-probe widened it from [medium] to every
+    // tier, so a high/xhigh effort now passes through on the base id instead of
+    // being rewritten to a (since-retired) -high / -xhigh sibling. This is the
+    // replacement coverage for the deleted VariantRewrite_Opus47 cases.
+    [InlineData("claude-opus-4-7",   "medium", "claude-opus-4.7",   "medium", false)]
+    [InlineData("claude-opus-4-7",   "high",   "claude-opus-4.7",   "high",   false)]
+    [InlineData("claude-opus-4-7",   "xhigh",  "claude-opus-4.7",   "xhigh",  false)]
     public Task PassThrough_NativelySupportedEffort(
         string claudeModel,
         string effort,
@@ -54,42 +74,11 @@ public class EffortRoutingTests : IClassFixture<BridgeFixture>
         bool _) =>
         RunMatrixCase(claudeModel, effort, expectedUpstreamModel, expectedUpstreamEffort);
 
-    // ─── Variant rewrite path: opus-4.7 base only accepts medium; bridge picks a variant ───
-
-    [Theory]
-    [InlineData("claude-opus-4-7", "medium", "claude-opus-4.7",       "medium")]  // medium is in base's supports list — pass through
-    [InlineData("claude-opus-4-7", "high",   "claude-opus-4.7-high",  null)]      // rewrite to -high variant, strip
-    [InlineData("claude-opus-4-7", "xhigh",  "claude-opus-4.7-xhigh", null)]      // rewrite to -xhigh variant, strip
-    public Task VariantRewrite_Opus47(
-        string claudeModel,
-        string effort,
-        string expectedUpstreamModel,
-        string? expectedUpstreamEffort) =>
-        RunMatrixCase(claudeModel, effort, expectedUpstreamModel, expectedUpstreamEffort);
-
     // ─── Strip path: model lacks reasoning_effort capability; bridge drops the field ───
 
     [Theory]
-    [InlineData("claude-sonnet-4-5", "high",   "claude-sonnet-4.5", null)]
     [InlineData("claude-haiku-4-5",  "medium", "claude-haiku-4.5",  null)]
     public Task Strip_ModelsWithoutReasoningEffort(
-        string claudeModel,
-        string effort,
-        string expectedUpstreamModel,
-        string? expectedUpstreamEffort) =>
-        RunMatrixCase(claudeModel, effort, expectedUpstreamModel, expectedUpstreamEffort);
-
-    // ─── 1M-context models: priority per goal. Both expose full effort ranges. ───
-
-    [Theory]
-    [InlineData("claude-opus-4-7-1m-internal", "low",    "claude-opus-4.7-1m-internal", "low")]
-    [InlineData("claude-opus-4-7-1m-internal", "medium", "claude-opus-4.7-1m-internal", "medium")]
-    [InlineData("claude-opus-4-7-1m-internal", "high",   "claude-opus-4.7-1m-internal", "high")]
-    [InlineData("claude-opus-4-7-1m-internal", "xhigh",  "claude-opus-4.7-1m-internal", "xhigh")]
-    [InlineData("claude-opus-4-6-1m",          "low",    "claude-opus-4.6-1m",          "low")]
-    [InlineData("claude-opus-4-6-1m",          "medium", "claude-opus-4.6-1m",          "medium")]
-    [InlineData("claude-opus-4-6-1m",          "high",   "claude-opus-4.6-1m",          "high")]
-    public Task LongContext1mModels_PassThroughAllEfforts(
         string claudeModel,
         string effort,
         string expectedUpstreamModel,

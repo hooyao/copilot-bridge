@@ -77,15 +77,18 @@ internal sealed class CopilotModelRegistry : IModelRegistry
     /// Canonicalize a model id to dotted-version form regardless of date
     /// suffix or trailing variant tags:
     /// <code>
-    /// claude-opus-4-7                  → claude-opus-4.7
-    /// claude-opus-4-7-20251015         → claude-opus-4.7      (date suffix stripped)
-    /// claude-opus-4-7-high             → claude-opus-4.7-high
-    /// claude-opus-4-7-1m-internal      → claude-opus-4.7-1m-internal
-    /// claude-sonnet-4-5-20250929       → claude-sonnet-4.5
+    /// claude-opus-5                    → claude-opus-5        (no version pair to merge)
+    /// claude-opus-4-8                  → claude-opus-4.8
+    /// claude-opus-4-8-20260115         → claude-opus-4.8      (date suffix stripped)
+    /// claude-opus-4-7-high             → claude-opus-4.7-high (trailing tag preserved)
     /// claude-haiku-4.5                 → claude-haiku-4.5     (already canonical)
     /// </code>
     /// Strategy: (1) drop a trailing 8-digit date suffix, (2) merge the first
     /// consecutive <c>digit-digit</c> pair into <c>digit.digit</c>.
+    /// <para>The <c>-high</c> example is a retired id (Copilot dropped the sized
+    /// siblings), kept because it is the clearest illustration of the
+    /// trailing-tag-preserving rule — which is what lets a future variant id
+    /// round-trip without touching this method.</para>
     /// </summary>
     public static string Normalize(string modelId)
     {

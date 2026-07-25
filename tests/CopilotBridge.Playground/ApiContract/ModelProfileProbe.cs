@@ -31,12 +31,12 @@ public partial class ModelProfileProbe
     public static readonly string[] AllModels =
     [
         "claude-haiku-4.5",
-        "claude-sonnet-4.5",
         "claude-sonnet-4.6",
         "claude-sonnet-5",
         "claude-opus-4.6",
         "claude-opus-4.7",
         "claude-opus-4.8",
+        "claude-opus-5",
     ];
 
     public static IEnumerable<object[]> ThinkingMatrix() =>
@@ -153,30 +153,29 @@ public partial class ModelProfileProbe
     /// catalog's <c>AcceptedEfforts</c> currently allows (opus-4.8 covered
     /// separately above). As of 2026-06-05 <c>/models</c> shows:
     /// <list type="bullet">
-    ///   <item>opus-4.6 / opus-4.6-1m: <c>[low,medium,high,max]</c> (catalog: low/medium/high)</item>
-    ///   <item>opus-4.7 / opus-4.7-1m-internal: <c>[low,medium,high,xhigh,max]</c> (catalog base: medium only)</item>
+    ///   <item>opus-4.6: <c>[low,medium,high,max]</c> (catalog: low/medium/high)</item>
+    ///   <item>opus-4.7: <c>[low,medium,high,xhigh,max]</c> (catalog base: medium only)</item>
     ///   <item>sonnet-4.6: <c>[low,medium,high,max]</c> (catalog: low/medium/high)</item>
     /// </list>
     /// <c>/models</c> has lied before, so this probes each NEW tier (the ones
     /// the catalog doesn't yet allow) directly. Only the deltas are tested —
     /// low/medium are already known-good for these models. Pure effort, no
     /// thinking, small max_tokens for speed.
+    /// <para>The <c>opus-4.6-1m</c> / <c>opus-4.7-1m-internal</c> rows were dropped
+    /// in the 2026-07 reconciliation — Copilot retired both ids, so probing their
+    /// effort range only burns quota on a guaranteed 400. Their liveness is still
+    /// asserted by <see cref="RetiredCandidate_LivenessProbe"/>, which is where a
+    /// resurrection would show up.</para>
     /// </summary>
     [Theory]
     // opus-4.6 family — new tier to confirm: max
     [InlineData("claude-opus-4.6",            "high")]
     [InlineData("claude-opus-4.6",            "xhigh")]
     [InlineData("claude-opus-4.6",            "max")]
-    [InlineData("claude-opus-4.6-1m",         "high")]
-    [InlineData("claude-opus-4.6-1m",         "xhigh")]
-    [InlineData("claude-opus-4.6-1m",         "max")]
     // opus-4.7 base — catalog only allows medium today; confirm high/xhigh/max
     [InlineData("claude-opus-4.7",            "high")]
     [InlineData("claude-opus-4.7",            "xhigh")]
     [InlineData("claude-opus-4.7",            "max")]
-    // opus-4.7-1m-internal — catalog allows low..xhigh; confirm max
-    [InlineData("claude-opus-4.7-1m-internal", "xhigh")]
-    [InlineData("claude-opus-4.7-1m-internal", "max")]
     // sonnet-4.6 — catalog allows low/medium/high; confirm xhigh/max
     [InlineData("claude-sonnet-4.6",          "high")]
     [InlineData("claude-sonnet-4.6",          "xhigh")]
@@ -211,8 +210,8 @@ public partial class ModelProfileProbe
     /// </summary>
     [Theory]
     [InlineData("claude-opus-4.8")]
+    [InlineData("claude-opus-5")]
     [InlineData("claude-opus-4.7")]
-    [InlineData("claude-opus-4.7-1m-internal")]
     [InlineData("claude-opus-4.6")]
     [InlineData("claude-sonnet-4.6")]
     [InlineData("claude-sonnet-5")]
@@ -330,8 +329,8 @@ public partial class ModelProfileProbe
     /// </summary>
     [Theory]
     [InlineData("claude-opus-4.8")]
+    [InlineData("claude-opus-5")]
     [InlineData("claude-opus-4.7")]
-    [InlineData("claude-opus-4.7-1m-internal")]
     [InlineData("claude-sonnet-4.6")]
     [InlineData("claude-haiku-4.5")]
     public async Task ConsecutiveUserMessages_ProbeAcceptance(string model)
@@ -391,9 +390,11 @@ public partial class ModelProfileProbe
     /// <c>context-1m-2025-08-07</c> beta header on a small request? The
     /// catalog says opus-4.8 has <c>ctx=1000000</c> in its <c>/models</c>
     /// capabilities, and there is no separate <c>-1m-internal</c> variant
-    /// for 4.8 (unlike 4.7). If 4.8 takes the 1M beta directly, the routing
-    /// rule that today silently downgrades opus-4.8 + 1M beta to
-    /// opus-4.7-1m-internal can be removed.
+    /// for 4.8 (unlike 4.7 at the time this was written). If 4.8 takes the 1M
+    /// beta directly, the routing rule that then silently downgraded opus-4.8 +
+    /// 1M beta to opus-4.7-1m-internal can be removed. (It was: the answer was
+    /// yes, the redirect is gone, and Copilot has since retired that variant id
+    /// entirely — see <see cref="RetiredCandidate_LivenessProbe"/>.)
     ///
     /// Three cases under one probe — minimal payload, both with and without
     /// the beta, observing acceptance:
@@ -461,12 +462,13 @@ public partial class ModelProfileProbe
     }
 
     /// <summary>
-    /// Probes the actual context window of <c>claude-sonnet-4.6</c>,
-    /// <c>claude-haiku-4.5</c>, and <c>claude-sonnet-4.5</c> on Copilot —
-    /// does Copilot 400 a >200k-token prompt with "prompt is too long" the
-    /// way <c>docs/context-window.md</c> (PR #7, 2026-06-04) claimed, or
-    /// has Copilot's gateway been upgraded to honor the 1M ctx the
-    /// <c>/models</c> capability advertises for sonnet-4.6?
+    /// Probes the actual context window of <c>claude-sonnet-4.6</c> and
+    /// <c>claude-haiku-4.5</c> on Copilot — does Copilot 400 a &gt;200k-token
+    /// prompt with "prompt is too long" the way <c>docs/context-window.md</c>
+    /// (PR #7, 2026-06-04) claimed, or has Copilot's gateway been upgraded to
+    /// honor the 1M ctx the <c>/models</c> capability advertises for sonnet-4.6?
+    /// (sonnet-4.5 was a third case here until Copilot retired it in the 2026-07
+    /// reconciliation — see <see cref="RetiredCandidate_LivenessProbe"/>.)
     /// <para>
     /// Uses a deliberately incompressible padding (rotating short token
     /// strings) so the byte-to-token ratio stays close to 1:3 — 800k chars
@@ -486,7 +488,6 @@ public partial class ModelProfileProbe
     /// </summary>
     [Theory]
     [InlineData("claude-sonnet-4.6")]
-    [InlineData("claude-sonnet-4.5")]
     [InlineData("claude-haiku-4.5")]
     public async Task NonOpus_LargePrompt_Probe200kBoundary(string model)
     {
@@ -661,6 +662,10 @@ public partial class ModelProfileProbe
     [InlineData("claude-opus-4.7-high")]
     [InlineData("claude-opus-4.7-xhigh")]
     [InlineData("claude-opus-4.7-1m-internal")]
+    // sonnet-4.5 dropped out of /models in the 2026-07 reconciliation while its
+    // catalog profile remained. Absence is NOT a delete license (see the class
+    // remarks) — this probe is the ground truth for whether it still routes.
+    [InlineData("claude-sonnet-4.5")]
     public async Task RetiredCandidate_LivenessProbe(string model)
     {
         var payload = $$"""
@@ -802,6 +807,262 @@ public partial class ModelProfileProbe
         using var client = new PlaygroundClient();
         var (status, body) = await client.TryPostMessagesAsync(payload, anthropicBeta: beta);
         _output.WriteLine($"[claude-sonnet-5] padded-prompt beta={beta ?? "<none>"} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
+    // ── claude-opus-5 (added 2026-07) ────────────────────────────────────────
+    // Mirrors the sonnet-5 probe set, PLUS a cross-field probe no earlier model
+    // needed. Anthropic's own docs state opus-5 has thinking ON by default and
+    // rejects thinking:disabled at effort xhigh/max — a two-field constraint the
+    // single-axis matrix above cannot see, and one no other catalog model has.
+
+    /// <summary>
+    /// Per-thinking-shape acceptance for opus-5 — the analog of
+    /// <see cref="Sonnet5_Thinking_ProbeAcceptance"/>. Anthropic documents opus-5 as
+    /// adaptive-by-default (unlike opus-4.8/4.7, where omitting <c>thinking</c> means
+    /// no thinking) with <c>budget_tokens</c> removed. Whether COPILOT's gateway
+    /// enforces the same is a separate question — probe it rather than inherit the
+    /// opus-4.8 answer from the family name.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("adaptive")]
+    [InlineData("enabled")]
+    [InlineData("disabled")]
+    public async Task Opus5_Thinking_ProbeAcceptance(string? thinkingType)
+    {
+        var thinkingBlock = thinkingType switch
+        {
+            null       => "",
+            "enabled"  => ""","thinking":{"type":"enabled","budget_tokens":8192}""",
+            _          => $$$""","thinking":{"type":"{{{thinkingType}}}"}""",
+        };
+        var payload = $$"""
+          {
+            "model": "claude-opus-5",
+            "max_tokens": 16384,
+            "messages": [{"role":"user","content":"reply: ok"}]{{thinkingBlock}}
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-opus-5] thinking={thinkingType ?? "<null>"} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 280)}");
+    }
+
+    /// <summary>
+    /// Effort acceptance for opus-5, standalone and combined with adaptive thinking
+    /// (the shape Claude Code actually sends — the bridge derives effort from the
+    /// thinking budget, so both fields ride together). <c>/models</c> advertises
+    /// <c>effort=[low,medium,high,xhigh,max]</c>; capabilities have lied before
+    /// (haiku-4.5 advertises adaptive and 400s it), so each tier is probed directly.
+    /// </summary>
+    [Theory]
+    [InlineData("low",    false)]
+    [InlineData("medium", false)]
+    [InlineData("high",   false)]
+    [InlineData("xhigh",  false)]
+    [InlineData("max",    false)]
+    [InlineData("low",    true)]
+    [InlineData("medium", true)]
+    [InlineData("high",   true)]
+    [InlineData("xhigh",  true)]
+    [InlineData("max",    true)]
+    public async Task Opus5_Effort_ReProbe(string effort, bool withAdaptiveThinking)
+    {
+        var thinkingBlock = withAdaptiveThinking ? ""","thinking":{"type":"adaptive"}""" : "";
+        var payload = $$"""
+          {
+            "model": "claude-opus-5",
+            "max_tokens": 64,
+            "messages": [{"role":"user","content":"reply: ok"}],
+            "output_config":{"effort":"{{effort}}"}{{thinkingBlock}}
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-opus-5] effort={effort} adaptive-thinking={withAdaptiveThinking} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 280)}");
+    }
+
+    /// <summary>
+    /// <b>Cross-field probe with no precedent in this file.</b> Anthropic documents a
+    /// constraint unique to opus-5: <c>thinking:{"type":"disabled"}</c> is accepted
+    /// only at effort <c>high</c> or below, and returns 400 when paired with
+    /// <c>xhigh</c> / <c>max</c>. Every other probe here is single-axis and would
+    /// report "disabled → 200" and "effort=max → 200" independently while the
+    /// COMBINATION 400s — exactly the blind spot that ships a silent bug.
+    /// <para>This matters concretely for the bridge: <see cref="Routing.ProfileAdjuster"/>
+    /// can produce that pair. Claude Code sends <c>thinking:disabled</c> with
+    /// <c>effort:max</c> whenever a user disables thinking at max effort, and the
+    /// adjuster passes both through untouched when the profile accepts each field
+    /// on its own. If Copilot enforces Anthropic's rule, the catalog needs a new
+    /// mechanism (this profile shape cannot express a cross-field constraint) —
+    /// so the probe decides whether that work is required at all.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("low")]
+    [InlineData("medium")]
+    [InlineData("high")]
+    [InlineData("xhigh")]
+    [InlineData("max")]
+    public async Task Opus5_DisabledThinking_EffortInteraction_Probe(string effort)
+    {
+        var payload = $$"""
+          {
+            "model": "claude-opus-5",
+            "max_tokens": 64,
+            "messages": [{"role":"user","content":"reply: ok"}],
+            "thinking":{"type":"disabled"},
+            "output_config":{"effort":"{{effort}}"}
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-opus-5] thinking=disabled + effort={effort} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
+    /// <summary>
+    /// opus-5 mid-conversation <c>role:"system"</c> placement matrix — same six
+    /// placements as <see cref="Opus48_MidConversationSystem_PlacementRules"/> and
+    /// <see cref="Sonnet5_MidConversationSystem_PlacementRules"/>. Anthropic lists
+    /// opus-5 among the models supporting mid-conv system, but sonnet-5 already
+    /// proved the doc list and Copilot's gateway disagree in BOTH directions, so
+    /// <see cref="ModelProfile.AcceptsMidConversationSystem"/> must be set from the
+    /// legal placements actually returning 200 — not from the doc claim.
+    /// </summary>
+    [Theory]
+    [InlineData("end-after-user",          """[{"role":"user","content":"hi"},{"role":"system","content":"S"}]""")]
+    [InlineData("between-two-users",       """[{"role":"user","content":"hi"},{"role":"system","content":"S"},{"role":"user","content":"there"}]""")]
+    [InlineData("end-after-assistant",     """[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"system","content":"S"}]""")]
+    [InlineData("between-assistant-user",  """[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"system","content":"S"},{"role":"user","content":"more"}]""")]
+    [InlineData("between-two-assistants",  """[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"system","content":"S"},{"role":"assistant","content":"world"}]""")]
+    [InlineData("end-after-user-followup", """[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"more"},{"role":"system","content":"S"}]""")]
+    public async Task Opus5_MidConversationSystem_PlacementRules(string label, string messagesJson)
+    {
+        var payload = $$"""
+          {
+            "model": "claude-opus-5",
+            "max_tokens": 64,
+            "messages": {{messagesJson}}
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-opus-5] placement={label} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 240)}");
+    }
+
+    /// <summary>
+    /// Beta-token acceptance control for opus-5: baseline / real 1M beta / bogus
+    /// beta. The bogus arm is the control that makes the 1M arm meaningful — if a
+    /// nonexistent beta also returns 200, Copilot ignores unknown betas and a 200 on
+    /// <c>context-1m-2025-08-07</c> proves nothing on its own (the padded-prompt
+    /// probe below is what actually establishes 1M).
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("context-1m-2025-08-07")]
+    [InlineData("bogus-nonexistent-beta-99999")]
+    public async Task Opus5_ContextOneMillionBeta_ProbeAcceptance(string? beta)
+    {
+        var payload = """
+          {
+            "model": "claude-opus-5",
+            "max_tokens": 16,
+            "messages": [{"role":"user","content":"reply: ok"}]
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload, anthropicBeta: beta);
+        _output.WriteLine($"[claude-opus-5] beta={beta ?? "<none>"} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
+    /// <summary>
+    /// &gt;200k-token padded prompt against opus-5, with and without the 1M beta.
+    /// <c>/models</c> reports <c>ctx=1000000, max_prompt=936000</c>; this confirms the
+    /// gateway honors it rather than 400ing "prompt is too long", which decides
+    /// whether the profile needs a <c>StripBetas=["context-1m-*"]</c> entry (as
+    /// whether the profile needs a <c>StripBetas=["context-1m-*"]</c> entry (as
+    /// haiku-4.5 does) or passes the beta through (as opus-4.8 / sonnet-5 do).
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("context-1m-2025-08-07")]
+    public async Task Opus5_LargePrompt_ProbeOneMillionContextSupport(string? beta)
+    {
+        var unit = "qZ7$%w!eL#3xR2&Vp9*Jb4@Sk6mTn1Y";
+        var padding = string.Concat(Enumerable.Repeat(unit, 600_000 / unit.Length));
+        var payload = $$"""
+          {
+            "model": "claude-opus-5",
+            "max_tokens": 16,
+            "messages": [{"role":"user","content":"context follows; reply: ok\n\n{{padding}}"}]
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload, anthropicBeta: beta);
+        _output.WriteLine($"[claude-opus-5] padded-prompt beta={beta ?? "<none>"} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
+    /// <summary>
+    /// Dumps Copilot's <b>integrator allowlist</b> in full — the second source of
+    /// truth alongside <c>/models</c>, and often the more current one. The gateway
+    /// emits "Available models: [...]" for integrator <c>vscode-chat</c> only when the
+    /// requested id <b>exists upstream but is not granted</b>; a genuinely unknown id
+    /// returns a bare <c>model_not_supported</c> with no list. So this probe must ask
+    /// for a real-but-restricted id (a retired sibling variant) rather than a made-up
+    /// one. Prints the response UNTRUNCATED so a reconciliation can diff against it.
+    /// <para>The two lists genuinely disagree in both directions: the retired
+    /// <c>-1m-internal</c> / <c>-high</c> / <c>-xhigh</c> variants routed 200 for
+    /// months while absent from <c>/models</c>, and the 2026-07 run found the reverse
+    /// — ids in the allowlist that <c>/models</c> never advertises. Neither list alone
+    /// is grounds to add or delete a profile; a live probe is.</para>
+    /// </summary>
+    [Fact]
+    public async Task IntegratorAllowlist_Dump()
+    {
+        var payload = """
+          {
+            "model": "claude-opus-4.7-high",
+            "max_tokens": 16,
+            "messages": [{"role":"user","content":"reply: ok"}]
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[allowlist] → {(int)status} {status}");
+        _output.WriteLine(body);
+    }
+
+    /// <summary>
+    /// Liveness for ids that appear in the <b>integrator allowlist but NOT in
+    /// <c>/models</c></b> (2026-07: <c>claude-fable-5</c>, <c>claude-opus-4.8-fast</c>).
+    /// The mirror image of <see cref="RetiredCandidate_LivenessProbe"/>: absence from
+    /// <c>/models</c> is not grounds to ignore an id any more than it is grounds to
+    /// delete one. A 200 means the id is genuinely reachable and is a real candidate
+    /// for a profile; a 400 means the allowlist over-reports what this account can
+    /// actually reach — which is what the 2026-07 run found for both ids, so neither
+    /// gets a profile.
+    /// </summary>
+    [Theory]
+    [InlineData("claude-fable-5")]
+    [InlineData("claude-opus-4.8-fast")]
+    public async Task UnadvertisedCandidate_LivenessProbe(string model)
+    {
+        var payload = $$"""
+          {
+            "model": "{{model}}",
+            "max_tokens": 16,
+            "messages": [{"role":"user","content":"reply: ok"}]
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[{model}] liveness → {(int)status} {status}");
         _output.WriteLine($"  body: {Truncate(body, 300)}");
     }
 }

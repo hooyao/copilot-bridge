@@ -13,7 +13,7 @@ Single source of truth in code: `ClientBehaviorSupport` in
 
 | Constant | Today | Used by |
 | --- | --- | --- |
-| `LatestClaude` | `claude-opus-4.8` | CC-native `/cc` cases, and the CC→gpt client-facing id |
+| `LatestClaude` | `claude-opus-5` | CC-native `/cc` cases, and the CC→gpt client-facing id |
 | `LatestGpt` | `gpt-5.6-sol` | Codex `/codex` cases, and the CC→gpt route target |
 
 ## Bumping when Copilot ships a newer model

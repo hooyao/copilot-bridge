@@ -77,14 +77,14 @@ each Layer 2 box gets ticked when a prompt runs end-to-end.
 These confirm Copilot's `/v1/messages` accepts each Anthropic feature. Test source
 in `tests/CopilotBridge.Playground/`. See `docs/copilot-api-research.md` §15 for
 detailed findings, including model-specific quirks (haiku-4.5 lies about adaptive
-thinking; opus-4.7-1m-internal rejects explicit thinking; vision rejects images
-under ~100×100; etc.).
+thinking; opus-4.7/4.8 reject explicit thinking; opus-5 rejects `xhigh`/`max`
+effort only when thinking is disabled; vision rejects images under ~100×100; etc.).
 
 - [x] **GitHub OAuth (device-code flow)** — `copilot-bridge auth login` round-trip
 - [x] **DPAPI-encrypted token persistence** — `Auth/TokenStore.cs`
 - [x] **Copilot token exchange + auto-refresh** — `Auth/CopilotTokenClient.cs`
 - [x] **Model discovery** — `copilot-bridge debug list-models`; 11 Claude models on Enterprise
-- [x] **Adaptive thinking + reasoning_effort** — `EffortLevelsTests` (4 levels on opus-4.7-1m-internal)
+- [x] **Adaptive thinking + reasoning_effort** — `EffortLevelsTests` (4 levels on opus-4.7)
 - [x] **Explicit thinking budget** — `ExplicitThinkingTests` (sonnet-4.6, budget=2048)
 - [x] **Prompt caching, 5m TTL** — `PromptCachingTests` (sonnet, haiku); 5303 tokens cached, exact round-trip
 - [x] **Prompt caching, 1h TTL** — `ExtendedCacheTtlTests` (sonnet)

@@ -115,24 +115,23 @@ public class ProfileAdjusterTests
     }
 
     [Fact]
-    public void Sonnet45_ThinkingEnabled_StaysEnabled_NoEffortInvented()
+    public void Haiku45_ThinkingEnabled_StaysEnabled_NoEffortInvented()
     {
-        // sonnet-4.5 accepts thinking:enabled as-is → no coerce → no derivation.
-        var ctx = WithThinking("claude-sonnet-4.5", new ThinkingConfigEnabled { BudgetTokens = 32000 });
+        // haiku-4.5 accepts thinking:enabled as-is → no coerce → no derivation.
+        var ctx = WithThinking("claude-haiku-4.5", new ThinkingConfigEnabled { BudgetTokens = 32000 });
 
-        Adjust(ctx, "claude-sonnet-4.5");
+        Adjust(ctx, "claude-haiku-4.5");
 
-        Assert.Equal("claude-sonnet-4.5", ctx.Request.Body.Model);
+        Assert.Equal("claude-haiku-4.5", ctx.Request.Body.Model);
         Assert.IsType<ThinkingConfigEnabled>(ctx.Request.Body.Thinking);
         Assert.Null(ctx.Request.Body.OutputConfig?.Effort);
     }
 
-    // ── sonnet-4.5/haiku-4.5 register the context-1m strip (still 200k on Copilot) ─────
+    // ── haiku-4.5 registers the context-1m strip (still 200k on Copilot) ─────
 
     [Theory]
-    [InlineData("claude-sonnet-4.5")]
     [InlineData("claude-haiku-4.5")]
-    public void Sonnet45Haiku_RegisterContext1mStrip(string profileId)
+    public void Haiku_RegisterContext1mStrip(string profileId)
     {
         var ctx = TestCtx.Build(profileId);
 
@@ -216,15 +215,174 @@ public class ProfileAdjusterTests
     [Theory]
     [InlineData("claude-sonnet-5", true)]
     [InlineData("claude-opus-4.8", true)]
+    [InlineData("claude-opus-5", true)]
     [InlineData("claude-sonnet-4.6", false)]
     [InlineData("claude-opus-4.7", false)]
     [InlineData("claude-opus-4.6", false)]
     [InlineData("claude-haiku-4.5", false)]
-    [InlineData("claude-sonnet-4.5", false)]
     public void MidConversationSystem_AcceptanceFlag_MatchesProbedContract(string id, bool accepts)
     {
         var profile = Catalog.Get(id);
         Assert.NotNull(profile);
         Assert.Equal(accepts, profile!.AcceptsMidConversationSystem);
+    }
+
+    // ── opus-5: the cross-field thinking-disabled × effort constraint ─────────
+    //
+    // CONTRACT (probed 2026-07, Opus5_DisabledThinking_EffortInteraction_Probe):
+    // Copilot rejects effort xhigh/max on opus-5 *when thinking is disabled* —
+    //   400 "output_config.effort 'max' is not supported when thinking is
+    //        disabled on this model. Use effort 'high' or below, or enable
+    //        thinking."
+    // — while accepting those same efforts with thinking ON, and accepting
+    // disabled thinking at high and below. So the bridge MUST NOT put that pair
+    // on the wire. It must clamp DOWN to the highest still-accepted tier rather
+    // than strip: the backend's own error names "effort 'high' or below" as the
+    // remedy, and stripping would fall back to the model default, discarding
+    // more of the user's requested depth than the constraint requires.
+    //
+    // Claude Code emits exactly this pair whenever a user disables thinking at
+    // max/xhigh effort, so without the clamp every such turn 400s upstream.
+
+    [Theory]
+    [InlineData("max")]
+    [InlineData("xhigh")]
+    public void Opus5_DisabledThinking_RejectedEffort_ClampedToHigh(string inboundEffort)
+    {
+        var ctx = WithThinking("claude-opus-5", new ThinkingConfigDisabled(), effort: inboundEffort);
+
+        Adjust(ctx, "claude-opus-5");
+
+        // Thinking stays disabled — the clamp resolves the conflict by lowering
+        // effort, never by silently re-enabling reasoning the user turned off.
+        Assert.IsType<ThinkingConfigDisabled>(ctx.Request.Body.Thinking);
+        // "high" is the highest tier opus-5 accepts under disabled thinking.
+        Assert.Equal("high", ctx.Request.Body.OutputConfig?.Effort);
+    }
+
+    [Theory]
+    [InlineData("low")]
+    [InlineData("medium")]
+    [InlineData("high")]
+    public void Opus5_DisabledThinking_AcceptedEffort_PassesThroughUntouched(string inboundEffort)
+    {
+        // The constraint binds ONLY on xhigh/max. Everything at high or below is
+        // legal with thinking off and must survive byte-identical — a clamp that
+        // also touched these would be silently downgrading valid requests.
+        var ctx = WithThinking("claude-opus-5", new ThinkingConfigDisabled(), effort: inboundEffort);
+
+        Adjust(ctx, "claude-opus-5");
+
+        Assert.IsType<ThinkingConfigDisabled>(ctx.Request.Body.Thinking);
+        Assert.Equal(inboundEffort, ctx.Request.Body.OutputConfig?.Effort);
+    }
+
+    [Theory]
+    [InlineData("max")]
+    [InlineData("xhigh")]
+    public void Opus5_ThinkingOn_HighEfforts_SurviveUnclamped(string inboundEffort)
+    {
+        // The load-bearing half of the contract: with thinking ON, xhigh/max are
+        // accepted (Opus5_Effort_ReProbe → 200 for every tier, standalone and
+        // with adaptive). Modelling the constraint by narrowing AcceptedEfforts
+        // would break exactly this case — the COMMON one — so this test is what
+        // stops the cheaper, wrong implementation.
+        var ctx = WithThinking("claude-opus-5", new ThinkingConfigAdaptive(), effort: inboundEffort);
+
+        Adjust(ctx, "claude-opus-5");
+
+        Assert.IsType<ThinkingConfigAdaptive>(ctx.Request.Body.Thinking);
+        Assert.Equal(inboundEffort, ctx.Request.Body.OutputConfig?.Effort);
+    }
+
+    [Theory]
+    [InlineData("max")]
+    [InlineData("xhigh")]
+    public void ProfileWithoutTheConstraint_DisabledThinking_HighEfforts_NotClamped(string inboundEffort)
+    {
+        // Scope guard: the clamp must key on the profile's
+        // EffortsRejectedWhenThinkingDisabled and NOTHING else. A synthetic
+        // profile identical to opus-5 except for an EMPTY rejected-effort list
+        // must leave xhigh/max alone.
+        //
+        // Deliberately NOT written against the real opus-4.8 profile: that one
+        // carries ThinkingPolicy.AdaptiveOnly, which coerces thinking:disabled →
+        // adaptive before the clamp is even consulted, so the assertion would
+        // hold no matter how the clamp were scoped — a vacuous pass. (Confirmed
+        // by mutation: copying the constraint onto opus-4.8 left the suite
+        // green.) Pinning the thinking policy here to AdaptiveOrDisabled keeps
+        // the disabled shape alive to the clamp, so this test can only pass
+        // because the scoping is right.
+        var permissive = new ModelProfile
+        {
+            CanonicalId = "test-no-constraint",
+            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
+            EffortOnUnsupported = EffortHandling.Strip,
+            Thinking = ThinkingPolicy.AdaptiveOrDisabled,
+            MaxThinkingBudget = 32000,
+            EffortsRejectedWhenThinkingDisabled = [],
+        };
+        var catalog = new ModelProfileCatalog([permissive]);
+        var ctx = WithThinking("test-no-constraint", new ThinkingConfigDisabled(), effort: inboundEffort);
+
+        ProfileAdjuster.Apply(ctx, permissive, catalog);
+
+        Assert.IsType<ThinkingConfigDisabled>(ctx.Request.Body.Thinking);
+        Assert.Equal(inboundEffort, ctx.Request.Body.OutputConfig?.Effort);
+    }
+
+    /// <summary>
+    /// opus-5 is adaptive-only: <c>thinking.type.enabled</c> → 400 ("Use
+    /// thinking.type.adaptive and output_config.effort" —
+    /// <c>Opus5_Thinking_ProbeAcceptance</c>). Inbound enabled must be coerced to
+    /// adaptive with the reasoning depth carried across as effort. budget 64000 →
+    /// <c>BudgetToEffort</c> → "xhigh", which opus-5 accepts — and because the
+    /// coerced shape is adaptive (not disabled), the cross-field clamp must NOT
+    /// fire here. This is the interaction between the two rules.
+    /// </summary>
+    [Fact]
+    public void Opus5_ThinkingEnabled_CoercedToAdaptive_XhighSurvivesClamp()
+    {
+        var ctx = WithThinking("claude-opus-5", new ThinkingConfigEnabled { BudgetTokens = 64000 });
+
+        Adjust(ctx, "claude-opus-5");
+
+        Assert.Equal("claude-opus-5", ctx.Request.Body.Model);
+        Assert.IsType<ThinkingConfigAdaptive>(ctx.Request.Body.Thinking);
+        Assert.Equal("xhigh", ctx.Request.Body.OutputConfig?.Effort);
+    }
+
+    /// <summary>
+    /// opus-5 serves 1M context natively (677k-token prompt → 200 with and
+    /// without the beta — <c>Opus5_LargePrompt_ProbeOneMillionContextSupport</c>),
+    /// so the <c>context-1m-*</c> beta must pass through rather than be stripped.
+    /// Same as opus-4.8 / sonnet-5; opposite of haiku-4.5.
+    /// </summary>
+    [Fact]
+    public void Opus5_DoesNotStripContext1m()
+    {
+        var ctx = TestCtx.Build("claude-opus-5");
+
+        Adjust(ctx, "claude-opus-5");
+
+        Assert.DoesNotContain("context-1m-*", ctx.PendingBetaStrips);
+    }
+
+    /// <summary>
+    /// Retirement guard: Copilot retired <c>claude-sonnet-4.5</c> (400
+    /// <c>model_not_supported</c> — <c>RetiredCandidate_LivenessProbe</c>), so the
+    /// catalog must not carry a profile for it. Keeping one would let the router
+    /// resolve an id the backend rejects, turning a clean fuzzy-match-to-sonnet-4.6
+    /// into an upstream 400. The stale integrator-allowlist entry is not evidence
+    /// to the contrary — that list also names opus-4.5 and claude-fable-5, which
+    /// likewise 400.
+    /// </summary>
+    [Fact]
+    public void RetiredModels_HaveNoProfile()
+    {
+        Assert.Null(Catalog.Get("claude-sonnet-4.5"));
+        Assert.Null(Catalog.Get("claude-opus-4.5"));
+        Assert.Null(Catalog.Get("claude-opus-4.6-1m"));
+        Assert.Null(Catalog.Get("claude-opus-4.7-1m-internal"));
     }
 }

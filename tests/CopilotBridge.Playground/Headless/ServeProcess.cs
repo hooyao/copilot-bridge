@@ -59,7 +59,7 @@ internal enum ServeScenario
     /// (Claude Code) and native /codex (Codex CLI) scenarios.</summary>
     Passthrough,
 
-    /// <summary>The <c>claude-opus-4.8 → gpt-5.6-sol</c> location active (promoted from
+    /// <summary>The <c>claude-opus-5 → gpt-5.6-sol</c> location active (promoted from
     /// the shipped <c>_Locations_disabled</c> example), tracing on. The CC→gpt leg.</summary>
     CcToGpt,
 
@@ -377,7 +377,7 @@ internal static class ServeProcess
         {
             var disabled = routing["_Locations_disabled"]?.AsArray()
                 ?? throw new ServeStartupException(
-                    "CcToGpt scenario needs Routing._Locations_disabled (the claude-opus-4.8 → "
+                    "CcToGpt scenario needs Routing._Locations_disabled (the claude-opus-5 → "
                     + "gpt-5.6-sol example) in appsettings.json, but it is absent — the shipped "
                     + "config drifted. Restore the disabled example or update the scenario.");
             // Move the disabled example into the active Locations slot (deep-clone so

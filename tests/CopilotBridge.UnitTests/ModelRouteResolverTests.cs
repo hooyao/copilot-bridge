@@ -35,21 +35,21 @@ public class ModelRouteResolverTests
     public void NestedWhen_Opus48_Match_SwapsModel_AndMapsMaxToXhigh()
     {
         var cfg = OneLoc(OneMWhen(),
-            new LocationUse { Model = "claude-opus-4.7-1m-internal", EffortMap = new() { ["max"] = "xhigh" } });
+            new LocationUse { Model = "claude-opus-5", EffortMap = new() { ["max"] = "xhigh" } });
         var ctx = TestCtx.Build("claude-opus-4.8", effort: "max", betas: ["context-1m-2025-08-07"]);
 
         var (matched, idx) = ModelRouteResolver.Apply(ctx, cfg);
 
         Assert.NotNull(matched);
         Assert.Equal(0, idx);
-        Assert.Equal("claude-opus-4.7-1m-internal", ctx.Request.Body.Model);
+        Assert.Equal("claude-opus-5", ctx.Request.Body.Model);
         Assert.Equal("xhigh", ctx.Request.Body.OutputConfig?.Effort);   // EffortMap applied
     }
 
     [Fact]
     public void NestedWhen_WrongModel_DoesNotMatch()
     {
-        var cfg = OneLoc(OneMWhen(), new LocationUse { Model = "claude-opus-4.7-1m-internal" });
+        var cfg = OneLoc(OneMWhen(), new LocationUse { Model = "claude-opus-5" });
         var ctx = TestCtx.Build("claude-opus-4.6", betas: ["context-1m-2025-08-07"]);
 
         var (matched, idx) = ModelRouteResolver.Apply(ctx, cfg);
@@ -82,12 +82,12 @@ public class ModelRouteResolverTests
     public void EffortMap_NonMatchingEffort_LeavesItAlone()
     {
         var cfg = OneLoc(new MatchExpression { Model = "claude-opus-4.8" },
-            new LocationUse { Model = "claude-opus-4.7-1m-internal", EffortMap = new() { ["max"] = "xhigh" } });
+            new LocationUse { Model = "claude-opus-5", EffortMap = new() { ["max"] = "xhigh" } });
         var ctx = TestCtx.Build("claude-opus-4.8", effort: "high");   // "high" not in the map
 
         ModelRouteResolver.Apply(ctx, cfg);
 
-        Assert.Equal("claude-opus-4.7-1m-internal", ctx.Request.Body.Model);
+        Assert.Equal("claude-opus-5", ctx.Request.Body.Model);
         Assert.Equal("high", ctx.Request.Body.OutputConfig?.Effort);   // untouched
     }
 

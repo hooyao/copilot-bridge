@@ -1015,10 +1015,12 @@ Pure name normalization + prefix-based dispatch in `CopilotModelRegistry`:
 
 `Normalize` canonicalizes the inbound id:
 
-- Strips a trailing 8-digit date suffix (`claude-sonnet-4-5-20250929` → `claude-sonnet-4-5`)
+- Strips a trailing 8-digit date suffix (`claude-opus-4-8-20260115` → `claude-opus-4-8`)
 - Merges the first consecutive `digit-digit` pair into `digit.digit`
-  (`claude-opus-4-7` → `claude-opus-4.7`,
-  `claude-opus-4-7-1m-internal` → `claude-opus-4.7-1m-internal`)
+  (`claude-opus-4-7` → `claude-opus-4.7`). Any trailing non-numeric segments are
+  preserved verbatim (`claude-opus-4-7-1m-internal` → `claude-opus-4.7-1m-internal`)
+  — that variant id is itself retired, but the suffix-preserving rule is what
+  lets a future sized/variant id round-trip without a code change.
 
 `Resolve` returns `null` for unknown prefixes; the runtime stage throws a
 descriptive error in that case.
@@ -1026,15 +1028,27 @@ descriptive error in that case.
 ### 7.2 Model profile catalog — `ModelProfileCatalog`
 
 The wire-truth table. One `ModelProfile` per Copilot Anthropic model id,
-hand-curated in `Pipeline/Routing/ModelProfileCatalog.cs`. After the 2026 model
+hand-curated in `Pipeline/Routing/ModelProfileCatalog.cs`. After the 2026-07
 reconciliation the catalog covers 7 models (every Claude id Copilot still
-exposes on this account: haiku-4.5, sonnet-4.5, sonnet-4.6, **sonnet-5**,
-opus-4.6, opus-4.7, opus-4.8). The reconciliation **retired** opus-4.5,
-opus-4.6-1m, and the opus-4.7 -high/-xhigh/-1m-internal variants — all now 400
-"not available for integrator" (`ModelProfileProbe.RetiredCandidate_LivenessProbe`).
+exposes on this account: haiku-4.5, sonnet-4.6, **sonnet-5**, opus-4.6,
+opus-4.7, opus-4.8, **opus-5**). The reconciliations **retired** opus-4.5,
+opus-4.6-1m, the opus-4.7 -high/-xhigh/-1m-internal variants, and (2026-07)
+**sonnet-4.5** — all now 400 (`model_not_supported` / "not available for
+integrator"; `ModelProfileProbe.RetiredCandidate_LivenessProbe`).
 The values are sourced from the corresponding probe rows in
 `ModelProfileProbe.cs` — re-run that test after Copilot ships or changes any
 model, then reconcile.
+
+> **Neither `/models` nor the integrator allowlist is authoritative — probe.**
+> They disagree in *both* directions. The retired `-1m-internal`/`-high`/`-xhigh`
+> ids routed 200 for months while absent from `/models`; conversely, as of
+> 2026-07 the allowlist still advertises `claude-sonnet-4.5`, `claude-opus-4.5`,
+> `claude-fable-5`, and `claude-opus-4.8-fast`, **every one of which 400s** on a
+> live request (`IntegratorAllowlist_Dump`,
+> `UnadvertisedCandidate_LivenessProbe`). Only a live probe adds or removes a
+> profile. (The allowlist only surfaces for an id that exists upstream but is not
+> granted — a wholly unknown id returns a bare `model_not_supported` with no
+> list, so dump it with a real-but-restricted id.)
 
 ```csharp
 internal sealed record ModelProfile
@@ -1055,9 +1069,9 @@ internal sealed record ModelProfile
     public ThinkingPolicy Thinking { get; init; } = ThinkingPolicy.AdaptiveOnly;
     public int MaxThinkingBudget { get; init; } = 64000;
 
-    // opus-4.8 and sonnet-5 accept the protocol extension in legal placements
-    // (pred=user, succ=assistant-or-end); every other model rejects it — see
-    // the cross-cutting facts below.
+    // opus-4.8, opus-5 and sonnet-5 accept the protocol extension in legal
+    // placements (pred=user, succ=assistant-or-end); every other model rejects
+    // it — see the cross-cutting facts below.
     public bool AcceptsMidConversationSystem { get; init; }
     public bool AcceptsSpeedFast { get; init; }
 
@@ -1065,6 +1079,10 @@ internal sealed record ModelProfile
     // profile is the active target (e.g. `context-1m-*` on the dedicated 1M
     // model ids, which subsume the beta).
     public IReadOnlyList<string> StripBetas { get; init; } = [];
+
+    // CROSS-FIELD: efforts the backend rejects ONLY when thinking is disabled.
+    // Empty for every model but opus-5 — see the cross-cutting facts below.
+    public IReadOnlyList<string> EffortsRejectedWhenThinkingDisabled { get; init; } = [];
 }
 
 internal sealed record ThinkingPolicy
@@ -1074,25 +1092,46 @@ internal sealed record ThinkingPolicy
     public bool DeriveBudgetFromEffortOnEnabled { get; init; }
     public bool DeriveEffortFromBudgetOnCoerce { get; init; }
 
-    // Three named presets cover today's catalog. Add more as needed.
-    public static ThinkingPolicy AdaptiveOnly { get; } // opus-4.7, opus-4.8, sonnet-5
-    public static ThinkingPolicy EnabledOnly  { get; } // haiku-4.5, sonnet-4.5
-    public static ThinkingPolicy All          { get; } // sonnet-4.6, opus-4.6
+    // Four named presets cover today's catalog. Add more as needed.
+    public static ThinkingPolicy AdaptiveOnly       { get; } // opus-4.7, opus-4.8, sonnet-5
+    public static ThinkingPolicy AdaptiveOrDisabled { get; } // opus-5
+    public static ThinkingPolicy EnabledOnly        { get; } // haiku-4.5
+    public static ThinkingPolicy All                { get; } // sonnet-4.6, opus-4.6
 }
 ```
 
 Cross-cutting facts the probe surfaced and the catalog encodes (re-probed in
-the 2026 reconciliation):
+the 2026 reconciliations):
 
 - **Effort acceptance is per-model and non-monotonic.** opus-4.7 / opus-4.8 /
-  sonnet-5 accept `low/medium/high/xhigh/max`; opus-4.6 / sonnet-4.6 accept
-  `low/medium/high/max` but reject `xhigh` (max works where xhigh 400s);
-  haiku-4.5 / sonnet-4.5 reject the effort field entirely. So `max` is stripped
+  opus-5 / sonnet-5 accept `low/medium/high/xhigh/max`; opus-4.6 / sonnet-4.6
+  accept `low/medium/high/max` but reject `xhigh` (max works where xhigh 400s);
+  haiku-4.5 rejects the effort field entirely. So `max` is stripped
   only on the models that reject it, not universally.
-- **opus-4.8 and sonnet-5 accept non-first `role:"system"` messages** in legal
-  placements (predecessor=user; successor=assistant or end-of-array); every
+- **opus-5 carries the catalog's only CROSS-FIELD constraint.** With
+  `thinking:disabled` it rejects effort `xhigh`/`max` — *"output_config.effort
+  'max' is not supported when thinking is disabled on this model. Use effort
+  'high' or below, or enable thinking."* — while accepting each field
+  independently (`Opus5_DisabledThinking_EffortInteraction_Probe`). A
+  single-axis probe matrix cannot see this, so **when adding a model, probe the
+  field COMBINATIONS the client actually emits**, not just each axis. It is
+  modeled as `EffortsRejectedWhenThinkingDisabled` rather than by narrowing
+  `AcceptedEfforts`, because narrowing would silently downgrade every
+  *thinking-on* max/xhigh request — the common case, which probes show is fine.
+  §7.3's clamp applies only on the disabled-thinking path. This was proven live:
+  with the constraint removed, a real `claude.exe` run at max effort sent
+  `disabled`+`max` upstream and Copilot 400'd it.
+- **opus-5 is `AdaptiveOrDisabled`, not `AdaptiveOnly`.** It rejects only
+  `thinking:enabled`; `disabled` returns 200 (`Opus5_Thinking_ProbeAcceptance`).
+  Reusing opus-4.8's `AdaptiveOnly` would coerce a user's explicit
+  `thinking:disabled` up to adaptive — silently re-enabling and billing
+  reasoning they turned off — and would make the cross-field clamp unreachable.
+  (opus-4.7/4.8/sonnet-5 probe the same way but retain `AdaptiveOnly`; changing
+  them alters shipped behavior and needs its own real-client verification.)
+- **opus-4.8, opus-5 and sonnet-5 accept non-first `role:"system"` messages** in
+  legal placements (predecessor=user; successor=assistant or end-of-array); every
   other model rejects the extension with `"Unexpected role 'system'"`. So
-  `AcceptsMidConversationSystem` is `true` for those two and `false` elsewhere,
+  `AcceptsMidConversationSystem` is `true` for those three and `false` elsewhere,
   and the §7.3 handler keeps legal placements / converts illegal ones when
   `true` and converts unconditionally when `false`. (sonnet-5 mid-conv support
   contradicts Anthropic's "opus-4.8 only" docs — it was confirmed by live probe.)
@@ -1124,6 +1163,17 @@ applied in order:
    `Unexpected role 'system'`.
 4. **Budget cap.** Clamp `thinking.budget_tokens` to
    `MaxThinkingBudget`.
+4b. **Cross-field effort clamp (disabled thinking).** If the FINAL thinking
+   shape is `disabled` and the surviving effort is in the profile's
+   `EffortsRejectedWhenThinkingDisabled`, clamp *down* to the highest tier
+   that is both in `AcceptedEfforts` and not vetoed (opus-5: `max`/`xhigh` →
+   `high`); if no such tier exists, drop the field. Runs **after** step 2
+   (the coerced shape is what makes the constraint bind) and after both
+   effort passes (it clamps whatever survived them). Clamping rather than
+   stripping preserves as much of the user's requested depth as the backend
+   allows — Copilot's own error names `"effort 'high' or below"` as the
+   remedy, whereas stripping would fall back to the model default. No-op for
+   every profile with an empty list, i.e. everything except opus-5.
 5. **Beta strip registration.** Append the profile's `StripBetas`
    patterns to `ctx.PendingBetaStrips` so `HeadersOutboundStage` removes
    them from the outbound `anthropic-beta` header. A global
@@ -1286,8 +1336,10 @@ The probe → catalog refresh cycle:
 3. Reconcile `Pipeline/Routing/ModelProfileCatalog.cs` against the
    results. Each entry's field should map back to a row in the probe
    output — don't extrapolate from family names; sibling models surprise
-   you (haiku-4.5 ≠ sonnet-4.6 on thinking; opus-4.7-1m-internal accepts
-   four efforts but its base only accepts one).
+   you (haiku-4.5 ≠ sonnet-4.6 on thinking; opus-5 accepts `thinking:disabled`
+   while opus-4.7/4.8 are modeled adaptive-only, and opus-5 alone rejects
+   `xhigh`/`max` *when* thinking is disabled — a constraint no single-axis
+   probe can see).
 
 A future Copilot model can land as a hard error first (the bridge refuses
 the request with a clear 400) and then as a profile after probes confirm

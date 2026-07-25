@@ -88,39 +88,58 @@ internal sealed class ModelProfileCatalog
     /// <remarks>
     /// Cross-cutting facts learned from probing the live Copilot model set (the
     /// 2026 reconciliation retired opus-4.5, opus-4.6-1m, and the opus-4.7
-    /// -high/-xhigh/-1m-internal variants — all now 400 "not available for
-    /// integrator"; see <c>ModelProfileProbe.RetiredCandidate_LivenessProbe</c>):
+    /// -high/-xhigh/-1m-internal variants; the 2026-07 pass retired sonnet-4.5
+    /// and added opus-5 — all retirements confirmed 400 by
+    /// <c>ModelProfileProbe.RetiredCandidate_LivenessProbe</c>):
     /// <list type="bullet">
-    ///   <item>Effort acceptance was re-probed 2026-06-05 and again during the
-    ///         2026 reconciliation. Per
+    ///   <item>Effort acceptance was re-probed 2026-06-05, during the 2026
+    ///         reconciliation, and again 2026-07 for opus-5. Per
     ///         <c>ModelProfileProbe.Family_Effort_ReProbe</c> /
-    ///         <c>Opus48_Effort_ReProbe</c> / <c>Sonnet5_Effort_ReProbe</c>:
+    ///         <c>Opus48_Effort_ReProbe</c> / <c>Sonnet5_Effort_ReProbe</c> /
+    ///         <c>Opus5_Effort_ReProbe</c>:
     ///         opus-4.6 / sonnet-4.6 accept <c>low/medium/high/max</c> but REJECT
     ///         <c>xhigh</c> (effort tiers are NOT monotonic — <c>max</c> works
-    ///         where <c>xhigh</c> 400s); opus-4.7 base / opus-4.8 / sonnet-5
-    ///         accept all of <c>low/medium/high/xhigh/max</c> (sonnet-5 is the
-    ///         first Sonnet-tier model to take <c>xhigh</c>); haiku-4.5 /
-    ///         sonnet-4.5 reject the effort field entirely. "max" is not stripped
-    ///         universally — only on the models that actually reject it.</item>
-    ///   <item>Of the Anthropic models on Copilot, <b>opus-4.8 and sonnet-5</b>
-    ///         accept non-first <c>role:"system"</c> messages — and even there,
-    ///         only in legal placements (predecessor=user, successor=assistant or
-    ///         end-of-array). Every other model 400s with "Unexpected role
-    ///         'system'" regardless of position, so
+    ///         where <c>xhigh</c> 400s); opus-4.7 base / opus-4.8 / opus-5 /
+    ///         sonnet-5 accept all of <c>low/medium/high/xhigh/max</c>;
+    ///         haiku-4.5 rejects the effort field entirely. "max" is not
+    ///         stripped universally — only on the models that actually reject it.</item>
+    ///   <item><b>opus-5 adds the catalog's first CROSS-FIELD constraint:</b> with
+    ///         <c>thinking:disabled</c> it rejects effort <c>xhigh</c>/<c>max</c>
+    ///         (400 "…not supported when thinking is disabled on this model")
+    ///         even though both fields are individually accepted. Modeled by
+    ///         <see cref="ModelProfile.EffortsRejectedWhenThinkingDisabled"/>;
+    ///         probed by <c>Opus5_DisabledThinking_EffortInteraction_Probe</c>.
+    ///         A single-axis matrix cannot see this — when adding a model, probe
+    ///         field COMBINATIONS the client actually emits, not just each axis.</item>
+    ///   <item>Of the Anthropic models on Copilot, <b>opus-4.8, opus-5, and
+    ///         sonnet-5</b> accept non-first <c>role:"system"</c> messages — and
+    ///         even there, only in legal placements (predecessor=user, successor=
+    ///         assistant or end-of-array). Every other model 400s with "Unexpected
+    ///         role 'system'" regardless of position, so
     ///         <see cref="ModelProfile.AcceptsMidConversationSystem"/> is
-    ///         <c>true</c> for opus-4.8 / sonnet-5 and <c>false</c> for all
-    ///         others; <see cref="Routing.ProfileAdjuster"/> converts mid-conv
+    ///         <c>true</c> for those three and <c>false</c> for all others;
+    ///         <see cref="Routing.ProfileAdjuster"/> converts mid-conv
     ///         system to user (with an injected-context marker prefix) when the
     ///         profile says <c>false</c>, and only placement-fixes the bad
     ///         positions when <c>true</c>. (Note: sonnet-5 mid-conv support
     ///         contradicts Anthropic's "opus-4.8 only" docs — it was confirmed by
     ///         live probe, <c>Sonnet5_MidConversationSystem_PlacementRules</c>.)</item>
-    ///   <item>1M context is now native on the opus-4.6 / opus-4.7 / opus-4.8 base
-    ///         ids and on sonnet-5 (all serve &gt;600k-token prompts →&#160;200;
-    ///         <c>OpusBase_LargePrompt_Probe…</c> / <c>Sonnet5_LargePrompt_Probe…</c>).
+    ///   <item>1M context is now native on the opus-4.6 / opus-4.7 / opus-4.8 /
+    ///         opus-5 base ids and on sonnet-5 (all serve &gt;600k-token prompts
+    ///         →&#160;200; <c>OpusBase_LargePrompt_Probe…</c> /
+    ///         <c>Sonnet5_LargePrompt_Probe…</c> / <c>Opus5_LargePrompt_Probe…</c>).
     ///         The dedicated <c>-1m</c> / <c>-1m-internal</c> ids that used to
     ///         unlock it were retired, so their redirects are gone — the base id
     ///         is passed through.</item>
+    ///   <item><b>Neither <c>/models</c> nor the integrator allowlist is
+    ///         authoritative.</b> They disagree in both directions: the retired
+    ///         <c>-1m-internal</c>/<c>-high</c>/<c>-xhigh</c> variants routed 200
+    ///         while absent from <c>/models</c>, and as of 2026-07 the allowlist
+    ///         still names <c>claude-sonnet-4.5</c>, <c>claude-opus-4.5</c>,
+    ///         <c>claude-fable-5</c>, and <c>claude-opus-4.8-fast</c> — every one
+    ///         of which 400s on a live request
+    ///         (<c>IntegratorAllowlist_Dump</c> / <c>UnadvertisedCandidate_LivenessProbe</c>).
+    ///         Only a live probe adds or removes a profile.</item>
     ///   <item><c>thinking.budget_tokens</c> must always be &lt;
     ///         <c>max_tokens</c>; otherwise Copilot 400s on that constraint
     ///         before evaluating the shape at all.</item>
@@ -129,14 +148,14 @@ internal sealed class ModelProfileCatalog
     private static IEnumerable<ModelProfile> BuildDefault()
     {
         // ── Family: "enabled-only" thinking, no reasoning_effort ─────────
-        // haiku-4.5, sonnet-4.5 share the same wire contract:
-        //   adaptive thinking rejected ("does not match expected tags:
-        //     'disabled', 'enabled'" / "adaptive thinking is not supported"),
+        // haiku-4.5 is the sole surviving member: adaptive thinking rejected
+        //   ("does not match expected tags: 'disabled', 'enabled'" / "adaptive
+        //     thinking is not supported"),
         //   enabled+disabled accepted,
         //   output_config.effort rejected outright ("does not support
         //     reasoning effort").
-        // (opus-4.5 was in this family but Copilot RETIRED it — 400
-        //  model_not_supported; RetiredCandidate_LivenessProbe.)
+        // (opus-4.5 and sonnet-4.5 were in this family but Copilot RETIRED
+        //  both — 400 model_not_supported; RetiredCandidate_LivenessProbe.)
         yield return new ModelProfile
         {
             CanonicalId = "claude-haiku-4.5",
@@ -144,27 +163,28 @@ internal sealed class ModelProfileCatalog
             EffortOnUnsupported = EffortHandling.Strip,
             Thinking = ThinkingPolicy.EnabledOnly,
             MaxThinkingBudget = 32000, // /models capabilities.supports.max_thinking_budget
-            // Copilot has no 1M variant for haiku/sonnet (every base model =
-            // 200k input per /models; only opus-4.6-1m / opus-4.7-1m-internal
-            // = 1M). Claude Code still offers "<family>[1m]" and, when picked,
-            // sends bare model + context-1m-2025-08-07 on the wire. Copilot
-            // accepts-and-ignores that token (returns 200), but forwarding a
-            // beta the backend can't honor is misleading, so strip it. NOTE:
-            // this does NOT change Claude Code's own 1M belief (that is decided
-            // client-side from the [1m] suffix, before the request); the user
-            // overfills to 200k and Copilot returns a "prompt is too long: N >
-            // 200000" 400 that Claude Code self-heals on. See docs/context-window.md.
+            // Copilot has no 1M variant for haiku (every base model = 200k
+            // input per /models). Claude Code still offers "<family>[1m]"
+            // and, when picked, sends bare model + context-1m-2025-08-07 on
+            // the wire. Copilot accepts-and-ignores that token (returns 200),
+            // but forwarding a beta the backend can't honor is misleading, so
+            // strip it. NOTE: this does NOT change Claude Code's own 1M belief
+            // (that is decided client-side from the [1m] suffix, before the
+            // request); the user overfills to 200k and Copilot returns a
+            // "prompt is too long: N > 200000" 400 that Claude Code self-heals
+            // on. See docs/context-window.md.
             StripBetas = ["context-1m-*"],
         };
-        yield return new ModelProfile
-        {
-            CanonicalId = "claude-sonnet-4.5",
-            AcceptedEfforts = [],
-            EffortOnUnsupported = EffortHandling.Strip,
-            Thinking = ThinkingPolicy.EnabledOnly,
-            MaxThinkingBudget = 32000,
-            StripBetas = ["context-1m-*"], // no 1M sonnet on Copilot — see claude-haiku-4.5 above
-        };
+        // NOTE: claude-sonnet-4.5 was RETIRED by Copilot (2026-07 reconciliation:
+        // 400 "The requested model is not supported" / model_not_supported —
+        // RetiredCandidate_LivenessProbe). Its profile is deleted. It is absent
+        // from /models AND unreachable; the stale entry in the integrator
+        // allowlist is NOT evidence to the contrary (that list still names
+        // opus-4.5, claude-fable-5, and claude-opus-4.8-fast, all of which 400 —
+        // see IntegratorAllowlist_Dump / UnadvertisedCandidate_LivenessProbe).
+        // An inbound claude-sonnet-4.5 now fuzzy-matches to sonnet-4.6 and is
+        // forwarded under that contract; Copilot remains the authority on
+        // whether the id resolves.
 
         // ── Family: "all thinking shapes" + effort low/medium/high/max ───
         // sonnet-4.6 and opus-4.6 (base + 1m) accept all three thinking
@@ -293,6 +313,57 @@ internal sealed class ModelProfileCatalog
             MaxThinkingBudget = 32000,
             AcceptsMidConversationSystem = true,  // empirical 2026-06-05: 4.8 accepts S in legal placements
             AcceptsSpeedFast = false,             // DTO doesn't model speed; unverified, leaving conservative
+        };
+
+        // ── claude-opus-5 ────────────────────────────────────────────────
+        // Copilot's newest Opus (added to /models 2026-07). Every field below
+        // is live-probed (ModelProfileProbe.Opus5_*) rather than inherited from
+        // opus-4.8, and one axis genuinely differs — see the cross-field note.
+        //   • Thinking: adaptive AND disabled accepted; only enabled → 400
+        //     ("not supported for this model. Use thinking.type.adaptive and
+        //     output_config.effort"). Opus5_Thinking_ProbeAcceptance:
+        //     null/adaptive/disabled → 200, enabled → 400. Hence
+        //     ThinkingPolicy.AdaptiveOrDisabled, NOT the AdaptiveOnly that
+        //     4.7/4.8 carry — AdaptiveOnly would coerce a user's explicit
+        //     thinking:disabled up to adaptive, silently re-enabling (and
+        //     billing) reasoning they turned off, and would make the cross-field
+        //     clamp below unreachable.
+        //   • Effort: low/medium/high/xhigh/max ALL accepted, standalone and
+        //     combined with adaptive thinking. Opus5_Effort_ReProbe (10/10 200).
+        //   • Mid-conv system: ACCEPTED under the exact 4.8 placement rule —
+        //     Opus5_MidConversationSystem_PlacementRules: end-after-user (U·S)
+        //     and U·A·U·S → 200; every predecessor=assistant / successor=user
+        //     placement → 400 with the placement-specific errors ("must follow
+        //     a 'user' message …" / "must precede an 'assistant' message …"),
+        //     NOT the unconditional "Unexpected role 'system'". So true, and
+        //     ProfileAdjuster keeps legal placements / converts illegal ones.
+        //   • 1M context: native. Opus5_ContextOneMillionBeta_ProbeAcceptance
+        //     (baseline/with-beta/bogus-beta all 200 → Copilot ignores unknown
+        //     betas, so the 1m acceptance is genuine) +
+        //     Opus5_LargePrompt_ProbeOneMillionContextSupport (677k-token
+        //     padded prompt → 200 with and without the beta). No StripBetas.
+        //   • CROSS-FIELD CONSTRAINT — the one place opus-5 is NOT opus-4.8,
+        //     and invisible to the single-axis matrix above: with
+        //     thinking:disabled, effort xhigh/max are REJECTED (400 "effort
+        //     'max' is not supported when thinking is disabled on this model.
+        //     Use effort 'high' or below, or enable thinking") while low/medium/
+        //     high are 200 — Opus5_DisabledThinking_EffortInteraction_Probe.
+        //     Each field is individually valid; only the PAIR 400s, and Claude
+        //     Code emits exactly that pair when a user turns thinking off at max
+        //     effort. Modeled as EffortsRejectedWhenThinkingDisabled so the
+        //     clamp applies ONLY on the disabled-thinking path — narrowing
+        //     AcceptedEfforts instead would silently downgrade every
+        //     thinking-ON max/xhigh request, which probes show is fine.
+        yield return new ModelProfile
+        {
+            CanonicalId = "claude-opus-5",
+            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
+            EffortOnUnsupported = EffortHandling.Strip,
+            Thinking = ThinkingPolicy.AdaptiveOrDisabled,
+            MaxThinkingBudget = 32000,
+            AcceptsMidConversationSystem = true,  // probed 2026-07: placement-rule errors, same as opus-4.8
+            AcceptsSpeedFast = false,             // DTO doesn't model speed; opus-4.8-fast 400s on this account
+            EffortsRejectedWhenThinkingDisabled = ["xhigh", "max"],
         };
     }
 }

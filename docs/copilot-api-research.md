@@ -769,6 +769,15 @@ Captured via `copilot-bridge debug list-models`: **44 models total, 11 support `
 | `claude-opus-4.7-high` | `/v1/messages`, `/chat/completions` |
 | `claude-opus-4.7-xhigh` | `/v1/messages`, `/chat/completions` |
 
+> ⚠️ **Historical snapshot (2026-05).** Retained as the record of what the account
+> exposed then. Since retired by Copilot (all 400 today): `claude-sonnet-4`,
+> `claude-sonnet-4.5`, `claude-opus-4.5`, `claude-opus-4.6-1m`,
+> `claude-opus-4.7-1m-internal`, `claude-opus-4.7-high`, `claude-opus-4.7-xhigh`.
+> Added since: `claude-sonnet-5`, `claude-opus-4.8`, `claude-opus-5`. The live set
+> is whatever `debug list-models --all` prints plus a liveness probe — see
+> `ModelProfileProbe.RetiredCandidate_LivenessProbe`; the current catalog is
+> `pipeline-design.md` §7.2.
+
 Observations:
 
 - **No `claude-opus-4` or `claude-opus-4.1`** — those IDs only appear in older reference projects; they're retired on a 2026-05 Enterprise account
@@ -1065,13 +1074,20 @@ Copilot emits an `event: message  data: [DONE]` after `message_stop` — OpenAI-
 
 The `capabilities` field returned by `/models` is not always consistent with actual API behavior. These are hard facts found by the playground:
 
+> ⚠️ **Historical (2026-05).** The `-1m-internal` / `-high` / `-xhigh` rows below
+> describe ids Copilot has since **retired**, and the `claude-opus-4.7` vanilla row
+> is **stale**: the 2026-06-05 re-probe found the base widened from `[medium]` to
+> the full `low..max` range. The *lesson* is what still holds — `/models` lies, so
+> probe. Current per-model truth: `pipeline-design.md` §7.2.
+
 | Model | capabilities claim | Actual behavior |
 | --- | --- | --- |
-| `claude-haiku-4.5` | `supports.adaptive_thinking: true` | Request with `thinking:{type:"adaptive"}` returns **HTTP 400** "adaptive thinking is not supported on this model". **Only supports `thinking:{type:"enabled", budget_tokens:N}`** |
-| `claude-opus-4.7-1m-internal` | `supports.adaptive_thinking: true`, `thinking_budget=1024..32000` | Request with `thinking:{type:"enabled", budget_tokens:4096}` returns **HTTP 400**. **Only supports `thinking:{type:"adaptive"}` + `output_config:{effort:X}`** |
-| `claude-opus-4.7` (vanilla) | `supports.reasoning_effort=[medium]` | Single-effort lock — `effort` must be `medium` |
-| `claude-opus-4.7-high` | `supports.reasoning_effort=[high]` | Single-effort lock — `effort` must be `high` |
-| `claude-opus-4.7-xhigh` | `supports.reasoning_effort=[xhigh]` | Single-effort lock — `effort` must be `xhigh` |
+| `claude-haiku-4.5` | `supports.adaptive_thinking: true` | Request with `thinking:{type:"adaptive"}` returns **HTTP 400** "adaptive thinking is not supported on this model". **Only supports `thinking:{type:"enabled", budget_tokens:N}`** (still true) |
+| `claude-opus-4.7-1m-internal` *(retired)* | `supports.adaptive_thinking: true`, `thinking_budget=1024..32000` | Request with `thinking:{type:"enabled", budget_tokens:4096}` returns **HTTP 400**. **Only supports `thinking:{type:"adaptive"}` + `output_config:{effort:X}`** |
+| `claude-opus-4.7` (vanilla) *(stale — now accepts low..max)* | `supports.reasoning_effort=[medium]` | Single-effort lock — `effort` must be `medium` |
+| `claude-opus-4.7-high` *(retired)* | `supports.reasoning_effort=[high]` | Single-effort lock — `effort` must be `high` |
+| `claude-opus-4.7-xhigh` *(retired)* | `supports.reasoning_effort=[xhigh]` | Single-effort lock — `effort` must be `xhigh` |
+| `claude-opus-5` | `effort=[low..max]`, `thinking=true` | Both accurate *individually* — but `xhigh`/`max` **400 when `thinking:disabled`**, a cross-field rule `/models` cannot express (2026-07) |
 
 **Bridge implication**: don't passthrough Claude Code's `thinking` field unmodified. **The preprocessing pipeline must rewrite the `thinking` shape based on the target model**:
 

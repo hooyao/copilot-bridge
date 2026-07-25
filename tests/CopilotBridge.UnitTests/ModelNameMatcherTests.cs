@@ -13,12 +13,13 @@ namespace CopilotBridge.UnitTests;
 /// </summary>
 public class ModelNameMatcherTests
 {
-    // The Anthropic catalog's known ids (post-2026 reconciliation) — the real
-    // set the router matches an unknown claude id against.
+    // The Anthropic catalog's known ids (post-2026-07 reconciliation) — the real
+    // set the router matches an unknown claude id against. sonnet-4.5 was retired
+    // by Copilot and its profile deleted, so it is no longer a fuzzy-match target.
     private static readonly string[] Anthropic =
     [
-        "claude-haiku-4.5", "claude-sonnet-4.5", "claude-sonnet-4.6", "claude-sonnet-5",
-        "claude-opus-4.6", "claude-opus-4.7", "claude-opus-4.8",
+        "claude-haiku-4.5", "claude-sonnet-4.6", "claude-sonnet-5",
+        "claude-opus-4.6", "claude-opus-4.7", "claude-opus-4.8", "claude-opus-5",
     ];
 
     // The Codex/Responses catalog's known ids. Mirrors
@@ -58,9 +59,11 @@ public class ModelNameMatcherTests
     [Fact]
     public void NewerOpus_MajorBump_StillMatchesOpusFamily()
     {
-        // A major-version jump (opus-5) must still land on the opus family, not
-        // drift to sonnet/haiku just because the digits changed.
-        var match = Nearest("claude-opus-5", Anthropic, out _);
+        // A major-version jump must still land on the opus family, not drift to
+        // sonnet/haiku just because the digits changed. Uses opus-6 (genuinely
+        // unknown): opus-5 joined the catalog in the 2026-07 reconciliation, so
+        // it is now an EXACT match and would make this assertion vacuous.
+        var match = Nearest("claude-opus-6", Anthropic, out _);
         Assert.NotNull(match);
         Assert.StartsWith("claude-opus-", match);
     }
@@ -89,9 +92,10 @@ public class ModelNameMatcherTests
     public void FamilyBeatsRawSimilarity_OnNearTie()
     {
         // Construct a near-tie where the same-family candidate must win even if a
-        // cross-family id is a hair closer on raw bigrams. opus-5 shares the
+        // cross-family id is a hair closer on raw bigrams. opus-6 shares the
         // 'opus' family token; it must not be pulled to a sonnet/haiku id.
-        var match = Nearest("claude-opus-5", Anthropic, out _);
+        // (opus-5 is an exact catalog entry post-2026-07, so it can't test this.)
+        var match = Nearest("claude-opus-6", Anthropic, out _);
         Assert.NotNull(match);
         Assert.Contains("opus", match);
     }
