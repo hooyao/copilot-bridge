@@ -10,7 +10,7 @@ namespace CopilotBridge.Playground.Headless;
 /// two routes with the SAME task so their client-side behavior is comparable:
 /// <list type="bullet">
 ///   <item><b>Native <c>/cc</c></b> (passthrough scenario) at the latest Claude id.</item>
-///   <item><b>CC→gpt</b> (cc-to-gpt scenario) — Claude Code's <c>claude-opus-4.8</c>
+///   <item><b>CC→gpt</b> (cc-to-gpt scenario) — Claude Code's <c>claude-opus-5</c>
 ///   traffic routed to Copilot's <c>gpt-5.6-sol</c> <c>/responses</c> backend. This
 ///   is the leg left UNVERIFIED at 0.4.13: T3 stamps bridge-internal markers
 ///   (<c>bridge_tool_namespace</c> / <c>bridge_input_is_grammar_text</c>) on the
@@ -46,7 +46,7 @@ public class ClaudeCodeBehaviorTests
     }
 
     /// <summary>
-    /// CC→gpt: the client still speaks <c>claude-opus-4.8</c>; the cc-to-gpt scenario's
+    /// CC→gpt: the client still speaks <c>claude-opus-5</c>; the cc-to-gpt scenario's
     /// routing sends it to <c>gpt-5.6-sol</c>. The verdict agent additionally checks
     /// the bridge trace to confirm the internal markers did NOT leak to the client.
     /// </summary>

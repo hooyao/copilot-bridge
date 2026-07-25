@@ -54,12 +54,18 @@ internal sealed class LocationUse
     /// Per-target effort remapping. Keys are inbound effort values
     /// (case-insensitive); the matching key's value replaces
     /// <c>output_config.effort</c> before <see cref="ProfileAdjuster"/> runs.
-    /// Lives on the location rather than as a separate rule because the
-    /// mapping is specific to <see cref="Model"/> — e.g. <c>{"max":"xhigh"}</c>
-    /// is a deliberate down-tier on <c>gpt-5.6-sol</c> (which accepts <c>max</c>
-    /// natively, so without the map <c>max</c> passes through verbatim), but
-    /// would be pointless on a target that already rejects <c>max</c> — there
-    /// <see cref="ProfileAdjuster"/> strips it from the profile's contract.
+    /// Lives on the location rather than as a separate rule because the mapping
+    /// is specific to <see cref="Model"/>. Two distinct uses:
+    /// <list type="bullet">
+    ///   <item><b>Down-tier a value the target accepts.</b> <c>{"max":"xhigh"}</c>
+    ///   on <c>gpt-5.6-sol</c>, which takes <c>max</c> natively — without the map
+    ///   <c>max</c> would pass through verbatim; the map caps it deliberately.</item>
+    ///   <item><b>Preserve intent where the profile would otherwise strip.</b> If
+    ///   the target rejects <c>max</c> but accepts <c>xhigh</c>, mapping
+    ///   <c>max→xhigh</c> keeps the highest supported tier instead of letting
+    ///   <see cref="ProfileAdjuster"/> drop the field and fall back to the model
+    ///   default — which may be lower than the user asked for.</item>
+    /// </list>
     /// </summary>
     public Dictionary<string, string>? EffortMap { get; set; }
 

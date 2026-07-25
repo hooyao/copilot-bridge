@@ -182,9 +182,16 @@ internal sealed class ModelProfileCatalog
         // allowlist is NOT evidence to the contrary (that list still names
         // opus-4.5, claude-fable-5, and claude-opus-4.8-fast, all of which 400 —
         // see IntegratorAllowlist_Dump / UnadvertisedCandidate_LivenessProbe).
-        // An inbound claude-sonnet-4.5 now fuzzy-matches to sonnet-4.6 and is
-        // forwarded under that contract; Copilot remains the authority on
-        // whether the id resolves.
+        //
+        // What deleting the profile does NOT do is make the id work. ModelRouterStage
+        // fuzzy-matches an inbound claude-sonnet-4.5 to sonnet-4.6 but deliberately
+        // keeps the REQUESTED id on the wire (ModelRouterStage.cs — only the coercion
+        // rules are borrowed, never the id), so the request still goes upstream as
+        // claude-sonnet-4.5 and still 400s. That is intended: Copilot is the authority
+        // on whether an id resolves, and its error is the honest answer. Deleting the
+        // profile only stops the bridge from claiming probed knowledge it no longer
+        // has. An operator who wants old sonnet-4.5 traffic to keep working must add
+        // an explicit Routing.Locations rewrite to a live id.
 
         // ── Family: "all thinking shapes" + effort low/medium/high/max ───
         // sonnet-4.6 and opus-4.6 (base + 1m) accept all three thinking

@@ -995,7 +995,7 @@ Run: `dotnet test` (~1m40s, single-threaded to dodge Anthropic's per-account rat
 
 | Test class | Cases | Verifies |
 | --- | --- | --- |
-| `EffortLevelsTests` | 4 | `thinking:{type:"adaptive"}` + `output_config:{effort:X}` × {low, medium, high, xhigh} on `claude-opus-4.7-1m-internal` are all accepted |
+| `EffortLevelsTests` | 4 | `thinking:{type:"adaptive"}` + `output_config:{effort:X}` × {low, medium, high, xhigh} are all accepted (retargeted 2026-07 from the retired `claude-opus-4.7-1m-internal` to the `claude-opus-4.7` base, which now serves the same 1M context and effort range) |
 | `ExplicitThinkingTests` | 1 | `thinking:{type:"enabled", budget_tokens:2048}` produces a thinking content block on sonnet-4.6 |
 | `PromptCachingTests` | 2 | `cache_control:{type:"ephemeral"}` default 5m TTL: a second identical request's `cache_read_input_tokens` matches the first request's `cache_creation_input_tokens` (verified on sonnet/haiku) |
 | `ExtendedCacheTtlTests` | 1 | `cache_control:{type:"ephemeral", ttl:"1h"}` round-trips the same way; tokens land in the `usage.cache_creation.ephemeral_1h_input_tokens` bucket |
@@ -1361,13 +1361,23 @@ if (m.includes('haiku') || m.includes('sonnet') || m.includes('opus')) return fa
 | Sets `ANTHROPIC_MODEL=claude-opus-4.7-xhigh` directly | `model: claude-opus-4-7-xhigh`, no `effort` | normalize keeps `-xhigh`; the `-xhigh` profile accepts xhigh natively. Final: `claude-opus-4.7-xhigh` |
 | SDK `extraBodyParams.output_config.effort = "xhigh"` (only reachable via the SDK, not Claude Code UI) | `model: opus-4-7-...`, `effort: "xhigh"` | opus-4.7 profile routes xhigh → `-xhigh` variant, effort stripped. Final: `claude-opus-4.7-xhigh` |
 
-**Practical conclusion**: for a user who wants opus-4.7 xhigh, the supported path is **`ANTHROPIC_MODEL=claude-opus-4.7-xhigh`** — direct variant selection. The "base + effort" path is gated off by `modelSupportsEffort` returning false. The bridge's opus-4.7 profile (`AcceptedEfforts = ["medium"]` + `EffortToVariant` for high/xhigh) is correct but exercised mainly by the env-var bypass or SDK callers, not Claude Code's normal UI. (A `Routing.Locations` `EffortMap` can also remap a value per-target — e.g. `max → xhigh` on `claude-opus-4.7-1m-internal`.)
+**Practical conclusion (SUPERSEDED — see the banner below)**: for a user who wants opus-4.7 xhigh, the supported path is **`ANTHROPIC_MODEL=claude-opus-4.7-xhigh`** — direct variant selection. The "base + effort" path is gated off by `modelSupportsEffort` returning false. The bridge's opus-4.7 profile (`AcceptedEfforts = ["medium"]` + `EffortToVariant` for high/xhigh) is correct but exercised mainly by the env-var bypass or SDK callers, not Claude Code's normal UI. (A `Routing.Locations` `EffortMap` can also remap a value per-target — e.g. `max → xhigh` on `claude-opus-4.7-1m-internal`.)
+
+> ⚠️ **SUPERSEDED 2026-07 — do not follow the advice above.** Copilot **retired**
+> `claude-opus-4.7-high`, `-xhigh`, `-1m-internal`, and `claude-opus-4.6-1m`; all four
+> now 400 (`ModelProfileProbe.RetiredCandidate_LivenessProbe`), so setting
+> `ANTHROPIC_MODEL` to a sized variant fails outright. It is also no longer necessary:
+> the 2026-06-05 re-probe found the opus-4.7 **base** widened from `[medium]` to the
+> full `low`–`max` range, so effort passes through on the base id and no
+> `EffortToVariant` hop happens (no profile uses `RouteToVariant` today). The
+> variant-rewrite tests that encoded this were deleted. Current per-model truth:
+> `pipeline-design.md` §7.2.
 
 **Two follow-ups — both RESOLVED 2026-05-31 by the probe matrix**:
 - `claude-sonnet-4.6` sends `output_config.effort` from Claude Code's UI by default. The probe confirmed sonnet-4.6 accepts `low`/`medium`/`high` directly, so `ModelProfile.AcceptedEfforts = ["low","medium","high"]` and the bridge forwards those values unchanged (stripping only `xhigh`/`max`, which this family rejects). No wasteful stripping.
-- `claude-opus-4.6` (and `claude-opus-4.6-1m`) are now on Copilot and probed — same `["low","medium","high"]` profile as sonnet-4.6.
+- `claude-opus-4.6` (and the since-retired `claude-opus-4.6-1m`) are now on Copilot and probed — same `["low","medium","high"]` profile as sonnet-4.6. *(Re-probed 2026-06-05: opus-4.6 also accepts `max`, though still not `xhigh`.)*
 
-**RESOLVED 2026-05-21 (Claude Code 2.1.146)**: Claude Code now ships an `xhigh` effort level in its CLI vocabulary (`--effort low|medium|high|xhigh|max`) and unblocks opus-4.7 specifically — the model picker's `/effort xhigh` description is "Deeper reasoning than high, just below maximum (Opus 4.7 only)". The bridge's `CopilotModelCatalog` (loaded from `/models` at startup) drives effort routing dynamically from `capabilities.supports.reasoning_effort` per model — no more hardcoded EffortAware table. Verified end-to-end by `tests/CopilotBridge.Playground/Headless/EffortRoutingTests.cs` (18 cases covering sonnet-4.6 / opus-4.6 / opus-4.7 base+variant / opus-4.7-1m-internal / opus-4.6-1m / sonnet-4.5 strip / haiku-4.5 strip).
+**RESOLVED 2026-05-21 (Claude Code 2.1.146)**: Claude Code now ships an `xhigh` effort level in its CLI vocabulary (`--effort low|medium|high|xhigh|max`) and unblocks opus-4.7 specifically — the model picker's `/effort xhigh` description is "Deeper reasoning than high, just below maximum (Opus 4.7 only)". The bridge's `CopilotModelCatalog` (loaded from `/models` at startup) drives effort routing dynamically from `capabilities.supports.reasoning_effort` per model — no more hardcoded EffortAware table. Verified end-to-end by `tests/CopilotBridge.Playground/Headless/EffortRoutingTests.cs`. *(That suite was pruned in 2026-07: the variant / `-1m` / sonnet-4.5 cases were deleted with their retired ids, leaving sonnet-4.6 / opus-4.6 / opus-4.7 base pass-through + haiku-4.5 strip.)*
 
 > **Superseded 2026-05-31**: the `/models`-derived `CopilotModelCatalog` was itself deleted and replaced by the hand-curated `ModelProfileCatalog` (playground probes). `/models` capability metadata proved unreliable — haiku-4.5 advertises adaptive thinking but rejects it at runtime; opus-4.8 declares mid-conversation `role:"system"` support its gateway rejects on every model. Effort routing is now a per-profile `AcceptedEfforts` + `EffortToVariant` fact sourced from `ModelProfileProbe.cs`, not from `/models`. See pipeline-design.md §7.2.
 

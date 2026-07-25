@@ -1,6 +1,7 @@
 using System.Net;
 using System.Runtime.Versioning;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Xunit;
 using Xunit.Abstractions;
@@ -61,13 +62,13 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
     [Fact]
     public async Task Opus47_With1mBeta_NoDowngrade_BetaPassesThrough()
     {
-        var seenBefore = SnapshotLogFiles();
+        var marker = NewMarker();
 
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
         req.Headers.TryAddWithoutValidation("anthropic-beta", "context-1m-2025-08-07");
         req.Content = new StringContent(
-            """{"model":"claude-opus-4-7","max_tokens":8,"messages":[{"role":"user","content":"reply: ok"}]}""",
+            $$$"""{"model":"claude-opus-4-7","max_tokens":8,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}]}""",
             Encoding.UTF8, "application/json");
 
         using var resp = await http.SendAsync(req);
@@ -77,7 +78,7 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var upstreamReq = FindUpstreamRequestSince(seenBefore, "claude-opus-4.7");
+        var upstreamReq = FindUpstreamRequestByMarker(marker);
         Assert.NotNull(upstreamReq);
 
         var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
@@ -91,18 +92,18 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
     [Fact]
     public async Task Opus47_WithoutBeta_DoesNotRewrite()
     {
-        var seenBefore = SnapshotLogFiles();
+        var marker = NewMarker();
 
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
         req.Content = new StringContent(
-            """{"model":"claude-opus-4-7","max_tokens":8,"messages":[{"role":"user","content":"reply: ok"}]}""",
+            $$$"""{"model":"claude-opus-4-7","max_tokens":8,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}]}""",
             Encoding.UTF8, "application/json");
 
         using var resp = await http.SendAsync(req);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var upstreamReq = FindUpstreamRequestSince(seenBefore, "claude-opus-4.7");
+        var upstreamReq = FindUpstreamRequestByMarker(marker);
         Assert.NotNull(upstreamReq);
 
         var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
@@ -120,19 +121,19 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
     [Fact]
     public async Task UnknownBeta_PassesThroughVerbatim()
     {
-        var seenBefore = SnapshotLogFiles();
+        var marker = NewMarker();
 
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
         req.Headers.TryAddWithoutValidation("anthropic-beta", "extended-cache-ttl-2025-04-11");
         req.Content = new StringContent(
-            """{"model":"claude-haiku-4-5","max_tokens":8,"messages":[{"role":"user","content":"reply: ok"}]}""",
+            $$$"""{"model":"claude-haiku-4-5","max_tokens":8,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}]}""",
             Encoding.UTF8, "application/json");
 
         using var resp = await http.SendAsync(req);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var upstreamReq = FindUpstreamRequestSince(seenBefore, "claude-haiku-4.5");
+        var upstreamReq = FindUpstreamRequestByMarker(marker);
         Assert.NotNull(upstreamReq);
 
         var upstreamBeta = upstreamReq["headers"]?["anthropic-beta"]?.GetValue<string>() ?? "";
@@ -153,13 +154,13 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
     [Fact]
     public async Task Opus47_WithThinkingEnabled_And1mBeta_RewritesThinkingButKeepsModel()
     {
-        var seenBefore = SnapshotLogFiles();
+        var marker = NewMarker();
 
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
         req.Headers.TryAddWithoutValidation("anthropic-beta", "context-1m-2025-08-07");
         req.Content = new StringContent(
-            """{"model":"claude-opus-4-7","max_tokens":32,"messages":[{"role":"user","content":"reply: ok"}],"thinking":{"type":"enabled","budget_tokens":8192}}""",
+            $$$"""{"model":"claude-opus-4-7","max_tokens":32,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}],"thinking":{"type":"enabled","budget_tokens":8192}}""",
             Encoding.UTF8, "application/json");
 
         using var resp = await http.SendAsync(req);
@@ -169,7 +170,7 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var upstreamReq = FindUpstreamRequestSince(seenBefore, "claude-opus-4.7");
+        var upstreamReq = FindUpstreamRequestByMarker(marker);
         Assert.NotNull(upstreamReq);
 
         var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
@@ -197,19 +198,19 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
     [Fact]
     public async Task Opus48_With1mBeta_RoutesToCopilotOpus48_NoDowngrade()
     {
-        var seenBefore = SnapshotLogFiles();
+        var marker = NewMarker();
 
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
         req.Headers.TryAddWithoutValidation("anthropic-beta", "context-1m-2025-08-07");
         req.Content = new StringContent(
-            """{"model":"claude-opus-4-8","max_tokens":16,"messages":[{"role":"user","content":"reply: ok"}]}""",
+            $$$"""{"model":"claude-opus-4-8","max_tokens":16,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}]}""",
             Encoding.UTF8, "application/json");
 
         using var resp = await http.SendAsync(req);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var upstreamReq = FindUpstreamRequestSince(seenBefore, "claude-opus-4.8");
+        var upstreamReq = FindUpstreamRequestByMarker(marker);
         Assert.NotNull(upstreamReq);
 
         var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
@@ -231,18 +232,18 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
     [Fact]
     public async Task Opus48_WithThinkingEnabled_RewritesThinkingButKeepsModel()
     {
-        var seenBefore = SnapshotLogFiles();
+        var marker = NewMarker();
 
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
         req.Content = new StringContent(
-            """{"model":"claude-opus-4-8","max_tokens":32,"messages":[{"role":"user","content":"reply: ok"}],"thinking":{"type":"enabled","budget_tokens":16384}}""",
+            $$$"""{"model":"claude-opus-4-8","max_tokens":32,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}],"thinking":{"type":"enabled","budget_tokens":16384}}""",
             Encoding.UTF8, "application/json");
 
         using var resp = await http.SendAsync(req);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var upstreamReq = FindUpstreamRequestSince(seenBefore, "claude-opus-4.8");
+        var upstreamReq = FindUpstreamRequestByMarker(marker);
         Assert.NotNull(upstreamReq);
 
         var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
@@ -270,19 +271,19 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
     [Fact]
     public async Task Sonnet46_With1mBeta_NoDowngrade_PassthroughToCopilotSonnet46()
     {
-        var seenBefore = SnapshotLogFiles();
+        var marker = NewMarker();
 
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
         req.Headers.TryAddWithoutValidation("anthropic-beta", "context-1m-2025-08-07");
         req.Content = new StringContent(
-            """{"model":"claude-sonnet-4-6","max_tokens":16,"messages":[{"role":"user","content":"reply: ok"}]}""",
+            $$$"""{"model":"claude-sonnet-4-6","max_tokens":16,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}]}""",
             Encoding.UTF8, "application/json");
 
         using var resp = await http.SendAsync(req);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var upstreamReq = FindUpstreamRequestSince(seenBefore, "claude-sonnet-4.6");
+        var upstreamReq = FindUpstreamRequestByMarker(marker);
         Assert.NotNull(upstreamReq);
 
         var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
@@ -320,12 +321,12 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
     [InlineData("xhigh")]
     public async Task Opus5_DisabledThinking_RejectedEffort_IsClampedNotForwarded(string effort)
     {
-        var seenBefore = SnapshotLogFiles();
+        var marker = NewMarker();
 
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
         req.Content = new StringContent(
-            $$$"""{"model":"claude-opus-5","max_tokens":16,"messages":[{"role":"user","content":"reply: ok"}],"thinking":{"type":"disabled"},"output_config":{"effort":"{{{effort}}}"}}""",
+            $$$"""{"model":"claude-opus-5","max_tokens":16,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}],"thinking":{"type":"disabled"},"output_config":{"effort":"{{{effort}}}"}}""",
             Encoding.UTF8, "application/json");
 
         using var resp = await http.SendAsync(req);
@@ -336,7 +337,7 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
         // Without the clamp this is the upstream 400 quoted above, surfaced to the client.
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var upstreamReq = FindUpstreamRequestSince(seenBefore, "claude-opus-5");
+        var upstreamReq = FindUpstreamRequestByMarker(marker);
         Assert.NotNull(upstreamReq);
 
         var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
@@ -362,18 +363,18 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
     [Fact]
     public async Task Opus5_AdaptiveThinking_MaxEffort_PassesThroughUnclamped()
     {
-        var seenBefore = SnapshotLogFiles();
+        var marker = NewMarker();
 
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
         req.Content = new StringContent(
-            """{"model":"claude-opus-5","max_tokens":16,"messages":[{"role":"user","content":"reply: ok"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}}""",
+            $$$"""{"model":"claude-opus-5","max_tokens":16,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}}""",
             Encoding.UTF8, "application/json");
 
         using var resp = await http.SendAsync(req);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var upstreamReq = FindUpstreamRequestSince(seenBefore, "claude-opus-5");
+        var upstreamReq = FindUpstreamRequestByMarker(marker);
         Assert.NotNull(upstreamReq);
 
         var upstreamThinking = upstreamReq["body"]?["thinking"]?["type"]?.GetValue<string>();
@@ -394,19 +395,19 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
     [Fact]
     public async Task Opus5_With1mBeta_NoDowngrade_BetaPassesThrough()
     {
-        var seenBefore = SnapshotLogFiles();
+        var marker = NewMarker();
 
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
         req.Headers.TryAddWithoutValidation("anthropic-beta", "context-1m-2025-08-07");
         req.Content = new StringContent(
-            """{"model":"claude-opus-5","max_tokens":16,"messages":[{"role":"user","content":"reply: ok"}]}""",
+            $$$"""{"model":"claude-opus-5","max_tokens":16,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}]}""",
             Encoding.UTF8, "application/json");
 
         using var resp = await http.SendAsync(req);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var upstreamReq = FindUpstreamRequestSince(seenBefore, "claude-opus-5");
+        var upstreamReq = FindUpstreamRequestByMarker(marker);
         Assert.NotNull(upstreamReq);
 
         var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
@@ -417,63 +418,70 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
         Assert.Contains("context-1m-2025-08-07", upstreamBeta, StringComparison.OrdinalIgnoreCase);
     }
 
-    private HashSet<string> SnapshotLogFiles() =>        Directory.Exists(_bridge.LogDirectory)
-            ? new HashSet<string>(Directory.GetFiles(_bridge.LogDirectory, "*.json"))
-            : new HashSet<string>();
-
     /// <summary>
-    /// Finds the newest <c>*-upstream-req.json</c> file written since
-    /// <paramref name="seenBefore"/> was snapshotted. Returns its parsed root.
-    /// Null if no such file appeared (e.g. early-fail path).
-    /// <para><paramref name="expectModelPrefix"/> filters to the request whose
-    /// <c>body.model</c> starts with that value — pass the <b>normalized dotted</b>
-    /// id (<c>claude-opus-4.7</c>), which is what
-    /// <see cref="Routing.CopilotModelRegistry.Normalize"/> puts on the upstream
-    /// body, NOT the dashed form the client sends inbound.</para>
-    /// <para><b>This filter is required for correctness, not just precision:</b>
-    /// every test in this class shares one <see cref="BridgeFixture"/> and xUnit
-    /// runs them concurrently within the class, so several tests write into the
-    /// same trace dir at once. Taking the newest new file unconditionally can
-    /// return a SIBLING test's request — which surfaced as
-    /// <c>Opus47_WithThinkingEnabled_And1mBeta…</c> reading an opus-5 body and
-    /// failing on the model assertion, while passing in isolation. Filtering by
-    /// the model under test makes each lookup pick its own request regardless of
-    /// interleaving.</para>
+    /// Finds the upstream request this test produced, correlated by a unique
+    /// marker the caller embedded in the request body.
+    /// <para><b>Why a marker and not "the newest new file":</b> the fixture's
+    /// trace dir is a FIXED path (<c>AppContext.BaseDirectory/request-traces</c>,
+    /// see <see cref="BridgeFixture"/>) shared by every test AND every prior run
+    /// — it currently holds hundreds of files going back months. A single
+    /// <c>/cc/v1/messages</c> POST can also produce more than one
+    /// <c>upstream-req</c> (the bridge retries transient connection failures,
+    /// <c>Pipeline:UpstreamRetry</c>). So "newest file since the snapshot" is not
+    /// a reliable identity for a given test's request.</para>
+    /// <para>An earlier revision of this helper filtered by model id instead and
+    /// justified it with cross-test parallelism. That rationale was wrong —
+    /// <c>AssemblyInfo.cs</c> sets <c>DisableTestParallelization = true</c>, so
+    /// sibling methods never run concurrently — and the filter was also too weak,
+    /// since several cases here share a model (three drive <c>opus-4.7</c>, three
+    /// drive <c>opus-5</c>) and would still select each other's file. Correlating
+    /// on a per-call unique marker is exact regardless of ordering, retries, or
+    /// leftovers from previous runs.</para>
+    /// <para>Returns null if no matching request appeared (e.g. early-fail path).</para>
     /// </summary>
-    private JsonObject? FindUpstreamRequestSince(HashSet<string> seenBefore, string? expectModelPrefix = null)
+    private JsonObject? FindUpstreamRequestByMarker(string marker)
     {
-        // Sink writes asynchronously; the file appears a few ms after the
-        // response. Poll briefly so the test doesn't flake.
+        // The sink writes asynchronously, so the file appears a few ms after the
+        // response and may briefly be a partially-written prefix. Poll, and treat
+        // an unreadable OR not-yet-complete file as "retry", never as "no match".
         for (var attempt = 0; attempt < 50; attempt++)
         {
-            var newFiles = Directory.GetFiles(_bridge.LogDirectory, "*-upstream-req.json")
-                .Where(f => !seenBefore.Contains(f))
+            var files = Directory.GetFiles(_bridge.LogDirectory, "*-upstream-req.json")
                 .OrderBy(File.GetLastWriteTimeUtc)
                 .ToList();
 
-            // Walk newest-first so the most recent matching request wins.
-            for (var i = newFiles.Count - 1; i >= 0; i--)
+            // Walk newest-first: the marker is unique, but this reaches it fastest.
+            for (var i = files.Count - 1; i >= 0; i--)
             {
-                // Use FileShare.ReadWrite so we don't race the sink worker —
-                // when several tests share the fixture and run in parallel, the
-                // worker may still hold a write handle on the latest file.
-                var raw = ReadFileShared(newFiles[i]);
-                if (raw is null) continue;
-                var parsed = JsonNode.Parse(raw)?.AsObject();
-                if (parsed is null) continue;
-                if (expectModelPrefix is null) return parsed;
+                var raw = ReadFileShared(files[i]);
+                if (raw is null) continue;               // locked mid-write
+                if (!raw.Contains(marker, StringComparison.Ordinal)) continue;
 
-                var model = parsed["body"]?["model"]?.GetValue<string>();
-                if (model is not null
-                    && model.StartsWith(expectModelPrefix, StringComparison.OrdinalIgnoreCase))
+                JsonObject? parsed;
+                try
                 {
-                    return parsed;
+                    parsed = JsonNode.Parse(raw)?.AsObject();
                 }
+                catch (JsonException)
+                {
+                    // The marker is present but the JSON is still truncated — the
+                    // sink hasn't finished flushing. Keep polling rather than
+                    // throwing out of the helper.
+                    continue;
+                }
+                if (parsed is not null) return parsed;
             }
             Thread.Sleep(50);
         }
         return null;
     }
+
+    /// <summary>
+    /// A per-call correlation token, embedded in the request's user message so it
+    /// round-trips into the upstream body the bridge writes to its trace. Kept
+    /// short and inert so it cannot change how Copilot handles the request.
+    /// </summary>
+    private static string NewMarker() => $"probe-{Guid.NewGuid():N}";
 
     private static string? ReadFileShared(string path)
     {

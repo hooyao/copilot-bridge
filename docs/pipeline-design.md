@@ -1258,10 +1258,10 @@ Today's `appsettings.json` ships an **empty** active location list
 
 | `When` model | `Use.Model` | `Use.EffortMap` |
 | --- | --- | --- |
-| `claude-opus-4.8` | `gpt-5.6-sol` | `max` → `xhigh` |
+| `claude-opus-5` | `gpt-5.6-sol` | `max` → `xhigh` |
 
 Note:
-- The example routes Claude Code's `claude-opus-4.8` to Copilot's newest Codex
+- The example routes Claude Code's `claude-opus-5` to Copilot's newest Codex
   model `gpt-5.6-sol`. The `EffortMap max→xhigh` is an **optional down-tier**:
   unlike gpt-5.5, gpt-5.6-sol (the "xlarge" effort profile) accepts `max`
   natively, so without the map Claude Code's `max` passes through verbatim — the

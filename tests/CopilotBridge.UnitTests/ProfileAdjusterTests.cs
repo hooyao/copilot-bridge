@@ -371,11 +371,16 @@ public class ProfileAdjusterTests
     /// <summary>
     /// Retirement guard: Copilot retired <c>claude-sonnet-4.5</c> (400
     /// <c>model_not_supported</c> — <c>RetiredCandidate_LivenessProbe</c>), so the
-    /// catalog must not carry a profile for it. Keeping one would let the router
-    /// resolve an id the backend rejects, turning a clean fuzzy-match-to-sonnet-4.6
-    /// into an upstream 400. The stale integrator-allowlist entry is not evidence
-    /// to the contrary — that list also names opus-4.5 and claude-fable-5, which
-    /// likewise 400.
+    /// catalog must not carry a profile for it. A profile would assert probed
+    /// knowledge the bridge no longer has, and would let the adjuster coerce a
+    /// body against a contract nobody has verified since the id went away.
+    /// <para>Deleting it does NOT make the id work: the router keeps the requested
+    /// id on the wire even when it borrows a neighbour's profile, so a
+    /// sonnet-4.5 request still 400s upstream. That is the intended outcome —
+    /// Copilot's own error is the honest answer, and an operator who needs the id
+    /// to keep working adds an explicit <c>Routing.Locations</c> rewrite.</para>
+    /// <para>The stale integrator-allowlist entry is not evidence to the contrary
+    /// — that list also names opus-4.5 and claude-fable-5, which likewise 400.</para>
     /// </summary>
     [Fact]
     public void RetiredModels_HaveNoProfile()

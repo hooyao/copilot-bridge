@@ -985,7 +985,6 @@ public partial class ModelProfileProbe
     /// <c>/models</c> reports <c>ctx=1000000, max_prompt=936000</c>; this confirms the
     /// gateway honors it rather than 400ing "prompt is too long", which decides
     /// whether the profile needs a <c>StripBetas=["context-1m-*"]</c> entry (as
-    /// whether the profile needs a <c>StripBetas=["context-1m-*"]</c> entry (as
     /// haiku-4.5 does) or passes the beta through (as opus-4.8 / sonnet-5 do).
     /// </summary>
     [Theory]
