@@ -112,9 +112,19 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    Replay a real captured body, mutating **only the axis under test**:
 
    ```csharp
-   // Bodies land in tests/behavior-runs/<serve-dir>/*-upstream-req.json after any
-   // Kind=ClientBehavior run (tracing is forced on). Take one, change one field,
-   // POST it straight at Copilot via PlaygroundClient — bypassing the bridge.
+   // Bodies land in tests/behavior-runs/<serve-dir>/*-upstream-req.json after a
+   // Kind=ClientBehavior run (ServeProcess forces tracing on). Take one, change
+   // one field, POST it straight at Copilot via PlaygroundClient — bypassing the
+   // bridge.
+
+   // The capture MUST already name the model you are profiling. PlaygroundClient
+   // posts body.model verbatim, so a capture from a sibling model would validate
+   // that sibling — and rewriting model here would change a second variable,
+   // which is exactly what makes a model-specific rejection look "confirmed" on
+   // the wrong model. Assert, don't coerce.
+   var capturedModel = captured["body"]!["model"]?.GetValue<string>()
+       ?? throw new InvalidOperationException("capture has no body.model");
+   Assert.Equal(modelUnderTest, capturedModel);   // pick a different capture if this fails
 
    // BridgeIoSink writes a parseable body as a NESTED OBJECT and only falls back
    // to a string when parsing failed, so handle both shapes.
@@ -162,9 +172,16 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    `xhigh`/`max` rejection, confirmed byte-identical (2756 B, 3 system blocks, 8
    betas) before the clamp shipped.
 
-   If no capture exists yet (a brand-new model with no traffic), run one
-   `Kind=ClientBehavior` case first to produce one — that run is needed for step 7
-   anyway.
+   **Prerequisite for a brand-new model: you must create the capture first, and
+   step 7 does NOT create it for you.** Only `Kind=ClientBehavior` cases produce
+   `tests/behavior-runs/` (that path is written by `ServeProcess`); step 7's Codex
+   load-task smoke is `Kind=ApiContract` and runs on `BridgeFixture`, so it writes
+   nothing there. The behavior cases also target fixed latest-model constants
+   (`ClientBehaviorSupport.LatestClaude` / `LatestGpt`), so a model that is not yet
+   the constant produces no capture of its own. Before this step can run on a new
+   id, either retarget the constant (only once the catalog knows the id — see
+   `real-client-verify`'s `models.md`) or add a candidate-targeted behavior case.
+   Then run it to generate the capture.
 4. **Write the `ModelProfile`** in `ModelProfileCatalog.BuildDefault()` (or a
    `CodexModelProfile` in `CodexModelProfileCatalog`) with every field grounded
    in a probe result, and a code comment citing the probe method name for each
