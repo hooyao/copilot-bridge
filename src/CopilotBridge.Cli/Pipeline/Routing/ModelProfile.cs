@@ -23,7 +23,7 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 /// </remarks>
 internal sealed record ModelProfile
 {
-    /// <summary>Canonical model id this profile describes (e.g. <c>claude-opus-4.7-1m-internal</c>).</summary>
+    /// <summary>Canonical model id this profile describes (e.g. <c>claude-opus-5</c>).</summary>
     public required string CanonicalId { get; init; }
 
     /// <summary>
@@ -45,6 +45,12 @@ internal sealed record ModelProfile
     /// when <see cref="EffortOnUnsupported"/> is
     /// <see cref="EffortHandling.RouteToVariant"/>. The chosen variant has its
     /// own profile; the adjuster re-resolves against it.
+    /// <para><b>Dormant as of the 2026-07 reconciliation:</b> no profile uses
+    /// <see cref="EffortHandling.RouteToVariant"/> today. Copilot retired every
+    /// sized sibling id (<c>-high</c> / <c>-xhigh</c>) and widened the base
+    /// models to accept the full effort range directly, so there is nothing to
+    /// route to. The mechanism is kept because the pattern can return, but the
+    /// example id above no longer resolves — treat it as illustrative only.</para>
     /// </summary>
     public IReadOnlyDictionary<string, string> EffortToVariant { get; init; } =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -95,6 +101,30 @@ internal sealed record ModelProfile
     /// <c>context-1m-*</c> beta is at best redundant and at worst rejected.
     /// </summary>
     public IReadOnlyList<string> StripBetas { get; init; } = [];
+
+    /// <summary>
+    /// Efforts the backend rejects <b>only when <c>thinking</c> is
+    /// <c>disabled</c></b> — a CROSS-FIELD constraint: each field is
+    /// individually valid, but the pair 400s. Empty (the default) means the
+    /// model has no such interaction and effort validity depends solely on
+    /// <see cref="AcceptedEfforts"/>.
+    /// <para>Introduced for <c>claude-opus-5</c>, the first Copilot model to
+    /// enforce one (probed 2026-07:
+    /// <c>ModelProfileProbe.Opus5_DisabledThinking_EffortInteraction_Probe</c> —
+    /// <c>thinking:disabled</c> + <c>xhigh</c>/<c>max</c> → 400 <i>"effort 'max'
+    /// is not supported when thinking is disabled on this model. Use effort
+    /// 'high' or below, or enable thinking"</i>, while the same efforts are 200
+    /// with thinking on and <c>disabled</c> is 200 at <c>high</c> and below).</para>
+    /// <para><b>Why this needs its own field rather than a narrower
+    /// <see cref="AcceptedEfforts"/>:</b> narrowing the list would strip
+    /// <c>xhigh</c>/<c>max</c> unconditionally and silently downgrade every
+    /// thinking-ON request — the common case — to reach a constraint that only
+    /// binds when thinking is off. <see cref="ProfileAdjuster"/> therefore
+    /// consults this only on the disabled-thinking path, where it clamps to the
+    /// highest still-accepted effort (preserving the user's intent as far as the
+    /// backend allows) instead of dropping the field entirely.</para>
+    /// </summary>
+    public IReadOnlyList<string> EffortsRejectedWhenThinkingDisabled { get; init; } = [];
 }
 
 /// <summary>What to do with an <c>output_config.effort</c> the model won't take.</summary>
@@ -142,6 +172,32 @@ internal sealed record ThinkingPolicy
     public static ThinkingPolicy AdaptiveOnly { get; } = new()
     {
         AcceptedShapes = ["adaptive"],
+        CoerceToWhenUnsupported = "adaptive",
+        DeriveEffortFromBudgetOnCoerce = true,
+    };
+
+    /// <summary>
+    /// opus-5: <c>adaptive</c> AND <c>disabled</c> both accepted; only
+    /// <c>enabled</c> is rejected (400 "Use thinking.type.adaptive and
+    /// output_config.effort") and is coerced to adaptive.
+    /// <para><b>Why this is not <see cref="AdaptiveOnly"/>:</b> that policy lists
+    /// only <c>adaptive</c> as accepted, so it coerces an inbound
+    /// <c>thinking:disabled</c> up to adaptive — silently re-enabling reasoning
+    /// the user explicitly turned off, and billing them for the thinking tokens.
+    /// <c>Opus5_Thinking_ProbeAcceptance</c> shows Copilot returns 200 for
+    /// <c>disabled</c> on opus-5, so there is no backend reason to rewrite it.
+    /// Keeping <c>disabled</c> is also what makes
+    /// <see cref="ModelProfile.EffortsRejectedWhenThinkingDisabled"/> reachable —
+    /// under <see cref="AdaptiveOnly"/> the disabled shape never survives to the
+    /// wire, so the cross-field clamp would be dead code.</para>
+    /// <para>NOTE: opus-4.7 / opus-4.8 / sonnet-5 probe the same way
+    /// (<c>disabled</c> → 200) but still carry <see cref="AdaptiveOnly"/>. That
+    /// pre-existing coercion is untouched here — changing it alters live behavior
+    /// for three shipped models and needs its own real-client verification.</para>
+    /// </summary>
+    public static ThinkingPolicy AdaptiveOrDisabled { get; } = new()
+    {
+        AcceptedShapes = ["adaptive", "disabled"],
         CoerceToWhenUnsupported = "adaptive",
         DeriveEffortFromBudgetOnCoerce = true,
     };

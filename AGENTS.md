@@ -321,7 +321,7 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
     mismatch). Reproduce execution, not just acceptance.
   - **Claude Code (`/cc`, `claude-*`)** → real `claude.exe`, multi-tool task.
   - **Claude Code → gpt** → run `claude.exe` against the `CcToGpt` behavior scenario
-    (the `ServeProcess` variant promoting the `claude-opus-4.8 → gpt-5.6-sol`
+    (the `ServeProcess` variant promoting the `claude-opus-5 → gpt-5.6-sol`
     location; `docs/routing.md`) so the CC→gpt translation is exercised end-to-end.
     Also confirm from the trace that the T3-internal markers
     (`bridge_tool_namespace` / `bridge_input_is_grammar_text`) do NOT leak to the

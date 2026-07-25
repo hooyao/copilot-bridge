@@ -20,22 +20,34 @@
   base is 200k (4.5 / haiku) or 1M (sonnet-4.6, re-probed). No special handling
   needed for the plain path. (Once the fix env vars from §5 are installed, plain
   `sonnet-4.6` — being a `native_1m` model — is assigned 1M by Claude Code rather
-  than 200k, matching what Copilot serves; plain 4.5 / haiku stay 200k, which is
+  than 200k, matching what Copilot serves; plain haiku stays 200k, which is
   correct.)
-- **`sonnet-4.5[1m]` / `haiku[1m]` is a client-side trap**: Claude Code believes
-  1M, but those models really are 200k on Copilot. This **degrades gracefully on
+- **`haiku[1m]` is a client-side trap**: Claude Code believes
+  1M, but haiku-4.5 really is 200k on Copilot. This **degrades gracefully on
   its own** — when the conversation overfills 200k, Copilot returns a `prompt is
   too long` error that Claude Code already self-heals on. The bridge just strips
-  the now-meaningless `context-1m` beta on the way out for those two profiles.
+  the now-meaningless `context-1m` beta on the way out for that profile.
+  (sonnet-4.5 was the other model in this category until Copilot retired it in
+  the 2026-07 reconciliation.)
 - **`sonnet-4.6[1m]` works**: Copilot upgraded sonnet-4.6 to native 1M ctx
   (re-probed 2026-06-05; an 851k-token prompt returns 200). The profile no
   longer carries a `context-1m-*` strip, so Claude Code's 1M belief is honored
   end-to-end without any model swap.
-- **Opus 1M works**: `opus-4.6[1m]` / `opus-4.7[1m]` / `opus-4.8[1m]` are all
-  identity passthrough — Copilot serves 1M on the base id natively (opus-4.8
-  always did; opus-4.6/4.7 base ids were upgraded to 1M and their dedicated
-  `-1m` / `-1m-internal` variants retired in the 2026 reconciliation). No model
-  swap, no beta strip; Claude Code's 1M belief is met by the base model.
+- **Opus 1M works**: `opus-4.6[1m]` / `opus-4.7[1m]` / `opus-4.8[1m]` / `opus-5[1m]`
+  are all identity passthrough — Copilot serves 1M on the base id natively
+  (opus-4.8 always did; opus-4.6/4.7 base ids were upgraded to 1M and their
+  dedicated `-1m` / `-1m-internal` variants retired in the 2026 reconciliation;
+  opus-5 probed 2026-07 — a 677k-token prompt returns 200 with and without the
+  beta, `ModelProfileProbe.Opus5_LargePrompt_ProbeOneMillionContextSupport`). No
+  model swap, no beta strip; Claude Code's 1M belief is met by the base model.
+  **Both sides are confirmed for opus-5**: server-side by that probe, and
+  client-side by the bundled capability table in `claude.exe` 2.1.220, whose
+  `claude-opus-5` entry carries `context:{window:1e6, native_1m:!0,
+  supports_1m_beta:!0, supports_1m_suffix:!0}` — so branch ③ applies once the §5
+  env vars are set, and the `[1m]` suffix (branch ①) works too. Checking only the
+  Copilot side would have been insufficient: the window is a **client** decision
+  (§1), so a model Copilot serves at 1M still renders as 200k if the client's
+  bundled table lacks `native_1m`.
 - **Resume now keeps 1M**: on 2.1.216 the window comes from a bundled
   `native_1m` capability gated on the request being first-party, so a bridge base
   URL reverts to 200k after `--resume`. `config claude-code` fixes this by writing
@@ -91,40 +103,40 @@ From Copilot's `/models` (projected through `/cc/v1/models`):
 
 | Model | `max_input_tokens` per `/models` | Actually serves (probed) |
 | --- | --- | --- |
-| `claude-sonnet-4.5` | 200000 | 200k (probed: 212k → `prompt is too long`) |
 | `claude-haiku-4.5` | 200000 | 200k (probed: 212k → `prompt is too long`) |
 | `claude-sonnet-4.6` | 1000000 | **1M (probed: 851k → 200 OK)** |
 | `claude-sonnet-5` | 1000000 | **1M (probed: 677k → 200 OK)** |
 | `claude-opus-4.6` / `4.7` (base) | 1000000 | **1M (2026 re-probe: 639k / 677k → 200 OK)** |
 | `claude-opus-4.8` (base) | 1000000 | **1M (probed: 260k → 200 OK)** |
+| `claude-opus-5` | 1000000 | **1M (probed 2026-07: 677k → 200 OK, with and without the beta)** |
 
-**The 200k models on Copilot are now: sonnet-4.5 and haiku-4.5.** Everything
-else — sonnet-4.6, sonnet-5, opus-4.6, opus-4.7, opus-4.8 — is natively 1M on
+**haiku-4.5 is now the only 200k model on Copilot.** Everything else —
+sonnet-4.6, sonnet-5, opus-4.6, opus-4.7, opus-4.8, opus-5 — is natively 1M on
 the base id. (The 2026 reconciliation: opus-4.6 / opus-4.7 base ids were 200k
 when this doc was first written and needed a redirect to a dedicated `-1m` /
 `-1m-internal` id to reach 1M; Copilot has since **upgraded the base ids to 1M
 and retired those dedicated variants**, so the redirects are gone — see
-`docs/routing.md` → Retired: the opus 1M redirects.) Also verified: sending the
-`context-1m` beta to a 200k model returns **200** — Copilot accepts-and-ignores
-it (it does not 400).
+`docs/routing.md` → Retired: the opus 1M redirects. The 2026-07 pass retired
+**sonnet-4.5**, which was the other 200k model — it now 400s
+`model_not_supported`.) Also verified: sending the `context-1m` beta to a 200k
+model returns **200** — Copilot accepts-and-ignores it (it does not 400).
 
 ## 3. Sonnet / Haiku
 
 ### Plain (no `[1m]`) — already correct
 
-Claude Code uses 200k; for sonnet-4.5/haiku-4.5 Copilot is also 200k (perfect
+Claude Code uses 200k; for haiku-4.5 Copilot is also 200k (perfect
 match); for sonnet-4.6 Copilot is actually 1M (so plain selection silently
 under-uses the available window, but that's identical to the real Anthropic
 API behavior and Claude Code controls the cap). The profile coerces
 effort/thinking to what each model accepts. Nothing to do.
 
-### `sonnet-4.5[1m]` / `haiku[1m]` — graceful degradation
+### `haiku[1m]` — graceful degradation
 
-The user *can* land here: Claude Code offers a "1M" upgrade for the `sonnet`
-alias (and a user can type `haiku[1m]` explicitly; the `[1m]` suffix forces 1M
-even though `modelSupports1M` is false for Haiku). For sonnet-4.5 and haiku-4.5
-the bridge **cannot** undo the client's 1M belief and Copilot really is 200k
-for those models. What happens instead:
+The user *can* land here: a user can type `haiku[1m]` explicitly and the `[1m]`
+suffix forces 1M even though `modelSupports1M` is false for Haiku. For haiku-4.5
+the bridge **cannot** undo the client's 1M belief and Copilot really is 200k for
+that model. What happens instead:
 
 1. Claude Code (believing 1M) lets the conversation grow past 200k.
 2. Copilot returns `400 {"type":"error","error":{"type":"invalid_request_error",
@@ -138,14 +150,18 @@ for those models. What happens instead:
 
 So the bridge needs **no error-rewrite** — Copilot's error is already in the
 exact shape Claude Code self-heals on. The only bridge change is hygiene: the
-sonnet-4.5 / haiku-4.5 profiles carry `StripBetas = ["context-1m-*"]` so the
+haiku-4.5 profile carries `StripBetas = ["context-1m-*"]` so the
 bridge does not forward a 1M beta the backend cannot honor. This does **not**
 change Claude Code's window belief (that is already fixed client-side); it just
 keeps the outbound request honest.
 
+> This section used to cover `sonnet-4.5[1m]` as well — the same 200k trap
+> applied there. Copilot retired sonnet-4.5 in the 2026-07 reconciliation (400
+> `model_not_supported`), so haiku-4.5 is the last model in this category.
+
 ### `sonnet-4.6[1m]` — natively 1M, works end-to-end
 
-Different from sonnet-4.5. Copilot now serves sonnet-4.6 with a real 1M context
+Unlike haiku-4.5, Copilot serves sonnet-4.6 with a real 1M context
 window (probed 2026-06-05: an 851,612-token padded prompt returns 200 with
 `copilot_usage.token_count.input = 851612`). So the bridge does **not** strip
 `context-1m-*` on the sonnet-4.6 profile and does **not** do any model swap —
@@ -159,8 +175,8 @@ refactor.
 
 ### Best results
 
-For sonnet-4.5 / haiku-4.5, **don't enable 1M** — you gain nothing (Copilot is
-200k for those) and you trade proactive auto-compaction for reactive (one
+For haiku-4.5, **don't enable 1M** — you gain nothing (Copilot is
+200k there) and you trade proactive auto-compaction for reactive (one
 wasted round-trip + a compaction when you hit 200k). For sonnet-4.6,
 **enabling 1M is genuinely useful** — Copilot serves it. A global client-side
 cap is also available if you must: `CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000`
@@ -262,9 +278,39 @@ Measured end-to-end against real `claude.exe` 2.1.216 (plain `claude-opus-4-8`, 
 
 No `[1m]` suffix, no bridge response rewrite; the transcript model stays
 `claude-opus-4-8`, so ccusage / cost tracking are unaffected. This applies to every
-native-1M model (opus-4.6/4.7/4.8, sonnet-4.6, sonnet-5). For sonnet-4.5 /
-haiku-4.5 the capability table has no `native_1m`, so branch ③ never fires and they
-correctly stay 200k — the env does not (and should not) change that.
+native-1M model (opus-4.6/4.7/4.8, **opus-5**, sonnet-4.6, sonnet-5). For haiku-4.5
+the capability table has no `native_1m`, so branch ③ never fires and it correctly
+stays 200k — the env does not (and should not) change that. (sonnet-4.5 was in that
+same 200k group until Copilot retired it in the 2026-07 reconciliation; its bridge
+profile is gone.)
+
+**Reading the bundled table directly.** Because the table is static and bundled,
+whether a NEW model gets 1M client-side is decidable without running a turn — grep
+the shipped binary for its entry rather than inferring from the family. On 2.1.220:
+
+```
+{id:"claude-opus-5", family:"opus", …
+   context:{window:1e6, native_1m:!0, supports_1m_beta:!0, supports_1m_suffix:!0},
+   capabilities:["effort","max_effort","xhigh_effort","adaptive_thinking",
+                 "mid_conv_system","context_management","fast_mode", …],
+   default_effort:"high"}
+```
+
+That single record answers three questions the bridge otherwise has to guess at:
+1M applies client-side (`native_1m`), all five effort tiers are offered
+(`effort` + `max_effort` + `xhigh_effort`), and mid-conversation `role:"system"` is
+expected (`mid_conv_system`) — each matching what the live Copilot probes found.
+Reproduce with:
+
+```powershell
+$t = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes((Get-Command claude).Source))
+$i = $t.IndexOf('{id:"claude-opus-5"'); $t.Substring($i, 900)
+```
+
+> Caveat: the table describes what the **client** offers, not what Copilot serves.
+> `claude-fable-5` also has an entry (and appears in Copilot's integrator
+> allowlist) yet 400s `model_not_supported` on a live request, so it gets no bridge
+> profile. Client table and server probe must agree before a model is supported.
 
 **Side effects of asserting first-party (audited, 116 `Wd()`-gated functions +
 real-client wire capture).** The env only flips `Wd()`-gated behavior (a bridge
@@ -284,8 +330,8 @@ signal, so the bridge stays byte-faithful to the Anthropic API on the wire.
 ## 6. Re-verifying
 
 - **Does Copilot still return the CC-recognizable overflow on 200k models?**
-  Post a >200k-token body to `/cc/v1/messages` (model `claude-sonnet-4.5` or
-  `claude-haiku-4.5`); expect `400` with `prompt is too long: N tokens > 200000
+  Post a >200k-token body to `/cc/v1/messages` (model `claude-haiku-4.5`);
+  expect `400` with `prompt is too long: N tokens > 200000
   maximum`. See `ModelProfileProbe.NonOpus_LargePrompt_Probe200kBoundary`.
 - **Does sonnet-4.6 actually serve >200k?** Same probe with model
   `claude-sonnet-4.6` — expect 200 with `copilot_usage.token_count.input` well

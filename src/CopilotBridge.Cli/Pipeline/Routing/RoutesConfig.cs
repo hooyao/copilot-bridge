@@ -47,18 +47,25 @@ internal sealed class RouteLocation
 /// </summary>
 internal sealed class LocationUse
 {
-    /// <summary>Replace the outbound model id (canonical form, e.g. <c>claude-opus-4.7-1m-internal</c>).</summary>
+    /// <summary>Replace the outbound model id (canonical form, e.g. <c>gpt-5.6-sol</c>).</summary>
     public string? Model { get; set; }
 
     /// <summary>
     /// Per-target effort remapping. Keys are inbound effort values
     /// (case-insensitive); the matching key's value replaces
     /// <c>output_config.effort</c> before <see cref="ProfileAdjuster"/> runs.
-    /// Lives on the location rather than as a separate rule because the
-    /// mapping is specific to <see cref="Model"/> — e.g.
-    /// <c>{"max":"xhigh"}</c> makes sense on <c>claude-opus-4.7-1m-internal</c>
-    /// (the only Copilot model that accepts xhigh natively) but would be
-    /// wrong on <c>claude-opus-4.8</c> (no xhigh variant exists).
+    /// Lives on the location rather than as a separate rule because the mapping
+    /// is specific to <see cref="Model"/>. Two distinct uses:
+    /// <list type="bullet">
+    ///   <item><b>Down-tier a value the target accepts.</b> <c>{"max":"xhigh"}</c>
+    ///   on <c>gpt-5.6-sol</c>, which takes <c>max</c> natively — without the map
+    ///   <c>max</c> would pass through verbatim; the map caps it deliberately.</item>
+    ///   <item><b>Preserve intent where the profile would otherwise strip.</b> If
+    ///   the target rejects <c>max</c> but accepts <c>xhigh</c>, mapping
+    ///   <c>max→xhigh</c> keeps the highest supported tier instead of letting
+    ///   <see cref="ProfileAdjuster"/> drop the field and fall back to the model
+    ///   default — which may be lower than the user asked for.</item>
+    /// </list>
     /// </summary>
     public Dictionary<string, string>? EffortMap { get; set; }
 

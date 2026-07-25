@@ -28,7 +28,7 @@ public class RoutesValidatorTests
                     new MatchExpression { Header = new HeaderMatch { Name = "anthropic-beta", Contains = "context-1m-2025-08-07" } },
                 ],
             },
-            new LocationUse { Model = "claude-opus-4.7-1m-internal", EffortMap = new() { ["max"] = "xhigh" } });
+            new LocationUse { Model = "claude-opus-5", EffortMap = new() { ["max"] = "xhigh" } });
 
         RoutesValidator.Validate(cfg);   // must not throw
     }

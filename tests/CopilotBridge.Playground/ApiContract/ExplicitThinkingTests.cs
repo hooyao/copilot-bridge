@@ -13,10 +13,11 @@ namespace CopilotBridge.Playground;
 [Trait("Kind", "ApiContract")]
 public class ExplicitThinkingTests
 {
-    // claude-opus-4.7-1m-internal returns HTTP 400 when sent thinking:{type:"enabled"};
-    // it appears to require thinking:{type:"adaptive"} + output_config.effort
-    // (see EffortLevelsTests) and rejects the explicit-budget shape entirely.
-    // Sonnet/Haiku models accept both flavors.
+    // The opus family (4.7 / 4.8 / 5) returns HTTP 400 on thinking:{type:"enabled"} —
+    // it requires thinking:{type:"adaptive"} + output_config.effort (see
+    // EffortLevelsTests) and rejects the explicit-budget shape entirely.
+    // Sonnet-4.6 / Haiku models accept both flavors, which is why the case below
+    // uses sonnet-4.6.
     [Theory]
     [InlineData("claude-sonnet-4.6", 2048)]
     public async Task ExplicitThinkingBudget_ProducesThinkingBlock(string model, int budgetTokens)

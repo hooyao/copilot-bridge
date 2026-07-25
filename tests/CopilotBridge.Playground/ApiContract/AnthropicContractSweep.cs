@@ -19,6 +19,15 @@ namespace CopilotBridge.Playground;
 ///        (each per-model claim — "opus accepts only medium" — confirmed live;
 ///        a mismatch names the catalog row to reconcile).
 ///
+/// Axes swept per model: effort, thinking shape, mid-conversation
+/// <c>role:"system"</c>, and the <b>cross-field</b> effort × thinking:disabled
+/// interaction. That last one exists because single-axis sweeps are blind to a
+/// constraint that only binds on a COMBINATION — opus-5 accepts <c>max</c> and
+/// accepts <c>disabled</c>, but rejects the pair. Sweeping it here means the
+/// snapshot detects Copilot ADDING such a rule to another model, and B3 detects
+/// Copilot DROPPING it (which would leave the bridge silently clamping requests
+/// the backend now accepts).
+///
 /// One aggregate test, not a per-cell theory: the snapshot must be built from
 /// ALL cells atomically, and a single live run keeps quota cost bounded. Tagged
 /// Integration (inherited) — skipped in CI, run on demand / on a drift check.
@@ -92,6 +101,35 @@ public partial class ModelProfileProbe
                 () => client.TryPostMessagesAsync(midConvPayload), $"{model} mid-conv-system");
             var midConvAccepted = WireAcceptance.IsAccepted(mcStatus, mcBody, $"{model} mid-conv-system");
 
+            // Cross-field probe: efforts that are individually accepted can still
+            // be rejected when combined with thinking:disabled (opus-5 is the only
+            // known case — "effort 'max' is not supported when thinking is disabled
+            // on this model"). The single-axis loops above CANNOT see this, so the
+            // interaction gets its own fact row. Without it, Copilot could drop the
+            // constraint and every committed test would stay green while the bridge
+            // kept silently clamping requests the backend now accepts.
+            //
+            // Only probe efforts the model accepts standalone — an effort it rejects
+            // outright tells us nothing about the interaction, and skipping those
+            // keeps the added quota cost proportional.
+            var disabledThinkingRejected = new JsonArray();
+            if (thinkingAccepted.Any(n => n!.GetValue<string>() == "disabled"))
+            {
+                foreach (var effort in effortAccepted.Select(n => n!.GetValue<string>()).ToList())
+                {
+                    var payload =
+                        "{\"model\":\"" + model + "\",\"max_tokens\":16,"
+                        + "\"messages\":[{\"role\":\"user\",\"content\":\"reply: ok\"}],"
+                        + "\"thinking\":{\"type\":\"disabled\"},"
+                        + "\"output_config\":{\"effort\":\"" + effort + "\"}}";
+                    var (status, body) = await ProbeRetry.WithRetry(
+                        () => client.TryPostMessagesAsync(payload),
+                        $"{model} thinking=disabled+effort={effort}");
+                    if (!WireAcceptance.IsAccepted(status, body, $"{model} disabled+{effort}"))
+                        disabledThinkingRejected.Add(effort);
+                }
+            }
+
             models[model] = new JsonObject
             {
                 ["effort"] = new JsonObject
@@ -105,6 +143,9 @@ public partial class ModelProfileProbe
                     ["rejected"] = thinkingRejected,
                 },
                 ["mid_conv_system"] = midConvAccepted,
+                // Efforts rejected ONLY in combination with thinking:disabled.
+                // Empty for every model that has no such interaction.
+                ["effort_rejected_when_thinking_disabled"] = disabledThinkingRejected,
             };
         }
 
@@ -190,6 +231,22 @@ public partial class ModelProfileProbe
                 mismatches.Add(
                     $"{model}: catalog AcceptsMidConversationSystem={profile.AcceptsMidConversationSystem} "
                     + $"but live={liveMidConv}");
+
+            // Cross-field: efforts rejected only under thinking:disabled. Compared
+            // as an exact set in BOTH directions, which is the point — a catalog
+            // entry the backend no longer enforces means the bridge is silently
+            // clamping requests Copilot would now accept (a quiet capability
+            // regression, invisible to the single-axis checks above), and a
+            // constraint the catalog lacks means live 400s.
+            var liveCrossField = (facts["effort_rejected_when_thinking_disabled"]?.AsArray()
+                    ?? new JsonArray())
+                .Select(n => n!.GetValue<string>()).OrderBy(s => s, StringComparer.Ordinal).ToList();
+            var catCrossField = profile.EffortsRejectedWhenThinkingDisabled
+                .OrderBy(s => s, StringComparer.Ordinal).ToList();
+            if (!liveCrossField.SequenceEqual(catCrossField))
+                mismatches.Add(
+                    $"{model}: catalog EffortsRejectedWhenThinkingDisabled=[{string.Join(",", catCrossField)}] "
+                    + $"but live rejects=[{string.Join(",", liveCrossField)}] when thinking is disabled");
         }
 
         if (mismatches.Count > 0)

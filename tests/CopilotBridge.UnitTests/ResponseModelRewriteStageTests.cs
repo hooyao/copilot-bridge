@@ -69,7 +69,7 @@ public class ResponseModelRewriteStageTests
           "usage": {"input_tokens": 10, "output_tokens": 2}
         }
         """;
-        var d = NewDetector("claude-opus-4-8", "claude-opus-4.7-1m-internal");
+        var d = NewDetector("claude-opus-4-8", "claude-opus-5");
 
         var action = d.InspectBuffered(Encoding.UTF8.GetBytes(body));
 
@@ -113,7 +113,7 @@ public class ResponseModelRewriteStageTests
         // detector to be active, proving the guard holds even on the rewrite path.
         var errorBody = Encoding.UTF8.GetBytes(
             """{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 206217 tokens > 200000 maximum"},"request_id":"req_vrtx_x"}""");
-        var d = NewDetector("claude-opus-4-8", "claude-opus-4.7-1m-internal");
+        var d = NewDetector("claude-opus-4-8", "claude-opus-5");
 
         var action = d.InspectBuffered(errorBody);
 
@@ -152,7 +152,7 @@ public class ResponseModelRewriteStageTests
     [Fact]
     public void Streaming_RewritesFirstMessageStart_OnlyOnce()
     {
-        var d = NewDetector("claude-opus-4-8", "claude-opus-4.7-1m-internal");
+        var d = NewDetector("claude-opus-4-8", "claude-opus-5");
 
         var first = d.InspectEvent(new SseItem<string>(
             """{"type":"message_start","message":{"id":"msg_1","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":0}}}""",

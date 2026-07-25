@@ -50,6 +50,11 @@ internal static class ProfileAdjuster
         HandleMidConversationSystem(ctx, profile, log);
         CapThinkingBudget(ctx, profile, log);
 
+        // Step 4b: cross-field clamp. MUST run after ApplyThinking, because the
+        // final thinking SHAPE is what makes the constraint bind, and after both
+        // ApplyEffort passes, because it clamps whatever effort survived them.
+        ClampEffortForDisabledThinking(ctx, profile, log);
+
         // Step 5: register beta-strip patterns for HeadersOutboundStage.
         // Operator-configured global strips run first (these are tokens
         // Copilot's gateway rejects on EVERY model — they live in
@@ -322,8 +327,88 @@ internal static class ProfileAdjuster
         ConvertToUser,
     }
 
-    private static void CapThinkingBudget(BridgeContext<MessagesRequest> ctx, ModelProfile profile, ILogger? log)
+    /// <summary>
+    /// Enforces <see cref="ModelProfile.EffortsRejectedWhenThinkingDisabled"/> —
+    /// the cross-field constraint where an effort that is valid on its own 400s
+    /// once <c>thinking</c> is <c>disabled</c>. Applies only when the FINAL
+    /// thinking shape (post-coercion) is disabled and the surviving effort is in
+    /// the rejected set.
+    /// <para>Clamps DOWN to the highest still-accepted effort rather than
+    /// stripping the field: the user asked for maximum reasoning depth, and the
+    /// backend's own error names the remedy ("Use effort 'high' or below, or
+    /// enable thinking"), so <c>max</c>→<c>high</c> keeps as much of that intent
+    /// as the model permits. Stripping would silently fall back to the model
+    /// default, which may be lower.</para>
+    /// <para>Ordering: <c>AcceptedEfforts</c> is the accept-list and this is a
+    /// narrower veto on top of it, so the clamp target must be a member of BOTH
+    /// — hence the walk down <see cref="EffortLadder"/> looking for an effort the
+    /// profile accepts AND does not reject under disabled thinking. If no such
+    /// effort exists (a profile that vetoes everything it accepts), the field is
+    /// dropped, which is always valid.</para>
+    /// </summary>
+    private static void ClampEffortForDisabledThinking(
+        BridgeContext<MessagesRequest> ctx, ModelProfile profile, ILogger? log)
     {
+        if (profile.EffortsRejectedWhenThinkingDisabled.Count == 0) return;
+        if (ctx.Request.Body.Thinking is not ThinkingConfigDisabled) return;
+
+        var effort = ctx.Request.Body.OutputConfig?.Effort;
+        if (effort is null) return;
+        if (!Contains(profile.EffortsRejectedWhenThinkingDisabled, effort)) return;
+
+        // Walk down from the offending tier to the first effort that is both
+        // accepted outright and not vetoed under disabled thinking.
+        var start = IndexOf(EffortLadder, effort);
+        string? clampTo = null;
+        for (var i = start - 1; i >= 0; i--)
+        {
+            var candidate = EffortLadder[i];
+            if (Contains(profile.AcceptedEfforts, candidate)
+                && !Contains(profile.EffortsRejectedWhenThinkingDisabled, candidate))
+            {
+                clampTo = candidate;
+                break;
+            }
+        }
+
+        var oc = ctx.Request.Body.OutputConfig;
+        ctx.Request.Body = ctx.Request.Body with
+        {
+            OutputConfig = oc is null ? null : oc with { Effort = clampTo },
+        };
+        log?.LogDebug(
+            "  profile/effort-thinking-disabled: '{Profile}' rejects effort='{Effort}' when thinking is "
+            + "disabled → {Action}",
+            profile.CanonicalId, effort, clampTo is null ? "stripped" : $"clamped to '{clampTo}'");
+    }
+
+    /// <summary>
+    /// Effort tiers in ascending order. Used only to pick a clamp target for
+    /// <see cref="ClampEffortForDisabledThinking"/>; membership in a profile's
+    /// accepted set is still what decides validity (tiers are NOT monotonic
+    /// across models — opus-4.6 accepts <c>max</c> while rejecting <c>xhigh</c>).
+    /// </summary>
+    private static readonly string[] EffortLadder = ["low", "medium", "high", "xhigh", "max"];
+
+    private static bool Contains(IReadOnlyList<string> list, string value)
+    {
+        for (var i = 0; i < list.Count; i++)
+        {
+            if (string.Equals(list[i], value, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    private static int IndexOf(string[] list, string value)
+    {
+        for (var i = 0; i < list.Length; i++)
+        {
+            if (string.Equals(list[i], value, StringComparison.OrdinalIgnoreCase)) return i;
+        }
+        return list.Length; // unknown tier → start the walk from the top
+    }
+
+    private static void CapThinkingBudget(BridgeContext<MessagesRequest> ctx, ModelProfile profile, ILogger? log)    {
         if (ctx.Request.Body.Thinking is ThinkingConfigEnabled enabled
             && enabled.BudgetTokens > profile.MaxThinkingBudget)
         {

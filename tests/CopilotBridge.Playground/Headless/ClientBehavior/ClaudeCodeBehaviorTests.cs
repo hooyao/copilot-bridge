@@ -10,7 +10,7 @@ namespace CopilotBridge.Playground.Headless;
 /// two routes with the SAME task so their client-side behavior is comparable:
 /// <list type="bullet">
 ///   <item><b>Native <c>/cc</c></b> (passthrough scenario) at the latest Claude id.</item>
-///   <item><b>CC→gpt</b> (cc-to-gpt scenario) — Claude Code's <c>claude-opus-4.8</c>
+///   <item><b>CC→gpt</b> (cc-to-gpt scenario) — Claude Code's <c>claude-opus-5</c>
 ///   traffic routed to Copilot's <c>gpt-5.6-sol</c> <c>/responses</c> backend. This
 ///   is the leg left UNVERIFIED at 0.4.13: T3 stamps bridge-internal markers
 ///   (<c>bridge_tool_namespace</c> / <c>bridge_input_is_grammar_text</c>) on the
@@ -46,7 +46,7 @@ public class ClaudeCodeBehaviorTests
     }
 
     /// <summary>
-    /// CC→gpt: the client still speaks <c>claude-opus-4.8</c>; the cc-to-gpt scenario's
+    /// CC→gpt: the client still speaks <c>claude-opus-5</c>; the cc-to-gpt scenario's
     /// routing sends it to <c>gpt-5.6-sol</c>. The verdict agent additionally checks
     /// the bridge trace to confirm the internal markers did NOT leak to the client.
     /// </summary>
@@ -60,6 +60,82 @@ public class ClaudeCodeBehaviorTests
             model: ClientBehaviorSupport.LatestClaude, // client id; routing rewrites to gpt-5.6-sol
             route: "/cc->gpt",
             canary: "cc-to-gpt-canary-33917");
+    }
+
+    /// <summary>
+    /// <b>opus-5 cross-field constraint (thinking-disabled × effort).</b> Copilot rejects
+    /// <c>output_config.effort</c> of <c>xhigh</c>/<c>max</c> on opus-5 <i>when
+    /// <c>thinking</c> is disabled</i> — 400 <c>"…not supported when thinking is disabled
+    /// on this model. Use effort 'high' or below, or enable thinking."</c> — while
+    /// accepting both fields independently
+    /// (<c>ModelProfileProbe.Opus5_DisabledThinking_EffortInteraction_Probe</c>).
+    /// <see cref="Routing.ProfileAdjuster"/> clamps the effort down on that path only.
+    /// <para><b>Why this case exists (Gate 1).</b> The ordinary multi-tool case runs at
+    /// Claude Code's default effort, where the pair never forms — its trace showed
+    /// <c>thinking=disabled</c> reaching the wire only at <c>effort=high</c>, which is
+    /// legal, so the clamp was never exercised. Pinning
+    /// <c>CLAUDE_CODE_EFFORT_LEVEL=max</c> makes the real client emit the offending
+    /// combination on the internal no-thinking requests it issues alongside the main
+    /// turn. Without the clamp those requests 400 upstream.</para>
+    /// <para>Verdict evidence: every upstream request must be 2xx, and any upstream body
+    /// carrying <c>thinking.type=disabled</c> must NOT carry effort <c>xhigh</c>/<c>max</c>
+    /// — cross-checked against the inbound body to confirm the client really did send
+    /// the rejected pair (otherwise the case proves nothing and is INCONCLUSIVE).</para>
+    /// </summary>
+    [Fact]
+    public async Task ClaudeCode_NativeCc_MaxEffort_DisabledThinkingEffortIsClamped()
+    {
+        const string caseId = "cc-native-opus5-disabled-thinking-max-effort";
+        const string canary = "cc-opus5-clamp-canary-51724";
+
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(ServeScenario.Passthrough));
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+
+        var prompt =
+            "Do the following in order, actually calling the tools — do not fabricate any output. "
+            + "As soon as step 2 is done, give your final answer and STOP (no extra verification):\n"
+            + $"1. Use the Bash tool to run `echo {canary} > cbridge_probe.txt`.\n"
+            + "2. Use the Read tool to read cbridge_probe.txt and tell me the exact first line, verbatim.";
+
+        var result = await ClaudeProcess.RunAsync(new ClaudeInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: prompt,
+            Model: ClientBehaviorSupport.LatestClaude,
+            // The whole point of the case: drive the client at max effort so its
+            // no-thinking internal requests form the disabled+max pair Copilot rejects.
+            Effort: "max",
+            OutputFormat: "stream-json",
+            Verbose: true,
+            AllowedTools: "Bash,Read",
+            Timeout: TimeSpan.FromMinutes(8),
+            WorkingDirectory: work.Path));
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "claude",
+                Route: "/cc",
+                Model: ClientBehaviorSupport.LatestClaude,
+                Scenario: ServeScenario.Passthrough,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: null,
+                DispatchSinceUnix: 0,
+                DispatchUntilUnix: 0,
+                Prompt: prompt),
+            result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
+            out _, out _);
+
+        _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
+        _output.WriteLine($"claude.exe exit={result.ExitCode} duration={result.Duration}");
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine(
+            "[verdict] real-client-verify: every upstream 2xx; no upstream body may pair "
+            + "thinking.type=disabled with effort xhigh/max; confirm from an inbound body that "
+            + "the client actually sent that pair (else INCONCLUSIVE).");
+
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
     }
 
     /// <summary>

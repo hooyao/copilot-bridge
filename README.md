@@ -22,12 +22,12 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 
 - **One Copilot subscription, two agents.** Point Claude Code at `/cc` and Codex
   at `/codex`; both bill against your Copilot plan, not an Anthropic/OpenAI account.
-- **The full Claude line-up, with native 1M context.** opus-4.6/4.7/**4.8**,
-  sonnet-4.5/4.6/**5**, haiku-4.5 — 1M on everything except sonnet-4.5 and
-  haiku-4.5. Codex runs on Copilot's gpt-5.x, up to the newest **gpt-5.6**
+- **The full Claude line-up, with native 1M context.** opus-4.6/4.7/4.8/**5**,
+  sonnet-4.6/**5**, haiku-4.5 — 1M on everything except haiku-4.5. Codex runs on
+  Copilot's gpt-5.x, up to the newest **gpt-5.6**
   (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`).
 - **Run Claude Code on a GPT model.** One `Routing.Locations` rule points
-  `claude-opus-4.8` at `gpt-5.6-sol`; the bridge translates the full Anthropic
+  `claude-opus-5` at `gpt-5.6-sol`; the bridge translates the full Anthropic
   tool-use protocol to and from the Responses API, so an agentic session runs end
   to end. See [Configuration](#configuration-appsettingsjson).
 - **Handles the wire-shape mismatches for you.** It strips beta headers Copilot
@@ -170,12 +170,12 @@ under `_Locations_disabled` (a key the binder ignores). To enable it, rename
 
 ```jsonc
 {
-  "When": { "Model": "claude-opus-4.8" },
+  "When": { "Model": "claude-opus-5" },
   "Use":  { "Model": "gpt-5.6-sol", "EffortMap": { "max": "xhigh" } }
 }
 ```
 
-This routes Claude Code's `claude-opus-4.8` to Copilot's `gpt-5.6-sol`. The
+This routes Claude Code's `claude-opus-5` to Copilot's `gpt-5.6-sol`. The
 `EffortMap` down-tiers `max` → `xhigh` (gpt-5.6-sol accepts `max`, so drop the map
 to pass it through). Full match/rewrite syntax in
 [`docs/routing.md`](docs/routing.md).
@@ -191,9 +191,11 @@ native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
   `.mcp.json`) and disable the built-in WebSearch tool. Other MCP tools flow
   through transparently.
 - **`max` / `xhigh` reasoning effort isn't universal.** Support is per-model and
-  non-monotonic: opus-4.8 / opus-4.7 / sonnet-5 accept every tier
+  non-monotonic: opus-5 / opus-4.8 / opus-4.7 / sonnet-5 accept every tier
   (`low`–`max`, including `xhigh`); opus-4.6 / sonnet-4.6 accept `max` but reject
-  `xhigh`; sonnet-4.5 / haiku-4.5 take no effort field. On the Codex side it's
+  `xhigh`; haiku-4.5 takes no effort field. opus-5 adds a cross-field rule: with
+  `thinking` disabled it rejects `xhigh`/`max`, so the bridge clamps those to
+  `high` on that path only. On the Codex side it's
   also per-model: most gpt-5.x models accept up to `xhigh` and the **gpt-5.6**
   models (`luna`/`sol`/`terra`) are the first to also accept `max`, while smaller
   ones like `gpt-5-mini` top out at `high` (no `xhigh`). The bridge strips (or

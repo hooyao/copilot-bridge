@@ -179,13 +179,13 @@ public class UpstreamResponseCaptureContractTests
     public async Task TracingOn_Buffered_CaptureKeepsCopilotModel_AfterRewrite()
     {
         // Copilot answered as its back-end variant; the client asked for opus-4-8.
-        var copilotBody = Encoding.UTF8.GetBytes("""{"model":"claude-opus-4.7-1m-internal","type":"message"}""");
+        var copilotBody = Encoding.UTF8.GetBytes("""{"model":"claude-opus-5","type":"message"}""");
 
         // Realistic routing state: the router already rewrote Body.Model to the
         // resolved back-end variant and recorded the original the client asked for.
         // ResponseModelRewriteStage only fires when resolved != original, so the
         // resolved model must be the variant here — not the requested name.
-        var ctx = Ctx("claude-opus-4.7-1m-internal", stream: false);
+        var ctx = Ctx("claude-opus-5", stream: false);
         ctx.OriginalRequestedModel = "claude-opus-4-8";
 
         var strategy = CcStrategy(new StubClient(BufferedResponse(copilotBody)), tracing: true, ctx: ctx);
@@ -214,7 +214,7 @@ public class UpstreamResponseCaptureContractTests
         // …but the upstream-resp capture is Copilot's untouched original bytes.
         Assert.NotNull(rawCapture);
         Assert.Equal(copilotBody, rawCapture);
-        Assert.Contains("claude-opus-4.7-1m-internal", Encoding.UTF8.GetString(rawCapture!));
+        Assert.Contains("claude-opus-5", Encoding.UTF8.GetString(rawCapture!));
     }
 
     // ── Codex parallel path: same contract on /responses ──────────────────────

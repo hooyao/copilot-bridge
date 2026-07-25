@@ -28,8 +28,8 @@ public class RequestSummaryFormatterTests
         {
             Kind = "messages",
             RequestedModel = "claude-opus-4.8",
-            ResolvedModel = "claude-opus-4.7-1m-internal",
-            CanonicalProfileId = "claude-opus-4.7-1m-internal",
+            ResolvedModel = "claude-opus-5",
+            CanonicalProfileId = "claude-opus-5",
             TargetVendor = "CopilotAnthropic",
             TargetEndpoint = "/v1/messages",
             InboundBetas = new[] { "context-1m-2025-08-07", "interleaved-thinking-2025-05-14" },
@@ -51,8 +51,8 @@ public class RequestSummaryFormatterTests
 
         Assert.Equal("messages", evt.Properties["Kind"]);
         Assert.Equal("claude-opus-4.8", evt.Properties["RequestedModel"]);
-        Assert.Equal("claude-opus-4.7-1m-internal", evt.Properties["ResolvedModel"]);
-        Assert.Equal("claude-opus-4.7-1m-internal", evt.Properties["CanonicalProfileId"]);
+        Assert.Equal("claude-opus-5", evt.Properties["ResolvedModel"]);
+        Assert.Equal("claude-opus-5", evt.Properties["CanonicalProfileId"]);
         Assert.Equal("CopilotAnthropic", evt.Properties["TargetVendor"]);
         Assert.Equal("/v1/messages", evt.Properties["TargetEndpoint"]);
         Assert.Equal("context-1m-2025-08-07,interleaved-thinking-2025-05-14", evt.Properties["InboundBetasCsv"]);

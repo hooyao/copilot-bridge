@@ -10,7 +10,7 @@ Every case names: **route**, **client**, **scenario** (`ServeProcess` appsetting
 `evidence.md`). The `Kind=ClientBehavior` tests already implement the flagship cases;
 this table is the menu — including cases the CLI can and cannot drive.
 
-Latest ids under test live in `models.md` (`claude-opus-4.8`, `gpt-5.6-sol` today).
+Latest ids under test live in `models.md` (`claude-opus-5`, `gpt-5.6-sol` today).
 
 ---
 
@@ -24,6 +24,17 @@ Client `claude.exe`, scenario `Passthrough`, route `/cc`.
 | A2 parallel tools | "in ONE turn, run `echo a` and `echo b` as separate Bash calls" | `Bash` | transcript shows two tool_use blocks in one assistant turn, both results consumed |
 | A3 MCP tool | drive the bundled `mcp-echo-server.py` and echo a canary through it | MCP echo | the MCP tool call executed and its result reached the final answer (see `McpToolUseTests`) |
 | A4 1M-context routing | a >600k-token prompt at opus with the 1M beta | none | trace: upstream carried the 1M beta / model that serves it, 2xx; turn completed |
+| A5 max-effort cross-field | the A1 task with `CLAUDE_CODE_EFFORT_LEVEL=max` (`ClaudeCode_NativeCc_MaxEffort_DisabledThinkingEffortIsClamped`) | `Bash,Read` | **every upstream 2xx**, and no upstream body pairs `thinking.type=disabled` with effort `xhigh`/`max`. Cross-check an *inbound* body actually carried that pair — otherwise the case never reached the path and is INCONCLUSIVE, not PASS. |
+
+> **A5 is the worked example of Gate 1.** A1 at default effort does NOT exercise
+> the opus-5 disabled-thinking clamp: its trace shows `thinking=disabled` reaching
+> the wire only at `effort=high`, a legal combination. Pinning max effort makes the
+> real client emit the rejected `disabled`+`max` pair on the no-thinking internal
+> requests it issues alongside the main turn. Verified by mutation: with the
+> constraint removed from the catalog, that request 400s upstream with Copilot's
+> *"effort 'max' is not supported when thinking is disabled"*. When a change adds a
+> constraint that only binds on a FIELD COMBINATION, the case must force the
+> combination — a default-settings task will silently miss it.
 
 ## B. Codex CLI — native `/codex`
 
@@ -59,8 +70,8 @@ Client `codex.exe` (`codex exec`), scenario `Passthrough`, route `/codex`.
 
 ## C. Claude Code → gpt (CC routed to a Codex backend)
 
-Client `claude.exe`, scenario `CcToGpt` (promotes the `claude-opus-4.8 → gpt-5.6-sol`
-location), route `/cc->gpt`. The client speaks `claude-opus-4.8`; routing rewrites it
+Client `claude.exe`, scenario `CcToGpt` (promotes the `claude-opus-5 → gpt-5.6-sol`
+location), route `/cc->gpt`. The client speaks `claude-opus-5`; routing rewrites it
 to `gpt-5.6-sol` on the `/responses` wire.
 
 | Case | Prompt (essence) | PASS evidence |

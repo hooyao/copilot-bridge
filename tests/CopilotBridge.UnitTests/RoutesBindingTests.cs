@@ -41,7 +41,7 @@ public class RoutesBindingTests
                     { "Header": { "Name": "anthropic-beta", "Contains": "context-1m-2025-08-07" } }
                   ]
                 },
-                "Use": { "Model": "claude-opus-4.7-1m-internal", "EffortMap": { "max": "xhigh" } }
+                "Use": { "Model": "claude-opus-5", "EffortMap": { "max": "xhigh" } }
               }
             ]
           }
@@ -65,7 +65,7 @@ public class RoutesBindingTests
         Assert.False(when.Matches(TestCtx.Build("claude-opus-4.6", betas: ["context-1m-2025-08-07"])));
 
         // Use bound too (Model + EffortMap dictionary).
-        Assert.Equal("claude-opus-4.7-1m-internal", routes.Locations[0].Use.Model);
+        Assert.Equal("claude-opus-5", routes.Locations[0].Use.Model);
         Assert.Equal("xhigh", routes.Locations[0].Use.EffortMap!["max"]);
     }
 

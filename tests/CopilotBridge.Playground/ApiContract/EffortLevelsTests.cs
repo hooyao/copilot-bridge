@@ -8,15 +8,22 @@ namespace CopilotBridge.Playground;
 /// reasoning_effort value advertised by the model. Each successful test = one
 /// piece of ground truth for what the bridge can later forward verbatim.
 /// </summary>
+/// <remarks>
+/// Retargeted from <c>claude-opus-4.7-1m-internal</c> to the opus-4.7 BASE id in
+/// the 2026-07 reconciliation: Copilot retired the <c>-1m-internal</c> variant
+/// (400 — <see cref="ModelProfileProbe.RetiredCandidate_LivenessProbe"/>) and the
+/// base id now serves the same 1M context and the same effort range, so the
+/// contract under test is preserved on a live id rather than deleted.
+/// </remarks>
 [Trait("Category", "Integration")]
 [Trait("Kind", "ApiContract")]
 public class EffortLevelsTests
 {
     [Theory]
-    [InlineData("claude-opus-4.7-1m-internal", "low")]
-    [InlineData("claude-opus-4.7-1m-internal", "medium")]
-    [InlineData("claude-opus-4.7-1m-internal", "high")]
-    [InlineData("claude-opus-4.7-1m-internal", "xhigh")]
+    [InlineData("claude-opus-4.7", "low")]
+    [InlineData("claude-opus-4.7", "medium")]
+    [InlineData("claude-opus-4.7", "high")]
+    [InlineData("claude-opus-4.7", "xhigh")]
     public async Task AdaptiveThinking_AcceptsEffort(string model, string level)
     {
         var payload = $$"""
