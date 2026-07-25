@@ -122,14 +122,19 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    var body = raw is JsonValue v
        ? JsonNode.Parse(v.GetValue<string>())!.AsObject()
        : raw.DeepClone().AsObject();
-
-   // Mutate the ONE axis in place. Do NOT replace the whole output_config object —
-   // that would silently drop sibling fields (task_budget, …) and change more than
-   // one variable, defeating the point of the check.
-   (body["output_config"] ??= new JsonObject()).AsObject()["effort"] = effort;
    body["stream"] = false;   // non-streaming so the error body is readable
 
-   // Route by the endpoint the capture came from: a /responses capture posted to
+   // The two backends carry the SAME axis under different names — Anthropic uses
+   // output_config.effort, Codex/Responses uses reasoning.effort. Writing the
+   // Anthropic path into a /responses body sets a field Copilot ignores, so the
+   // check would pass while exercising nothing. Pick by capture type, and mutate
+   // in place: replacing the parent object drops siblings (a real capture's
+   // output_config also carried a json_schema `format`), which would change more
+   // than one variable and defeat the point of the check.
+   var effortParent = isResponsesCapture ? "reasoning" : "output_config";
+   (body[effortParent] ??= new JsonObject()).AsObject()["effort"] = effort;
+
+   // Route to the endpoint the capture came from: a /responses capture posted to
    // /v1/messages would test the wrong backend entirely.
    var (status, resp) = isResponsesCapture
        ? await client.TryPostResponsesAsync(body.ToJsonString())
@@ -137,6 +142,12 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
              body.ToJsonString(),
              anthropicBeta: captured["headers"]?["anthropic-beta"]?.GetValue<string>());
    ```
+
+   > **Effort is only the worked example.** Whatever axis you probed, locate it in
+   > the *capture's own* schema before mutating — the two backends diverge on more
+   > than this one field (thinking shape, tool arrays, beta headers). A mutation
+   > that lands on a field the target backend ignores makes the check pass while
+   > testing nothing, which is worse than skipping it.
 
    Same verdict on both = the rule is model-level and your profile's scope is
    right. **Divergence = the minimal probe misled you** — a beta, a system block,
