@@ -237,7 +237,23 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
   `Pipeline/Routing/ModelProfileCatalog.cs` is sourced from
   `tests/CopilotBridge.Playground/ModelProfileProbe.cs`. Re-run that probe after
   Copilot ships or changes a model; don't extrapolate from family names (sibling
-  models surprise you — haiku-4.5 ≠ sonnet-4.6 on thinking).
+  models surprise you — haiku-4.5 ≠ sonnet-4.6 on thinking). Two follow-ons apply
+  when a probe result makes the bridge **rewrite** a request (strip / clamp /
+  coerce), because those are the findings that fail *silently*:
+  - **Re-confirm the finding on real captured client bytes**, not just the
+    minimal synthetic probe. A probe body is ~150 bytes with no system blocks or
+    betas; a real request carries 3 system blocks, ~8 `anthropic-beta` tokens and
+    streaming. A false *accept* fails loudly as Copilot's own 400 — a false
+    *reject* makes the bridge downgrade a request Copilot would have taken, with
+    no error anywhere. Replay a captured `upstream-req` body from any
+    `Kind=ClientBehavior` trace, mutating only the axis under test.
+  - **Guard the BACKEND fact, not just the bridge's behavior.** A unit test
+    pinning "the bridge clamps" stays green forever if Copilot drops the
+    constraint. Sweep it into `AnthropicContractSweep` so the snapshot catches the
+    rule appearing elsewhere (B2) and the catalog-vs-live check catches it
+    disappearing (B3).
+
+  The `copilot-model-sync` skill encodes this whole loop.
 
 ## Conventions
 
