@@ -122,7 +122,13 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    var body = raw is JsonValue v
        ? JsonNode.Parse(v.GetValue<string>())!.AsObject()
        : raw.DeepClone().AsObject();
-   body["stream"] = false;   // non-streaming so the error body is readable
+
+   // Leave `stream` exactly as captured. Streaming is one of the things that
+   // could plausibly change the answer, so flipping it off would silently drop a
+   // constraint that only binds under stream:true — and it would violate this
+   // step's own one-variable rule. No need anyway: both TryPost*Async use
+   // HttpCompletionOption.ResponseContentRead, so a non-2xx body is fully read
+   // either way.
 
    // The two backends carry the SAME axis under different names — Anthropic uses
    // output_config.effort, Codex/Responses uses reasoning.effort. Writing the
