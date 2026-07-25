@@ -249,9 +249,11 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
     `Kind=ClientBehavior` trace, mutating only the axis under test.
   - **Guard the BACKEND fact, not just the bridge's behavior.** A unit test
     pinning "the bridge clamps" stays green forever if Copilot drops the
-    constraint. Sweep it into `AnthropicContractSweep` so the snapshot catches the
-    rule appearing elsewhere (B2) and the catalog-vs-live check catches it
-    disappearing (B3).
+    constraint. Sweep it into the contract sweep so the snapshot catches the rule
+    appearing elsewhere (B2) and the catalog-vs-live check catches it
+    disappearing (B3). Check what the sweeps actually cover first — `StripBetas`,
+    `MaxThinkingBudget` and every Codex field have no B3 today, so a rewrite
+    landing there means extending the sweep.
 
   The `copilot-model-sync` skill encodes this whole loop.
 

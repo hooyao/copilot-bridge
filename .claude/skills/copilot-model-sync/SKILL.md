@@ -115,10 +115,27 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    // Bodies land in tests/behavior-runs/<serve-dir>/*-upstream-req.json after any
    // Kind=ClientBehavior run (tracing is forced on). Take one, change one field,
    // POST it straight at Copilot via PlaygroundClient — bypassing the bridge.
-   var body = JsonNode.Parse(captured["body"]!.GetValue<string>())!.AsObject();
-   body["output_config"] = new JsonObject { ["effort"] = effort };   // the ONE axis
-   var beta = captured["headers"]?["anthropic-beta"]?.GetValue<string>();
-   var (status, resp) = await client.TryPostMessagesAsync(body.ToJsonString(), anthropicBeta: beta);
+
+   // BridgeIoSink writes a parseable body as a NESTED OBJECT and only falls back
+   // to a string when parsing failed, so handle both shapes.
+   var raw = captured["body"]!;
+   var body = raw is JsonValue v
+       ? JsonNode.Parse(v.GetValue<string>())!.AsObject()
+       : raw.DeepClone().AsObject();
+
+   // Mutate the ONE axis in place. Do NOT replace the whole output_config object —
+   // that would silently drop sibling fields (task_budget, …) and change more than
+   // one variable, defeating the point of the check.
+   (body["output_config"] ??= new JsonObject()).AsObject()["effort"] = effort;
+   body["stream"] = false;   // non-streaming so the error body is readable
+
+   // Route by the endpoint the capture came from: a /responses capture posted to
+   // /v1/messages would test the wrong backend entirely.
+   var (status, resp) = isResponsesCapture
+       ? await client.TryPostResponsesAsync(body.ToJsonString())
+       : await client.TryPostMessagesAsync(
+             body.ToJsonString(),
+             anthropicBeta: captured["headers"]?["anthropic-beta"]?.GetValue<string>());
    ```
 
    Same verdict on both = the rule is model-level and your profile's scope is
@@ -151,10 +168,26 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
 
    **A rewrite rule needs a BACKEND-fact guard too, not just a behavior test.** A
    unit test pinning "the bridge clamps" stays green forever if Copilot drops the
-   constraint — and the bridge keeps silently downgrading. Sweep the finding into
-   `AnthropicContractSweep` so the committed snapshot detects the backend ADDING
-   the rule elsewhere (B2) and the catalog-vs-live assertion detects it being
-   DROPPED (B3, compared as an exact set in both directions).
+   constraint — and the bridge keeps silently downgrading. So sweep the finding
+   into the contract sweep, which snapshots it (B2 catches the backend ADDING the
+   rule elsewhere) and compares it against the catalog (B3 catches it being
+   DROPPED).
+
+   **Know what the sweeps actually cover today — the guard is not automatic.**
+
+   | Sweep | B2 snapshot | B3 catalog-vs-live |
+   | --- | --- | --- |
+   | `AnthropicContractSweep` | effort, thinking, mid-conv-system, effort×thinking-disabled | same four; `AcceptedEfforts` and `EffortsRejectedWhenThinkingDisabled` are exact-set both ways, `Thinking` is catalog→live only |
+   | `ResponsesContractSweep` | effort, tools | **none** — the Codex catalog/coercions post-date it |
+
+   Not covered by any B3: **`StripBetas`**, **`MaxThinkingBudget`**, every Codex
+   (`CodexModelProfile`) field, and the live→catalog direction of `Thinking`. If
+   your rewrite rule lands on one of those, **extend the sweep as part of this
+   step** — don't assume writing the profile field gave you a guard. Adding the
+   axis is the same shape as the 2026-07 `effort_rejected_when_thinking_disabled`
+   addition: probe it per model in the sweep loop, add it to the facts object, and
+   assert it in `AssertCatalogMatchesLive`. Mutation-check the new assertion the
+   same way (break the catalog value, watch B3 redden).
 7. **Load-task smoke — MANDATORY for a Codex (`gpt-*` / `mai-code-*`) model.** A
    liveness/effort probe and a plain one-word turn do **not** exercise a real Codex
    client tool loop — multi-call `function_call`/`function_call_output` round-trips
@@ -247,8 +280,11 @@ Full worked example (opus-4.6-1m, the -internal/-high/-xhigh variants):
   Copilot would have taken — invisible in production.
 - **Pair every rewrite rule with a BACKEND-fact guard, not just a behavior test.**
   A unit test pinning "the bridge clamps" stays green forever if Copilot drops the
-  constraint. Sweep the finding into `AnthropicContractSweep` so B2 catches the
-  backend adding it elsewhere and B3 catches it being dropped.
+  constraint. Sweep the finding into the contract sweep (B2 catches the backend
+  adding it elsewhere, B3 catches it being dropped) — but check the coverage table
+  in step 6 first: `StripBetas`, `MaxThinkingBudget` and every Codex field have
+  **no** B3 today, so landing a rewrite there means extending the sweep, not just
+  writing the profile field.
 - **A Codex model isn't done until a real `codex.exe` load task passes on it.**
   Probes and plain turns don't exercise a real client tool loop; the load-task
   smoke (`CodexLoadTaskSmokeTests`, `CODEX_SMOKE_MODEL=<id>`) catches tool-loop and
