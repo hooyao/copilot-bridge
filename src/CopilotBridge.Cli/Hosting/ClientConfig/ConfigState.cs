@@ -35,6 +35,12 @@ namespace CopilotBridge.Cli.Hosting.ClientConfig;
 /// <c>null</c> for a client that does not manage it (Codex).</param>
 /// <param name="CurrentDisableErrorReporting">The value currently stored for that
 /// key, or <c>null</c> if unset / not pointed at the bridge.</param>
+/// <param name="ExpectedForceIdleTimeout">The value the bridge would force-write for
+/// <c>API_FORCE_IDLE_TIMEOUT</c> (<c>"0"</c> for Claude Code, disabling its
+/// client-side idle abort so the bridge's own stream-idle budget is the sole
+/// inactivity bound), or <c>null</c> for a client that does not manage it (Codex).</param>
+/// <param name="CurrentForceIdleTimeout">The value currently stored for that key, or
+/// <c>null</c> if unset / not pointed at the bridge.</param>
 /// <param name="Details">Extra human-readable lines (e.g. the fallback-env state)
 /// shown under <c>config status</c>.</param>
 internal sealed record ConfigState(
@@ -51,6 +57,8 @@ internal sealed record ConfigState(
     string? CurrentAssume1m,
     string? ExpectedDisableErrorReporting,
     string? CurrentDisableErrorReporting,
+    string? ExpectedForceIdleTimeout,
+    string? CurrentForceIdleTimeout,
     IReadOnlyList<string> Details)
 {
     /// <summary>
@@ -58,12 +66,15 @@ internal sealed record ConfigState(
     /// longer matches what the current bridge configuration would produce — either
     /// the base URL (e.g. the port changed), the fallback-env value (e.g. a legacy
     /// <c>CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK</c> key remains in Claude Code's
-    /// settings even though the bridge now removes it), or a missing / non-managed
-    /// value for either 1M-context env key the bridge force-writes.
+    /// settings even though the bridge now removes it), a missing / non-managed
+    /// value for either 1M-context env key the bridge force-writes, or a missing /
+    /// non-managed <c>API_FORCE_IDLE_TIMEOUT</c> (which means the client is still
+    /// running its own idle watchdog).
     /// </summary>
     public bool Drifted => ConfiguredForBridge &&
         (!string.Equals(CurrentBaseUrl, ExpectedBaseUrl, System.StringComparison.Ordinal) ||
          !string.Equals(CurrentFallback, ExpectedFallback, System.StringComparison.Ordinal) ||
          !string.Equals(CurrentAssume1m, ExpectedAssume1m, System.StringComparison.Ordinal) ||
-         !string.Equals(CurrentDisableErrorReporting, ExpectedDisableErrorReporting, System.StringComparison.Ordinal));
+         !string.Equals(CurrentDisableErrorReporting, ExpectedDisableErrorReporting, System.StringComparison.Ordinal) ||
+         !string.Equals(CurrentForceIdleTimeout, ExpectedForceIdleTimeout, System.StringComparison.Ordinal));
 }

@@ -90,6 +90,7 @@ internal sealed class CodexConfigurator : IClientConfigurator
                 ExpectedFallback: null, CurrentFallback: null,
                 ExpectedAssume1m: null, CurrentAssume1m: null,
                 ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+                ExpectedForceIdleTimeout: null, CurrentForceIdleTimeout: null,
                 Details: ["not configured (file does not exist)"]);
         }
 
@@ -105,6 +106,7 @@ internal sealed class CodexConfigurator : IClientConfigurator
                 ExpectedFallback: null, CurrentFallback: null,
                 ExpectedAssume1m: null, CurrentAssume1m: null,
                 ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+                ExpectedForceIdleTimeout: null, CurrentForceIdleTimeout: null,
                 Details: ["file has TOML syntax errors (cannot read — fix or remove it, then re-run)"]);
         }
 
@@ -123,6 +125,7 @@ internal sealed class CodexConfigurator : IClientConfigurator
             ExpectedBaseUrl: expected, ExpectedFallback: null, CurrentFallback: null,
             ExpectedAssume1m: null, CurrentAssume1m: null,
             ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+            ExpectedForceIdleTimeout: null, CurrentForceIdleTimeout: null,
             Details: details);
     }
 

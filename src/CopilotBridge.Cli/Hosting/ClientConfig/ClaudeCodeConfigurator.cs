@@ -56,6 +56,30 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
     /// <summary>The managed value both 1M-context env keys are force-written to.</summary>
     private const string ManagedFlagOn = "1";
 
+    /// <summary>
+    /// Disables Claude Code's client-side idle abort of a streaming response. Claude
+    /// Code drops a stream that has gone 5 minutes without bytes; that timeout is
+    /// inactive on direct Anthropic / AWS connections and <b>active on every other
+    /// provider</b> — so it is armed by default for every bridge user.
+    /// <para>On this backend it cannot tell a working stream from a dead one: Copilot
+    /// sends no SSE <c>ping</c> keepalive (measured: 0 occurrences across 290 captured
+    /// upstream bodies), so an extended-thinking gap is genuinely byte-free on the wire
+    /// and looks identical to a stall. A model still reasoning gets its turn aborted.</para>
+    /// <para>The bridge already owns this bound —
+    /// <c>Pipeline:UpstreamTimeout:StreamIdleTimeoutSeconds</c>, operator-tunable, with a
+    /// configured recovery action. A second, non-tunable timer in the client can only
+    /// abort turns the bridge intended to keep alive, so the bridge turns it off and is
+    /// the sole idle actor.</para>
+    /// <para>This does NOT lengthen the maximum turn: Copilot independently closes a
+    /// stream that has produced no token after ~300s (see <c>docs/copilot-stream-cap.md</c>).
+    /// Disabling this watchdog removes a redundant abort; it cannot defeat that cap.</para>
+    /// </summary>
+    private const string ForceIdleTimeoutKey = "API_FORCE_IDLE_TIMEOUT";
+
+    /// <summary>The managed value for <see cref="ForceIdleTimeoutKey"/> — <c>"0"</c>
+    /// disables the client watchdog on every provider.</summary>
+    private const string ManagedFlagOff = "0";
+
     private static readonly JsonSerializerOptions WriteOptions = new()
     {
         WriteIndented = true,
@@ -116,6 +140,7 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
                 CurrentFallback: null,
                 ExpectedAssume1m: null, CurrentAssume1m: null,
                 ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+                ExpectedForceIdleTimeout: null, CurrentForceIdleTimeout: null,
                 Details: ["not configured (file does not exist)"]);
         }
 
@@ -139,6 +164,7 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
                 CurrentFallback: null,
                 ExpectedAssume1m: null, CurrentAssume1m: null,
                 ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+                ExpectedForceIdleTimeout: null, CurrentForceIdleTimeout: null,
                 Details: ["file is not a JSON object (cannot read — run the config command to rewrite)"]);
         }
 
@@ -147,6 +173,7 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         var fallback = AsStringOrNull(env?[FallbackKey]);
         var assume1m = AsStringOrNull(env?[Assume1mKey]);
         var disableErrorReporting = AsStringOrNull(env?[DisableErrorReportingKey]);
+        var forceIdleTimeout = AsStringOrNull(env?[ForceIdleTimeoutKey]);
 
         // "Configured for bridge" means the base URL points at THIS bridge's Claude Code
         // route (the `/cc` prefix), not merely that ANTHROPIC_BASE_URL is set — a config
@@ -169,6 +196,9 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         details.Add(disableErrorReporting is null
             ? $"{DisableErrorReportingKey}: (unset)"
             : $"{DisableErrorReportingKey}: {disableErrorReporting}");
+        details.Add(forceIdleTimeout is null
+            ? $"{ForceIdleTimeoutKey}: (unset)"
+            : $"{ForceIdleTimeoutKey}: {forceIdleTimeout}");
 
         return new ConfigState(ClientId, scope, path, Exists: true,
             ConfiguredForBridge: pointsAtBridge, CurrentBaseUrl: pointsAtBridge ? current : null,
@@ -183,6 +213,11 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
             CurrentAssume1m: pointsAtBridge ? assume1m : null,
             ExpectedDisableErrorReporting: ManagedFlagOn,
             CurrentDisableErrorReporting: pointsAtBridge ? disableErrorReporting : null,
+            // Same force-write/drift contract as the pair above: a bridge-pointed config
+            // without the managed "0" is still running Claude Code's own idle watchdog,
+            // which on this backend aborts turns that are merely thinking.
+            ExpectedForceIdleTimeout: ManagedFlagOff,
+            CurrentForceIdleTimeout: pointsAtBridge ? forceIdleTimeout : null,
             Details: details);
     }
 
@@ -223,6 +258,14 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         summary.Add($"set env.{Assume1mKey} = {ManagedFlagOn} (1M context on native-1M models, survives --resume)");
         env[DisableErrorReportingKey] = ManagedFlagOn;
         summary.Add($"set env.{DisableErrorReportingKey} = {ManagedFlagOn} (keep error-reporting telemetry off)");
+
+        // Idle watchdog — force-written off. Claude Code's 5-minute byte-free abort is
+        // active on non-Anthropic providers, and Copilot sends no SSE ping, so it would
+        // kill turns that are merely thinking. The bridge's own stream-idle budget is
+        // the tunable, single owner of this bound. Force-written (not fill-if-absent)
+        // because an explicit "1" is precisely the value that arms the defect.
+        env[ForceIdleTimeoutKey] = ManagedFlagOff;
+        summary.Add($"set env.{ForceIdleTimeoutKey} = {ManagedFlagOff} (bridge owns the idle bound; Copilot sends no keepalive)");
 
         // auth token — fill only if absent; preserve any existing value.
         if (env[AuthTokenKey] is null)

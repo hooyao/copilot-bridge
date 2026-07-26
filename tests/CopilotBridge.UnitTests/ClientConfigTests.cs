@@ -254,6 +254,124 @@ public class ClientConfigTests
         Assert.DoesNotContain("DISABLE_ERROR_REPORTING", content);
     }
 
+    // ---- Idle watchdog (spec: "Claude Code streaming idle watchdog is disabled") ----
+
+    [Fact]
+    public void ClaudeCode_disables_the_client_idle_watchdog()
+    {
+        // Contract: the bridge must be the SOLE idle actor for a client it configures.
+        // Claude Code's own 5-minute byte-free abort is active on non-Anthropic
+        // providers, and Copilot sends no SSE ping — so during extended thinking the
+        // wire is legitimately silent and that watchdog would kill a working turn.
+        // The bridge's own stream-idle budget is the tunable owner of this bound.
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(null, Conn());
+        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
+
+        Assert.Equal("0", (string?)env["API_FORCE_IDLE_TIMEOUT"]);
+    }
+
+    [Fact]
+    public void ClaudeCode_force_overwrites_an_explicitly_armed_idle_watchdog()
+    {
+        // "1" is the one value that actively arms the watchdog on EVERY provider —
+        // precisely the configuration this change exists to undo. Fill-if-absent would
+        // preserve the defect for the users who explicitly set it, so the write is
+        // unconditional.
+        var original = """
+        { "env": { "API_FORCE_IDLE_TIMEOUT": "1" } }
+        """;
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
+        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
+
+        Assert.Equal("0", (string?)env["API_FORCE_IDLE_TIMEOUT"]);
+    }
+
+    [Fact]
+    public void Writing_the_idle_watchdog_key_preserves_unmanaged_env_keys()
+    {
+        // The surgical-merge guarantee: adding a managed key must not disturb anything
+        // the bridge does not own.
+        var original = """
+        { "env": { "MY_OWN_KEY": "keep me", "EDITOR": "vim" } }
+        """;
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
+        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
+
+        Assert.Equal("0", (string?)env["API_FORCE_IDLE_TIMEOUT"]);
+        Assert.Equal("keep me", (string?)env["MY_OWN_KEY"]);
+        Assert.Equal("vim", (string?)env["EDITOR"]);
+    }
+
+    [Fact]
+    public void Codex_config_carries_no_idle_watchdog_key()
+    {
+        // API_FORCE_IDLE_TIMEOUT is a Claude Code env key; Codex does not manage it.
+        var (content, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn());
+
+        Assert.DoesNotContain("API_FORCE_IDLE_TIMEOUT", content);
+    }
+
+    [Fact]
+    public void Status_reports_drift_when_the_idle_watchdog_key_is_missing()
+    {
+        // This is the state of every user configured before this change — the exact
+        // population still running with the watchdog armed. Reporting them as drifted
+        // is how they learn to re-run the config command.
+        var missing = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
+            ConfiguredForBridge: true,
+            CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
+            ExpectedFallback: null, CurrentFallback: null,
+            ExpectedAssume1m: "1", CurrentAssume1m: "1",
+            ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            ExpectedForceIdleTimeout: "0", CurrentForceIdleTimeout: null,
+            Details: []);
+        Assert.True(missing.Drifted);
+
+        // A stored value other than the managed "0" is drift too — "1" means the
+        // watchdog is not merely defaulted-on but explicitly forced on.
+        Assert.True((missing with { CurrentForceIdleTimeout = "1" }).Drifted);
+
+        // ...and the managed value clears it.
+        Assert.False((missing with { CurrentForceIdleTimeout = "0" }).Drifted);
+    }
+
+    [Theory]
+    [InlineData(null, true)]        // absent — the pre-change population
+    [InlineData("\"1\"", true)]     // explicitly armed
+    [InlineData("\"0\"", false)]    // managed value
+    public void ClaudeCode_read_detects_idle_watchdog_drift_from_disk(string? forceIdle, bool expectDrift)
+    {
+        // Exercises Read against a real file, not just the ConfigState record: proves the
+        // configurator actually looks the key up on disk and maps it to its own field.
+        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
+        var keys = new System.Collections.Generic.List<string>
+        {
+            "\"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\"",
+            // All other managed keys at their managed values, so only the watchdog key
+            // can be the source of drift in this theory.
+            "\"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL\": \"1\"",
+            "\"DISABLE_ERROR_REPORTING\": \"1\"",
+        };
+        if (forceIdle is not null) keys.Add($"\"API_FORCE_IDLE_TIMEOUT\": {forceIdle}");
+        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
+            "{ \"env\": { " + string.Join(", ", keys) + " } }");
+
+        var old = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = dir;
+            var state = new ClaudeCodeConfigurator().Read(Conn(port: 8765), ConfigScope.Repo);
+            Assert.True(state.ConfiguredForBridge);
+            Assert.Equal(expectDrift, state.Drifted);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = old;
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
     // ---- Codex TOML merge (spec: "Surgical merge preserves all unrelated content", "Overwrite policy") ----
 
     private const string DenseCodexToml = """
@@ -406,6 +524,7 @@ public class ClientConfigTests
             ExpectedFallback: null, CurrentFallback: "1",
             ExpectedAssume1m: "1", CurrentAssume1m: "1",
             ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            ExpectedForceIdleTimeout: "0", CurrentForceIdleTimeout: "0",
             Details: []);
         Assert.True(drifted.Drifted);
     }
@@ -419,6 +538,7 @@ public class ClientConfigTests
             ExpectedFallback: "1", CurrentFallback: "1",
             ExpectedAssume1m: "1", CurrentAssume1m: "1",
             ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            ExpectedForceIdleTimeout: "0", CurrentForceIdleTimeout: "0",
             Details: []);
         Assert.False(ok.Drifted);
     }
@@ -433,6 +553,7 @@ public class ClientConfigTests
             ExpectedFallback: null, CurrentFallback: null,
             ExpectedAssume1m: null, CurrentAssume1m: null,
             ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+            ExpectedForceIdleTimeout: null, CurrentForceIdleTimeout: null,
             Details: []);
         Assert.False(codexLike.Drifted);
     }
@@ -448,6 +569,7 @@ public class ClientConfigTests
             ExpectedFallback: null, CurrentFallback: null,
             ExpectedAssume1m: "1", CurrentAssume1m: null,
             ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            ExpectedForceIdleTimeout: "0", CurrentForceIdleTimeout: "0",
             Details: []);
         Assert.True(missingAssume.Drifted);
 
@@ -557,6 +679,10 @@ public class ClientConfigTests
         var keys = new System.Collections.Generic.List<string>
         {
             "\"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\"",
+            // Every OTHER managed key is written at its managed value so this theory
+            // isolates 1M-key drift; otherwise an unrelated managed key would drift and
+            // the expectDrift:false case could never be false.
+            "\"API_FORCE_IDLE_TIMEOUT\": \"0\"",
         };
         if (assume1m is not null) keys.Add($"\"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL\": {assume1m}");
         if (disableEr is not null) keys.Add($"\"DISABLE_ERROR_REPORTING\": {disableEr}");

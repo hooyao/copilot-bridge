@@ -46,11 +46,21 @@ internal sealed class UpstreamTimeoutOptions
     /// sent, the wire status stays <c>200</c>; by default the bridge injects the
     /// same retryable <c>overloaded_error</c> the response guards use (so Claude
     /// Code re-attempts the turn), unless <see cref="StreamIdleAction"/> selects
-    /// truncation. Default 60, below Claude Code's own opt-in stream watchdog
-    /// (<c>CLAUDE_STREAM_IDLE_TIMEOUT_MS</c>, default 90s), is unchanged by the
-    /// downstream-framing fix. The motivating observation was cancelled at 60s and
-    /// therefore cannot establish whether upstream would later have resumed; tune
-    /// this operator knob separately from failure recovery. <c>&lt;= 0</c> disables.
+    /// truncation. Default 60.
+    /// <para>This budget is the <b>only</b> inactivity bound on a configured client:
+    /// Claude Code's own idle abort (<c>API_FORCE_IDLE_TIMEOUT</c>, 5 minutes, active
+    /// on every non-Anthropic provider — so on by default for bridge users) is
+    /// force-disabled by <c>config claude-code</c>, because Copilot sends no SSE
+    /// <c>ping</c> and that watchdog therefore cannot distinguish extended thinking
+    /// from a dead stream. Do not justify this default by reference to a client-side
+    /// timer.</para>
+    /// <para>A timeout observation is right-censored at cancellation and cannot
+    /// establish whether upstream would later have resumed, so tune this operator
+    /// knob separately from failure recovery. Note also that Copilot independently
+    /// closes a stream that has produced no token after ~300s
+    /// (<c>docs/copilot-stream-cap.md</c>) — raising this budget past that point
+    /// changes which side reports the failure, not whether the turn survives.
+    /// <c>&lt;= 0</c> disables.</para>
     /// </summary>
     public int StreamIdleTimeoutSeconds { get; set; } = 60;
 

@@ -398,14 +398,20 @@ prompt cache) is never aborted.
   synchronously (the next event is already buffered) takes an allocation-free fast
   path; only a real wait on the network allocates the race scaffolding, and on an
   idle timeout the pending read is cancelled and awaited so it never dangles.
-  Default 60s sits *below* Claude Code's own opt-in stream watchdog
-  (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`, default 90s) so the bridge is the earlier
-  deterministic actor. On expiry the upstream strategy throws
+  Default 60s. This is the *only* inactivity bound acting on a configured client:
+  Claude Code's own idle abort (`API_FORCE_IDLE_TIMEOUT`, 5 minutes, inactive on
+  direct Anthropic/AWS connections and **active on every other provider**, so armed
+  by default for bridge users) is force-disabled by `config claude-code` — Copilot
+  sends no SSE `ping`, so that watchdog cannot distinguish extended thinking from a
+  dead stream and would abort working turns. On expiry the upstream strategy throws
   `UpstreamTimeoutException(StreamIdle)` through the hub stream; the downstream
   client edge selects the protocol-specific failure surface (see below). The 60s
   default is unchanged by the downstream-framing fix: an observation cancelled at
   that deadline is right-censored and cannot establish whether upstream would
   later have resumed, so timeout tuning remains a separate operator decision.
+  Note that Copilot independently closes a stream that has produced no token after
+  ~300s ([`copilot-stream-cap.md`](copilot-stream-cap.md)); raising this budget past
+  that point changes which side reports the failure, not whether the turn survives.
 
 Each budget disables at `<= 0` (no timer armed, no allocation — the byte-identical
 `/cc` passthrough hot path is unchanged). Surfacing, mapped by the endpoint's one
