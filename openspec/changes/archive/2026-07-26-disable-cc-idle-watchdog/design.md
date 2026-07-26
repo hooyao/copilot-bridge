@@ -142,9 +142,16 @@ also differ by account type (measured on an enterprise endpoint) or change witho
 notice. Mitigated by documenting the reproduction rather than only the number.
 
 **Disabling the client watchdog removes a safety net for non-Copilot failure modes.**
-If the bridge's own idle budget were misconfigured to 0 (disabled), a truly dead
-stream would now hang until the 10-minute `HttpClient.Timeout`. Accepted: the bridge's
-budget is on by default, and one clearly-owned bound beats two uncoordinated ones.
+If the bridge's own idle budget were misconfigured to `<= 0` (disabled), a dead body
+stream would hang **indefinitely** — not for ten minutes. `HttpClient.Timeout` bounds
+only the wait for response headers under `ResponseHeadersRead`; it does not apply to
+the SSE body reads that follow (`UpstreamTimeoutOptions.cs:12-15`), so there is no
+coarse outer backstop on a stalled body. `StreamIdleTimeoutSeconds` is therefore the
+**last effective inactivity bound** on the body once the client watchdog is off, and
+disabling it removes inactivity protection entirely rather than falling back to a
+longer one. Accepted only because the bridge's budget is on by default; an operator
+who sets it to 0 must understand they are opting out of body-stall detection, not
+choosing a laxer timeout.
 
 **`ConfigState` grows to a fourth Expected/Current pair.** The record is becoming a
 list of parallel key pairs and will eventually want a dictionary. Not refactored here

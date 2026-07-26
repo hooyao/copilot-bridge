@@ -1,9 +1,12 @@
 # Copilot's ~300s token-less stream cap
 
 **Copilot closes an SSE stream that has produced no token after roughly 300
-seconds.** The connection ends in a clean EOF — no `error` event, no
-`message_stop`, no bytes. This is a property of the Copilot backend, not of the
-bridge, and **no bridge or client setting extends it.**
+seconds.** The stream does open normally — `message_start` and a `content_block_start`
+arrive within seconds — and then no *further* bytes follow until the connection ends
+in a clean EOF: no `error` event, no `message_stop`. This is a mid-stream cap on a
+stream that never produced a token, **not** a pre-header or first-byte failure. It is
+a property of the Copilot backend, not of the bridge, and **no bridge or client
+setting extends it.**
 
 It matters because it is easy to misread. The symptom (a stream that emits
 `message_start`, opens a `thinking` block, and then dies) looks exactly like a
