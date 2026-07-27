@@ -25,11 +25,16 @@ key is unset, so setting the event-level key raises both, while setting only the
 byte-level key leaves the event-level one pinned at its 300 s floor.
 
 Current bridge state: `HttpClient.Timeout` is hard-coded to 10 minutes
-(`BridgeServiceCollectionExtensions.cs:113`). Under `ResponseHeadersRead` that
-cap bounds only the wait for headers on the streaming path — so a streaming turn
-can exceed it (verified: a real 534.8 s turn succeeded) — but on the **buffered**
-path it bounds the entire request including the body, which is exactly the
-non-streaming recovery request Claude Code issues after a streaming failure.
+(`BridgeServiceCollectionExtensions.cs:113`).
+
+> **Corrected during PR review (rounds 3/5).** This section originally claimed the
+> cap bounded the **buffered** path end-to-end. It does not: both forward paths use
+> `ResponseHeadersRead`, under which the cap ends at response headers on buffered
+> and streaming responses alike — verified over a real socket by
+> `UnderResponseHeadersRead_TheClientTimeoutDoesNotCoverTheBodyRead`. So removing it
+> does not remove a body bound; it replaces a coarse, unconfigurable header cap with
+> the configured per-attempt first-byte budget over the same phase. A buffered body
+> that stalls after headers remains unbounded, which this change does not address.
 
 ## Goals / Non-Goals
 

@@ -29,21 +29,25 @@ down to the 180 s first-party value. The operator has no way to see any of this.
   still raised because it also caps the non-streaming-fallback per attempt.
   `config status` reports drift on both, like the existing managed keys.
 - **BREAKING (operational, not wire):** the shared upstream `HttpClient.Timeout`
-  changes from a hard-coded 10 minutes to `Timeout.InfiniteTimeSpan`. That coarse
-  cap silently truncated the non-streaming fallback path — the one path where it
-  bounds the whole request including the body — at 10 minutes regardless of
-  `FirstByteTimeoutSeconds`. The two fine-grained `Pipeline:UpstreamTimeout`
-  budgets become the only upstream bound. An operator who disables *both* budgets
-  now has no upstream bound at all, where previously 10 minutes backstopped them.
-- At startup the bridge reads Claude Code's `settings.json`, combines the two
-  client env values with its own `FirstByteTimeoutSeconds` /
-  `StreamIdleTimeoutSeconds`, and logs the **effective end-to-end timeout** — plus
-  a warning whenever the client would fire first, naming both remedies: run the
-  bridge's `config claude-code` command, or set the environment variable by hand.
+  changes from a hard-coded 10 minutes to `Timeout.InfiniteTimeSpan`. Both forward
+  paths use `ResponseHeadersRead`, under which that cap only ever bounded the wait
+  for **headers** — so this replaces a coarse, unconfigurable header cap with the
+  configured per-attempt `FirstByteTimeoutSeconds` budget over the same phase. The
+  two fine-grained `Pipeline:UpstreamTimeout` budgets become the only upstream
+  bound. An operator who disables *both* now has no upstream bound at all, where
+  previously 10 minutes backstopped the header wait. A buffered body that stalls
+  after headers was never bounded by the cap and still is not.
+- At startup the bridge reads Claude Code's **global** `settings.json` and reports
+  the bounds **per phase** — its own `FirstByteTimeoutSeconds` /
+  `StreamIdleTimeoutSeconds` alongside the client's — plus a warning whenever the
+  client's idle watchdog would fire first, naming both remedies: run the bridge's
+  `config claude-code` command, or set the environment variable by hand.
   A **missing** key warns exactly like a too-short one: absence is not benign,
   because the bridge's own 1M-context key makes the client fall back to the
   measured 180 s first-party bound, and absence is the state of every install
-  configured before this change.
+  configured before this change. It does not claim a single "effective" bound: the
+  phases do not compete over one interval, and a project-scoped
+  `settings.local.json` is not visible from startup.
 - **Not in this change: SSE `ping` injection.** Keepalive injection is the other
   half of the fix — it needs no client restart and no client-side configuration,
   and it is what the real Anthropic API does — but it touches the `/cc` relay

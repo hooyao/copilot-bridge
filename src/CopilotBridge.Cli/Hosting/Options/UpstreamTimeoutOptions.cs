@@ -10,12 +10,12 @@ namespace CopilotBridge.Cli.Hosting.Options;
 /// </summary>
 /// <remarks>
 /// <para>These budgets are the <b>sole</b> upstream bound: the shared
-/// <c>HttpClient</c> is registered with <c>Timeout.InfiniteTimeSpan</c>. A coarse
-/// whole-request timeout was actively harmful — under <c>ResponseHeadersRead</c> it
-/// bounds only the header wait on the streaming path, but on the <b>buffered</b>
-/// path it bounds the entire request including the body, which is exactly the
-/// non-streaming request Claude Code issues to recover a failed streaming turn.
-/// Consequence: disabling BOTH budgets leaves upstream calls genuinely unbounded.
+/// <c>HttpClient</c> is registered with <c>Timeout.InfiniteTimeSpan</c>. The coarse
+/// whole-request timeout it replaced was unconfigurable and redundant — both
+/// forward paths use <c>ResponseHeadersRead</c>, under which it bounded only the
+/// wait for headers, on buffered and streaming responses alike. The first-byte
+/// budget below bounds that same phase and can be tuned. Consequence: disabling
+/// BOTH budgets leaves upstream calls genuinely unbounded.
 /// See <c>docs/timeout-chain.md</c>, <c>docs/pipeline-design.md</c>, and the
 /// <c>add-upstream-idle-timeout</c> change for the incident that motivated them.</para>
 /// <para>The budgets themselves are path-agnostic; only the <b>mid-stream

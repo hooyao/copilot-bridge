@@ -385,10 +385,11 @@ prompt cache) is never aborted.
   eats the budget. On expiry it throws `UpstreamTimeoutException(FirstByte)`,
   which is terminal (the transient-retry `when` clause does not catch it — a slow
   upstream just times out again). This is the *sole* bound on that phase: the
-  shared `HttpClient` uses `Timeout.InfiniteTimeSpan`, because a coarse
-  whole-request cap bounds the **buffered** path end-to-end — the non-streaming
-  request Claude Code issues to recover a failed stream, which emits no bytes
-  until the model has finished. See `docs/timeout-chain.md`.
+  shared `HttpClient` uses `Timeout.InfiniteTimeSpan`, replacing a coarse,
+  unconfigurable cap that — under `ResponseHeadersRead`, which both forward paths
+  use — bounded the same header phase anyway, on buffered and streaming responses
+  alike. Note this budget is disarmed once headers arrive, so a **buffered** body
+  that stalls afterwards has no bound today. See `docs/timeout-chain.md`.
 - **Stream-idle budget** (`StreamIdleTimeoutSeconds`, default 240) bounds the gap
   between consecutive SSE events, reset on every event pulled from upstream. Each
   read is driven by the shared `StreamIdleReader`, which races `MoveNextAsync`
