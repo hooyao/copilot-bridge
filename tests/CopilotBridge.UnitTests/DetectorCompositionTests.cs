@@ -10,6 +10,7 @@ using CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 using System.Net.ServerSentEvents;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CopilotBridge.UnitTests;
@@ -248,6 +249,74 @@ public class DetectorCompositionTests
         var metadataTimeout = factory.CreateClient(UpstreamHttpClientNames.Metadata).Timeout;
         Assert.NotEqual(Timeout.InfiniteTimeSpan, metadataTimeout);
         Assert.True(metadataTimeout > TimeSpan.Zero);
+    }
+
+    [Fact]
+    public async Task ForwardingARequest_EmitsNoPerSendHttpClientLogging()
+    {
+        // Contract: a forwarded upstream call must produce NO log records of its own
+        // from the HTTP layer. The bridge already emits exactly one structured
+        // summary per turn (RequestSummaryLogger); IHttpClientFactory's default
+        // handlers would add four Information records per send ("Start processing
+        // HTTP request" / "Sending HTTP request" and their completion pair). With
+        // count_tokens fan-out that was ~10 lines per Claude Code turn, burying the
+        // summary the operator actually reads.
+        //
+        // Asserted on RECORDS, not on rendered text: a level filter in appsettings
+        // would hide the lines while the records still exist, and that fix lives in
+        // an installation's own config file — a stock config would silently lose it.
+        // Requiring zero records forces the handler itself to be gone.
+        var records = new List<string>();
+        var config = new ConfigurationBuilder().AddInMemoryCollection([]).Build();
+        var services = new ServiceCollection();
+        services.AddLogging(b => b.AddProvider(new RecordingLoggerProvider(records)));
+        services.AddBridgeServer(config, cliPort: 12345, deviceCodePrinter: null);
+        using var sp = services.BuildServiceProvider();
+
+        // Send through a registered client, terminated locally so the test never
+        // touches the network. The primary handler is what the factory pipeline
+        // wraps, so replacing it leaves every bridge-installed handler in place.
+        var factory = sp.GetRequiredService<IHttpClientFactory>();
+        var client = factory.CreateClient(UpstreamHttpClientNames.Metadata);
+        records.Clear();
+        try
+        {
+            await client.GetAsync("http://127.0.0.1:1/never-listening");
+        }
+        catch (HttpRequestException)
+        {
+            // Connection refused is fine — the send still ran the handler chain,
+            // which is where the unwanted records would be written.
+        }
+
+        Assert.DoesNotContain(records, r => r.StartsWith("System.Net.Http.HttpClient.", StringComparison.Ordinal));
+    }
+
+    private sealed class RecordingLoggerProvider(List<string> records) : ILoggerProvider
+    {
+        public ILogger CreateLogger(string categoryName) => new Recorder(categoryName, records);
+
+        public void Dispose() { }
+
+        private sealed class Recorder(string category, List<string> records) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                lock (records)
+                {
+                    records.Add(category);
+                }
+            }
+        }
     }
 
     [Fact]
