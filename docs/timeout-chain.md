@@ -19,21 +19,52 @@ that should ever fire; the client is configured to outlast them.
 2. **No coarse HTTP cap.** The shared upstream `HttpClient` uses
    `Timeout.InfiniteTimeSpan`. Setting **both** budgets `<= 0` therefore leaves
    upstream calls genuinely unbounded — there is no backstop behind them.
-3. **The client is derived from the bridge.** `config claude-code` force-writes
-   `CLAUDE_STREAM_IDLE_TIMEOUT_MS` and `API_TIMEOUT_MS` as `budget + 5 min`
-   (clamped to what the client actually honors). Change a budget → re-run
-   `config claude-code`; until you do, `config status` reports drift.
+3. **The client's idle bound is derived from the bridge.** `config claude-code`
+   force-writes `CLAUDE_STREAM_IDLE_TIMEOUT_MS` as `budget + 5 min` (clamped to
+   what the client actually honors). Change a budget → re-run `config claude-code`;
+   until you do, `config status` reports drift.
+   `API_TIMEOUT_MS` is written as a fixed generous maximum instead, **not**
+   derived — see [the one bound the bridge cannot own](#the-one-bound-the-bridge-cannot-own).
 4. **Startup says what is really in force**, and warns when the client would win:
 
 ```
 Timeouts:  bridge first-byte 900s, stream-idle 600s (Pipeline:UpstreamTimeout — idle budgets, not total caps)
-Timeouts:  Claude Code stream-idle 15m, request 20m (client env — applies on Claude Code's next start)
+Timeouts:  Claude Code stream-idle 15m, request 60m (global client env — applies on Claude Code's next start)
 Timeouts:  effective end-to-end bound 10m (bridge stream-idle)
 ```
 
 A `WARNING` naming a `CLAUDE_*` key means the client aborts first and the bridge's
 budget never applies. It fires for a **missing** key too — absence is not benign
 (see below).
+
+### The one bound the bridge cannot own
+
+`API_TIMEOUT_MS` is a **wall-clock** cap on the whole request, while the bridge's
+budgets bound **inactivity**. Those are different quantities, and no value of the
+first can be guaranteed to outlast the second:
+
+- A healthy turn that keeps emitting has **no total duration** — the stream-idle
+  timer resets on every event, so the turn can legitimately run for hours.
+- Even a stalled turn can spend the first-byte budget *and then* one or more
+  stream-idle gaps before any bridge timer fires. With first-byte 900 s and
+  stream-idle 600 s the bridge may legitimately take ~1500 s, so a derived
+  `max(900,600)+300 = 1200 s` would have the **client** abort first.
+
+So the bridge writes a fixed generous maximum (60 min) rather than deriving one,
+and the startup report calls it what it is — a residual bound the bridge cannot
+out-wait:
+
+```
+Timeouts:  API_TIMEOUT_MS = 60m is a wall-clock cap on the whole request, not an
+           inactivity budget — the bridge cannot out-wait it, so a turn running
+           longer than this ends at the client regardless of the budgets above
+```
+
+It is still worth raising from the client's own default, because it *also* bounds
+each attempt of Claude Code's non-streaming recovery request (default 300 s) —
+that path is a single bounded response, so a higher ceiling genuinely helps there.
+Deriving it would only have moved the threshold while implying a guarantee that
+cannot exist.
 
 ### Why the silence happens at all
 

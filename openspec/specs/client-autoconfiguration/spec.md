@@ -351,11 +351,18 @@ that decides when a stalled turn ends:
    client's streaming idle bound; the bridge SHALL write a value derived from its
    own configured budgets such that the client bound is not shorter than the
    bridge's.
-2. `API_TIMEOUT_MS` — Claude Code applies a whole-request bound, and the same
-   value also bounds each attempt of the non-streaming recovery request the
-   client issues after a streaming failure. A recovery request produces no bytes
-   until the model has finished, so this bound SHALL likewise be written to a
-   value not shorter than the bridge's first-byte budget.
+2. `API_TIMEOUT_MS` — Claude Code applies a **wall-clock** whole-request bound,
+   and the same value also bounds each attempt of the non-streaming recovery
+   request the client issues after a streaming failure. That recovery request
+   produces no bytes until the model has finished, and the client default is far
+   too short for a deep-thinking turn, so the bridge SHALL raise it.
+   It SHALL be written as a fixed maximum rather than derived from the budgets:
+   because the bridge's budgets bound *inactivity*, a healthy turn that keeps
+   emitting has no total duration, and a stalled one may legitimately consume the
+   first-byte budget and then one or more stream-idle gaps before any bridge timer
+   fires. **No finite wall-clock value can therefore guarantee that the client
+   outlasts the bridge**, and the bridge SHALL NOT claim otherwise — see the
+   residual-bound requirement in `timeout-budget-report`.
 
 Both keys SHALL be force-written (overwriting any pre-existing value) so the pair
 stays consistent with the bridge's configuration, in the same manner as the
@@ -370,7 +377,8 @@ running client session.
 
 - **WHEN** `config claude-code` writes Claude Code settings
 - **THEN** the `env` block contains both `CLAUDE_STREAM_IDLE_TIMEOUT_MS` and `API_TIMEOUT_MS`
-- **AND** each written value is not shorter than the bridge budget it is derived from.
+- **AND** the written `CLAUDE_STREAM_IDLE_TIMEOUT_MS` is not shorter than the stream-idle budget it is derived from
+- **AND** the written `API_TIMEOUT_MS` is the policy's fixed maximum, which is not derived from any budget.
 
 #### Scenario: Pre-existing timeout values are overwritten to the managed values
 

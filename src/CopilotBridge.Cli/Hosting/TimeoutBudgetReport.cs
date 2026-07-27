@@ -69,17 +69,36 @@ internal static class TimeoutBudgetReport
         WarnIfUndercut(
             log, snapshot.StreamIdle, budgets.StreamIdleTimeoutSeconds,
             "stream-idle", nameof(UpstreamTimeoutOptions.StreamIdleTimeoutSeconds));
-        // API_TIMEOUT_MS is a WHOLE-REQUEST cap, so it must outlast every phase that
-        // can elapse within one request — comparing it to the first-byte budget alone
-        // missed the case where a larger stream-idle budget outlives it mid-turn.
-        var longestPhaseSeconds = Math.Max(
-            budgets.FirstByteTimeoutSeconds, budgets.StreamIdleTimeoutSeconds);
-        WarnIfUndercut(
-            log, snapshot.RequestTimeout, longestPhaseSeconds,
-            "longest phase (first-byte / stream-idle)",
-            $"{nameof(UpstreamTimeoutOptions.FirstByteTimeoutSeconds)}/"
-            + nameof(UpstreamTimeoutOptions.StreamIdleTimeoutSeconds));
+        // API_TIMEOUT_MS is deliberately NOT compared against a budget. It is a
+        // wall-clock cap while the budgets bound inactivity, so no finite value can
+        // outlast them — a healthy turn that keeps emitting has no total duration,
+        // and a stalled one can legally spend first-byte + stream-idle + … before
+        // any bridge timer fires. Reporting it as a residual bound is honest;
+        // "warning when it undercuts" would fire on correct configurations.
+        ReportResidualWallClockBound(log, snapshot.RequestTimeout);
         WarnIfBudgetExceedsClientMaximum(log, budgets);
+    }
+
+    /// <summary>
+    /// State the client's whole-request cap as what it is: a bound the bridge cannot
+    /// out-wait, only raise. It exists mainly for Claude Code's non-streaming
+    /// recovery request (client default 300 s, far too short for a deep-thinking
+    /// turn); for a streaming turn it is a ceiling that can in principle be crossed
+    /// before a bridge budget fires.
+    /// </summary>
+    private static void ReportResidualWallClockBound(ILogger log, ClientTimeoutValue requestTimeout)
+    {
+        if (requestTimeout.EffectiveMs is not { } ms)
+        {
+            return;
+        }
+
+        log.LogInformation(
+            "Timeouts:  {Key} = {Value} is a wall-clock cap on the whole request, not an "
+            + "inactivity budget — the bridge cannot out-wait it, so a turn running longer than "
+            + "this ends at the client regardless of the budgets above",
+            requestTimeout.Key,
+            requestTimeout.IsExplicit ? FormatMs(ms) : $"{FormatMs(ms)} (unset — client default)");
     }
 
     /// <summary>
@@ -104,18 +123,10 @@ internal static class TimeoutBudgetReport
                 ClaudeCodeTimeoutPolicy.StreamIdleMaxMs / 1000);
         }
 
-        if (ClaudeCodeTimeoutPolicy.FirstByteBudgetExceedsClientMaximum(
-                Math.Max(budgets.FirstByteTimeoutSeconds, budgets.StreamIdleTimeoutSeconds)))
-        {
-            log.LogWarning(
-                "Timeouts:  the longest bridge phase ({Budget}s) exceeds the largest value the bridge "
-                + "writes for {Key} ({MaxMs}ms). The client will abort BEFORE that phase and re-running "
-                + "`{Command}` cannot fix it — lower the budget to at most {MaxSeconds}s.",
-                Math.Max(budgets.FirstByteTimeoutSeconds, budgets.StreamIdleTimeoutSeconds),
-                ClaudeCodeTimeoutPolicy.RequestTimeoutKey,
-                ClaudeCodeTimeoutPolicy.RequestTimeoutMaxMs, ConfigCommand,
-                ClaudeCodeTimeoutPolicy.RequestTimeoutMaxMs / 1000);
-        }
+        // Only the stream-idle key is checked here: it is the one whose written value
+        // is derived from a budget, so it is the one a too-large budget can render
+        // unsatisfiable. API_TIMEOUT_MS is a fixed maximum by design (see
+        // ClaudeCodeTimeoutPolicy.RequestTimeoutMs).
     }
 
     /// <summary>

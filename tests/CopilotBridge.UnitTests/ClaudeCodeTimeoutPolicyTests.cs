@@ -39,7 +39,7 @@ public class ClaudeCodeTimeoutPolicyTests
     {
         foreach (var budgetSeconds in new[] { 1, 60, 240, 900, 1800 })
         {
-            var writtenMs = ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(budgetSeconds, budgetSeconds);
+            var writtenMs = ClaudeCodeTimeoutPolicy.RequestTimeoutMs();
             Assert.True(
                 writtenMs > budgetSeconds * 1000,
                 $"budget {budgetSeconds}s -> written {writtenMs}ms must exceed the budget");
@@ -51,11 +51,11 @@ public class ClaudeCodeTimeoutPolicyTests
     {
         // Drives the drift contract: an operator who raises a budget and re-runs
         // config must get a larger client value, otherwise the bridge silently
-        // stops being the binding bound.
+        // stops being the binding bound. Only the stream-idle key is derived from a
+        // budget — API_TIMEOUT_MS is a fixed maximum by design, since no finite
+        // wall-clock value can outlast an inactivity budget.
         Assert.True(
             ClaudeCodeTimeoutPolicy.StreamIdleMsFor(600) > ClaudeCodeTimeoutPolicy.StreamIdleMsFor(300));
-        Assert.True(
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(900, 900) > ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(300, 300));
     }
 
     [Theory]
@@ -71,7 +71,7 @@ public class ClaudeCodeTimeoutPolicyTests
             ClaudeCodeTimeoutPolicy.StreamIdleMsFor(disabledBudget));
         Assert.Equal(
             ClaudeCodeTimeoutPolicy.RequestTimeoutMaxMs,
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(disabledBudget, disabledBudget));
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMs());
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public class ClaudeCodeTimeoutPolicyTests
         // produce a *shorter* client bound than the bridge's — the exact failure
         // this capability exists to prevent.
         Assert.True(ClaudeCodeTimeoutPolicy.StreamIdleMsFor(int.MaxValue) > 0);
-        Assert.True(ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(int.MaxValue, int.MaxValue) > 0);
+        Assert.True(ClaudeCodeTimeoutPolicy.RequestTimeoutMs() > 0);
         Assert.True(ClaudeCodeTimeoutPolicy.StreamIdleMsFor(int.MaxValue - 1) > 0);
     }
 
@@ -337,28 +337,30 @@ public class ClaudeCodeTimeoutPolicyTests
             > ClaudeCodeTimeoutPolicy.AbsentStreamIdleFirstPartyDefaultMs);
     }
 
-    // ---- API_TIMEOUT_MS is a WHOLE-REQUEST cap ----
+    // ---- API_TIMEOUT_MS is a residual wall-clock bound, not a derived one ----
 
     [Fact]
-    public void Request_timeout_outlasts_the_longest_phase_not_just_first_byte()
+    public void Request_timeout_is_the_fixed_maximum_not_derived_from_budgets()
     {
-        // Deriving from the first-byte budget alone wrote a value the stream-idle
-        // budget could outlive: first-byte 240 + stream-idle 600 gave 540 s, so the
-        // client aborted the whole request while the bridge still allowed a 600 s gap.
-        var writtenMs = ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(
-            firstByteBudgetSeconds: 240, streamIdleBudgetSeconds: 600);
-
-        Assert.True(
-            writtenMs > 600 * 1000,
-            $"{writtenMs}ms must outlast the 600s stream-idle budget, not just first-byte");
+        // No finite wall-clock value can outlast inactivity budgets: a healthy turn
+        // that keeps emitting has no total duration, and a stalled one can spend
+        // first-byte + stream-idle + ... before any bridge timer fires. Deriving it
+        // (from first-byte, or from Math.Max of both) only moved the threshold while
+        // still implying a guarantee that cannot exist — e.g. first-byte 900 +
+        // stream-idle 600 derived 1200 s while the bridge could legitimately take
+        // ~1500 s. So the policy writes its maximum and the report calls it residual.
+        Assert.Equal(ClaudeCodeTimeoutPolicy.RequestTimeoutMaxMs, ClaudeCodeTimeoutPolicy.RequestTimeoutMs());
     }
 
     [Fact]
-    public void Request_timeout_still_outlasts_a_dominant_first_byte_budget()
+    public void Request_timeout_still_far_exceeds_the_clients_own_fallback_default()
     {
-        var writtenMs = ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(
-            firstByteBudgetSeconds: 900, streamIdleBudgetSeconds: 60);
-
-        Assert.True(writtenMs > 900 * 1000);
+        // It is written for a real reason: it also bounds each attempt of Claude
+        // Code's non-streaming recovery request, whose 300 s client default was half
+        // of the original failure. That path IS a bounded single response, so raising
+        // the ceiling genuinely helps even though it guarantees nothing for a stream.
+        Assert.True(
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMs()
+            > ClaudeCodeTimeoutPolicy.AbsentRequestTimeoutDefaultMs);
     }
 }

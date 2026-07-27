@@ -103,7 +103,7 @@ JSON**, so it must not contain comments:
     "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1",
     "DISABLE_ERROR_REPORTING": "1",
     "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "900000",
-    "API_TIMEOUT_MS": "1200000"
+    "API_TIMEOUT_MS": "3600000"
   }
 }
 ```
@@ -239,7 +239,7 @@ or MDM rather than letting the bridge write it):
 | Key | Why |
 | --- | --- |
 | `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | The **only** knob that lifts both of Claude Code's idle watchdogs. Setting `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` alone leaves the other pinned at its 300 s floor. |
-| `API_TIMEOUT_MS` | Bounds the whole request **and** each attempt of the non-streaming request Claude Code uses to recover a failed stream — that one emits no bytes until the model finishes, so it needs the headroom too. |
+| `API_TIMEOUT_MS` | A **wall-clock** cap on the whole request. The bridge writes a fixed generous value rather than deriving one: its own budgets bound *inactivity*, so a turn that keeps emitting has no total duration and no finite wall-clock value can be guaranteed to outlast them. It is still worth raising because it also bounds each attempt of the non-streaming recovery request, which emits no bytes until the model finishes. Treat it as a ceiling the bridge cannot out-wait. |
 
 Set each to at least the bridge budget it must outlast. Claude Code reads `env` at
 process start, so **restart it** for either to take effect.

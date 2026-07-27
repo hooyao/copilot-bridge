@@ -114,7 +114,7 @@ public class TimeoutBudgetReportTests
         var overCeilingSeconds = (ClaudeCodeTimeoutPolicy.StreamIdleMaxMs / 1000) + 600;
         var path = WriteSettings(BridgePointedSettings(
             ClaudeCodeTimeoutPolicy.StreamIdleMsFor(overCeilingSeconds).ToString(),
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(900, 600).ToString()));
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMs().ToString()));
         var (events, log) = Recorder();
 
         TimeoutBudgetReport.Emit(
@@ -131,7 +131,7 @@ public class TimeoutBudgetReportTests
     {
         var path = WriteSettings(BridgePointedSettings(
             ClaudeCodeTimeoutPolicy.StreamIdleMsFor(600).ToString(),
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(900, 600).ToString()));
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMs().ToString()));
         var (events, log) = Recorder();
 
         TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
@@ -186,15 +186,25 @@ public class TimeoutBudgetReportTests
     }
 
     [Fact]
-    public void A_client_request_timeout_shorter_than_the_first_byte_budget_warns()
+    public void A_short_client_request_timeout_is_reported_as_a_residual_bound_not_a_warning()
     {
+        // API_TIMEOUT_MS is a wall-clock cap while the bridge's budgets bound
+        // INACTIVITY, so it can always be crossed first — warning on that would fire
+        // on correct configurations and there is no value that would silence it.
+        // The honest surface is to state it as a residual bound the bridge cannot
+        // out-wait, which is what this asserts.
         var path = WriteSettings(BridgePointedSettings("900000", "60000"));
         var (events, log) = Recorder();
 
         TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
 
-        var warning = Assert.Single(Warnings(events));
-        Assert.Contains(ClaudeCodeTimeoutPolicy.RequestTimeoutKey, warning.Message, StringComparison.Ordinal);
+        Assert.Empty(Warnings(events));
+
+        var residual = events.Find(e =>
+            e.Message.Contains("wall-clock cap", StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(residual);
+        Assert.Contains(
+            ClaudeCodeTimeoutPolicy.RequestTimeoutKey, residual!.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -270,7 +280,7 @@ public class TimeoutBudgetReportTests
         {
             var path = WriteSettings(BridgePointedSettings(
                 ClaudeCodeTimeoutPolicy.StreamIdleMsFor(streamIdle).ToString(),
-                ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(firstByte, streamIdle).ToString()));
+                ClaudeCodeTimeoutPolicy.RequestTimeoutMs().ToString()));
             var (events, log) = Recorder();
 
             TimeoutBudgetReport.Emit(Budgets(firstByte, streamIdle), log, path);

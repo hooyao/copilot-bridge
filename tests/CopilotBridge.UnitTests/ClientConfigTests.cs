@@ -132,9 +132,7 @@ public class ClientConfigTests
     private static BridgeConnection Conn(int port = 8765, bool fallback = true) => new(
         port, fallback,
         ClaudeCodeTimeoutPolicy.StreamIdleMsFor(new UpstreamTimeoutOptions().StreamIdleTimeoutSeconds),
-        ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(
-            new UpstreamTimeoutOptions().FirstByteTimeoutSeconds,
-            new UpstreamTimeoutOptions().StreamIdleTimeoutSeconds));
+        ClaudeCodeTimeoutPolicy.RequestTimeoutMs());
 
     [Fact]
     public void ClaudeCode_sets_base_url_and_leaves_recovery_fallback_enabled()

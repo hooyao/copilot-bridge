@@ -55,9 +55,10 @@ internal static class ClaudeCodeTimeoutPolicy
     public const int StreamIdleMaxMs = 1_800_000;
 
     /// <summary>
-    /// Ceiling the bridge applies to <see cref="RequestTimeoutKey"/>. The client
-    /// imposes no documented cap of its own; this bounds an unbounded-budget
-    /// derivation to a finite, writable number.
+    /// Ceiling the bridge applies to <see cref="RequestTimeoutKey"/>, and the value
+    /// it always writes (see <see cref="RequestTimeoutMs"/> for why it is not
+    /// derived). 60 minutes: comfortably above any single non-streaming recovery
+    /// response, while still leaving a wedged client able to give up eventually.
     /// </summary>
     public const int RequestTimeoutMaxMs = 3_600_000;
 
@@ -98,27 +99,28 @@ internal static class ClaudeCodeTimeoutPolicy
         DeriveMs(streamIdleBudgetSeconds, StreamIdleMaxMs);
 
     /// <summary>
-    /// Value to write for <see cref="RequestTimeoutKey"/>. This key is a
-    /// <b>whole-request</b> cap on the client, so it must outlast every bridge
-    /// phase that can elapse within one request — not just the first-byte wait.
-    /// Deriving it from the first-byte budget alone produced a known-bad config:
-    /// first-byte 240 s + stream-idle 600 s wrote 540 s, so the client aborted
-    /// mid-turn while the bridge still tolerated a 600 s idle gap. Takes the larger
-    /// of the two budgets; a disabled budget follows the same rule as
-    /// <see cref="StreamIdleMsFor"/>.
+    /// Value to write for <see cref="RequestTimeoutKey"/> — always the maximum this
+    /// policy will write, deliberately NOT derived from the budgets.
     /// </summary>
-    public static int RequestTimeoutMsFor(int firstByteBudgetSeconds, int streamIdleBudgetSeconds)
-    {
-        // A disabled (non-positive) budget means "no bound", which no finite client
-        // value can outlast — so it dominates, exactly as DeriveMs treats its own.
-        if (firstByteBudgetSeconds <= 0 || streamIdleBudgetSeconds <= 0)
-        {
-            return RequestTimeoutMaxMs;
-        }
-
-        return DeriveMs(
-            Math.Max(firstByteBudgetSeconds, streamIdleBudgetSeconds), RequestTimeoutMaxMs);
-    }
+    /// <remarks>
+    /// <para><b>No finite value here can satisfy the authority invariant.</b> The
+    /// bridge's budgets bound <i>inactivity</i>, so a healthy turn that keeps
+    /// emitting has no total duration at all, and even a stalled one can legally
+    /// spend (first-byte budget + stream-idle budget + …) before any bridge timer
+    /// fires. A wall-clock cap can always be crossed first. Deriving it — from the
+    /// first-byte budget, or later from <c>Math.Max</c> of both — only moved the
+    /// threshold and kept implying a guarantee that cannot exist: with first-byte
+    /// 900 s and stream-idle 600 s, <c>Math.Max</c> wrote 1200 s while the bridge
+    /// could legitimately take ~1500 s.</para>
+    /// <para>It is still written, because it also bounds each attempt of Claude
+    /// Code's non-streaming recovery request, whose client default (300 s) is far
+    /// too short for a deep-thinking turn and was half of the original failure.
+    /// That path <i>is</i> a bounded single response, so raising the ceiling
+    /// genuinely helps. The bridge therefore writes the largest value it will use
+    /// and the startup report surfaces it as a <b>residual wall-clock bound</b>
+    /// rather than as something that outlasts the bridge.</para>
+    /// </remarks>
+    public static int RequestTimeoutMs() => RequestTimeoutMaxMs;
 
     /// <summary>
     /// budget + margin, in milliseconds, clamped to <paramref name="maxMs"/>.
@@ -153,8 +155,4 @@ internal static class ClaudeCodeTimeoutPolicy
     /// </remarks>
     public static bool StreamIdleBudgetExceedsClientMaximum(int budgetSeconds) =>
         budgetSeconds > 0 && (long)budgetSeconds * 1000L > StreamIdleMaxMs;
-
-    /// <inheritdoc cref="StreamIdleBudgetExceedsClientMaximum"/>
-    public static bool FirstByteBudgetExceedsClientMaximum(int budgetSeconds) =>
-        budgetSeconds > 0 && (long)budgetSeconds * 1000L > RequestTimeoutMaxMs;
 }
