@@ -1,14 +1,21 @@
 ## ADDED Requirements
 
-### Requirement: Effective end-to-end timeout is reported at startup
+### Requirement: The shortest visible timeout bound is reported at startup
 
-The bridge SHALL report, once at startup, the **effective end-to-end timeout** for
-a long-thinking turn — the shortest inactivity bound that will actually fire
-across the chain — derived from both sides: its own configured upstream budgets
-(`Pipeline:UpstreamTimeout`) and the timeout-governing environment values stored
-in Claude Code's settings file. The report SHALL name each contributing bound and
-its source, so an operator can see the real limit without reverse-engineering it
-from two separate config files.
+The bridge SHALL report, once at startup, the **shortest timeout bound it can
+see** for a long-thinking turn, derived from both sides: its own configured
+upstream budgets (`Pipeline:UpstreamTimeout`) and the timeout-governing
+environment values stored in Claude Code's **global** settings file. The report
+SHALL name each contributing bound and its source, so an operator can see the
+limit without reverse-engineering it from two separate config files.
+
+The report SHALL NOT present that value as the definitive end-to-end bound. Only
+global client settings are readable from startup: a project-scoped
+`settings.local.json` overrides them and belongs to the Claude session's own
+directory, which a bridge serving many repositories cannot identify. The report
+SHALL therefore label the value as coming from global settings and state that a
+project-scoped override may be shorter and is not visible — labelling it
+"effective" would make the diagnostic confidently wrong for exactly those users.
 
 Reading the client settings SHALL be **best-effort and non-fatal**: a missing,
 unreadable, or malformed client settings file, or a file not pointed at this
@@ -25,7 +32,7 @@ imposing no bound, and SHALL NOT be treated as the shortest bound.
 #### Scenario: Client is configured to outlast the bridge
 
 - **WHEN** the bridge starts and Claude Code's settings hold timeout values that are all longer than the bridge's configured budgets
-- **THEN** the startup report names the bridge's own budgets as the effective bound
+- **THEN** the startup report names the bridge's own budgets as the shortest bound it can see
 - **AND** the report is emitted exactly once, at startup, and startup proceeds normally.
 
 #### Scenario: Client settings are absent or unreadable
@@ -44,7 +51,10 @@ imposing no bound, and SHALL NOT be treated as the shortest bound.
 
 The bridge SHALL emit a startup warning whenever Claude Code's configuration
 would abort a turn before the bridge's own inactivity budget applies. This
-covers two cases, which SHALL be treated alike because both produce the same
+applies to the client bound that is DERIVED from a budget (the streaming idle
+key); the wall-clock whole-request cap is covered separately below, because no
+finite value of it can be guaranteed to outlast an inactivity budget. It covers
+two cases, which SHALL be treated alike because both produce the same
 outcome — the client kills a healthy in-progress turn and the bridge's budget
 never gets to decide:
 
@@ -75,10 +85,6 @@ the bridge SHALL NOT emit that warning.
 - **THEN** the bridge emits a warning identifying that key, both values, and both remedies — the configuration command and the environment variable the operator can set directly
 - **AND** startup proceeds — the warning does not abort the bridge.
 
-#### Scenario: Client request timeout undercuts the bridge first-byte budget
-
-- **WHEN** the client's stored whole-request timeout is shorter than the bridge's configured first-byte budget
-- **THEN** the bridge emits a warning identifying that key, both values, and both remedies.
 
 #### Scenario: A missing client timeout key is warned about, not passed over
 
@@ -90,3 +96,36 @@ the bridge SHALL NOT emit that warning.
 
 - **WHEN** every client timeout value is present and greater than or equal to the corresponding bridge budget
 - **THEN** no undercut warning is emitted.
+
+
+### Requirement: The client's wall-clock cap is reported as a residual bound
+
+The bridge SHALL report Claude Code's whole-request timeout (`API_TIMEOUT_MS`) as
+a **residual wall-clock bound** — one the bridge cannot out-wait — rather than as
+a value that outlasts its budgets.
+
+The distinction is not cosmetic. The bridge's budgets bound *inactivity*, so a
+healthy turn that keeps emitting has no total duration at all, and a stalled turn
+may legitimately consume the first-byte budget and then one or more stream-idle
+gaps before any bridge timer fires. No finite wall-clock value can therefore be
+guaranteed to outlast them, and any derivation that implies otherwise is false.
+
+Accordingly the bridge SHALL NOT warn that this key "undercuts" a budget: such a
+warning would fire on correct configurations and no value would silence it.
+
+#### Scenario: A client whole-request cap shorter than a bridge budget
+
+- **WHEN** the client's stored whole-request timeout is shorter than a bridge inactivity budget
+- **THEN** the bridge reports it as a wall-clock cap that ends the turn at the client regardless of the budgets
+- **AND** emits no undercut warning for that key.
+
+#### Scenario: The written value is not presented as a guarantee
+
+- **WHEN** the bridge reports the whole-request cap
+- **THEN** the report does not state or imply that the client is guaranteed to outlast the bridge on that bound.
+
+#### Scenario: The reported bound is not labelled as definitive
+
+- **WHEN** the bridge reports the shortest bound it can see from its budgets and the global client settings
+- **THEN** the report identifies the client contribution as coming from global settings
+- **AND** states that a project-scoped override may be shorter and is not visible from startup.

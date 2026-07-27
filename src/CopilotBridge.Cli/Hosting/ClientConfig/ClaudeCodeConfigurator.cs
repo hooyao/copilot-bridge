@@ -284,7 +284,8 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         env[RequestTimeoutKey] = requestTimeout;
         summary.Add(
             $"set env.{RequestTimeoutKey} = {requestTimeout} "
-            + "(outlasts the bridge first-byte budget, incl. the non-streaming recovery request)");
+            + "(fixed whole-request ceiling — a wall-clock cap the bridge cannot out-wait; "
+            + "raises the non-streaming recovery request's own limit)");
 
         // auth token — fill only if absent; preserve any existing value.
         if (env[AuthTokenKey] is null)

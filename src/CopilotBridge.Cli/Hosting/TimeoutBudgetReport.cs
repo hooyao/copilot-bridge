@@ -5,21 +5,25 @@ using Microsoft.Extensions.Logging;
 namespace CopilotBridge.Cli.Hosting;
 
 /// <summary>
-/// Reports, once at startup, the shortest timeout bound the bridge can see for a
-/// long-thinking turn, and warns when Claude Code's configuration would abort
-/// before the bridge's own budget applies.
+/// Reports, once at startup, which timeout bounds apply to a long-thinking turn —
+/// per phase, from both the bridge and the client — and warns when Claude Code's
+/// configuration would abort before the bridge's own budget applies.
 /// </summary>
 /// <remarks>
 /// <para>The operator otherwise has to derive this from two separate config files,
 /// one of which is the client's. Worse, the binding bound is usually the client's
 /// and is invisible from the bridge's logs: the bridge stays 200 while the client
 /// kills the turn. See <c>docs/timeout-chain.md</c>.</para>
-/// <para><b>It reports what it can see, not the true effective bound.</b> Only the
-/// GLOBAL client settings are readable from startup — a project-scoped
-/// <c>settings.local.json</c> belongs to the Claude session's directory, which a
-/// bridge serving many repositories cannot identify. Every line is therefore
-/// phrased as a global-settings bound; calling it "effective" would make the
-/// diagnostic confidently wrong for anyone using repo-scoped overrides.</para>
+/// <para><b>Bounds are reported per phase, never as one number.</b> They do not
+/// compete over the same interval: the first-byte budget is disarmed the moment
+/// headers arrive, the stream-idle budgets then govern each silent gap, and the
+/// client's whole-request cap is wall-clock across everything. A single "effective"
+/// minimum would be wrong — with first-byte 60 s and stream-idle 600 s it would
+/// report 60 s for a turn whose real exposure after headers is 600 s.</para>
+/// <para><b>It reports what it can see.</b> Only the GLOBAL client settings are
+/// readable from startup — a project-scoped <c>settings.local.json</c> belongs to
+/// the Claude session's directory, which a bridge serving many repositories cannot
+/// identify.</para>
 /// </remarks>
 internal static class TimeoutBudgetReport
 {
@@ -45,14 +49,15 @@ internal static class TimeoutBudgetReport
 
         if (!snapshot.Readable)
         {
-            // The client's bound is unknown, so the EFFECTIVE bound is unknown too —
-            // it is not "the bridge's budgets". A separately-configured client may
-            // hold a much shorter watchdog, and claiming otherwise would falsely
-            // reassure exactly the operator most likely to be bitten.
+            // The client's bounds are unknown, so what actually ends a stalled turn
+            // is unknown too — it is not "the bridge's budgets". A
+            // separately-configured client may hold a much shorter watchdog, and
+            // claiming otherwise would falsely reassure exactly the operator most
+            // likely to be bitten.
             log.LogInformation(
-                "Timeouts:  Claude Code client bounds unknown ({Reason}: {Path}) — "
-                + "effective end-to-end bound is therefore UNKNOWN; the bridge's own "
-                + "budgets above are the only ones it can vouch for",
+                "Timeouts:  Claude Code client bounds UNKNOWN ({Reason}: {Path}) — the bridge's own "
+                + "budgets above are the only ones it can vouch for; a shorter client watchdog "
+                + "could end a turn before any of them",
                 snapshot.Reason, snapshot.SettingsPath);
             WarnIfBudgetExceedsClientMaximum(log, budgets);
             return;
@@ -65,12 +70,16 @@ internal static class TimeoutBudgetReport
             DescribeClient(snapshot.StreamIdle),
             DescribeClient(snapshot.RequestTimeout));
 
-        var effective = Effective(budgets, snapshot);
+        // Per PHASE, not a single minimum: these bounds do not compete over the same
+        // interval, so a global min is meaningless. With first-byte 60 s and
+        // stream-idle 600 s, headers arriving immediately DISARM the 60 s timer and
+        // a later silence is bounded at 600 s — reporting "60 s" would be wrong.
         log.LogInformation(
-            "Timeouts:  shortest bound from bridge + GLOBAL client settings: {Effective} "
-            + "(not necessarily the effective end-to-end bound — a project-scoped "
-            + "settings.local.json could be shorter and is not visible from here)",
-            effective);
+            "Timeouts:  waiting for headers — bridge {FirstByte}; then per silent gap — "
+            + "bridge {StreamIdle} vs client {ClientIdle} (whichever is shorter ends the turn)",
+            Describe(budgets.FirstByteTimeoutSeconds),
+            Describe(budgets.StreamIdleTimeoutSeconds),
+            DescribeClient(snapshot.StreamIdle));
 
         // An undercut means the client aborts a healthy in-progress turn and the
         // bridge's budget never gets to decide — the failure this report exists for.
@@ -180,48 +189,6 @@ internal static class TimeoutBudgetReport
             + "yourself to at least {Minimum}ms.",
             client.Key, source, phaseLabel, bridgeBudgetSeconds, bridgeKeyName,
             ConfigCommand, client.Key, bridgeMs);
-    }
-
-    /// <summary>
-    /// The shortest bound that will actually fire. A disabled bridge budget imposes
-    /// no bound and is excluded rather than counted as zero.
-    /// </summary>
-    private static string Effective(UpstreamTimeoutOptions budgets, ClientTimeoutSnapshot snapshot)
-    {
-        var candidates = new List<(long Ms, string Source)>();
-
-        if (budgets.StreamIdleTimeoutSeconds > 0)
-        {
-            candidates.Add(((long)budgets.StreamIdleTimeoutSeconds * 1000L, "bridge stream-idle"));
-        }
-        if (budgets.FirstByteTimeoutSeconds > 0)
-        {
-            candidates.Add(((long)budgets.FirstByteTimeoutSeconds * 1000L, "bridge first-byte"));
-        }
-        if (snapshot.StreamIdle.EffectiveMs is { } si)
-        {
-            candidates.Add((si, $"client {snapshot.StreamIdle.Key}"));
-        }
-        if (snapshot.RequestTimeout.EffectiveMs is { } rt)
-        {
-            candidates.Add((rt, $"client {snapshot.RequestTimeout.Key}"));
-        }
-
-        if (candidates.Count == 0)
-        {
-            return "none — no bound on either side";
-        }
-
-        var min = candidates[0];
-        foreach (var c in candidates)
-        {
-            if (c.Ms < min.Ms)
-            {
-                min = c;
-            }
-        }
-
-        return $"{FormatMs(min.Ms)} ({min.Source})";
     }
 
     private static string Describe(int budgetSeconds) =>

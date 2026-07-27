@@ -35,14 +35,17 @@ public class ClaudeCodeTimeoutPolicyTests
     }
 
     [Fact]
-    public void Written_request_timeout_outlasts_the_bridge_first_byte_budget()
+    public void Written_request_timeout_is_generous_relative_to_realistic_budgets()
     {
+        // NOT a guarantee that it outlasts them — it cannot be (see the residual
+        // bound tests below). Just a sanity floor: the fixed ceiling must be large
+        // enough to be useful next to budgets an operator would plausibly set.
         foreach (var budgetSeconds in new[] { 1, 60, 240, 900, 1800 })
         {
             var writtenMs = ClaudeCodeTimeoutPolicy.RequestTimeoutMs();
             Assert.True(
                 writtenMs > budgetSeconds * 1000,
-                $"budget {budgetSeconds}s -> written {writtenMs}ms must exceed the budget");
+                $"budget {budgetSeconds}s -> written {writtenMs}ms should comfortably exceed it");
         }
     }
 
@@ -337,6 +340,47 @@ public class ClaudeCodeTimeoutPolicyTests
             > ClaudeCodeTimeoutPolicy.AbsentStreamIdleFirstPartyDefaultMs);
     }
 
+    [Fact]
+    public void An_explicit_value_above_the_clients_cap_is_reported_as_the_capped_value()
+    {
+        // EffectiveMs means "what the client actually applies". Claude Code silently
+        // caps this key, so echoing a larger stored number would overstate the real
+        // bound — and with the bridge budget disabled it would also imply a falsely
+        // long one.
+        var path = WriteSettings("""
+            {
+              "env": {
+                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+                "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "9999999"
+              }
+            }
+            """);
+
+        var snap = ClaudeCodeTimeoutReader.Read(path);
+
+        Assert.True(snap.StreamIdle.IsExplicit);
+        Assert.Equal(ClaudeCodeTimeoutPolicy.StreamIdleMaxMs, snap.StreamIdle.EffectiveMs);
+    }
+
+    [Fact]
+    public void A_stored_value_beyond_int_range_is_still_read_and_capped()
+    {
+        // int.TryParse would reject this outright and fall back to the built-in
+        // default, reporting a bound the client is not using.
+        var path = WriteSettings("""
+            {
+              "env": {
+                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+                "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "99999999999"
+              }
+            }
+            """);
+
+        var snap = ClaudeCodeTimeoutReader.Read(path);
+
+        Assert.True(snap.StreamIdle.IsExplicit);
+        Assert.Equal(ClaudeCodeTimeoutPolicy.StreamIdleMaxMs, snap.StreamIdle.EffectiveMs);
+    }
     // ---- API_TIMEOUT_MS is a residual wall-clock bound, not a derived one ----
 
     [Fact]

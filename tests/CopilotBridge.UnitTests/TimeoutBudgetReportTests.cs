@@ -97,11 +97,12 @@ public class TimeoutBudgetReportTests
         var text = string.Join("\n", events.ConvertAll(e => e.Message));
         // The bridge's own budgets are still stated...
         Assert.Contains("900", text, StringComparison.Ordinal);
-        // ...but no line may assert a concrete effective end-to-end bound.
-        var effectiveLine = events.Find(e =>
-            e.Message.Contains("effective end-to-end", StringComparison.OrdinalIgnoreCase));
-        Assert.NotNull(effectiveLine);
-        Assert.Contains("UNKNOWN", effectiveLine!.Message, StringComparison.OrdinalIgnoreCase);
+        // ...but the client side must be called UNKNOWN, never folded into a
+        // confident bound.
+        var unknownLine = events.Find(e =>
+            e.Message.Contains("UNKNOWN", StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(unknownLine);
+        Assert.Contains("client", unknownLine!.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -152,31 +153,37 @@ public class TimeoutBudgetReportTests
         var text = string.Join("\n", events.ConvertAll(e => e.Message));
         Assert.Contains("no bound", text, StringComparison.OrdinalIgnoreCase);
 
-        var shortest = events.Find(e => e.Message.Contains("shortest bound", StringComparison.OrdinalIgnoreCase));
-        Assert.NotNull(shortest);
-        // With both bridge budgets disabled the client's own values are all that
-        // remain, so the shortest bound must come from the client side.
-        Assert.Contains("client", shortest!.Message, StringComparison.OrdinalIgnoreCase);
+        // With both bridge budgets disabled, the per-phase line must show them as
+        // imposing no bound while still naming the client's own idle value.
+        var phases = events.Find(e => e.Message.Contains("per silent gap", StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(phases);
+        Assert.Contains("no bound", phases!.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("client", phases.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void The_shortest_bound_line_does_not_claim_to_be_the_effective_bound()
+    public void Bounds_are_reported_per_phase_not_as_one_global_minimum()
     {
-        // Only GLOBAL client settings are readable at startup; a project-scoped
-        // settings.local.json could be shorter and belongs to a directory the bridge
-        // cannot identify. Labelling a global-derived value "effective" would make
-        // the diagnostic confidently wrong for anyone using repo-scoped overrides.
-        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        // These bounds do not compete over the same interval: headers arriving
+        // disarm the first-byte timer, and the stream-idle budgets then govern each
+        // silent gap. A single minimum would report 60s here even though the real
+        // exposure after headers is 600s — confidently wrong.
+        var path = WriteSettings(BridgePointedSettings("900000", "3600000"));
         var (events, log) = Recorder();
 
-        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
+        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 60, streamIdleSeconds: 600), log, path);
 
-        var shortest = events.Find(e => e.Message.Contains("shortest bound", StringComparison.OrdinalIgnoreCase));
-        Assert.NotNull(shortest);
-        Assert.Contains("GLOBAL", shortest!.Message, StringComparison.Ordinal);
-        Assert.Contains("not necessarily", shortest.Message, StringComparison.OrdinalIgnoreCase);
+        var phases = events.Find(e => e.Message.Contains("per silent gap", StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(phases);
+        Assert.Contains("60s", phases!.Message, StringComparison.Ordinal);
+        Assert.Contains("600s", phases.Message, StringComparison.Ordinal);
+
+        // No line may present a single number as THE bound.
+        Assert.DoesNotContain(
+            events,
+            e => e.Message.Contains("effective end-to-end bound", StringComparison.OrdinalIgnoreCase)
+                 && !e.Message.Contains("UNKNOWN", StringComparison.OrdinalIgnoreCase));
     }
-
     [Fact]
     public void A_disabled_budget_cannot_be_undercut()
     {

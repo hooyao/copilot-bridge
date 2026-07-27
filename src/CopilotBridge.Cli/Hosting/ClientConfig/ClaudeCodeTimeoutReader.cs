@@ -147,7 +147,9 @@ internal static class ClaudeCodeTimeoutReader
             path,
             Readable: true,
             Reason: null,
-            StreamIdle: ValueOf(env, ClaudeCodeTimeoutPolicy.StreamIdleKey, absentStreamIdleMs),
+            StreamIdle: ValueOf(
+                env, ClaudeCodeTimeoutPolicy.StreamIdleKey, absentStreamIdleMs,
+                clientMaxMs: ClaudeCodeTimeoutPolicy.StreamIdleMaxMs),
             RequestTimeout: ValueOf(
                 env, ClaudeCodeTimeoutPolicy.RequestTimeoutKey,
                 ClaudeCodeTimeoutPolicy.AbsentRequestTimeoutDefaultMs));
@@ -170,14 +172,22 @@ internal static class ClaudeCodeTimeoutReader
     /// Claude Code's own parse yields no usable number either, so its default is
     /// what actually applies.
     /// </summary>
-    private static ClientTimeoutValue ValueOf(JsonObject? env, string key, int absentDefaultMs)
+    private static ClientTimeoutValue ValueOf(
+        JsonObject? env, string key, int absentDefaultMs, int? clientMaxMs = null)
     {
         var raw = AsStringOrNull(env?[key]);
+        // long, not int: a hand-edited value can exceed int.MaxValue, and parsing it
+        // as absent would report the built-in default while the client honors the
+        // (clamped) stored value.
         if (raw is not null
-            && int.TryParse(raw.Trim(), out var parsed)
+            && long.TryParse(raw.Trim(), out var parsed)
             && parsed > 0)
         {
-            return new ClientTimeoutValue(key, parsed, IsExplicit: true);
+            // Report what the client will ACTUALLY apply. Claude Code silently caps
+            // this key, so echoing a larger stored number would overstate the bound —
+            // e.g. a hand-managed 9999999 is really 1800000.
+            var effective = clientMaxMs is { } max && parsed > max ? max : parsed;
+            return new ClientTimeoutValue(key, (int)effective, IsExplicit: true);
         }
 
         return new ClientTimeoutValue(key, absentDefaultMs, IsExplicit: false);

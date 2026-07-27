@@ -20,12 +20,14 @@ down to the 180 s first-party value. The operator has no way to see any of this.
 - **The bridge becomes the single authority on long-thinking timeouts.** The
   client is configured to outlast the bridge, so the bridge's own inactivity
   budgets are what actually fire — one place to tune, one place that reports.
-- `config claude-code` force-writes two additional managed env keys,
-  `CLAUDE_STREAM_IDLE_TIMEOUT_MS` and `API_TIMEOUT_MS`, derived from the bridge's
-  configured budgets. `CLAUDE_STREAM_IDLE_TIMEOUT_MS` is the only knob that lifts
-  *both* client idle watchdogs; `API_TIMEOUT_MS` lifts both the SDK
-  whole-request cap and the non-streaming-fallback per-attempt cap. `config
-  status` reports drift on both, like the existing managed keys.
+- `config claude-code` force-writes two additional managed env keys.
+  `CLAUDE_STREAM_IDLE_TIMEOUT_MS` is **derived** from the bridge's stream-idle
+  budget (it is the only knob that lifts *both* client idle watchdogs).
+  `API_TIMEOUT_MS` is written as a **fixed maximum**, not derived: it is a
+  wall-clock cap while the budgets bound inactivity, so no finite value can be
+  guaranteed to outlast them — it is reported as a residual bound instead. It is
+  still raised because it also caps the non-streaming-fallback per attempt.
+  `config status` reports drift on both, like the existing managed keys.
 - **BREAKING (operational, not wire):** the shared upstream `HttpClient.Timeout`
   changes from a hard-coded 10 minutes to `Timeout.InfiniteTimeSpan`. That coarse
   cap silently truncated the non-streaming fallback path — the one path where it

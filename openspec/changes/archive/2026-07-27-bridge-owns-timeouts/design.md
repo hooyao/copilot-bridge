@@ -61,13 +61,22 @@ non-streaming recovery request Claude Code issues after a streaming failure.
 
 ## Decisions
 
-### D1: Derive the client values from the bridge budgets, with a margin
+### D1: Derive the idle key from the bridge budget; write the request cap as a fixed maximum
 
-The written values are a pure function of the bridge's own configured budgets:
+> **Revised during PR review (round 3).** The original decision derived BOTH keys
+> from the budgets. That is unsound for `API_TIMEOUT_MS`: it is a **wall-clock**
+> cap while the budgets bound **inactivity**, so no finite value can be guaranteed
+> to outlast them — a healthy turn that keeps emitting has no total duration, and a
+> stalled one can spend the first-byte budget *and then* one or more stream-idle
+> gaps first (900 s + 600 s budgets vs a derived 1200 s). The derivation only moved
+> the threshold while implying a guarantee that cannot exist, so it was removed.
+> The text below records the final design.
+
+Only the idle key is a function of the bridge's configured budgets:
 
 ```
 CLAUDE_STREAM_IDLE_TIMEOUT_MS = clamp(StreamIdleTimeoutSeconds  + MarginSeconds) → ms
-API_TIMEOUT_MS                = clamp(FirstByteTimeoutSeconds   + MarginSeconds) → ms
+API_TIMEOUT_MS                = RequestTimeoutMaxMs            (fixed, NOT derived)
 ```
 
 with `MarginSeconds = 300` (5 min) and the result clamped to the client's own
