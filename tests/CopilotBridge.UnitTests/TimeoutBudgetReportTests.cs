@@ -152,11 +152,29 @@ public class TimeoutBudgetReportTests
         var text = string.Join("\n", events.ConvertAll(e => e.Message));
         Assert.Contains("no bound", text, StringComparison.OrdinalIgnoreCase);
 
-        var effective = events.Find(e => e.Message.Contains("effective end-to-end", StringComparison.OrdinalIgnoreCase));
-        Assert.NotNull(effective);
+        var shortest = events.Find(e => e.Message.Contains("shortest bound", StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(shortest);
         // With both bridge budgets disabled the client's own values are all that
-        // remain, so the effective bound must come from the client side.
-        Assert.Contains("client", effective!.Message, StringComparison.OrdinalIgnoreCase);
+        // remain, so the shortest bound must come from the client side.
+        Assert.Contains("client", shortest!.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void The_shortest_bound_line_does_not_claim_to_be_the_effective_bound()
+    {
+        // Only GLOBAL client settings are readable at startup; a project-scoped
+        // settings.local.json could be shorter and belongs to a directory the bridge
+        // cannot identify. Labelling a global-derived value "effective" would make
+        // the diagnostic confidently wrong for anyone using repo-scoped overrides.
+        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
+
+        var shortest = events.Find(e => e.Message.Contains("shortest bound", StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(shortest);
+        Assert.Contains("GLOBAL", shortest!.Message, StringComparison.Ordinal);
+        Assert.Contains("not necessarily", shortest.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

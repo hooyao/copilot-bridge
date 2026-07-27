@@ -14,15 +14,22 @@ key it writes, so a default install is misconfigured in a way nothing announces.
 This capability states which bound will actually fire and where it came from, and
 names both remedies when the client is the one that would fire first.
 ## Requirements
-### Requirement: Effective end-to-end timeout is reported at startup
+### Requirement: The shortest visible timeout bound is reported at startup
 
-The bridge SHALL report, once at startup, the **effective end-to-end timeout** for
-a long-thinking turn — the shortest inactivity bound that will actually fire
-across the chain — derived from both sides: its own configured upstream budgets
-(`Pipeline:UpstreamTimeout`) and the timeout-governing environment values stored
-in Claude Code's settings file. The report SHALL name each contributing bound and
-its source, so an operator can see the real limit without reverse-engineering it
-from two separate config files.
+The bridge SHALL report, once at startup, the **shortest timeout bound it can
+see** for a long-thinking turn, derived from both sides: its own configured
+upstream budgets (`Pipeline:UpstreamTimeout`) and the timeout-governing
+environment values stored in Claude Code's **global** settings file. The report
+SHALL name each contributing bound and its source, so an operator can see the
+limit without reverse-engineering it from two separate config files.
+
+The report SHALL NOT present that value as the definitive end-to-end bound. Only
+global client settings are readable from startup: a project-scoped
+`settings.local.json` overrides them and belongs to the Claude session's own
+directory, which a bridge serving many repositories cannot identify. The report
+SHALL therefore label the value as coming from global settings and state that a
+project-scoped override may be shorter and is not visible — labelling it
+"effective" would make the diagnostic confidently wrong for exactly those users.
 
 Reading the client settings SHALL be **best-effort and non-fatal**: a missing,
 unreadable, or malformed client settings file, or a file not pointed at this
@@ -39,7 +46,7 @@ imposing no bound, and SHALL NOT be treated as the shortest bound.
 #### Scenario: Client is configured to outlast the bridge
 
 - **WHEN** the bridge starts and Claude Code's settings hold timeout values that are all longer than the bridge's configured budgets
-- **THEN** the startup report names the bridge's own budgets as the effective bound
+- **THEN** the startup report names the bridge's own budgets as the shortest bound it can see
 - **AND** the report is emitted exactly once, at startup, and startup proceeds normally.
 
 #### Scenario: Client settings are absent or unreadable
@@ -130,3 +137,9 @@ warning would fire on correct configurations and no value would silence it.
 
 - **WHEN** the bridge reports the whole-request cap
 - **THEN** the report does not state or imply that the client is guaranteed to outlast the bridge on that bound.
+
+#### Scenario: The reported bound is not labelled as definitive
+
+- **WHEN** the bridge reports the shortest bound it can see from its budgets and the global client settings
+- **THEN** the report identifies the client contribution as coming from global settings
+- **AND** states that a project-scoped override may be shorter and is not visible from startup.

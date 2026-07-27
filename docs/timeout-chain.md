@@ -8,8 +8,10 @@ upstream that goes silent on demand.
 
 ## The shipped model
 
-**The bridge owns the timeouts.** Its two inactivity budgets are the only bound
-that should ever fire; the client is configured to outlast them.
+**The bridge owns the timeouts it can own.** Its two inactivity budgets are what
+should decide a stalled turn, and the client's idle watchdog is configured to
+outlast them. One bound stays outside that guarantee — see
+[the one bound the bridge cannot own](#the-one-bound-the-bridge-cannot-own).
 
 1. **Two bridge budgets** (`Pipeline:UpstreamTimeout`) bound *inactivity*, not
    total duration — a slow-but-progressing turn is never aborted:
@@ -30,7 +32,7 @@ that should ever fire; the client is configured to outlast them.
 ```
 Timeouts:  bridge first-byte 900s, stream-idle 600s (Pipeline:UpstreamTimeout — idle budgets, not total caps)
 Timeouts:  Claude Code stream-idle 15m, request 60m (global client env — applies on Claude Code's next start)
-Timeouts:  effective end-to-end bound 10m (bridge stream-idle)
+Timeouts:  shortest bound from bridge + GLOBAL client settings: 10m (bridge stream-idle)
 ```
 
 A `WARNING` naming a `CLAUDE_*` key means the client aborts first and the bridge's

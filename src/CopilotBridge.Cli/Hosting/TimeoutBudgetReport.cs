@@ -5,16 +5,21 @@ using Microsoft.Extensions.Logging;
 namespace CopilotBridge.Cli.Hosting;
 
 /// <summary>
-/// Reports, once at startup, the effective end-to-end timeout for a long-thinking
-/// turn — the shortest bound that will actually fire across the chain — and warns
-/// when Claude Code's configuration would abort before the bridge's own budget
-/// applies.
+/// Reports, once at startup, the shortest timeout bound the bridge can see for a
+/// long-thinking turn, and warns when Claude Code's configuration would abort
+/// before the bridge's own budget applies.
 /// </summary>
 /// <remarks>
-/// The operator otherwise has to derive this from two separate config files, one
-/// of which is the client's. Worse, the binding bound is usually the client's and
-/// is invisible from the bridge's logs: the bridge stays 200 while the client
-/// kills the turn. See <c>docs/timeout-chain.md</c>.
+/// <para>The operator otherwise has to derive this from two separate config files,
+/// one of which is the client's. Worse, the binding bound is usually the client's
+/// and is invisible from the bridge's logs: the bridge stays 200 while the client
+/// kills the turn. See <c>docs/timeout-chain.md</c>.</para>
+/// <para><b>It reports what it can see, not the true effective bound.</b> Only the
+/// GLOBAL client settings are readable from startup — a project-scoped
+/// <c>settings.local.json</c> belongs to the Claude session's directory, which a
+/// bridge serving many repositories cannot identify. Every line is therefore
+/// phrased as a global-settings bound; calling it "effective" would make the
+/// diagnostic confidently wrong for anyone using repo-scoped overrides.</para>
 /// </remarks>
 internal static class TimeoutBudgetReport
 {
@@ -62,7 +67,10 @@ internal static class TimeoutBudgetReport
 
         var effective = Effective(budgets, snapshot);
         log.LogInformation(
-            "Timeouts:  effective end-to-end bound {Effective}", effective);
+            "Timeouts:  shortest bound from bridge + GLOBAL client settings: {Effective} "
+            + "(not necessarily the effective end-to-end bound — a project-scoped "
+            + "settings.local.json could be shorter and is not visible from here)",
+            effective);
 
         // An undercut means the client aborts a healthy in-progress turn and the
         // bridge's budget never gets to decide — the failure this report exists for.
