@@ -24,7 +24,7 @@
 
 ## 4. Startup effective-timeout report
 
-- [x] 4.1 Emit the report from `BridgeStartupHostedService` after the existing summary lines: each contributing bound, its source (bridge budget vs client env), and the resulting effective end-to-end bound. A disabled budget prints as "no bound" and is excluded from the minimum.
+- [x] 4.1 Emit the report from `BridgeStartupHostedService` after the existing summary lines: each contributing bound and its source (bridge budget vs client env), reported PER PHASE. A disabled budget prints as "no bound". (Revised during review: an earlier draft of this task called for a single effective end-to-end minimum, which the phases cannot support.)
 - [x] 4.2 Emit a warning whenever the client would fire first — a stored value shorter than the bridge budget **or** a missing key — naming the effective client bound (stored value, or the known first-party default when absent), the bridge budget it undercuts, and **both** remedies: the `config claude-code` command and the environment variable the operator can set by hand to at least the named value. No warning when values are present and equal-or-greater, or when the settings file itself is unreadable.
 - [x] 4.3 State in the report that client-side values take effect on Claude Code's next start.
 - [x] 4.4 Confirm a missing / malformed / unreadable client settings file does not fail startup and still produces the report with the client side marked unknown — distinct from a readable bridge-pointed file that merely lacks a key, which must warn.

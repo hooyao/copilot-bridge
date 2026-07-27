@@ -49,11 +49,11 @@ imposing no bound, and SHALL NOT be treated as the shortest bound.
 - **THEN** startup completes successfully
 - **AND** the report still states the bridge's own budgets, marking the client-side contribution as unknown rather than omitting the report or failing.
 
-#### Scenario: A disabled bridge budget is not counted as the shortest bound
+#### Scenario: A disabled bridge budget is reported as imposing no bound
 
 - **WHEN** a bridge inactivity budget is configured to zero or less
-- **THEN** the report describes that budget as imposing no bound
-- **AND** the effective bound is derived from the remaining bounds rather than from the disabled one.
+- **THEN** the report describes that budget as imposing no bound on its phase
+- **AND** it does not treat the disabled value as a numeric bound for that phase.
 
 ### Requirement: A client watchdog that would fire first is warned about
 

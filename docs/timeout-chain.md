@@ -178,7 +178,10 @@ clearing the budget by 3 s.
 
 ## Diagnosing a recurrence
 
-- Read the **startup report** first — it names the effective bound and its source.
+- Read the **startup report** first — it names the bound governing each phase and
+  where each came from. It deliberately does not name one "effective" bound: the
+  phases do not compete over the same interval, and a project-scoped
+  `settings.local.json` is invisible from startup.
 - Bridge summary line: `upstream_timeout=first_byte|stream_idle` names the phase
   that fired; `error=cancelled by client` means the *client* gave up first.
 - A `streaming=false` request immediately after a `cancelled by client` streaming

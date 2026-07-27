@@ -43,10 +43,14 @@ Current bridge state: `HttpClient.Timeout` is hard-coded to 10 minutes
 - The bridge is the single component that decides when a stalled turn ends. Its
   two `Pipeline:UpstreamTimeout` budgets are the only bound that fires in normal
   operation.
-- The client is configured to outlast the bridge, automatically, by the same
-  `config` command that already points it at the bridge.
-- The operator can see the real effective bound at startup without deriving it
-  from two config files.
+- The client's **idle watchdog** is configured to outlast the bridge,
+  automatically, by the same `config` command that already points it at the
+  bridge. (The client's wall-clock request cap cannot carry that guarantee — see
+  D1 — so it is raised rather than derived.)
+- The operator can see, at startup, the bound governing each phase and where it
+  came from, without deriving it from two config files. Not a single "effective"
+  bound: the phases do not compete over one interval, and project-scoped client
+  settings are invisible from startup.
 
 **Non-Goals:**
 
