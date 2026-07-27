@@ -5,11 +5,16 @@ namespace CopilotBridge.Cli.Copilot;
 /// one per upstream surface, so each gets its own connection pool.
 /// </summary>
 /// <remarks>
-/// <para>Every surface targets the <b>same host</b>, so a single shared pool would
-/// put them all in one connection budget — and this bridge holds each connection
-/// open for <i>minutes</i> while a model thinks. A burst on one surface would then
-/// stall the others. The auth pool is the worst case to get wrong: a token that
-/// cannot refresh in time stalls the whole bridge, not just one request.</para>
+/// <para>The two <b>model</b> surfaces and the metadata surface share the Copilot
+/// API origin, so one pooled handler would put them in a single connection budget
+/// — and this bridge holds each connection open for <i>minutes</i> while a model
+/// thinks. A burst on one surface would then stall the others.</para>
+/// <para>Auth is separated for a different reason: it targets <c>github.com</c> /
+/// <c>api.github.com</c>, so it never shared the model surfaces' connections
+/// anyway. It gets its own client because its <b>timeout policy and lifecycle</b>
+/// differ — short token calls on a background refresh timer, which must fail fast
+/// rather than inherit the unbounded posture the model surfaces need. A token that
+/// cannot refresh in time stalls the whole bridge.</para>
 /// <para>Consumers inject <see cref="IHttpClientFactory"/> and call
 /// <c>CreateClient(name)</c> where they need it. They must NOT stash the result in
 /// a field: that pins one pooled handler for the object's lifetime and defeats the
@@ -48,11 +53,12 @@ internal static class UpstreamHttpClientNames
     public const string Metadata = "copilot-metadata";
 
     /// <summary>
-    /// GitHub OAuth device-code flow and Copilot token exchange/refresh. Kept out
-    /// of the model-traffic pools because these are short requests on a background
-    /// refresh timer — queueing behind long-running inference connections could let
-    /// a token expire. Unlike the model surfaces this client keeps a finite
-    /// timeout: a hung auth call should fail fast, not hang forever.
+    /// GitHub OAuth device-code flow and Copilot token exchange/refresh. Targets
+    /// <c>github.com</c> / <c>api.github.com</c> rather than the Copilot API origin,
+    /// and is separated for its <b>timeout policy</b>: these are short requests on a
+    /// background refresh timer, so unlike the model surfaces this client keeps a
+    /// finite timeout — a hung auth call should fail fast, not hang forever, and a
+    /// token that cannot refresh in time stalls the whole bridge.
     /// </summary>
     public const string GitHubAuth = "github-auth";
 }

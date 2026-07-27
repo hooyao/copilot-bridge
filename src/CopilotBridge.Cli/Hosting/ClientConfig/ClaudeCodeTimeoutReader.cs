@@ -190,7 +190,12 @@ internal static class ClaudeCodeTimeoutReader
             // value directly — so the smaller of the two still binds and the stored
             // number is the honest report.
             var effective = clientMaxMs is { } max && parsed > max ? max : parsed;
-            return new ClientTimeoutValue(key, (int)effective, IsExplicit: true);
+            // Saturate rather than cast blindly: a key with no documented client cap
+            // (API_TIMEOUT_MS) can hold a value above int.MaxValue, and an unchecked
+            // narrowing would wrap it into an unrelated — possibly negative — number
+            // and report that as the client's bound.
+            return new ClientTimeoutValue(
+                key, (int)Math.Min(effective, int.MaxValue), IsExplicit: true);
         }
 
         return new ClientTimeoutValue(key, absentDefaultMs, IsExplicit: false);

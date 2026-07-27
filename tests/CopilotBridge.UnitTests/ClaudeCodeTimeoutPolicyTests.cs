@@ -381,6 +381,29 @@ public class ClaudeCodeTimeoutPolicyTests
         Assert.True(snap.StreamIdle.IsExplicit);
         Assert.Equal(ClaudeCodeTimeoutPolicy.StreamIdleMaxMs, snap.StreamIdle.EffectiveMs);
     }
+    [Fact]
+    public void A_request_timeout_beyond_int_range_does_not_wrap_into_a_short_bound()
+    {
+        // API_TIMEOUT_MS has no documented client cap, so a huge stored value reaches
+        // the narrowing conversion. An unchecked cast would wrap it into an unrelated
+        // (possibly negative) number and report THAT as the client's bound.
+        var path = WriteSettings("""
+            {
+              "env": {
+                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+                "API_TIMEOUT_MS": "99999999999"
+              }
+            }
+            """);
+
+        var snap = ClaudeCodeTimeoutReader.Read(path);
+
+        Assert.True(snap.RequestTimeout.IsExplicit);
+        Assert.NotNull(snap.RequestTimeout.EffectiveMs);
+        Assert.True(
+            snap.RequestTimeout.EffectiveMs > 0,
+            $"expected a positive bound, got {snap.RequestTimeout.EffectiveMs}");
+    }
     // ---- API_TIMEOUT_MS is a residual wall-clock bound, not a derived one ----
 
     [Fact]

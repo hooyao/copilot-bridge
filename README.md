@@ -114,11 +114,16 @@ JSON**, so it must not contain comments:
   the full 1M window for native-1M models (opus-4.6/4.7/4.8, sonnet-4.6/5),
   including after `--resume`, and keep telemetry off. See
   `docs/context-window.md` §5.
-- `CLAUDE_STREAM_IDLE_TIMEOUT_MS` + `API_TIMEOUT_MS` — keep Claude Code's own
-  watchdogs from aborting a deep-thinking turn before the bridge's budgets apply.
-  Derived from `Pipeline:UpstreamTimeout`, so re-run `config claude-code` after
-  changing a budget. Claude Code reads `env` at process start — **restart it** for
-  these to take effect. See [Long-thinking timeouts](#long-thinking-timeouts).
+- `CLAUDE_STREAM_IDLE_TIMEOUT_MS` — keeps Claude Code's idle watchdog from
+  aborting a deep-thinking turn before the bridge's budget applies. Derived from
+  `Pipeline:UpstreamTimeout`, so re-run `config claude-code` after changing a
+  budget.
+- `API_TIMEOUT_MS` — a wall-clock cap on the whole request. Raised well above the
+  client default, but **not** derived and carrying no such guarantee: a long turn
+  can still end here first.
+
+  Claude Code reads `env` at process start — **restart it** for either to take
+  effect. See [Long-thinking timeouts](#long-thinking-timeouts).
 
 Then pick any Claude model in Claude Code as usual — the bridge maps it to the
 matching Copilot model.
@@ -165,7 +170,7 @@ only touch it to tune. Each detector row is toggled by its own `Enabled` flag
 | **`Tracing.Enabled`** | `false` | Dump every request/response as JSON under `request-traces/`. Contains full prompts — turn back off after debugging. |
 | **`Pipeline:Detectors:ResponseLeakGuard`** | on | Auto-repairs a leaked tool call / Claude Code control envelope by forcing a clean retry. Turn off individual `Signatures` (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`, `SystemReminder`) to clear a false positive — the retry error names the exact switch. `Signal` (`OverloadedError`/`ApiError`) picks the retry error surface. `BufferScannableBlocks: true` withholds each `text`/`thinking` block until scanned so a leak in one never reaches the client (`tool_use` blocks still stream live; default relays until detection). |
 | **`Pipeline:Detectors:RunawayGuard`** | on | Circuit-breaker for degenerate output; forces a retryable `overloaded_error`. Thresholds: `MaxDeltaBytes` (12 MiB), `MaxDeltaCount` (20000), `RepetitionWindow`/`RepetitionMinUniqueRatio` (500 / 0.05), `RepetitionMaxConsecutiveRepeat` (50). Fix a false trip by **raising** the threshold, not disabling. |
-| **`Pipeline:UpstreamTimeout`** | on | Two *idle* timers (not total caps; `<= 0` disables): `FirstByteTimeoutSeconds` (240) for response headers, `StreamIdleTimeoutSeconds` (240) for the gap between streamed events. `StreamIdleAction` (`Retry`/`Truncate`) and `StreamIdleSignal` (`OverloadedError`/`ApiError`) govern mid-stream surfacing. These are the **only** upstream bound (no coarse HTTP cap), and they also derive Claude Code's timeout env keys — see [Long-thinking timeouts](#long-thinking-timeouts). |
+| **`Pipeline:UpstreamTimeout`** | on | Two *idle* timers (not total caps; `<= 0` disables): `FirstByteTimeoutSeconds` (240) for response headers, `StreamIdleTimeoutSeconds` (240) for the gap between streamed events. `StreamIdleAction` (`Retry`/`Truncate`) and `StreamIdleSignal` (`OverloadedError`/`ApiError`) govern mid-stream surfacing. These are the **only** upstream bound (no coarse HTTP cap), and `StreamIdleTimeoutSeconds` also derives Claude Code's idle env key — see [Long-thinking timeouts](#long-thinking-timeouts). |
 | **`Pipeline:Detectors:ToolInputValidation`** | observe-only | Validates `tool_use` input against the tool schema and flags `tool_input_invalid=true`, but does **not** abort — Claude Code self-heals. Set `MalformedJsonAction` / `SchemaViolationAction` to `AbortOverloaded`/`AbortApiError` only for a backend that doesn't; `PreserveStream` then picks delta-before-error (`true`) vs buffer-for-a-real-HTTP-error (`false`). |
 | **`Routing.Locations`** | `[]` | nginx-style per-request model/header rewrites. See below. |
 
@@ -230,8 +235,10 @@ Timeouts:  waiting for headers — bridge 900s; then per silent gap — bridge 6
            client 15m (whichever is shorter ends the turn)
 ```
 
-The last line is the number that matters: the shortest bound across *both* sides.
-A `WARNING` naming a `CLAUDE_*` key means the client fires first — the bridge's
+Each line covers a different phase — the first-byte timer is disarmed once headers
+arrive, and `API_TIMEOUT_MS` is a separate wall-clock cap across the whole request
+— so there is deliberately no single "effective" number. A `WARNING` naming a
+`CLAUDE_*` key means the client's idle watchdog fires first, and the bridge's
 budget never gets to apply.
 
 **Setting the env vars by hand** (if you manage `settings.json` through dotfiles
@@ -242,7 +249,9 @@ or MDM rather than letting the bridge write it):
 | `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | The **only** knob that lifts both of Claude Code's idle watchdogs. Setting `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` alone leaves the other pinned at its 300 s floor. |
 | `API_TIMEOUT_MS` | A **wall-clock** cap on the whole request. The bridge writes a fixed generous value rather than deriving one: its own budgets bound *inactivity*, so a turn that keeps emitting has no total duration and no finite wall-clock value can be guaranteed to outlast them. It is still worth raising because it also bounds each attempt of the non-streaming recovery request, which emits no bytes until the model finishes. Treat it as a ceiling the bridge cannot out-wait. |
 
-Set each to at least the bridge budget it must outlast. Claude Code reads `env` at
+Set `CLAUDE_STREAM_IDLE_TIMEOUT_MS` to at least the bridge's stream-idle budget —
+that one must outlast it. `API_TIMEOUT_MS` cannot be set to outlast an inactivity
+budget at all, so just give it plenty of headroom. Claude Code reads `env` at
 process start, so **restart it** for either to take effect.
 
 > One trap worth knowing: enabling the 1M context window tightens this. The

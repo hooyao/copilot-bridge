@@ -340,9 +340,11 @@ SHALL preserve all unrelated `env` keys.
 ### Requirement: Claude Code long-thinking timeout environment
 
 The bridge SHALL force-write two Claude Code environment keys whenever it
-configures Claude Code, so the client's own idle and request watchdogs outlast
-the bridge's upstream inactivity budgets and the bridge remains the component
-that decides when a stalled turn ends:
+configures Claude Code. The two serve different ends, and the requirement SHALL
+NOT be read as one guarantee: the **idle** key is derived so the client cannot
+abort a stalled turn before the bridge's own budget decides, while the
+**whole-request** key is merely raised well above the client's default because no
+finite wall-clock value can carry that guarantee (see item 2):
 
 1. `CLAUDE_STREAM_IDLE_TIMEOUT_MS` — Claude Code applies an inactivity bound to a
    streaming turn. Because Copilot emits no keepalive while a model is thinking,

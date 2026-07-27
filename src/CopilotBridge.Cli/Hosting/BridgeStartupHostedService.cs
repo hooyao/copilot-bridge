@@ -119,8 +119,8 @@ internal sealed class BridgeStartupHostedService : IHostedService
             "Codex profiles ({Count}): {Ids}",
             _codexCatalog.Count, string.Join(", ", _codexCatalog.KnownIds));
 
-        // Effective end-to-end timeout across bridge AND client. Best-effort: an
-        // unreadable client settings file must not fail startup.
+        // Per-phase timeout bounds from the bridge and the client's GLOBAL settings.
+        // Best-effort: an unreadable client settings file must not fail startup.
         TimeoutBudgetReport.Emit(_upstreamTimeout.Value, _log);
     }
 

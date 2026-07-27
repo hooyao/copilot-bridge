@@ -83,9 +83,17 @@ internal static class TimeoutBudgetReport
 
         // An undercut means the client aborts a healthy in-progress turn and the
         // bridge's budget never gets to decide — the failure this report exists for.
-        WarnIfUndercut(
-            log, snapshot.StreamIdle, budgets.StreamIdleTimeoutSeconds,
-            "stream-idle", nameof(UpstreamTimeoutOptions.StreamIdleTimeoutSeconds));
+        // Skipped when the budget exceeds what the client can honor: there the
+        // undercut is unavoidable, and WarnIfBudgetExceedsClientMaximum gives the
+        // only advice that works (lower the budget). Emitting both would hand the
+        // operator two contradictory instructions, one of them impossible.
+        if (!ClaudeCodeTimeoutPolicy.StreamIdleBudgetExceedsClientMaximum(
+                budgets.StreamIdleTimeoutSeconds))
+        {
+            WarnIfUndercut(
+                log, snapshot.StreamIdle, budgets.StreamIdleTimeoutSeconds,
+                "stream-idle", nameof(UpstreamTimeoutOptions.StreamIdleTimeoutSeconds));
+        }
         // API_TIMEOUT_MS is deliberately NOT compared against a budget. It is a
         // wall-clock cap while the budgets bound inactivity, so no finite value can
         // outlast them — a healthy turn that keeps emitting has no total duration,

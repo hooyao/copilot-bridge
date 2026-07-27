@@ -1,12 +1,14 @@
 namespace CopilotBridge.Cli.Hosting.ClientConfig;
 
 /// <summary>
-/// Derives the Claude Code timeout environment values from the bridge's own
-/// upstream inactivity budgets, so the client's watchdogs always outlast the
-/// bridge and the bridge stays the component that decides when a stalled turn
-/// ends.
+/// Derives the Claude Code timeout environment values the bridge force-writes.
 /// </summary>
 /// <remarks>
+/// <para>The <b>idle</b> watchdog is derived from the bridge's stream-idle budget
+/// so the client cannot abort a stalled turn before the bridge's own budget
+/// decides. The <b>whole-request</b> ceiling is not derived and carries no such
+/// guarantee — it is a wall-clock cap against inactivity budgets — but is still
+/// raised well above the client default; see <see cref="RequestTimeoutMs"/>.</para>
 /// <para>Pure and dependency-free — no configuration binding, no filesystem, no
 /// DI. Both composition roots call it: the <c>config</c> command (to write the
 /// values) and the server's startup report (to compare what the client actually

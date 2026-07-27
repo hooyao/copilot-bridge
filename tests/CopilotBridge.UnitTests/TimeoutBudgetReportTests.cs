@@ -128,6 +128,25 @@ public class TimeoutBudgetReportTests
     }
 
     [Fact]
+    public void An_unsatisfiable_budget_produces_one_actionable_warning_not_two()
+    {
+        // Above the client ceiling the undercut is unavoidable, so emitting the
+        // generic "raise the client value / re-run config" advice alongside the
+        // "lower the budget" advice would hand the operator two contradictory
+        // instructions — and the first one is impossible to carry out.
+        var overCeilingSeconds = (ClaudeCodeTimeoutPolicy.StreamIdleMaxMs / 1000) + 600;
+        var path = WriteSettings(BridgePointedSettings(
+            ClaudeCodeTimeoutPolicy.StreamIdleMsFor(overCeilingSeconds).ToString(),
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMs().ToString()));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(
+            Budgets(firstByteSeconds: 900, streamIdleSeconds: overCeilingSeconds), log, path);
+
+        var warning = Assert.Single(Warnings(events));
+        Assert.Contains("lower the budget", warning.Message, StringComparison.OrdinalIgnoreCase);
+    }
+    [Fact]
     public void A_budget_within_the_client_ceiling_does_not_warn_about_the_ceiling()
     {
         var path = WriteSettings(BridgePointedSettings(
