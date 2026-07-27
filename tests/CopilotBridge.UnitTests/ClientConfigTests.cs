@@ -1,4 +1,5 @@
 using CopilotBridge.Cli.Hosting.ClientConfig;
+using CopilotBridge.Cli.Hosting.Options;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
@@ -128,7 +129,10 @@ public class ClientConfigTests
 
     // ---- Claude Code JSON merge (spec: "Non-streaming fallback env", "Overwrite policy") ----
 
-    private static BridgeConnection Conn(int port = 8765, bool fallback = true) => new(port, fallback);
+    private static BridgeConnection Conn(int port = 8765, bool fallback = true) => new(
+        port, fallback,
+        ClaudeCodeTimeoutPolicy.StreamIdleMsFor(new UpstreamTimeoutOptions().StreamIdleTimeoutSeconds),
+        ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(new UpstreamTimeoutOptions().FirstByteTimeoutSeconds));
 
     [Fact]
     public void ClaudeCode_sets_base_url_and_leaves_recovery_fallback_enabled()
@@ -139,6 +143,152 @@ public class ClientConfigTests
 
         Assert.Equal("http://localhost:8765/cc", (string?)env["ANTHROPIC_BASE_URL"]);
         Assert.Null((string?)env["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"]);
+    }
+
+    // ---- Long-thinking timeout env (spec: "Claude Code long-thinking timeout environment") ----
+
+    [Fact]
+    public void ClaudeCode_writes_both_long_thinking_timeout_keys()
+    {
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(null, Conn());
+        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
+
+        Assert.NotNull((string?)env[ClaudeCodeTimeoutPolicy.StreamIdleKey]);
+        Assert.NotNull((string?)env[ClaudeCodeTimeoutPolicy.RequestTimeoutKey]);
+    }
+
+    [Fact]
+    public void Written_timeout_values_outlast_the_bridge_budgets()
+    {
+        // The contract the capability exists for: whatever the operator configured,
+        // the client must not abort before the bridge's own budget applies.
+        var config = Config("""
+            { "Pipeline": { "UpstreamTimeout": {
+                "FirstByteTimeoutSeconds": 900, "StreamIdleTimeoutSeconds": 600 } } }
+            """);
+        var conn = BridgeConnectionFactory.Create(config);
+
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(null, conn);
+        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
+
+        var streamIdleMs = int.Parse((string)env[ClaudeCodeTimeoutPolicy.StreamIdleKey]!);
+        var requestMs = int.Parse((string)env[ClaudeCodeTimeoutPolicy.RequestTimeoutKey]!);
+        Assert.True(streamIdleMs > 600 * 1000, $"{streamIdleMs}ms must outlast the 600s stream-idle budget");
+        Assert.True(requestMs > 900 * 1000, $"{requestMs}ms must outlast the 900s first-byte budget");
+    }
+
+    [Fact]
+    public void Raising_a_bridge_budget_raises_the_written_client_value()
+    {
+        string Written(int streamIdleSeconds)
+        {
+            var conn = BridgeConnectionFactory.Create(Config(
+                $$"""{ "Pipeline": { "UpstreamTimeout": { "StreamIdleTimeoutSeconds": {{streamIdleSeconds}} } } }"""));
+            var (content, _) = ClaudeCodeConfigurator.BuildContent(null, conn);
+            return (string)System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]![
+                ClaudeCodeTimeoutPolicy.StreamIdleKey]!;
+        }
+
+        Assert.True(int.Parse(Written(600)) > int.Parse(Written(60)));
+    }
+
+    [Fact]
+    public void Pre_existing_timeout_values_are_force_overwritten()
+    {
+        var original = $$"""
+            {
+              "env": {
+                "{{ClaudeCodeTimeoutPolicy.StreamIdleKey}}": "5000",
+                "{{ClaudeCodeTimeoutPolicy.RequestTimeoutKey}}": "5000"
+              }
+            }
+            """;
+
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
+        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
+
+        // A stale short value is exactly the state that kills a deep-thinking turn,
+        // so these must be overwritten rather than preserved.
+        Assert.NotEqual("5000", (string?)env[ClaudeCodeTimeoutPolicy.StreamIdleKey]);
+        Assert.NotEqual("5000", (string?)env[ClaudeCodeTimeoutPolicy.RequestTimeoutKey]);
+    }
+
+    [Fact]
+    public void Unrelated_env_keys_survive_the_timeout_write()
+    {
+        var original = """
+            { "env": { "MY_OWN_KEY": "keep me", "ANTHROPIC_AUTH_TOKEN": "mine" } }
+            """;
+
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
+        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
+
+        Assert.Equal("keep me", (string?)env["MY_OWN_KEY"]);
+        Assert.Equal("mine", (string?)env["ANTHROPIC_AUTH_TOKEN"]);
+        Assert.NotNull((string?)env[ClaudeCodeTimeoutPolicy.StreamIdleKey]);
+    }
+
+    [Fact]
+    public void Writing_the_timeout_keys_is_idempotent()
+    {
+        var (first, _) = ClaudeCodeConfigurator.BuildContent(null, Conn());
+        var (second, _) = ClaudeCodeConfigurator.BuildContent(first, Conn());
+
+        Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public void Codex_config_never_carries_the_timeout_keys()
+    {
+        var (content, _) = CodexConfigurator.BuildContent(null, Conn());
+
+        Assert.DoesNotContain(ClaudeCodeTimeoutPolicy.StreamIdleKey, content, System.StringComparison.Ordinal);
+        Assert.DoesNotContain(ClaudeCodeTimeoutPolicy.RequestTimeoutKey, content, System.StringComparison.Ordinal);
+    }
+
+    [Theory]
+    // Filesystem-backed Read for the timeout axis: a bridge-pointed file holding the
+    // derived values is not drifted; missing or stale values are. Stale is the case
+    // that matters most — it means the operator raised a budget without re-running
+    // config, so the client silently stopped outlasting the bridge.
+    [InlineData(true, false, false)]   // both present and current  -> not drifted
+    [InlineData(false, false, true)]   // stream-idle missing       -> drift
+    [InlineData(true, true, true)]     // stream-idle stale         -> drift
+    public void ClaudeCode_read_detects_timeout_env_drift_from_disk(
+        bool writeStreamIdle, bool staleStreamIdle, bool expectDrift)
+    {
+        var conn = Conn(port: 8765);
+        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
+
+        var keys = new System.Collections.Generic.List<string>
+        {
+            "\"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\"",
+            "\"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL\": \"1\"",
+            "\"DISABLE_ERROR_REPORTING\": \"1\"",
+            $"\"{ClaudeCodeTimeoutPolicy.RequestTimeoutKey}\": \"{conn.ClaudeCodeRequestTimeoutMs}\"",
+        };
+        if (writeStreamIdle)
+        {
+            var value = staleStreamIdle ? "1000" : conn.ClaudeCodeStreamIdleTimeoutMs.ToString();
+            keys.Add($"\"{ClaudeCodeTimeoutPolicy.StreamIdleKey}\": \"{value}\"");
+        }
+        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
+            "{ \"env\": { " + string.Join(", ", keys) + " } }");
+
+        var old = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = dir;
+            var state = new ClaudeCodeConfigurator().Read(conn, ConfigScope.Repo);
+            Assert.True(state.ConfiguredForBridge);
+            Assert.Equal(expectDrift, state.Drifted);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = old;
+            try { Directory.Delete(dir, true); } catch { }
+        }
     }
 
     [Fact]
@@ -406,6 +556,8 @@ public class ClientConfigTests
             ExpectedFallback: null, CurrentFallback: "1",
             ExpectedAssume1m: "1", CurrentAssume1m: "1",
             ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            ExpectedStreamIdleTimeout: "900000", CurrentStreamIdleTimeout: "900000",
+            ExpectedRequestTimeout: "1200000", CurrentRequestTimeout: "1200000",
             Details: []);
         Assert.True(drifted.Drifted);
     }
@@ -419,6 +571,8 @@ public class ClientConfigTests
             ExpectedFallback: "1", CurrentFallback: "1",
             ExpectedAssume1m: "1", CurrentAssume1m: "1",
             ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            ExpectedStreamIdleTimeout: "900000", CurrentStreamIdleTimeout: "900000",
+            ExpectedRequestTimeout: "1200000", CurrentRequestTimeout: "1200000",
             Details: []);
         Assert.False(ok.Drifted);
     }
@@ -433,6 +587,8 @@ public class ClientConfigTests
             ExpectedFallback: null, CurrentFallback: null,
             ExpectedAssume1m: null, CurrentAssume1m: null,
             ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+            ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
+            ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
             Details: []);
         Assert.False(codexLike.Drifted);
     }
@@ -448,6 +604,8 @@ public class ClientConfigTests
             ExpectedFallback: null, CurrentFallback: null,
             ExpectedAssume1m: "1", CurrentAssume1m: null,
             ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
+            ExpectedStreamIdleTimeout: "900000", CurrentStreamIdleTimeout: "900000",
+            ExpectedRequestTimeout: "1200000", CurrentRequestTimeout: "1200000",
             Details: []);
         Assert.True(missingAssume.Drifted);
 
@@ -557,6 +715,11 @@ public class ClientConfigTests
         var keys = new System.Collections.Generic.List<string>
         {
             "\"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\"",
+            // The timeout keys are managed too, so a file without them is drifted on
+            // that axis alone. Write the values the current budgets derive, keeping
+            // this theory isolated to the 1M-context axis it is testing.
+            $"\"{ClaudeCodeTimeoutPolicy.StreamIdleKey}\": \"{Conn(port: 8765).ClaudeCodeStreamIdleTimeoutMs}\"",
+            $"\"{ClaudeCodeTimeoutPolicy.RequestTimeoutKey}\": \"{Conn(port: 8765).ClaudeCodeRequestTimeoutMs}\"",
         };
         if (assume1m is not null) keys.Add($"\"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL\": {assume1m}");
         if (disableEr is not null) keys.Add($"\"DISABLE_ERROR_REPORTING\": {disableEr}");

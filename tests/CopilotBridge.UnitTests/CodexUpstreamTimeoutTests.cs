@@ -272,7 +272,7 @@ public class CodexUpstreamTimeoutTests
     {
         using var http = new HttpClient(new NeverRespondsHandler());
         var client = new CopilotClient(
-            http, new FakeAuth(), new CopilotHeaderFactory(),
+            new SingleClientHttpClientFactory(http), new FakeAuth(), new CopilotHeaderFactory(),
             Options.Create(new UpstreamRetryOptions { MaxRetries = 0 }),
             Options.Create(Timeouts(firstByte: 1, streamIdle: 0)),
             NullLogger<CopilotClient>.Instance);
@@ -293,7 +293,7 @@ public class CodexUpstreamTimeoutTests
         var handler = new NeverRespondsHandler();
         using var http = new HttpClient(handler);
         var client = new CopilotClient(
-            http, new FakeAuth(), new CopilotHeaderFactory(),
+            new SingleClientHttpClientFactory(http), new FakeAuth(), new CopilotHeaderFactory(),
             Options.Create(new UpstreamRetryOptions { MaxRetries = 2, BaseDelayMs = 1, BackoffMultiplier = 1.0, MaxDelayMs = 2 }),
             Options.Create(Timeouts(firstByte: 1, streamIdle: 0)),
             NullLogger<CopilotClient>.Instance);

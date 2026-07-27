@@ -27,6 +27,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
     private readonly IAuthService _auth;
     private readonly IOptions<BridgeServerOptions> _server;
     private readonly IOptions<RoutesConfig> _routes;
+    private readonly IOptions<UpstreamTimeoutOptions> _upstreamTimeout;
     private readonly ModelProfileCatalog _catalog;
     private readonly CodexModelProfileCatalog _codexCatalog;
     private readonly Logging.BridgeIoSink? _ioSink;
@@ -36,6 +37,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
         IAuthService auth,
         IOptions<BridgeServerOptions> server,
         IOptions<RoutesConfig> routes,
+        IOptions<UpstreamTimeoutOptions> upstreamTimeout,
         ModelProfileCatalog catalog,
         CodexModelProfileCatalog codexCatalog,
         ILogger<BridgeStartupHostedService> log,
@@ -44,6 +46,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
         _auth = auth;
         _server = server;
         _routes = routes;
+        _upstreamTimeout = upstreamTimeout;
         _catalog = catalog;
         _codexCatalog = codexCatalog;
         _log = log;
@@ -115,6 +118,10 @@ internal sealed class BridgeStartupHostedService : IHostedService
         _log.LogInformation(
             "Codex profiles ({Count}): {Ids}",
             _codexCatalog.Count, string.Join(", ", _codexCatalog.KnownIds));
+
+        // Effective end-to-end timeout across bridge AND client. Best-effort: an
+        // unreadable client settings file must not fail startup.
+        TimeoutBudgetReport.Emit(_upstreamTimeout.Value, _log);
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

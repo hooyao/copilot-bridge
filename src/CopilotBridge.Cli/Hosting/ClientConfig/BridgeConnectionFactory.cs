@@ -34,6 +34,8 @@ internal static class BridgeConnectionFactory
             ?? new ToolInputValidationOptions();
         var runaway = config.GetSection("Pipeline:Detectors:RunawayGuard").Get<RunawayGuardOptions>()
             ?? new RunawayGuardOptions();
+        var upstreamTimeout = config.GetSection("Pipeline:UpstreamTimeout").Get<UpstreamTimeoutOptions>()
+            ?? new UpstreamTimeoutOptions();
 
         var port = cliPort ?? server.Port;
 
@@ -48,6 +50,12 @@ internal static class BridgeConnectionFactory
             (toolInput.Enabled && toolInput.PreserveStream) ||
             runaway.Enabled;
 
-        return new BridgeConnection(port, needFallback);
+        return new BridgeConnection(
+            port,
+            needFallback,
+            // Derived from the SAME budgets the server enforces, so what the client
+            // stores is guaranteed to outlast what the bridge will actually apply.
+            ClaudeCodeTimeoutPolicy.StreamIdleMsFor(upstreamTimeout.StreamIdleTimeoutSeconds),
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(upstreamTimeout.FirstByteTimeoutSeconds));
     }
 }

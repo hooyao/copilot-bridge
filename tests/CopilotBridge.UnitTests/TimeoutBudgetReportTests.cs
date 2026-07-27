@@ -1,0 +1,223 @@
+using CopilotBridge.Cli.Hosting;
+using CopilotBridge.Cli.Hosting.ClientConfig;
+using CopilotBridge.Cli.Hosting.Options;
+using Microsoft.Extensions.Logging;
+using Xunit;
+
+namespace CopilotBridge.UnitTests;
+
+/// <summary>
+/// Contract tests for the timeout-budget-report capability. Asserted from the
+/// spec: the report names its bounds and their source; a client bound that would
+/// fire first warns and names BOTH remedies; a missing client key warns exactly
+/// like a too-short one (it is known-bad, not unknown); a disabled bridge budget
+/// reads as "no bound" and is excluded from the minimum; and an unreadable client
+/// file never fails startup.
+/// </summary>
+public class TimeoutBudgetReportTests
+{
+    private static UpstreamTimeoutOptions Budgets(int firstByteSeconds, int streamIdleSeconds) =>
+        new() { FirstByteTimeoutSeconds = firstByteSeconds, StreamIdleTimeoutSeconds = streamIdleSeconds };
+
+    private static (List<RecordedEvent> Events, ILogger Log) Recorder()
+    {
+        var provider = new RecordingLoggerProvider();
+        return (provider.Events, provider.CreateLogger("test"));
+    }
+
+    private static string WriteSettings(string json)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cb-report-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "settings.json");
+        File.WriteAllText(path, json);
+        return path;
+    }
+
+    private static string BridgePointedSettings(string? streamIdleMs, string? requestMs)
+    {
+        var keys = new List<string> { "\"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\"" };
+        if (streamIdleMs is not null)
+        {
+            keys.Add($"\"{ClaudeCodeTimeoutPolicy.StreamIdleKey}\": \"{streamIdleMs}\"");
+        }
+        if (requestMs is not null)
+        {
+            keys.Add($"\"{ClaudeCodeTimeoutPolicy.RequestTimeoutKey}\": \"{requestMs}\"");
+        }
+        return "{ \"env\": { " + string.Join(", ", keys) + " } }";
+    }
+
+    private static List<RecordedEvent> Warnings(List<RecordedEvent> events) =>
+        events.FindAll(e => e.Level == LogLevel.Warning);
+
+    // ---- Requirement: effective end-to-end timeout is reported at startup ----
+
+    [Fact]
+    public void Client_outlasting_the_bridge_produces_a_report_and_no_warning()
+    {
+        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
+
+        Assert.NotEmpty(events);
+        Assert.Empty(Warnings(events));
+    }
+
+    [Fact]
+    public void An_unreadable_client_file_still_reports_and_never_warns()
+    {
+        // A bridge is perfectly usable by a client configured some other way; that
+        // is unknown, not misconfigured, so it must not produce a warning.
+        var missing = Path.Combine(
+            Path.GetTempPath(), "cb-absent-" + Guid.NewGuid().ToString("N"), "settings.json");
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(900, 600), log, missing);
+
+        Assert.NotEmpty(events);
+        Assert.Empty(Warnings(events));
+        Assert.Contains(events, e => e.Message.Contains("unknown", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void A_disabled_budget_is_reported_as_no_bound_and_is_not_the_minimum()
+    {
+        // Zero means "no bound", not "zero milliseconds" — reporting it as the
+        // shortest bound would be exactly backwards.
+        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 0, streamIdleSeconds: 0), log, path);
+
+        var text = string.Join("\n", events.ConvertAll(e => e.Message));
+        Assert.Contains("no bound", text, StringComparison.OrdinalIgnoreCase);
+
+        var effective = events.Find(e => e.Message.Contains("effective end-to-end", StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(effective);
+        // With both bridge budgets disabled the client's own values are all that
+        // remain, so the effective bound must come from the client side.
+        Assert.Contains("client", effective!.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_disabled_budget_cannot_be_undercut()
+    {
+        // Nothing can fire "before" a bound that does not exist.
+        var path = WriteSettings(BridgePointedSettings("1000", "1000"));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 0, streamIdleSeconds: 0), log, path);
+
+        Assert.Empty(Warnings(events));
+    }
+
+    // ---- Requirement: a client watchdog that would fire first is warned about ----
+
+    [Fact]
+    public void A_client_stream_idle_shorter_than_the_bridge_budget_warns()
+    {
+        var path = WriteSettings(BridgePointedSettings("60000", "1200000"));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
+
+        var warning = Assert.Single(Warnings(events));
+        Assert.Contains(ClaudeCodeTimeoutPolicy.StreamIdleKey, warning.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_client_request_timeout_shorter_than_the_first_byte_budget_warns()
+    {
+        var path = WriteSettings(BridgePointedSettings("900000", "60000"));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
+
+        var warning = Assert.Single(Warnings(events));
+        Assert.Contains(ClaudeCodeTimeoutPolicy.RequestTimeoutKey, warning.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_missing_client_key_warns_rather_than_being_passed_over_as_unknown()
+    {
+        // The corrected design: absence is the DEFAULT state of every install
+        // configured before this feature, and the bridge's own 1M-context key is
+        // what selects the shorter client default. Staying quiet here would leave
+        // the common case unprotected.
+        var path = WriteSettings(BridgePointedSettings(streamIdleMs: null, requestMs: "1200000"));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
+
+        var warning = Assert.Single(Warnings(events));
+        Assert.Contains(ClaudeCodeTimeoutPolicy.StreamIdleKey, warning.Message, StringComparison.Ordinal);
+        // Names the bound that actually applies in the key's absence.
+        Assert.Contains(
+            ClaudeCodeTimeoutPolicy.AbsentStreamIdleDefaultMs.ToString(),
+            warning.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_warning_states_both_remedies()
+    {
+        // Some operators manage settings.json by other means (dotfiles, MDM, a
+        // shared team config), so naming only the bridge's own command is not
+        // enough — the env var and its minimum value must be actionable too.
+        var path = WriteSettings(BridgePointedSettings("60000", "1200000"));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
+
+        var warning = Assert.Single(Warnings(events));
+        Assert.Contains("config claude-code", warning.Message, StringComparison.Ordinal);
+        Assert.Contains(ClaudeCodeTimeoutPolicy.StreamIdleKey, warning.Message, StringComparison.Ordinal);
+        // The minimum the operator must set it to (the bridge budget, in ms).
+        Assert.Contains("600000", warning.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_equal_client_value_does_not_warn()
+    {
+        // Equal is not undercutting — it merely has no margin.
+        var path = WriteSettings(BridgePointedSettings("600000", "900000"));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
+
+        Assert.Empty(Warnings(events));
+    }
+
+    [Fact]
+    public void The_report_states_that_client_values_apply_on_next_start()
+    {
+        // Claude Code reads env at process start, so a freshly-written value does
+        // nothing for the session already running. The report must not imply it did.
+        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(900, 600), log, path);
+
+        var text = string.Join("\n", events.ConvertAll(e => e.Message));
+        Assert.Contains("next start", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void The_values_the_config_command_writes_never_trip_the_warning()
+    {
+        // End-to-end consistency between the two halves of the change: whatever the
+        // budgets are, what `config claude-code` writes must satisfy this report.
+        foreach (var (firstByte, streamIdle) in new[] { (240, 60), (900, 600), (60, 30), (3600, 1800) })
+        {
+            var path = WriteSettings(BridgePointedSettings(
+                ClaudeCodeTimeoutPolicy.StreamIdleMsFor(streamIdle).ToString(),
+                ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(firstByte).ToString()));
+            var (events, log) = Recorder();
+
+            TimeoutBudgetReport.Emit(Budgets(firstByte, streamIdle), log, path);
+
+            Assert.Empty(Warnings(events));
+        }
+    }
+}

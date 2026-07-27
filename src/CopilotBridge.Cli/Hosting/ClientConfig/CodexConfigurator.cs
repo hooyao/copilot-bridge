@@ -90,6 +90,8 @@ internal sealed class CodexConfigurator : IClientConfigurator
                 ExpectedFallback: null, CurrentFallback: null,
                 ExpectedAssume1m: null, CurrentAssume1m: null,
                 ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+                ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
+                ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
                 Details: ["not configured (file does not exist)"]);
         }
 
@@ -105,6 +107,8 @@ internal sealed class CodexConfigurator : IClientConfigurator
                 ExpectedFallback: null, CurrentFallback: null,
                 ExpectedAssume1m: null, CurrentAssume1m: null,
                 ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+                ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
+                ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
                 Details: ["file has TOML syntax errors (cannot read — fix or remove it, then re-run)"]);
         }
 
@@ -123,6 +127,10 @@ internal sealed class CodexConfigurator : IClientConfigurator
             ExpectedBaseUrl: expected, ExpectedFallback: null, CurrentFallback: null,
             ExpectedAssume1m: null, CurrentAssume1m: null,
             ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+            // Codex manages neither long-thinking timeout key (they are Claude Code
+            // env vars); null expected + null current keeps them out of drift.
+            ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
+            ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
             Details: details);
     }
 

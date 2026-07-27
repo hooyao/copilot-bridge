@@ -1,18 +1,5 @@
-# upstream-timeout Specification
+## MODIFIED Requirements
 
-## Purpose
-
-Bounds how long the bridge waits on an unresponsive upstream (GitHub Copilot)
-while forwarding a request, using two independent **inactivity** budgets — a
-first-byte budget over the response-headers phase and a stream-idle budget over
-the SSE body — rather than a total-duration cap, so a slow-but-progressing request
-is never aborted. Both budgets apply to **both** forward paths: `/cc` (Anthropic
-passthrough) and Codex (Responses). This capability defines when each budget
-fires, how a fired budget surfaces to the client (a pre-headers `504`; a
-mid-stream retryable error on `/cc` or a `response.failed` terminal on Codex) and
-to the operator (the request summary and log), and that a client cancellation
-always wins the race against a timeout.
-## Requirements
 ### Requirement: First-byte inactivity budget
 
 The bridge SHALL bound the time it waits for Copilot to return response headers
@@ -141,43 +128,3 @@ selected the Anthropic or Responses upstream backend:
 
 - **WHEN** the stream-idle budget is configured to zero or less
 - **THEN** the bridge imposes no stream-idle bound and allocates no per-event timer, and the streaming relay is byte-identical to the no-timeout path.
-
-### Requirement: Timeout is distinguished from client cancellation
-
-The bridge SHALL distinguish an upstream inactivity timeout (the bridge aborted
-the upstream because it stalled) from a client cancellation (the caller aborted
-the request). The two SHALL surface differently: a client cancellation continues
-to be reported as such, while an upstream timeout is reported as an upstream
-timeout in both the request summary and the operator log, so an operator is not
-misled into diagnosing a bridge regression or a client hang-up when the cause was
-an unresponsive upstream.
-
-#### Scenario: Client cancels while upstream is healthy
-
-- **WHEN** the caller aborts the request and no inactivity budget has been exceeded
-- **THEN** the bridge reports a client cancellation, not an upstream timeout.
-
-#### Scenario: Upstream stalls while the client is still waiting
-
-- **WHEN** an inactivity budget is exceeded while the caller is still connected
-- **THEN** the bridge reports an upstream timeout, not a client cancellation, and the log line names it as an upstream inactivity timeout with the phase (first-byte or stream-idle) and the elapsed idle time.
-
-### Requirement: The forward hot paths are not regressed
-
-Adding the timeout SHALL NOT alter the bytes the bridge forwards upstream or
-relays downstream on either forward path. When both budgets are enabled and
-upstream is responsive, the forwarded request body, the outbound headers, and the
-relayed events SHALL be identical to the pre-change behavior on both the `/cc`
-passthrough path and the Codex/Responses translation path; the only added work is
-arming and resetting the inactivity timers.
-
-#### Scenario: Enabled but upstream responsive (`/cc`)
-
-- **WHEN** both budgets are enabled and the `/cc` upstream responds within them
-- **THEN** the forwarded upstream body and the downstream event sequence are identical to the behavior with the timeout absent.
-
-#### Scenario: Enabled but upstream responsive (Codex)
-
-- **WHEN** both budgets are enabled and the Codex/Responses upstream responds within them
-- **THEN** the translated (T3) downstream event sequence is identical to the behavior with the timeout absent.
-

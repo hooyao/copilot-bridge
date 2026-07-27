@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Models;
 
 namespace CopilotBridge.Cli.Auth;
@@ -10,7 +11,7 @@ internal static class AuthCommand
     public static async Task<int> LoginAsync()
     {
         using var http = CreateHttpClient();
-        var auth = new AuthService(http, OnDeviceCodeIssued);
+        var auth = new AuthService(new SingleClientHttpClientFactory(http), OnDeviceCodeIssued);
 
         if (auth.IsAuthenticated)
         {
@@ -119,7 +120,7 @@ internal static class AuthCommand
         }
 
         using var http = CreateHttpClient();
-        using var auth = new AuthService(http);
+        using var auth = new AuthService(new SingleClientHttpClientFactory(http));
 
         try
         {

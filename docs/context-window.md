@@ -51,9 +51,9 @@
 - **Resume now keeps 1M**: on 2.1.216 the window comes from a bundled
   `native_1m` capability gated on the request being first-party, so a bridge base
   URL reverts to 200k after `--resume`. `config claude-code` fixes this by writing
-  `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` (+ `DISABLE_ERROR_REPORTING=1` to
-  neutralize the one side effect). No `[1m]` suffix needed; the transcript model
-  stays clean. See §5.
+  `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` (+ `DISABLE_ERROR_REPORTING=1` and
+  the two timeout keys, to neutralize its side effects — see §5). No `[1m]` suffix
+  needed; the transcript model stays clean. See §5.
 
 ## 1. Where the context window comes from — the client, not the server
 
@@ -264,7 +264,18 @@ companion) into `settings.json` `env`, next to `ANTHROPIC_BASE_URL`:
 | env key | value | why |
 | --- | --- | --- |
 | `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` | `1` | asserts first-party so the `native_1m` capability applies to the bridge base URL |
-| `DISABLE_ERROR_REPORTING` | `1` | neutralizes the one side effect: asserting first-party also flips CC's error-reporting (Datadog) telemetry on; this keeps it off |
+| `DISABLE_ERROR_REPORTING` | `1` | neutralizes one side effect: asserting first-party also flips CC's error-reporting (Datadog) telemetry on; this keeps it off |
+
+> **Second side effect — it also tightens the streaming idle bound.** Asserting
+> first-party makes Claude Code apply its *first-party* stream-idle budget
+> (**180 s**) instead of the 300 s it uses otherwise — measured against 2.1.220 by
+> driving the real client against an upstream that goes silent on demand. Because
+> Copilot sends no keepalive while a model thinks, a deep-thinking turn is
+> legitimately silent for minutes, so enabling the 1M window makes a long turn
+> *more* likely to be aborted by the client. `config claude-code` compensates by
+> also writing `CLAUDE_STREAM_IDLE_TIMEOUT_MS` and `API_TIMEOUT_MS` derived from
+> the bridge's own budgets, and the bridge warns at startup if either would fire
+> first. Full chain and measurements: [`timeout-chain.md`](timeout-chain.md).
 
 Measured end-to-end against real `claude.exe` 2.1.216 (plain `claude-opus-4-8`, no
 `[1m]`):

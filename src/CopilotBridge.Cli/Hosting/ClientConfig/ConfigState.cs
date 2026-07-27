@@ -35,6 +35,16 @@ namespace CopilotBridge.Cli.Hosting.ClientConfig;
 /// <c>null</c> for a client that does not manage it (Codex).</param>
 /// <param name="CurrentDisableErrorReporting">The value currently stored for that
 /// key, or <c>null</c> if unset / not pointed at the bridge.</param>
+/// <param name="ExpectedStreamIdleTimeout">The value the bridge would force-write
+/// for <c>CLAUDE_STREAM_IDLE_TIMEOUT_MS</c>, derived from its stream-idle budget,
+/// or <c>null</c> for a client that does not manage it (Codex).</param>
+/// <param name="CurrentStreamIdleTimeout">The value currently stored for that key,
+/// or <c>null</c> if unset / not pointed at the bridge.</param>
+/// <param name="ExpectedRequestTimeout">The value the bridge would force-write for
+/// <c>API_TIMEOUT_MS</c>, derived from its first-byte budget, or <c>null</c> for a
+/// client that does not manage it (Codex).</param>
+/// <param name="CurrentRequestTimeout">The value currently stored for that key, or
+/// <c>null</c> if unset / not pointed at the bridge.</param>
 /// <param name="Details">Extra human-readable lines (e.g. the fallback-env state)
 /// shown under <c>config status</c>.</param>
 internal sealed record ConfigState(
@@ -51,6 +61,10 @@ internal sealed record ConfigState(
     string? CurrentAssume1m,
     string? ExpectedDisableErrorReporting,
     string? CurrentDisableErrorReporting,
+    string? ExpectedStreamIdleTimeout,
+    string? CurrentStreamIdleTimeout,
+    string? ExpectedRequestTimeout,
+    string? CurrentRequestTimeout,
     IReadOnlyList<string> Details)
 {
     /// <summary>
@@ -58,12 +72,17 @@ internal sealed record ConfigState(
     /// longer matches what the current bridge configuration would produce — either
     /// the base URL (e.g. the port changed), the fallback-env value (e.g. a legacy
     /// <c>CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK</c> key remains in Claude Code's
-    /// settings even though the bridge now removes it), or a missing / non-managed
-    /// value for either 1M-context env key the bridge force-writes.
+    /// settings even though the bridge now removes it), a missing / non-managed
+    /// value for either 1M-context env key the bridge force-writes, or a missing /
+    /// stale value for either long-thinking timeout key (stale meaning the operator
+    /// changed a <c>Pipeline:UpstreamTimeout</c> budget without re-running the
+    /// config command, so the client no longer outlasts the bridge).
     /// </summary>
     public bool Drifted => ConfiguredForBridge &&
         (!string.Equals(CurrentBaseUrl, ExpectedBaseUrl, System.StringComparison.Ordinal) ||
          !string.Equals(CurrentFallback, ExpectedFallback, System.StringComparison.Ordinal) ||
          !string.Equals(CurrentAssume1m, ExpectedAssume1m, System.StringComparison.Ordinal) ||
-         !string.Equals(CurrentDisableErrorReporting, ExpectedDisableErrorReporting, System.StringComparison.Ordinal));
+         !string.Equals(CurrentDisableErrorReporting, ExpectedDisableErrorReporting, System.StringComparison.Ordinal) ||
+         !string.Equals(CurrentStreamIdleTimeout, ExpectedStreamIdleTimeout, System.StringComparison.Ordinal) ||
+         !string.Equals(CurrentRequestTimeout, ExpectedRequestTimeout, System.StringComparison.Ordinal));
 }

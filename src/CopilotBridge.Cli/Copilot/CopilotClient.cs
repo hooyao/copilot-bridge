@@ -9,8 +9,19 @@ using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Copilot;
 
+/// <summary>
+/// Talks to Copilot's two upstream surfaces: the native Anthropic
+/// <c>/v1/messages</c> endpoint and the OpenAI-shaped <c>/responses</c> endpoint.
+/// </summary>
+/// <remarks>
+/// Takes <see cref="IHttpClientFactory"/> and creates a client where it sends,
+/// rather than holding one in a field: a captured client pins a single pooled
+/// handler for the life of this singleton, so the factory's rotation never happens
+/// and DNS changes are never picked up. Each surface uses its own named client and
+/// therefore its own connection pool — see <see cref="UpstreamHttpClientNames"/>.
+/// </remarks>
 internal sealed class CopilotClient(
-    HttpClient http,
+    IHttpClientFactory httpClientFactory,
     IAuthService auth,
     CopilotHeaderFactory headers,
     IOptions<UpstreamRetryOptions> retryOptions,
@@ -28,7 +39,9 @@ internal sealed class CopilotClient(
         headers.ApplyTo(req, token);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-        using var resp = await http.SendAsync(req, ct);
+        using var resp = await httpClientFactory
+            .CreateClient(UpstreamHttpClientNames.Anthropic)
+            .SendAsync(req, ct);
         if (!resp.IsSuccessStatusCode)
         {
             var body = await resp.Content.ReadAsStringAsync(ct);
@@ -79,7 +92,8 @@ internal sealed class CopilotClient(
                 // without buffering. The caller owns disposal of the result.
                 // The first-byte inactivity budget is applied per attempt inside
                 // the shared helper (backoff below is outside the armed window).
-                return await SendWithFirstByteBudgetAsync(req, ct);
+                return await SendWithFirstByteBudgetAsync(
+                    req, httpClientFactory.CreateClient(UpstreamHttpClientNames.Anthropic), ct);
             }
             catch (Exception ex) when (
                 attempt < _retry.MaxRetries
@@ -128,7 +142,7 @@ internal sealed class CopilotClient(
     /// Budget <c>&lt;= 0</c> ⇒ the original bare send (no CTS, no timer).
     /// </remarks>
     private async ValueTask<HttpResponseMessage> SendWithFirstByteBudgetAsync(
-        HttpRequestMessage req, CancellationToken ct)
+        HttpRequestMessage req, HttpClient http, CancellationToken ct)
     {
         var firstByteBudget = _timeout.FirstByteTimeoutSeconds;
         if (firstByteBudget <= 0)
@@ -178,7 +192,9 @@ internal sealed class CopilotClient(
         };
         headers.ApplyTo(req, token);
 
-        return await http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
+        return await httpClientFactory
+            .CreateClient(UpstreamHttpClientNames.Anthropic)
+            .SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
     }
 
     public async ValueTask<HttpResponseMessage> PostResponsesAsync(
@@ -214,8 +230,11 @@ internal sealed class CopilotClient(
                 // Same first-byte inactivity budget as PostMessagesAsync, applied per
                 // attempt via the shared helper. A first-byte timeout throws a terminal
                 // UpstreamTimeoutException (not transient), so the retry `when` below
-                // does not catch it — the Codex endpoint maps it to a 504.
-                return await SendWithFirstByteBudgetAsync(req, ct);
+                // does not catch it — the Codex endpoint maps it to a 504. Uses the
+                // Responses pool, so Codex traffic cannot exhaust the connections the
+                // Claude Code path depends on.
+                return await SendWithFirstByteBudgetAsync(
+                    req, httpClientFactory.CreateClient(UpstreamHttpClientNames.Responses), ct);
             }
             catch (Exception ex) when (
                 attempt < _retry.MaxRetries

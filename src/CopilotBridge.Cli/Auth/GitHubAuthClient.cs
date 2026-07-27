@@ -6,10 +6,15 @@ using CopilotBridge.Cli.Models.GitHub;
 namespace CopilotBridge.Cli.Auth;
 
 /// <summary>
-/// Thin wrapper around the GitHub OAuth device-code endpoints. Implementation detail of
+/// The GitHub OAuth device-code endpoints. Implementation detail of
 /// <see cref="AuthService"/>; should not be used directly outside the Auth folder.
 /// </summary>
-internal sealed class GitHubAuthClient(HttpClient http)
+/// <remarks>
+/// Stateless: the caller creates an <see cref="HttpClient"/> at its own call site
+/// and passes it in, so nothing here holds one (which would pin a pooled handler
+/// and defeat the factory's rotation).
+/// </remarks>
+internal static class GitHubAuthClient
 {
     private const string DeviceCodeUrl = "https://github.com/login/device/code";
     private const string AccessTokenUrl = "https://github.com/login/oauth/access_token";
@@ -18,7 +23,8 @@ internal sealed class GitHubAuthClient(HttpClient http)
     public const string ClientId = "Iv1.b507a08c87ecfe98";
     public const string Scope = "read:user";
 
-    public async ValueTask<DeviceCodeResponse> RequestDeviceCodeAsync(CancellationToken ct = default)
+    public static async ValueTask<DeviceCodeResponse> RequestDeviceCodeAsync(
+        HttpClient http, CancellationToken ct = default)
     {
         using var req = new HttpRequestMessage(HttpMethod.Post, DeviceCodeUrl)
         {
@@ -34,7 +40,8 @@ internal sealed class GitHubAuthClient(HttpClient http)
                ?? throw new InvalidOperationException("Empty device-code response from GitHub.");
     }
 
-    public async ValueTask<string> PollAccessTokenAsync(
+    public static async ValueTask<string> PollAccessTokenAsync(
+        HttpClient http,
         DeviceCodeResponse deviceCode,
         CancellationToken ct = default)
     {
