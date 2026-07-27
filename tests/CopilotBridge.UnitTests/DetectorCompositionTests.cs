@@ -192,6 +192,10 @@ public class DetectorCompositionTests
         {
             UpstreamHttpClientNames.Anthropic,
             UpstreamHttpClientNames.Responses,
+            // Metadata shares the Copilot host with the two above, so it is the
+            // surface this split actually protects — omitting it would let a
+            // regression that maps it back onto a model client pass unnoticed.
+            UpstreamHttpClientNames.Metadata,
             UpstreamHttpClientNames.GitHubAuth,
         };
 
@@ -214,13 +218,15 @@ public class DetectorCompositionTests
     }
 
     [Fact]
-    public void ModelSurfaces_HaveNoCoarseRequestTimeout_ButAuthDoes()
+    public void ModelSurfaces_HaveNoCoarseRequestTimeout_ButAuthAndMetadataDo()
     {
-        // The model surfaces must not carry a whole-request cap: on the buffered
-        // (non-streaming) path such a cap bounds the entire request including the
-        // body, truncating a legitimately slow deep-thinking turn regardless of the
-        // configured first-byte budget. Auth keeps a finite one — a hung token call
-        // should fail fast rather than hang forever.
+        // The model surfaces must not carry a whole-request cap. Under
+        // ResponseHeadersRead — which both forward paths use — such a cap bounds only
+        // the wait for HEADERS (verified over a real socket by
+        // UnderResponseHeadersRead_TheClientTimeoutDoesNotCoverTheBodyRead), and the
+        // configured first-byte budget bounds that same phase and is tunable. Auth
+        // and metadata keep a finite one — short calls that should fail fast, and in
+        // metadata's case the client timeout is their ONLY bound.
         using var sp = BuildProvider();
         var factory = sp.GetRequiredService<IHttpClientFactory>();
 
@@ -234,6 +240,14 @@ public class DetectorCompositionTests
         var authTimeout = factory.CreateClient(UpstreamHttpClientNames.GitHubAuth).Timeout;
         Assert.NotEqual(Timeout.InfiniteTimeSpan, authTimeout);
         Assert.True(authTimeout > TimeSpan.Zero);
+
+        // Metadata (/models, count_tokens) must ALSO stay finite: those calls never
+        // pass through the first-byte / stream-idle budgets, so this registration is
+        // their only bound. Asserting it on the REGISTERED client (not a hand-built
+        // one) is what makes flipping it to InfiniteTimeSpan fail here.
+        var metadataTimeout = factory.CreateClient(UpstreamHttpClientNames.Metadata).Timeout;
+        Assert.NotEqual(Timeout.InfiniteTimeSpan, metadataTimeout);
+        Assert.True(metadataTimeout > TimeSpan.Zero);
     }
 
     [Fact]

@@ -251,6 +251,40 @@ public class ClientConfigTests
         Assert.DoesNotContain(ClaudeCodeTimeoutPolicy.RequestTimeoutKey, content, System.StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Status_details_name_the_expected_timeout_beside_a_drifted_value()
+    {
+        // The spec requires a drift report to show BOTH values. Asserting the
+        // Drifted flag (as the other tests do) cannot catch a renderer that prints
+        // only the current one — which is exactly what shipped, leaving the operator
+        // told "wrong" without the number to set.
+        var conn = Conn(port: 8765);
+        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
+        File.WriteAllText(
+            Path.Combine(dir, ".claude", "settings.local.json"),
+            "{ \"env\": { \"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\", "
+            + $"\"{ClaudeCodeTimeoutPolicy.StreamIdleKey}\": \"1000\" }} }}");
+
+        var old = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = dir;
+            var state = new ClaudeCodeConfigurator().Read(conn, ConfigScope.Repo);
+
+            Assert.True(state.Drifted);
+            var line = state.Details.Single(d => d.StartsWith(ClaudeCodeTimeoutPolicy.StreamIdleKey, StringComparison.Ordinal));
+            Assert.Contains("1000", line, StringComparison.Ordinal);
+            Assert.Contains(
+                conn.ClaudeCodeStreamIdleTimeoutMs.ToString(), line, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = old;
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
     [Theory]
     // Filesystem-backed Read for the timeout axis: a bridge-pointed file holding the
     // derived values is not drifted; missing or stale values are. Stale is the case

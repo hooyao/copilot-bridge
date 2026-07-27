@@ -1,7 +1,7 @@
 # Follow-ups from PR #55 review (rounds 8+)
 
-> Deferred deliberately: PR #55 was merged with these open, at the operator's
-> call. Not started — every box below is unchecked on purpose.
+> Status: **all done** (2026-07-27). Landed together with a rewrite of the
+> startup timeout report, which the operator found unreadable as four prose lines.
 
 These were raised by Copilot on PR #55 after the merge decision and deferred by
 the operator ("可以之后单独修"). They are recorded here so the merge does not lose
@@ -89,10 +89,10 @@ which is why this gap survived).
 
 ## Tasks
 
-- [ ] 1.1 AOT-publish before/after and record the `IHttpClientFactory` size delta in `docs/size-history.md` (baseline: 2026-07-13 `add-startup-auto-update`, 13.12 MB win-x64).
-- [ ] 1.2 Based on that number, either amend `docs/design.md` §2.2 + the `pipeline-design.md` singleton list to permit the factory, or revert to hand-held per-surface `HttpClient` instances. Do not leave code and contract disagreeing.
-- [ ] 2.1 Add `UpstreamHttpClientNames.Metadata` to `EachUpstreamSurface_GetsItsOwnConnectionPool`.
-- [ ] 3.1 Assert the finite timeout on the REGISTERED `copilot-metadata` client (not a hand-built one) and mutation-check it by flipping the registration to `InfiniteTimeSpan`.
-- [ ] 4.1 Fix the `DetectorCompositionTests` comment that still claims the coarse cap bounded the buffered body.
-- [ ] 5.1 Print the expected timeout beside each current value in `config status`, and add an output-level test (existing tests assert the `Drifted` flag, not the rendered output).
+- [x] 1.1 AOT-publish before/after and record the `IHttpClientFactory` size delta in `docs/size-history.md` (baseline: 2026-07-13 `add-startup-auto-update`, 13.12 MB win-x64).
+- [x] 1.2 Based on that number, either amend `docs/design.md` §2.2 + the `pipeline-design.md` singleton list to permit the factory, or revert to hand-held per-surface `HttpClient` instances. Do not leave code and contract disagreeing.
+- [x] 2.1 Add `UpstreamHttpClientNames.Metadata` to `EachUpstreamSurface_GetsItsOwnConnectionPool`.
+- [x] 3.1 Assert the finite timeout on the REGISTERED `copilot-metadata` client (not a hand-built one) and mutation-check it by flipping the registration to `InfiniteTimeSpan`.
+- [x] 4.1 Fix the `DetectorCompositionTests` comment that still claims the coarse cap bounded the buffered body.
+- [x] 5.1 Print the expected timeout beside each current value in `config status`, and add an output-level test (existing tests assert the `Drifted` flag, not the rendered output).
 

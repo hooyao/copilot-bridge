@@ -201,12 +201,12 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         details.Add(disableErrorReporting is null
             ? $"{DisableErrorReportingKey}: (unset)"
             : $"{DisableErrorReportingKey}: {disableErrorReporting}");
-        details.Add(streamIdleTimeout is null
-            ? $"{StreamIdleTimeoutKey}: (unset)"
-            : $"{StreamIdleTimeoutKey}: {streamIdleTimeout}");
-        details.Add(requestTimeout is null
-            ? $"{RequestTimeoutKey}: (unset)"
-            : $"{RequestTimeoutKey}: {requestTimeout}");
+        // Timeout keys show the EXPECTED value beside the current one whenever they
+        // differ: a drift report that only says "wrong" leaves the operator without
+        // the derived number they need to set. (The 1M keys above are always "1", so
+        // naming the expectation there would be noise.)
+        details.Add(DescribeTimeout(StreamIdleTimeoutKey, streamIdleTimeout, expectedStreamIdle));
+        details.Add(DescribeTimeout(RequestTimeoutKey, requestTimeout, expectedRequestTimeout));
 
         return new ConfigState(ClientId, scope, path, Exists: true,
             ConfiguredForBridge: pointsAtBridge, CurrentBaseUrl: pointsAtBridge ? current : null,
@@ -231,6 +231,16 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
             CurrentRequestTimeout: pointsAtBridge ? requestTimeout : null,
             Details: details);
     }
+
+    /// <summary>
+    /// Render one managed timeout key for <c>config status</c>. Names the expected
+    /// value whenever it differs from what is stored (including when the key is
+    /// absent), so a <c>DRIFTED</c> report carries the number needed to fix it.
+    /// </summary>
+    private static string DescribeTimeout(string key, string? current, string expected) =>
+        current is null ? $"{key}: (unset) — expected {expected}"
+        : string.Equals(current, expected, StringComparison.Ordinal) ? $"{key}: {current}"
+        : $"{key}: {current} — expected {expected}";
 
     /// <summary>
     /// Read a JSON node as a string, or <c>null</c> if it is absent or not a string.

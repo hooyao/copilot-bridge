@@ -38,7 +38,7 @@ For Copilot-unsupported features the options reduce to: document the gap + sugge
 
 ## 2. AOT discipline
 
-The single hard non-functional goal is a **single-file, small-footprint `.exe`** with no .NET runtime dependency. AOT isn't picked for cold-start speed — it's picked for deploy simplicity and binary size. Every dependency choice (no reflection-based JSON, no `IHttpClientFactory`, no `wwwroot/` static files) follows from that.
+The single hard non-functional goal is a **single-file, small-footprint `.exe`** with no .NET runtime dependency. AOT isn't picked for cold-start speed — it's picked for deploy simplicity and binary size. Every dependency choice (no reflection-based JSON, no `wwwroot/` static files, and a measured size entry for anything new) follows from that.
 
 ### 2.1 Required project settings
 
@@ -52,8 +52,20 @@ The single hard non-functional goal is a **single-file, small-footprint `.exe`**
 - `JsonSerializer.Serialize(obj)` without a `JsonTypeInfo` overload — silently breaks at runtime (output becomes `{}`)
 - `Activator.CreateInstance(Type)` / `Type.GetType(string)` / dynamic loading
 - `[FromBody] dynamic` or `object` parameters on minimal API delegates
-- `IHttpClientFactory` (default impl is AOT-friendly but adds size; a singleton `HttpClient` is enough)
 - `wwwroot/` static files (use `<EmbeddedResource>` for HTML/JS/CSS)
+
+#### Previously forbidden
+
+- `IHttpClientFactory` — **allowed since 2026-07-27** (was forbidden). The ban
+  assumed one upstream surface, where a singleton `HttpClient` really is enough.
+  The bridge now has four (`/v1/messages`, `/responses`, metadata, GitHub auth),
+  and the first three share a host: one pooled handler puts them in a single
+  connection budget while the bridge holds connections open for *minutes* during a
+  long turn, so a Codex burst could stall Claude Code. Measured cost of the switch:
+  **+199 KB (+1.55%)**, no new package (it ships in the ASP.NET shared framework) —
+  see [`size-history.md`](size-history.md) 2026-07-27. Consumers must lease per
+  call (`CreateClient` at the send site); caching one pins a pooled handler and
+  defeats the rotation that justifies the factory.
 
 ### 2.3 Size monitoring
 
