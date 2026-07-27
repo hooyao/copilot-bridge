@@ -82,6 +82,64 @@ public class TimeoutBudgetReportTests
     }
 
     [Fact]
+    public void An_unreadable_client_file_makes_the_effective_bound_unknown_not_the_bridge_budgets()
+    {
+        // Contract: with the client's bound unknown, the EFFECTIVE bound is unknown
+        // too. Claiming it equals the bridge's budgets would falsely reassure an
+        // operator whose separately-configured client holds a shorter watchdog —
+        // precisely the person this report exists to protect.
+        var missing = Path.Combine(
+            Path.GetTempPath(), "cb-absent-" + Guid.NewGuid().ToString("N"), "settings.json");
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(900, 600), log, missing);
+
+        var text = string.Join("\n", events.ConvertAll(e => e.Message));
+        // The bridge's own budgets are still stated...
+        Assert.Contains("900", text, StringComparison.Ordinal);
+        // ...but no line may assert a concrete effective end-to-end bound.
+        var effectiveLine = events.Find(e =>
+            e.Message.Contains("effective end-to-end", StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(effectiveLine);
+        Assert.Contains("UNKNOWN", effectiveLine!.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_budget_larger_than_the_client_can_honor_warns_that_config_cannot_fix_it()
+    {
+        // Contract: above the client's ceiling the derived value is capped BELOW the
+        // budget, so the client fires first and re-running the config command writes
+        // the same insufficient value. The operator must be told to lower the budget
+        // rather than handed a remedy that provably cannot work.
+        var overCeilingSeconds = (ClaudeCodeTimeoutPolicy.StreamIdleMaxMs / 1000) + 600;
+        var path = WriteSettings(BridgePointedSettings(
+            ClaudeCodeTimeoutPolicy.StreamIdleMsFor(overCeilingSeconds).ToString(),
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(900).ToString()));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(
+            Budgets(firstByteSeconds: 900, streamIdleSeconds: overCeilingSeconds), log, path);
+
+        var warnings = Warnings(events);
+        Assert.NotEmpty(warnings);
+        var text = string.Join("\n", warnings.ConvertAll(w => w.Message));
+        Assert.Contains("lower the budget", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_budget_within_the_client_ceiling_does_not_warn_about_the_ceiling()
+    {
+        var path = WriteSettings(BridgePointedSettings(
+            ClaudeCodeTimeoutPolicy.StreamIdleMsFor(600).ToString(),
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(900).ToString()));
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
+
+        Assert.Empty(Warnings(events));
+    }
+
+    [Fact]
     public void A_disabled_budget_is_reported_as_no_bound_and_is_not_the_minimum()
     {
         // Zero means "no bound", not "zero milliseconds" — reporting it as the

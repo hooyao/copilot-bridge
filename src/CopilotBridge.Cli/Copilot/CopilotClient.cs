@@ -40,7 +40,7 @@ internal sealed class CopilotClient(
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         using var resp = await httpClientFactory
-            .CreateClient(UpstreamHttpClientNames.Anthropic)
+            .CreateClient(UpstreamHttpClientNames.Metadata)
             .SendAsync(req, ct);
         if (!resp.IsSuccessStatusCode)
         {
@@ -193,7 +193,7 @@ internal sealed class CopilotClient(
         headers.ApplyTo(req, token);
 
         return await httpClientFactory
-            .CreateClient(UpstreamHttpClientNames.Anthropic)
+            .CreateClient(UpstreamHttpClientNames.Metadata)
             .SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
     }
 

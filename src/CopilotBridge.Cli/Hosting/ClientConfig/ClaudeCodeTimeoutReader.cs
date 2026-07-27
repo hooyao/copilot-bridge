@@ -62,18 +62,48 @@ internal static class ClaudeCodeTimeoutReader
         ".claude", "settings.json");
 
     /// <summary>
-    /// Inspect <paramref name="settingsPath"/> (defaults to the global settings
-    /// file). <paramref name="expectedBaseUrlSuffix"/> is the route suffix that
-    /// marks the file as pointed at a bridge — matching
-    /// <see cref="ClaudeCodeConfigurator"/>'s own "points at bridge" test, so a
-    /// config aimed at some other Anthropic-compatible endpoint reads as
-    /// unrelated rather than as a misconfigured bridge client.
+    /// Repo-scoped settings path (<c>./.claude/settings.local.json</c>) — what
+    /// <c>config claude-code --scope repo</c> writes. Claude Code layers this OVER
+    /// the global file, so a stale repo-scoped value silently wins.
     /// </summary>
+    public static string RepoSettingsPath => Path.Combine(
+        Environment.CurrentDirectory, ".claude", "settings.local.json");
+
+    /// <summary>
+    /// Inspect the Claude Code settings that will actually apply, honoring scope
+    /// precedence: the repo-scoped file (if it exists and points at a bridge) wins
+    /// over the global one, because that is how Claude Code resolves them. Reading
+    /// only the global file would let a stale repo-scoped timeout kill the turn
+    /// while startup reported the global values as safe.
+    /// </summary>
+    /// <param name="settingsPath">Explicit file to read (tests). When supplied, no
+    /// scope resolution happens — that file is the answer.</param>
+    /// <param name="expectedBaseUrlSuffix">The route suffix that marks the file as
+    /// pointed at a bridge — matching <see cref="ClaudeCodeConfigurator"/>'s own
+    /// "points at bridge" test, so a config aimed at some other
+    /// Anthropic-compatible endpoint reads as unrelated rather than as a
+    /// misconfigured bridge client.</param>
     public static ClientTimeoutSnapshot Read(
         string? settingsPath = null, string expectedBaseUrlSuffix = "/cc")
     {
-        var path = settingsPath ?? DefaultSettingsPath;
+        if (settingsPath is not null)
+        {
+            return ReadFile(settingsPath, expectedBaseUrlSuffix);
+        }
 
+        // Repo scope first: it overrides global for the active project.
+        var repo = ReadFile(RepoSettingsPath, expectedBaseUrlSuffix);
+        if (repo.Readable)
+        {
+            return repo;
+        }
+
+        var global = ReadFile(DefaultSettingsPath, expectedBaseUrlSuffix);
+        return global;
+    }
+
+    private static ClientTimeoutSnapshot ReadFile(string path, string expectedBaseUrlSuffix)
+    {
         string text;
         try
         {

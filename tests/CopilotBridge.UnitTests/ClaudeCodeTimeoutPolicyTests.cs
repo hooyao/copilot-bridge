@@ -10,6 +10,13 @@ namespace CopilotBridge.UnitTests;
 /// applies only when the file could not be read or does not concern this
 /// bridge" — not read back from the implementation.
 /// </summary>
+/// <remarks>
+/// Joins the client-config collection because the scope-precedence test mutates
+/// the process-wide <see cref="System.Environment.CurrentDirectory"/> (repo-scoped
+/// settings resolve relative to it), which would redirect any test running in
+/// parallel that resolves a relative path.
+/// </remarks>
+[Collection(ClientConfigCollection.Name)]
 public class ClaudeCodeTimeoutPolicyTests
 {
     // ---- Derivation (spec: Claude Code long-thinking timeout environment) ----
@@ -242,5 +249,46 @@ public class ClaudeCodeTimeoutPolicyTests
         var snap = ClaudeCodeTimeoutReader.Read(path);
 
         Assert.True(snap.Readable);
+    }
+
+    [Fact]
+    public void Repo_scoped_settings_win_over_global()
+    {
+        // Contract: Claude Code layers ./.claude/settings.local.json OVER the global
+        // file, so a stale repo-scoped timeout is what actually applies. Reading only
+        // the global file would report safe values while the real bound kills turns.
+        var dir = Path.Combine(Path.GetTempPath(), "cb-scope-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
+        File.WriteAllText(
+            Path.Combine(dir, ".claude", "settings.local.json"),
+            """
+            {
+              "env": {
+                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+                "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "1000"
+              }
+            }
+            """);
+
+        var old = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = dir;
+
+            // No explicit path => scope resolution applies.
+            var snap = ClaudeCodeTimeoutReader.Read();
+
+            Assert.True(snap.Readable);
+            Assert.Equal(
+                Path.Combine(dir, ".claude", "settings.local.json"),
+                snap.SettingsPath);
+            Assert.True(snap.StreamIdle.IsExplicit);
+            Assert.Equal(1000, snap.StreamIdle.EffectiveMs);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = old;
+            try { Directory.Delete(dir, true); } catch { }
+        }
     }
 }

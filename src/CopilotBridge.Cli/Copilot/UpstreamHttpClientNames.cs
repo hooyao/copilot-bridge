@@ -19,18 +19,33 @@ namespace CopilotBridge.Cli.Copilot;
 internal static class UpstreamHttpClientNames
 {
     /// <summary>
-    /// Copilot's native Anthropic surface: <c>/v1/messages</c>,
-    /// <c>/v1/messages/count_tokens</c>, <c>/models</c>. Serves the Claude Code
-    /// path, whose streaming responses can stay open for many minutes.
+    /// Copilot's native Anthropic <b>turn</b> surface: <c>/v1/messages</c>. Serves
+    /// the Claude Code path, whose streaming responses can stay open for many
+    /// minutes, so it carries no whole-request timeout — the configured
+    /// <c>Pipeline:UpstreamTimeout</c> budgets bound it instead.
     /// </summary>
     public const string Anthropic = "copilot-anthropic";
 
     /// <summary>
     /// Copilot's Responses surface: <c>/responses</c>. Serves the Codex path.
     /// Isolated from <see cref="Anthropic"/> so a saturated Codex path cannot
-    /// starve Claude Code of connections, or the reverse.
+    /// starve Claude Code of connections, or the reverse. Same no-whole-request-cap
+    /// rule, for the same reason.
     /// </summary>
     public const string Responses = "copilot-responses";
+
+    /// <summary>
+    /// Short Copilot <b>metadata</b> calls that are not model turns:
+    /// <c>/models</c> and <c>/v1/messages/count_tokens</c>.
+    /// </summary>
+    /// <remarks>
+    /// These do NOT go through the first-byte / stream-idle budgets (they are not
+    /// turn forwards), so without a client-level timeout they would have no bound
+    /// at all and could hang indefinitely. They are short by nature, so a finite
+    /// cap is both safe and necessary — this is deliberately the one model-host
+    /// client that keeps one.
+    /// </remarks>
+    public const string Metadata = "copilot-metadata";
 
     /// <summary>
     /// GitHub OAuth device-code flow and Copilot token exchange/refresh. Kept out

@@ -134,6 +134,16 @@ internal static class BridgeServiceCollectionExtensions
             http.Timeout = TimeSpan.FromSeconds(30);
             http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
         });
+        // Metadata (/models, count_tokens) likewise keeps a finite timeout. These
+        // are NOT turn forwards, so they never pass through the first-byte /
+        // stream-idle budgets — without a client-level cap they would have no bound
+        // at all. Longer than auth because count_tokens on a near-full context is
+        // slower than a token exchange, but still far short of a model turn.
+        services.AddHttpClient(UpstreamHttpClientNames.Metadata, http =>
+        {
+            http.Timeout = TimeSpan.FromMinutes(2);
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
+        });
         // AuthService keeps a factory registration: it takes the closure-captured
         // deviceCodePrinter (DI can't supply it). Everything else with a
         // straightforward constructor uses the two-param overload so the

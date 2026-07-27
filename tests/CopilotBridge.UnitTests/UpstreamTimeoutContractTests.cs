@@ -715,33 +715,48 @@ public class UpstreamTimeoutContractTests
         return buf;
     }
 
-    // ── The coarse HttpClient.Timeout must not bound the buffered path ────────
+    // ── What the coarse HttpClient.Timeout actually bounded ──────────────────
 
     /// <summary>
-    /// Contract: a NON-STREAMING (buffered) upstream response whose body takes
-    /// longer than the former hard-coded coarse client cap still completes, so long
-    /// as the configured first-byte budget has not elapsed. This is the regression
-    /// the change exists to fix: under ResponseHeadersRead a coarse
-    /// HttpClient.Timeout bounds only the header wait on the streaming path, but on
-    /// the buffered path it bounds the WHOLE request including the body — the exact
-    /// path Claude Code uses to recover a failed streaming turn, which yields no
-    /// bytes at all until the model has finished thinking.
+    /// Contract: a metadata call (<c>/models</c>, <c>count_tokens</c>) must stay
+    /// bounded. These are read with <c>ResponseContentRead</c> and do NOT pass
+    /// through the first-byte / stream-idle budgets, so the client-level timeout is
+    /// their only bound — removing it would let them hang forever.
     ///
-    /// Runs over a REAL loopback socket, not a stub handler: HttpClient's timeout is
-    /// enforced by its own send/read machinery, which an in-process
-    /// HttpMessageHandler stub bypasses — a stubbed version of this test passes even
-    /// with a finite cap and would prove nothing. Durations are scaled down; the
-    /// contract is "a body slower than the cap survives", not the wall-clock number.
+    /// Runs over a REAL loopback socket: HttpClient's timeout is enforced by its own
+    /// send/read machinery, which an in-process HttpMessageHandler stub bypasses, so
+    /// a stubbed version of this test would pass regardless and prove nothing.
     /// </summary>
     [Fact]
-    public async Task BufferedBody_SlowerThanTheFormerCoarseCap_StillCompletes()
+    public async Task AMetadataStyleCall_StaysBoundedByItsClientTimeout()
     {
-        using var server = new SlowBodyServer(bodyDelay: TimeSpan.FromMilliseconds(600));
-        using var http = new HttpClient
-        {
-            // What the composition root now registers.
-            Timeout = Timeout.InfiniteTimeSpan,
-        };
+        using var server = new SlowBodyServer(bodyDelay: TimeSpan.FromSeconds(5));
+        using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(300) };
+
+        // ResponseContentRead: the timeout covers headers AND body, which is what
+        // makes it a real bound for these calls.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            http.SendAsync(
+                new HttpRequestMessage(HttpMethod.Post, server.Url),
+                HttpCompletionOption.ResponseContentRead));
+    }
+
+    /// <summary>
+    /// Pins the boundary that justifies leaving the turn surfaces uncapped: under
+    /// <c>ResponseHeadersRead</c> the client timeout covers only the wait for
+    /// HEADERS. Once headers are on the wire the body read is NOT covered, so a
+    /// model that thinks for minutes mid-stream is not killed by it.
+    ///
+    /// The server writes a real first byte before pausing — an empty flush does not
+    /// reliably commit headers, and a test written that way measures delayed headers
+    /// instead of a slow body, which is the mistake this test exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task UnderResponseHeadersRead_TheClientTimeoutDoesNotCoverTheBodyRead()
+    {
+        using var server = new SlowBodyServer(
+            bodyDelay: TimeSpan.FromSeconds(2), commitHeadersFirst: true);
+        using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(400) };
 
         using var resp = await http.SendAsync(
             new HttpRequestMessage(HttpMethod.Post, server.Url),
@@ -749,34 +764,8 @@ public class UpstreamTimeoutContractTests
         var body = await resp.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        Assert.Equal(SlowBodyServer.Payload, body);
+        Assert.EndsWith(SlowBodyServer.Payload, body, StringComparison.Ordinal);
     }
-
-    /// <summary>
-    /// Pins WHY the change was needed: with a finite coarse cap shorter than the
-    /// body's duration, the same buffered read is killed — even though no
-    /// inactivity budget is anywhere near elapsed. If this ever stops throwing, the
-    /// coarse cap has stopped bounding the buffered path and the test above proves
-    /// less than it claims.
-    /// </summary>
-    [Fact]
-    public async Task BufferedBody_WithAFiniteCoarseCap_IsKilled_ShowingWhyItWasRemoved()
-    {
-        using var server = new SlowBodyServer(bodyDelay: TimeSpan.FromSeconds(5));
-        using var http = new HttpClient
-        {
-            Timeout = TimeSpan.FromMilliseconds(300), // the pre-change shape, scaled down
-        };
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-        {
-            using var resp = await http.SendAsync(
-                new HttpRequestMessage(HttpMethod.Post, server.Url),
-                HttpCompletionOption.ResponseHeadersRead);
-            await resp.Content.ReadAsStringAsync();
-        });
-    }
-
     /// <summary>
     /// Loopback HTTP server that flushes response headers immediately and only then
     /// waits <c>bodyDelay</c> before writing the body — modelling a non-streaming
@@ -791,7 +780,7 @@ public class UpstreamTimeoutContractTests
         private readonly HttpListener _listener = new();
         private readonly CancellationTokenSource _cts = new();
 
-        public SlowBodyServer(TimeSpan bodyDelay)
+        public SlowBodyServer(TimeSpan bodyDelay, bool commitHeadersFirst = false)
         {
             // Port 0 is not supported by HttpListener; pick a high port and retry
             // past a collision so the suite never fights another local listener.
@@ -824,7 +813,17 @@ public class UpstreamTimeoutContractTests
                     {
                         ctx.Response.StatusCode = 200;
                         ctx.Response.SendChunked = true;
-                        await ctx.Response.OutputStream.FlushAsync();   // headers now
+                        if (commitHeadersFirst)
+                        {
+                            // An empty flush does NOT reliably put headers on the
+                            // wire; a real byte does. Without this the client is
+                            // still waiting for headers during the delay, and a test
+                            // meant to exercise a slow BODY silently measures a slow
+                            // header instead.
+                            await ctx.Response.OutputStream.WriteAsync(
+                                Encoding.UTF8.GetBytes("."), _cts.Token);
+                        }
+                        await ctx.Response.OutputStream.FlushAsync();
                         await Task.Delay(bodyDelay, _cts.Token);        // "thinking"
                         await ctx.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(Payload));
                         ctx.Response.Close();

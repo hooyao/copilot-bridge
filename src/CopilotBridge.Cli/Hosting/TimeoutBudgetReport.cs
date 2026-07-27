@@ -40,10 +40,16 @@ internal static class TimeoutBudgetReport
 
         if (!snapshot.Readable)
         {
+            // The client's bound is unknown, so the EFFECTIVE bound is unknown too —
+            // it is not "the bridge's budgets". A separately-configured client may
+            // hold a much shorter watchdog, and claiming otherwise would falsely
+            // reassure exactly the operator most likely to be bitten.
             log.LogInformation(
                 "Timeouts:  Claude Code client bounds unknown ({Reason}: {Path}) — "
-                + "effective end-to-end timeout is the bridge's own budgets",
+                + "effective end-to-end bound is therefore UNKNOWN; the bridge's own "
+                + "budgets above are the only ones it can vouch for",
                 snapshot.Reason, snapshot.SettingsPath);
+            WarnIfBudgetExceedsClientMaximum(log, budgets);
             return;
         }
 
@@ -65,6 +71,42 @@ internal static class TimeoutBudgetReport
         WarnIfUndercut(
             log, snapshot.RequestTimeout, budgets.FirstByteTimeoutSeconds,
             "first-byte", nameof(UpstreamTimeoutOptions.FirstByteTimeoutSeconds));
+        WarnIfBudgetExceedsClientMaximum(log, budgets);
+    }
+
+    /// <summary>
+    /// Warn when a bridge budget is larger than any value the client will honor. In
+    /// that state the derived client value is necessarily SHORTER than the budget,
+    /// so the client fires first no matter how often the operator re-runs the config
+    /// command — the only fix is lowering the budget, which the warning must say
+    /// instead of pointing at a remedy that cannot work.
+    /// </summary>
+    private static void WarnIfBudgetExceedsClientMaximum(ILogger log, UpstreamTimeoutOptions budgets)
+    {
+        if (ClaudeCodeTimeoutPolicy.StreamIdleBudgetExceedsClientMaximum(
+                budgets.StreamIdleTimeoutSeconds))
+        {
+            log.LogWarning(
+                "Timeouts:  StreamIdleTimeoutSeconds ({Budget}s) exceeds the largest value Claude Code "
+                + "honors for {Key} ({MaxMs}ms). The written client value is capped there, so the client "
+                + "will abort BEFORE this budget and re-running `{Command}` cannot fix it — lower the "
+                + "budget to at most {MaxSeconds}s.",
+                budgets.StreamIdleTimeoutSeconds, ClaudeCodeTimeoutPolicy.StreamIdleKey,
+                ClaudeCodeTimeoutPolicy.StreamIdleMaxMs, ConfigCommand,
+                ClaudeCodeTimeoutPolicy.StreamIdleMaxMs / 1000);
+        }
+
+        if (ClaudeCodeTimeoutPolicy.FirstByteBudgetExceedsClientMaximum(
+                budgets.FirstByteTimeoutSeconds))
+        {
+            log.LogWarning(
+                "Timeouts:  FirstByteTimeoutSeconds ({Budget}s) exceeds the largest value the bridge "
+                + "writes for {Key} ({MaxMs}ms). The client will abort BEFORE this budget and re-running "
+                + "`{Command}` cannot fix it — lower the budget to at most {MaxSeconds}s.",
+                budgets.FirstByteTimeoutSeconds, ClaudeCodeTimeoutPolicy.RequestTimeoutKey,
+                ClaudeCodeTimeoutPolicy.RequestTimeoutMaxMs, ConfigCommand,
+                ClaudeCodeTimeoutPolicy.RequestTimeoutMaxMs / 1000);
+        }
     }
 
     /// <summary>

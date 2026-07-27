@@ -112,4 +112,25 @@ internal static class ClaudeCodeTimeoutPolicy
         var ms = ((long)budgetSeconds + MarginSeconds) * 1000L;
         return ms >= maxMs ? maxMs : (int)ms;
     }
+
+    /// <summary>
+    /// True when <paramref name="budgetSeconds"/> is so large that no writable
+    /// client value can outlast it — the clamp would produce a bound SHORTER than
+    /// the bridge's own, so the client aborts first and the bridge's authority
+    /// silently inverts.
+    /// </summary>
+    /// <remarks>
+    /// This is a real configuration mistake, not a rounding artifact: the client
+    /// caps its idle bound at 30 minutes, so a stream-idle budget beyond that can
+    /// never be honored. Re-running <c>config claude-code</c> would deterministically
+    /// write the same insufficient value, so the operator has to lower the budget —
+    /// which is why the startup report must SAY so rather than emit a fix-it hint
+    /// that cannot work.
+    /// </remarks>
+    public static bool StreamIdleBudgetExceedsClientMaximum(int budgetSeconds) =>
+        budgetSeconds > 0 && (long)budgetSeconds * 1000L > StreamIdleMaxMs;
+
+    /// <inheritdoc cref="StreamIdleBudgetExceedsClientMaximum"/>
+    public static bool FirstByteBudgetExceedsClientMaximum(int budgetSeconds) =>
+        budgetSeconds > 0 && (long)budgetSeconds * 1000L > RequestTimeoutMaxMs;
 }
