@@ -148,29 +148,92 @@ public class DetectorCompositionTests
     {
         using var sp = BuildProvider();
 
-        HttpClient http1, http2;
+        IHttpClientFactory factory1, factory2;
         IAuthService auth1, auth2;
         ICopilotClient copilot1, copilot2;
         using (var scope = sp.CreateScope())
         {
             var p = scope.ServiceProvider;
-            http1 = p.GetRequiredService<HttpClient>();
+            factory1 = p.GetRequiredService<IHttpClientFactory>();
             auth1 = p.GetRequiredService<IAuthService>();
             copilot1 = p.GetRequiredService<ICopilotClient>();
         }
         using (var scope = sp.CreateScope())
         {
             var p = scope.ServiceProvider;
-            http2 = p.GetRequiredService<HttpClient>();
+            factory2 = p.GetRequiredService<IHttpClientFactory>();
             auth2 = p.GetRequiredService<IAuthService>();
             copilot2 = p.GetRequiredService<ICopilotClient>();
         }
 
         // Process-level shared resources: one instance across all request scopes.
-        // Notably no per-request HttpClient (the socket-exhaustion anti-pattern).
-        Assert.Same(http1, http2);
+        // The FACTORY is the shared thing — it owns the pooled handlers. Note there
+        // is deliberately no singleton HttpClient: capturing one would pin a single
+        // handler for the process lifetime and defeat the factory's rotation, and a
+        // per-request one would be the socket-exhaustion anti-pattern. Consumers
+        // create a client where they send.
+        Assert.Same(factory1, factory2);
         Assert.Same(auth1, auth2);
         Assert.Same(copilot1, copilot2);
+    }
+
+    [Fact]
+    public void EachUpstreamSurface_GetsItsOwnConnectionPool()
+    {
+        // Contract: the Anthropic, Responses, and auth surfaces must not share a
+        // connection pool. They target the same host and this bridge holds each
+        // connection open for minutes while a model thinks, so one shared pool
+        // would let a burst on one surface stall the others. Distinct handler
+        // chains per name is what makes them independent.
+        using var sp = BuildProvider();
+        var factory = sp.GetRequiredService<IHttpClientFactory>();
+
+        var names = new[]
+        {
+            UpstreamHttpClientNames.Anthropic,
+            UpstreamHttpClientNames.Responses,
+            UpstreamHttpClientNames.GitHubAuth,
+        };
+
+        var handlerField = typeof(HttpMessageInvoker).GetField(
+            "_handler",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(handlerField);
+
+        var handlers = names
+            .Select(n => handlerField!.GetValue(factory.CreateClient(n)))
+            .ToArray();
+
+        Assert.Equal(names.Length, handlers.Distinct().Count());
+
+        // Same name twice = same pooled handler, so a per-call CreateClient does
+        // not spin up a new connection pool on every request.
+        Assert.Same(
+            handlerField!.GetValue(factory.CreateClient(UpstreamHttpClientNames.Anthropic)),
+            handlerField.GetValue(factory.CreateClient(UpstreamHttpClientNames.Anthropic)));
+    }
+
+    [Fact]
+    public void ModelSurfaces_HaveNoCoarseRequestTimeout_ButAuthDoes()
+    {
+        // The model surfaces must not carry a whole-request cap: on the buffered
+        // (non-streaming) path such a cap bounds the entire request including the
+        // body, truncating a legitimately slow deep-thinking turn regardless of the
+        // configured first-byte budget. Auth keeps a finite one — a hung token call
+        // should fail fast rather than hang forever.
+        using var sp = BuildProvider();
+        var factory = sp.GetRequiredService<IHttpClientFactory>();
+
+        Assert.Equal(
+            Timeout.InfiniteTimeSpan,
+            factory.CreateClient(UpstreamHttpClientNames.Anthropic).Timeout);
+        Assert.Equal(
+            Timeout.InfiniteTimeSpan,
+            factory.CreateClient(UpstreamHttpClientNames.Responses).Timeout);
+
+        var authTimeout = factory.CreateClient(UpstreamHttpClientNames.GitHubAuth).Timeout;
+        Assert.NotEqual(Timeout.InfiniteTimeSpan, authTimeout);
+        Assert.True(authTimeout > TimeSpan.Zero);
     }
 
     [Fact]

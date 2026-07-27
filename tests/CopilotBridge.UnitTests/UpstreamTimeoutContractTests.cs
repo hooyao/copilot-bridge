@@ -159,7 +159,7 @@ public class UpstreamTimeoutContractTests
     {
         using var http = new HttpClient(new NeverRespondsHandler());
         var client = new CopilotClient(
-            http, new FakeAuth(), new CopilotHeaderFactory(),
+            new SingleClientHttpClientFactory(http), new FakeAuth(), new CopilotHeaderFactory(),
             Options.Create(new UpstreamRetryOptions { MaxRetries = 0 }),
             Options.Create(Timeouts(firstByteSeconds: 1, streamIdleSeconds: 0)),
             NullLogger<CopilotClient>.Instance);
@@ -180,7 +180,7 @@ public class UpstreamTimeoutContractTests
     {
         using var http = new HttpClient(new NeverRespondsHandler());
         var client = new CopilotClient(
-            http, new FakeAuth(), new CopilotHeaderFactory(),
+            new SingleClientHttpClientFactory(http), new FakeAuth(), new CopilotHeaderFactory(),
             Options.Create(new UpstreamRetryOptions { MaxRetries = 0 }),
             Options.Create(Timeouts(firstByteSeconds: 0, streamIdleSeconds: 0)),
             NullLogger<CopilotClient>.Instance);
@@ -204,7 +204,7 @@ public class UpstreamTimeoutContractTests
     {
         using var http = new HttpClient(new DelayedHandler(TimeSpan.FromMilliseconds(150)));
         var client = new CopilotClient(
-            http, new FakeAuth(), new CopilotHeaderFactory(),
+            new SingleClientHttpClientFactory(http), new FakeAuth(), new CopilotHeaderFactory(),
             Options.Create(new UpstreamRetryOptions { MaxRetries = 0 }),
             Options.Create(Timeouts(firstByteSeconds: 5, streamIdleSeconds: 0)),
             NullLogger<CopilotClient>.Instance);
@@ -229,7 +229,7 @@ public class UpstreamTimeoutContractTests
             delayBeforeOk: TimeSpan.FromMilliseconds(50));
         using var http = new HttpClient(handler);
         var client = new CopilotClient(
-            http, new FakeAuth(), new CopilotHeaderFactory(),
+            new SingleClientHttpClientFactory(http), new FakeAuth(), new CopilotHeaderFactory(),
             Options.Create(new UpstreamRetryOptions { MaxRetries = 2, BaseDelayMs = 100, BackoffMultiplier = 1.0, MaxDelayMs = 100 }),
             Options.Create(Timeouts(firstByteSeconds: 2, streamIdleSeconds: 0)),
             NullLogger<CopilotClient>.Instance);
@@ -251,7 +251,7 @@ public class UpstreamTimeoutContractTests
     {
         using var http = new HttpClient(new NeverRespondsHandler());
         var client = new CopilotClient(
-            http, new FakeAuth(), new CopilotHeaderFactory(),
+            new SingleClientHttpClientFactory(http), new FakeAuth(), new CopilotHeaderFactory(),
             Options.Create(new UpstreamRetryOptions { MaxRetries = 0 }),
             // A long budget so the timer does NOT fire first; the client cancels.
             Options.Create(Timeouts(firstByteSeconds: 30, streamIdleSeconds: 0)),
@@ -713,6 +713,137 @@ public class UpstreamTimeoutContractTests
         var o = 0;
         foreach (var p in parts) { p.CopyTo(buf, o); o += p.Length; }
         return buf;
+    }
+
+    // ── What the coarse HttpClient.Timeout actually bounded ──────────────────
+
+    /// <summary>
+    /// Contract: a metadata call (<c>/models</c>, <c>count_tokens</c>) must stay
+    /// bounded. These are read with <c>ResponseContentRead</c> and do NOT pass
+    /// through the first-byte / stream-idle budgets, so the client-level timeout is
+    /// their only bound — removing it would let them hang forever.
+    ///
+    /// Runs over a REAL loopback socket: HttpClient's timeout is enforced by its own
+    /// send/read machinery, which an in-process HttpMessageHandler stub bypasses, so
+    /// a stubbed version of this test would pass regardless and prove nothing.
+    /// </summary>
+    [Fact]
+    public async Task AMetadataStyleCall_StaysBoundedByItsClientTimeout()
+    {
+        using var server = new SlowBodyServer(bodyDelay: TimeSpan.FromSeconds(5));
+        using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(300) };
+
+        // ResponseContentRead: the timeout covers headers AND body, which is what
+        // makes it a real bound for these calls.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            http.SendAsync(
+                new HttpRequestMessage(HttpMethod.Post, server.Url),
+                HttpCompletionOption.ResponseContentRead));
+    }
+
+    /// <summary>
+    /// Pins the boundary that justifies leaving the turn surfaces uncapped: under
+    /// <c>ResponseHeadersRead</c> the client timeout covers only the wait for
+    /// HEADERS. Once headers are on the wire the body read is NOT covered, so a
+    /// model that thinks for minutes mid-stream is not killed by it.
+    ///
+    /// The server writes a real first byte before pausing — an empty flush does not
+    /// reliably commit headers, and a test written that way measures delayed headers
+    /// instead of a slow body, which is the mistake this test exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task UnderResponseHeadersRead_TheClientTimeoutDoesNotCoverTheBodyRead()
+    {
+        using var server = new SlowBodyServer(
+            bodyDelay: TimeSpan.FromSeconds(2), commitHeadersFirst: true);
+        using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(400) };
+
+        using var resp = await http.SendAsync(
+            new HttpRequestMessage(HttpMethod.Post, server.Url),
+            HttpCompletionOption.ResponseHeadersRead);
+        var body = await resp.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.EndsWith(SlowBodyServer.Payload, body, StringComparison.Ordinal);
+    }
+    /// <summary>
+    /// Loopback HTTP server that flushes response headers immediately and only then
+    /// waits <c>bodyDelay</c> before writing the body — modelling a non-streaming
+    /// turn where the model thinks before producing any output. Charges the delay to
+    /// the body read, which a coarse whole-request timeout bounds and a first-byte
+    /// budget does not.
+    /// </summary>
+    private sealed class SlowBodyServer : IDisposable
+    {
+        public const string Payload = "slow-but-complete";
+
+        private readonly HttpListener _listener = new();
+        private readonly CancellationTokenSource _cts = new();
+
+        public SlowBodyServer(TimeSpan bodyDelay, bool commitHeadersFirst = false)
+        {
+            // Port 0 is not supported by HttpListener; pick a high port and retry
+            // past a collision so the suite never fights another local listener.
+            for (var attempt = 0; ; attempt++)
+            {
+                var port = 19_600 + Random.Shared.Next(0, 300);
+                Url = $"http://127.0.0.1:{port}/";
+                _listener.Prefixes.Clear();
+                _listener.Prefixes.Add(Url);
+                try
+                {
+                    _listener.Start();
+                    break;
+                }
+                catch (HttpListenerException) when (attempt < 20)
+                {
+                    // try another port
+                }
+            }
+
+            _ = Task.Run(async () =>
+            {
+                while (!_cts.IsCancellationRequested)
+                {
+                    HttpListenerContext ctx;
+                    try { ctx = await _listener.GetContextAsync(); }
+                    catch { return; }
+
+                    try
+                    {
+                        ctx.Response.StatusCode = 200;
+                        ctx.Response.SendChunked = true;
+                        if (commitHeadersFirst)
+                        {
+                            // An empty flush does NOT reliably put headers on the
+                            // wire; a real byte does. Without this the client is
+                            // still waiting for headers during the delay, and a test
+                            // meant to exercise a slow BODY silently measures a slow
+                            // header instead.
+                            await ctx.Response.OutputStream.WriteAsync(
+                                Encoding.UTF8.GetBytes("."), _cts.Token);
+                        }
+                        await ctx.Response.OutputStream.FlushAsync();
+                        await Task.Delay(bodyDelay, _cts.Token);        // "thinking"
+                        await ctx.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(Payload));
+                        ctx.Response.Close();
+                    }
+                    catch
+                    {
+                        // Client gave up (the finite-cap case) — expected.
+                    }
+                }
+            });
+        }
+
+        public string Url { get; }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            try { _listener.Stop(); } catch { }
+            _cts.Dispose();
+        }
     }
 
     // A handler that never returns until its token is cancelled — models an

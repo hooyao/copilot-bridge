@@ -15,7 +15,21 @@ namespace CopilotBridge.Cli.Hosting.ClientConfig;
 /// mid-stream). Retained as a detector-state fact for status/reporting; Claude Code
 /// configuration no longer disables non-streaming fallback because real 2.1.207
 /// uses that request as its recovery path.</param>
-internal sealed record BridgeConnection(int Port, bool NeedNonStreamingFallbackDisabled)
+/// <param name="ClaudeCodeStreamIdleTimeoutMs">Value to force-write for Claude
+/// Code's <c>CLAUDE_STREAM_IDLE_TIMEOUT_MS</c>, derived from the bridge's
+/// stream-idle budget so the client's idle watchdogs outlast it. See
+/// <see cref="ClaudeCodeTimeoutPolicy"/>.</param>
+/// <param name="ClaudeCodeRequestTimeoutMs">Value to force-write for Claude
+/// Code's <c>API_TIMEOUT_MS</c>: a <b>fixed</b> residual whole-request ceiling,
+/// NOT derived from any budget. It is a wall-clock cap while the bridge's budgets
+/// bound inactivity, so no finite value can be guaranteed to outlast them; it is
+/// still raised because it also caps each attempt of the client's non-streaming
+/// recovery request. See <see cref="ClaudeCodeTimeoutPolicy.RequestTimeoutMs"/>.</param>
+internal sealed record BridgeConnection(
+    int Port,
+    bool NeedNonStreamingFallbackDisabled,
+    int ClaudeCodeStreamIdleTimeoutMs,
+    int ClaudeCodeRequestTimeoutMs)
 {
     /// <summary>Base URL Claude Code points <c>ANTHROPIC_BASE_URL</c> at.</summary>
     public string ClaudeCodeBaseUrl => $"http://localhost:{Port}/cc";

@@ -351,7 +351,7 @@ public class CopilotGapProbes
         // GitHub's token-exchange endpoint 403s ("User-Agent required") without
         // one — PlaygroundClient sets this; a hand-rolled client must too.
         http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-playground/0.1");
-        var auth = new AuthService(http);
+        var auth = new AuthService(new SingleClientHttpClientFactory(http));
         try
         {
             var token = await auth.GetCopilotTokenAsync();

@@ -26,7 +26,7 @@ internal sealed class PlaygroundClient : IDisposable
     {
         _http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-playground/0.1");
-        _auth = new AuthService(_http);
+        _auth = new AuthService(new SingleClientHttpClientFactory(_http));
         _headers = new CopilotHeaderFactory();
     }
 

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -55,6 +56,27 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
 
     /// <summary>The managed value both 1M-context env keys are force-written to.</summary>
     private const string ManagedFlagOn = "1";
+
+    /// <summary>
+    /// Claude Code's streaming-idle env key. Force-written from the bridge's own
+    /// stream-idle budget so the client never aborts a healthy turn before the
+    /// bridge's budget applies — the bridge, not the client, decides when a
+    /// stalled turn ends. This is the ONLY knob that lifts both of Claude Code's
+    /// idle watchdogs (measured against 2.1.220): the byte-level watchdog derives
+    /// its budget from this value whenever its own key is unset, so setting the
+    /// byte-level key alone leaves the event-level one pinned at its floor. See
+    /// <c>docs/timeout-chain.md</c>.
+    /// </summary>
+    private const string StreamIdleTimeoutKey = ClaudeCodeTimeoutPolicy.StreamIdleKey;
+
+    /// <summary>
+    /// Claude Code's whole-request env key. Force-written from the bridge's
+    /// first-byte budget. It also bounds each attempt of the non-streaming
+    /// recovery request Claude Code issues after a streaming failure — the path
+    /// that yields no bytes until the model has finished, so a deep-thinking turn
+    /// needs it raised too.
+    /// </summary>
+    private const string RequestTimeoutKey = ClaudeCodeTimeoutPolicy.RequestTimeoutKey;
 
     private static readonly JsonSerializerOptions WriteOptions = new()
     {
@@ -116,6 +138,8 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
                 CurrentFallback: null,
                 ExpectedAssume1m: null, CurrentAssume1m: null,
                 ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+                ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
+                ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
                 Details: ["not configured (file does not exist)"]);
         }
 
@@ -139,6 +163,8 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
                 CurrentFallback: null,
                 ExpectedAssume1m: null, CurrentAssume1m: null,
                 ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
+                ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
+                ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
                 Details: ["file is not a JSON object (cannot read — run the config command to rewrite)"]);
         }
 
@@ -147,6 +173,12 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         var fallback = AsStringOrNull(env?[FallbackKey]);
         var assume1m = AsStringOrNull(env?[Assume1mKey]);
         var disableErrorReporting = AsStringOrNull(env?[DisableErrorReportingKey]);
+        var streamIdleTimeout = AsStringOrNull(env?[StreamIdleTimeoutKey]);
+        var requestTimeout = AsStringOrNull(env?[RequestTimeoutKey]);
+        var expectedStreamIdle =
+            connection.ClaudeCodeStreamIdleTimeoutMs.ToString(CultureInfo.InvariantCulture);
+        var expectedRequestTimeout =
+            connection.ClaudeCodeRequestTimeoutMs.ToString(CultureInfo.InvariantCulture);
 
         // "Configured for bridge" means the base URL points at THIS bridge's Claude Code
         // route (the `/cc` prefix), not merely that ANTHROPIC_BASE_URL is set — a config
@@ -169,6 +201,12 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         details.Add(disableErrorReporting is null
             ? $"{DisableErrorReportingKey}: (unset)"
             : $"{DisableErrorReportingKey}: {disableErrorReporting}");
+        details.Add(streamIdleTimeout is null
+            ? $"{StreamIdleTimeoutKey}: (unset)"
+            : $"{StreamIdleTimeoutKey}: {streamIdleTimeout}");
+        details.Add(requestTimeout is null
+            ? $"{RequestTimeoutKey}: (unset)"
+            : $"{RequestTimeoutKey}: {requestTimeout}");
 
         return new ConfigState(ClientId, scope, path, Exists: true,
             ConfiguredForBridge: pointsAtBridge, CurrentBaseUrl: pointsAtBridge ? current : null,
@@ -183,6 +221,14 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
             CurrentAssume1m: pointsAtBridge ? assume1m : null,
             ExpectedDisableErrorReporting: ManagedFlagOn,
             CurrentDisableErrorReporting: pointsAtBridge ? disableErrorReporting : null,
+            // Same rule for the timeout keys, except the expected value is DERIVED from
+            // the current budgets — so raising a budget without re-running the config
+            // command reads as drift, which is exactly when the client has stopped
+            // outlasting the bridge.
+            ExpectedStreamIdleTimeout: expectedStreamIdle,
+            CurrentStreamIdleTimeout: pointsAtBridge ? streamIdleTimeout : null,
+            ExpectedRequestTimeout: expectedRequestTimeout,
+            CurrentRequestTimeout: pointsAtBridge ? requestTimeout : null,
             Details: details);
     }
 
@@ -223,6 +269,23 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         summary.Add($"set env.{Assume1mKey} = {ManagedFlagOn} (1M context on native-1M models, survives --resume)");
         env[DisableErrorReportingKey] = ManagedFlagOn;
         summary.Add($"set env.{DisableErrorReportingKey} = {ManagedFlagOn} (keep error-reporting telemetry off)");
+
+        // Long-thinking timeouts — force-written from the bridge's own budgets so the
+        // client outlasts them. Copilot sends no keepalive while a model thinks, so a
+        // deep-thinking turn is legitimately silent for minutes; without these the
+        // client aborts a healthy stream and the bridge's budget never applies.
+        // Takes effect on Claude Code's NEXT start (it reads env at process start).
+        var streamIdle = connection.ClaudeCodeStreamIdleTimeoutMs.ToString(CultureInfo.InvariantCulture);
+        env[StreamIdleTimeoutKey] = streamIdle;
+        summary.Add(
+            $"set env.{StreamIdleTimeoutKey} = {streamIdle} "
+            + "(outlasts the bridge stream-idle budget; effective on Claude Code's next start)");
+        var requestTimeout = connection.ClaudeCodeRequestTimeoutMs.ToString(CultureInfo.InvariantCulture);
+        env[RequestTimeoutKey] = requestTimeout;
+        summary.Add(
+            $"set env.{RequestTimeoutKey} = {requestTimeout} "
+            + "(fixed whole-request ceiling — a wall-clock cap the bridge cannot out-wait; "
+            + "raises the non-streaming recovery request's own limit)");
 
         // auth token — fill only if absent; preserve any existing value.
         if (env[AuthTokenKey] is null)

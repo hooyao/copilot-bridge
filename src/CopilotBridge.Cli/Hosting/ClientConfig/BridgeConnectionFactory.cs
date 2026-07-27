@@ -34,6 +34,8 @@ internal static class BridgeConnectionFactory
             ?? new ToolInputValidationOptions();
         var runaway = config.GetSection("Pipeline:Detectors:RunawayGuard").Get<RunawayGuardOptions>()
             ?? new RunawayGuardOptions();
+        var upstreamTimeout = config.GetSection("Pipeline:UpstreamTimeout").Get<UpstreamTimeoutOptions>()
+            ?? new UpstreamTimeoutOptions();
 
         var port = cliPort ?? server.Port;
 
@@ -48,6 +50,14 @@ internal static class BridgeConnectionFactory
             (toolInput.Enabled && toolInput.PreserveStream) ||
             runaway.Enabled;
 
-        return new BridgeConnection(port, needFallback);
+        return new BridgeConnection(
+            port,
+            needFallback,
+            // Stream-idle is derived from the SAME budget the server enforces, so the
+            // client's idle watchdog outlasts it. The request timeout is NOT: it is a
+            // fixed wall-clock ceiling that cannot be guaranteed to outlast an
+            // inactivity-bounded call (see ClaudeCodeTimeoutPolicy.RequestTimeoutMs).
+            ClaudeCodeTimeoutPolicy.StreamIdleMsFor(upstreamTimeout.StreamIdleTimeoutSeconds),
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMs());
     }
 }

@@ -172,7 +172,7 @@ public class CopilotClientRetryTests
             StreamIdleTimeoutSeconds = 0,
         });
         return new CopilotClient(
-            http, new FakeAuth(), new CopilotHeaderFactory(), opts, timeoutOpts,
+            new SingleClientHttpClientFactory(http), new FakeAuth(), new CopilotHeaderFactory(), opts, timeoutOpts,
             NullLogger<CopilotClient>.Instance);
     }
 

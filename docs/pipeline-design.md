@@ -384,10 +384,13 @@ prompt cache) is never aborted.
   body read). Because it wraps each `SendAsync` individually, retry backoff never
   eats the budget. On expiry it throws `UpstreamTimeoutException(FirstByte)`,
   which is terminal (the transient-retry `when` clause does not catch it — a slow
-  upstream just times out again). Fills the gap left by `HttpClient.Timeout`,
-  which under `ResponseHeadersRead` covers only the headers phase and never the
-  SSE body.
-- **Stream-idle budget** (`StreamIdleTimeoutSeconds`, default 60) bounds the gap
+  upstream just times out again). This is the *sole* bound on that phase: the
+  shared `HttpClient` uses `Timeout.InfiniteTimeSpan`, replacing a coarse,
+  unconfigurable cap that — under `ResponseHeadersRead`, which both forward paths
+  use — bounded the same header phase anyway, on buffered and streaming responses
+  alike. Note this budget is disarmed once headers arrive, so a **buffered** body
+  that stalls afterwards has no bound today. See `docs/timeout-chain.md`.
+- **Stream-idle budget** (`StreamIdleTimeoutSeconds`, default 240) bounds the gap
   between consecutive SSE events, reset on every event pulled from upstream. Each
   read is driven by the shared `StreamIdleReader`, which races `MoveNextAsync`
   against an independent `Task.Delay(idle)` rather than arming/disarming a
@@ -398,14 +401,17 @@ prompt cache) is never aborted.
   synchronously (the next event is already buffered) takes an allocation-free fast
   path; only a real wait on the network allocates the race scaffolding, and on an
   idle timeout the pending read is cancelled and awaited so it never dangles.
-  Default 60s sits *below* Claude Code's own opt-in stream watchdog
-  (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`, default 90s) so the bridge is the earlier
-  deterministic actor. On expiry the upstream strategy throws
+  The bridge is the earlier deterministic actor by construction: `config
+  claude-code` derives Claude Code's `CLAUDE_STREAM_IDLE_TIMEOUT_MS` from this
+  budget plus a margin, so the client always outlasts it, and startup warns if it
+  does not (see `docs/timeout-chain.md`). On expiry the upstream strategy throws
   `UpstreamTimeoutException(StreamIdle)` through the hub stream; the downstream
-  client edge selects the protocol-specific failure surface (see below). The 60s
-  default is unchanged by the downstream-framing fix: an observation cancelled at
-  that deadline is right-censored and cannot establish whether upstream would
-  later have resumed, so timeout tuning remains a separate operator decision.
+  client edge selects the protocol-specific failure surface (see below). An
+  observation cancelled at that deadline is right-censored and cannot establish
+  whether upstream would later have resumed, so timeout tuning remains a separate
+  operator decision — note Copilot sends no keepalive during extended thinking, so
+  240s covers ordinary long thinking, but a measured opus-5 turn at effort=xhigh
+  stayed silent for 600s, so consistently deep workloads want more.
 
 Each budget disables at `<= 0` (no timer armed, no allocation — the byte-identical
 `/cc` passthrough hot path is unchanged). Surfacing, mapped by the endpoint's one

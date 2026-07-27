@@ -1,3 +1,5 @@
+using CopilotBridge.Cli.Copilot;
+
 namespace CopilotBridge.Cli.Auth;
 
 /// <summary>
@@ -16,8 +18,7 @@ public sealed class AuthService : IAuthService, IDisposable
     private static readonly TimeSpan RefreshFailureBackoff = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan FreshnessSlack = TimeSpan.FromSeconds(60);
 
-    private readonly GitHubAuthClient _gitHubClient;
-    private readonly CopilotTokenClient _copilotTokenClient;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly Action<DeviceCodeChallenge> _onDeviceCodeIssued;
     private readonly SemaphoreSlim _fetchLock = new(1, 1);
 
@@ -25,10 +26,9 @@ public sealed class AuthService : IAuthService, IDisposable
     private Timer? _refreshTimer;
     private bool _disposed;
 
-    public AuthService(HttpClient http, Action<DeviceCodeChallenge>? onDeviceCodeIssued = null)
+    public AuthService(IHttpClientFactory httpClientFactory, Action<DeviceCodeChallenge>? onDeviceCodeIssued = null)
     {
-        _gitHubClient = new GitHubAuthClient(http);
-        _copilotTokenClient = new CopilotTokenClient(http);
+        _httpClientFactory = httpClientFactory;
         _onDeviceCodeIssued = onDeviceCodeIssued ?? (_ => { });
     }
 
@@ -55,13 +55,14 @@ public sealed class AuthService : IAuthService, IDisposable
         var existing = TokenStore.TryLoad();
         if (existing is not null) return existing;
 
-        var deviceCode = await _gitHubClient.RequestDeviceCodeAsync(ct);
+        var http = _httpClientFactory.CreateClient(UpstreamHttpClientNames.GitHubAuth);
+        var deviceCode = await GitHubAuthClient.RequestDeviceCodeAsync(http, ct);
         _onDeviceCodeIssued(new DeviceCodeChallenge(
             deviceCode.UserCode,
             deviceCode.VerificationUri,
             TimeSpan.FromSeconds(deviceCode.ExpiresIn)));
 
-        var token = await _gitHubClient.PollAccessTokenAsync(deviceCode, ct);
+        var token = await GitHubAuthClient.PollAccessTokenAsync(http, deviceCode, ct);
         TokenStore.Save(token);
         return token;
     }
@@ -119,7 +120,8 @@ public sealed class AuthService : IAuthService, IDisposable
 
     private async Task<CopilotTokenSnapshot> FetchAndCacheAsync(string githubToken, CancellationToken ct)
     {
-        var response = await _copilotTokenClient.FetchAsync(githubToken, ct);
+        var http = _httpClientFactory.CreateClient(UpstreamHttpClientNames.GitHubAuth);
+        var response = await CopilotTokenClient.FetchAsync(http, githubToken, ct);
 
         var snapshot = new CopilotTokenSnapshot(
             Token: response.Token,

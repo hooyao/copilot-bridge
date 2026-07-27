@@ -101,21 +101,57 @@ internal static class BridgeServiceCollectionExtensions
         });
 
         // --- HTTP + auth + Copilot client ---------------------------------
-        // HttpClient and AuthService keep factory registrations: the former
-        // needs UserAgent setup, the latter takes the closure-captured
+        // One named client per upstream surface, so each gets its own connection
+        // pool — see UpstreamHttpClientNames for why sharing one is a hazard here.
+        // Microsoft.Extensions.Http ships in the ASP.NET shared framework, so this
+        // adds no package and no AOT/size cost.
+        //
+        // The two MODEL surfaces carry NO coarse whole-request timeout. Under
+        // ResponseHeadersRead — which BOTH PostMessagesAsync and PostResponsesAsync
+        // use — HttpClient.Timeout only ever bounded the wait for HEADERS, on
+        // buffered and streaming responses alike (verified against a real socket by
+        // UnderResponseHeadersRead_TheClientTimeoutDoesNotCoverTheBodyRead). So this
+        // is not "removing a body bound": it REPLACES a coarse, unconfigurable header
+        // cap with the configured, per-attempt FirstByteTimeoutSeconds budget, which
+        // bounds the same phase and can be tuned. Note the body after headers is
+        // bounded only by StreamIdleTimeoutSeconds on the streaming path; a stalled
+        // BUFFERED body has no bound (see UpstreamTimeoutOptions). See
+        // docs/timeout-chain.md.
+        services.AddHttpClient(UpstreamHttpClientNames.Anthropic, http =>
+        {
+            http.Timeout = Timeout.InfiniteTimeSpan;
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
+        });
+        services.AddHttpClient(UpstreamHttpClientNames.Responses, http =>
+        {
+            http.Timeout = Timeout.InfiniteTimeSpan;
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
+        });
+        // Auth keeps a finite timeout: these are short token calls on a refresh
+        // timer, never long-lived streams, and a hung one should fail fast.
+        services.AddHttpClient(UpstreamHttpClientNames.GitHubAuth, http =>
+        {
+            http.Timeout = TimeSpan.FromSeconds(30);
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
+        });
+        // Metadata (/models, count_tokens) likewise keeps a finite timeout. These
+        // are NOT turn forwards, so they never pass through the first-byte /
+        // stream-idle budgets — without a client-level cap they would have no bound
+        // at all. Longer than auth because count_tokens on a near-full context is
+        // slower than a token exchange, but still far short of a model turn.
+        services.AddHttpClient(UpstreamHttpClientNames.Metadata, http =>
+        {
+            http.Timeout = TimeSpan.FromMinutes(2);
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
+        });
+        // AuthService keeps a factory registration: it takes the closure-captured
         // deviceCodePrinter (DI can't supply it). Everything else with a
         // straightforward constructor uses the two-param overload so the
         // container does its own activation — fewer moving pieces, same
         // AOT-safety (Microsoft.Extensions.DependencyInjection's two-param
         // AddSingleton<TService, TImpl> is trim-clean since .NET 8).
-        services.AddSingleton(_ =>
-        {
-            var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
-            return http;
-        });
         services.AddSingleton(sp => new AuthService(
-            sp.GetRequiredService<HttpClient>(),
+            sp.GetRequiredService<IHttpClientFactory>(),
             deviceCodePrinter));
         // Forwarding singleton — same AuthService instance reachable through
         // both the concrete type and the IAuthService interface. Must stay

@@ -9,11 +9,16 @@ namespace CopilotBridge.Cli.Auth;
 /// Exchanges a GitHub OAuth token for a short-lived Copilot bearer token via
 /// <c>GET /copilot_internal/v2/token</c>. Implementation detail of <see cref="AuthService"/>.
 /// </summary>
-internal sealed class CopilotTokenClient(HttpClient http)
+/// <remarks>
+/// Stateless: the caller creates an <see cref="HttpClient"/> at its own call site
+/// and passes it in, so nothing here holds one.
+/// </remarks>
+internal static class CopilotTokenClient
 {
     private const string TokenUrl = "https://api.github.com/copilot_internal/v2/token";
 
-    public async ValueTask<CopilotTokenResponse> FetchAsync(string githubToken, CancellationToken ct = default)
+    public static async ValueTask<CopilotTokenResponse> FetchAsync(
+        HttpClient http, string githubToken, CancellationToken ct = default)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, TokenUrl);
         req.Headers.Authorization = new AuthenticationHeaderValue("token", githubToken);
