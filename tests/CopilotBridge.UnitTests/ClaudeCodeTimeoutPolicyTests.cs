@@ -405,6 +405,24 @@ public class ClaudeCodeTimeoutPolicyTests
         // the ceiling genuinely helps even though it guarantees nothing for a stream.
         Assert.True(
             ClaudeCodeTimeoutPolicy.RequestTimeoutMs()
+            > ClaudeCodeTimeoutPolicy.AbsentFallbackRequestTimeoutDefaultMs);
+        // ...and the primary-request default too, which is the larger of the two.
+        Assert.True(
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMs()
             > ClaudeCodeTimeoutPolicy.AbsentRequestTimeoutDefaultMs);
+    }
+
+    [Fact]
+    public void The_two_absent_request_defaults_are_mode_specific()
+    {
+        // Claude Code's SDK whole-request default (600 s) and its non-streaming
+        // fallback per-attempt default (300 s) are different bounds. Collapsing them
+        // to one number would label the primary request with a limit that only
+        // applies to the recovery attempt.
+        Assert.Equal(600_000, ClaudeCodeTimeoutPolicy.AbsentRequestTimeoutDefaultMs);
+        Assert.Equal(300_000, ClaudeCodeTimeoutPolicy.AbsentFallbackRequestTimeoutDefaultMs);
+        Assert.True(
+            ClaudeCodeTimeoutPolicy.AbsentRequestTimeoutDefaultMs
+            > ClaudeCodeTimeoutPolicy.AbsentFallbackRequestTimeoutDefaultMs);
     }
 }

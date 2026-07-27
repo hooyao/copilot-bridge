@@ -115,7 +115,11 @@ internal static class TimeoutBudgetReport
             + "inactivity budget — the bridge cannot out-wait it, so a turn running longer than "
             + "this ends at the client regardless of the budgets above",
             requestTimeout.Key,
-            requestTimeout.IsExplicit ? FormatMs(ms) : $"{FormatMs(ms)} (unset — client default)");
+            requestTimeout.IsExplicit
+                ? FormatMs(ms)
+                : $"{FormatMs(ms)} primary / "
+                  + $"{FormatMs(ClaudeCodeTimeoutPolicy.AbsentFallbackRequestTimeoutDefaultMs)} "
+                  + "per non-streaming recovery attempt (unset — client defaults)");
     }
 
     /// <summary>

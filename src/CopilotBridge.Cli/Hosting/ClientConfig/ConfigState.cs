@@ -41,8 +41,8 @@ namespace CopilotBridge.Cli.Hosting.ClientConfig;
 /// <param name="CurrentStreamIdleTimeout">The value currently stored for that key,
 /// or <c>null</c> if unset / not pointed at the bridge.</param>
 /// <param name="ExpectedRequestTimeout">The value the bridge would force-write for
-/// <c>API_TIMEOUT_MS</c>, derived from its first-byte budget, or <c>null</c> for a
-/// client that does not manage it (Codex).</param>
+/// <c>API_TIMEOUT_MS</c> — a fixed residual ceiling, independent of every budget —
+/// or <c>null</c> for a client that does not manage it (Codex).</param>
 /// <param name="CurrentRequestTimeout">The value currently stored for that key, or
 /// <c>null</c> if unset / not pointed at the bridge.</param>
 /// <param name="Details">Extra human-readable lines (e.g. the fallback-env state)

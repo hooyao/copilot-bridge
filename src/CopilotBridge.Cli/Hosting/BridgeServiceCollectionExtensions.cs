@@ -107,16 +107,16 @@ internal static class BridgeServiceCollectionExtensions
         // adds no package and no AOT/size cost.
         //
         // The two MODEL surfaces carry NO coarse whole-request timeout. Under
-        // ResponseHeadersRead such a cap bounds only the wait for headers on the
-        // streaming path, but on the BUFFERED path it bounds the entire request
-        // including the body — exactly the non-streaming request Claude Code issues
-        // to recover a failed streaming turn. A deep-thinking turn legitimately
-        // exceeds any fixed cap there, so the former 10-minute value silently
-        // truncated it regardless of FirstByteTimeoutSeconds. The two fine-grained
-        // Pipeline:UpstreamTimeout budgets are the sole upstream bound; they bound
-        // IDLE time, not total duration, so a slow-but-progressing request is never
-        // killed. Consequence: disabling BOTH budgets leaves the call genuinely
-        // unbounded. See docs/timeout-chain.md.
+        // ResponseHeadersRead — which BOTH PostMessagesAsync and PostResponsesAsync
+        // use — HttpClient.Timeout only ever bounded the wait for HEADERS, on
+        // buffered and streaming responses alike (verified against a real socket by
+        // UnderResponseHeadersRead_TheClientTimeoutDoesNotCoverTheBodyRead). So this
+        // is not "removing a body bound": it REPLACES a coarse, unconfigurable header
+        // cap with the configured, per-attempt FirstByteTimeoutSeconds budget, which
+        // bounds the same phase and can be tuned. Note the body after headers is
+        // bounded only by StreamIdleTimeoutSeconds on the streaming path; a stalled
+        // BUFFERED body has no bound (see UpstreamTimeoutOptions). See
+        // docs/timeout-chain.md.
         services.AddHttpClient(UpstreamHttpClientNames.Anthropic, http =>
         {
             http.Timeout = Timeout.InfiniteTimeSpan;

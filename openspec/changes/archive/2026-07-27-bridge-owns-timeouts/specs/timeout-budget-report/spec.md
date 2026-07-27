@@ -1,13 +1,21 @@
 ## ADDED Requirements
 
-### Requirement: The shortest visible timeout bound is reported at startup
+### Requirement: Timeout bounds are reported per phase at startup
 
-The bridge SHALL report, once at startup, the **shortest timeout bound it can
-see** for a long-thinking turn, derived from both sides: its own configured
-upstream budgets (`Pipeline:UpstreamTimeout`) and the timeout-governing
-environment values stored in Claude Code's **global** settings file. The report
-SHALL name each contributing bound and its source, so an operator can see the
-limit without reverse-engineering it from two separate config files.
+The bridge SHALL report, once at startup, which timeout bounds apply to a
+long-thinking turn, from both sides: its own configured upstream budgets
+(`Pipeline:UpstreamTimeout`) and the timeout-governing environment values stored
+in Claude Code's **global** settings file. The report SHALL name each contributing
+bound and its source, so an operator can see the limits without
+reverse-engineering them from two separate config files.
+
+Bounds SHALL be reported **per phase**, and the report SHALL NOT reduce them to a
+single minimum. They do not compete over the same interval: the first-byte budget
+is disarmed the moment response headers arrive, the stream-idle bounds then govern
+each silent gap, and the client's whole-request cap is wall-clock across all of
+them. A single minimum would therefore misreport the real exposure — with a 60 s
+first-byte budget and a 600 s stream-idle budget it would announce 60 s for a turn
+whose exposure after headers is 600 s.
 
 The report SHALL NOT present that value as the definitive end-to-end bound. Only
 global client settings are readable from startup: a project-scoped
@@ -32,7 +40,7 @@ imposing no bound, and SHALL NOT be treated as the shortest bound.
 #### Scenario: Client is configured to outlast the bridge
 
 - **WHEN** the bridge starts and Claude Code's settings hold timeout values that are all longer than the bridge's configured budgets
-- **THEN** the startup report names the bridge's own budgets as the shortest bound it can see
+- **THEN** the startup report names the bridge's own budgets for each phase they govern
 - **AND** the report is emitted exactly once, at startup, and startup proceeds normally.
 
 #### Scenario: Client settings are absent or unreadable
@@ -129,3 +137,9 @@ warning would fire on correct configurations and no value would silence it.
 - **WHEN** the bridge reports the shortest bound it can see from its budgets and the global client settings
 - **THEN** the report identifies the client contribution as coming from global settings
 - **AND** states that a project-scoped override may be shorter and is not visible from startup.
+
+#### Scenario: Bounds governing different phases are not collapsed into one number
+
+- **WHEN** the first-byte budget and the stream-idle budget differ
+- **THEN** the report states each against the phase it governs
+- **AND** it does not present a single minimum across them as the bound for the turn.

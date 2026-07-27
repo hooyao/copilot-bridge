@@ -47,6 +47,20 @@ internal static class ClaudeCodeTimeoutPolicy
     public const int MarginSeconds = 300;
 
     /// <summary>
+    /// Floor Claude Code applies to the <b>event-level</b> idle watchdog:
+    /// <c>m7i()</c> is <c>Math.max(env, 300000)</c>, so a smaller stored value
+    /// cannot lower that watchdog below 300 s.
+    /// </summary>
+    /// <remarks>
+    /// It is NOT a floor on the effective bound. The <b>byte-level</b> watchdog
+    /// (<c>h7i()</c>) clamps only to <c>[1, StreamIdleMaxMs]</c> and takes the raised
+    /// value directly, which is exactly how the 180 s first-party default is
+    /// reachable. So a stored 60000 yields event-level 300 s but byte-level 60 s,
+    /// and the byte-level one binds — the effective bound is the MINIMUM of the two.
+    /// </remarks>
+    public const int EventWatchdogFloorMs = 300_000;
+
+    /// <summary>
     /// Ceiling Claude Code applies to <see cref="StreamIdleKey"/>. A larger
     /// value is silently reduced by the client, so the bridge clamps here —
     /// otherwise what it writes would not be what takes effect, and the startup
@@ -82,11 +96,21 @@ internal static class ClaudeCodeTimeoutPolicy
     public const int AbsentStreamIdleDefaultMs = 300_000;
 
     /// <summary>
-    /// Effective client whole-request bound (milliseconds) when
-    /// <see cref="RequestTimeoutKey"/> is absent. Claude Code's non-streaming
-    /// fallback uses this same 300 s per attempt.
+    /// Effective client whole-request bound (milliseconds) for the PRIMARY request
+    /// when <see cref="RequestTimeoutKey"/> is absent: Claude Code's SDK default is
+    /// 600 s. Distinct from <see cref="AbsentFallbackRequestTimeoutDefaultMs"/> —
+    /// reporting one number for both would label the primary request with a bound
+    /// that only applies to the recovery attempt.
     /// </summary>
-    public const int AbsentRequestTimeoutDefaultMs = 300_000;
+    public const int AbsentRequestTimeoutDefaultMs = 600_000;
+
+    /// <summary>
+    /// Effective client bound (milliseconds) for each attempt of the NON-STREAMING
+    /// recovery request when <see cref="RequestTimeoutKey"/> is absent: 300 s.
+    /// Shorter than the primary default, and the one that mattered in the original
+    /// failure — the recovery request produces no bytes until the model finishes.
+    /// </summary>
+    public const int AbsentFallbackRequestTimeoutDefaultMs = 300_000;
 
     /// <summary>
     /// Value to write for <see cref="StreamIdleKey"/>, derived from the bridge's

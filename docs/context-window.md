@@ -273,9 +273,13 @@ companion) into `settings.json` `env`, next to `ANTHROPIC_BASE_URL`:
 > Copilot sends no keepalive while a model thinks, a deep-thinking turn is
 > legitimately silent for minutes, so enabling the 1M window makes a long turn
 > *more* likely to be aborted by the client. `config claude-code` compensates by
-> also writing `CLAUDE_STREAM_IDLE_TIMEOUT_MS` and `API_TIMEOUT_MS` derived from
-> the bridge's own budgets, and the bridge warns at startup if either would fire
-> first. Full chain and measurements: [`timeout-chain.md`](timeout-chain.md).
+> writing `CLAUDE_STREAM_IDLE_TIMEOUT_MS`, derived from the bridge's stream-idle
+> budget so the client's idle watchdog outlasts it — and the bridge warns at
+> startup if it would fire first. It also raises `API_TIMEOUT_MS`, but to a fixed
+> ceiling rather than a derived value (a wall-clock cap cannot be guaranteed to
+> outlast an inactivity budget), so that one is reported as a residual bound and
+> produces no warning. Full chain and measurements:
+> [`timeout-chain.md`](timeout-chain.md).
 
 Measured end-to-end against real `claude.exe` 2.1.216 (plain `claude-opus-4-8`, no
 `[1m]`):

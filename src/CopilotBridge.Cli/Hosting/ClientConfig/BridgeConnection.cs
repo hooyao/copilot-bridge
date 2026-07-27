@@ -20,9 +20,11 @@ namespace CopilotBridge.Cli.Hosting.ClientConfig;
 /// stream-idle budget so the client's idle watchdogs outlast it. See
 /// <see cref="ClaudeCodeTimeoutPolicy"/>.</param>
 /// <param name="ClaudeCodeRequestTimeoutMs">Value to force-write for Claude
-/// Code's <c>API_TIMEOUT_MS</c>, derived from the bridge's first-byte budget.
-/// Bounds both the client's whole-request timeout and each attempt of its
-/// non-streaming recovery request.</param>
+/// Code's <c>API_TIMEOUT_MS</c>: a <b>fixed</b> residual whole-request ceiling,
+/// NOT derived from any budget. It is a wall-clock cap while the bridge's budgets
+/// bound inactivity, so no finite value can be guaranteed to outlast them; it is
+/// still raised because it also caps each attempt of the client's non-streaming
+/// recovery request. See <see cref="ClaudeCodeTimeoutPolicy.RequestTimeoutMs"/>.</param>
 internal sealed record BridgeConnection(
     int Port,
     bool NeedNonStreamingFallbackDisabled,

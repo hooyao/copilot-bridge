@@ -158,7 +158,7 @@ public class ClientConfigTests
     }
 
     [Fact]
-    public void Written_timeout_values_outlast_the_bridge_budgets()
+    public void Written_stream_idle_outlasts_its_budget_and_request_cap_is_the_fixed_maximum()
     {
         // The contract the capability exists for: whatever the operator configured,
         // the client must not abort before the bridge's own budget applies.
@@ -172,9 +172,14 @@ public class ClientConfigTests
         var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
 
         var streamIdleMs = int.Parse((string)env[ClaudeCodeTimeoutPolicy.StreamIdleKey]!);
-        var requestMs = int.Parse((string)env[ClaudeCodeTimeoutPolicy.RequestTimeoutKey]!);
         Assert.True(streamIdleMs > 600 * 1000, $"{streamIdleMs}ms must outlast the 600s stream-idle budget");
-        Assert.True(requestMs > 900 * 1000, $"{requestMs}ms must outlast the 900s first-byte budget");
+
+        // API_TIMEOUT_MS carries NO outlast guarantee — it is a fixed wall-clock
+        // ceiling and can legitimately be shorter than a configured budget (the old
+        // assertion only passed because this fixture's 900 s happens to sit under
+        // it). Assert what is actually contracted: it is the policy's fixed maximum.
+        var requestMs = int.Parse((string)env[ClaudeCodeTimeoutPolicy.RequestTimeoutKey]!);
+        Assert.Equal(ClaudeCodeTimeoutPolicy.RequestTimeoutMs(), requestMs);
     }
 
     [Fact]

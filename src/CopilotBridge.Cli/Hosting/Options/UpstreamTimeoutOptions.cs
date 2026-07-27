@@ -36,12 +36,17 @@ internal sealed class UpstreamTimeoutOptions
     /// against it). A near-full-context prompt legitimately takes minutes to first
     /// byte (cache creation), so this is generous by design. On timeout the bridge
     /// aborts the send and, because no bytes have reached the client, returns a
-    /// real <c>504 Gateway Timeout</c>. Also governs the buffered (non-streaming)
-    /// path end-to-end, and drives Claude Code's <c>API_TIMEOUT_MS</c> (this value
-    /// plus a margin). Default 240 (4 min), above a realistic cache-creation first
-    /// byte. <c>&lt;= 0</c> disables, leaving the phase unbounded — there is no
-    /// coarse client timeout behind it.
+    /// real <c>504 Gateway Timeout</c>. Default 240 (4 min), above a realistic
+    /// cache-creation first byte. <c>&lt;= 0</c> disables the bound.
     /// </summary>
+    /// <remarks>
+    /// <b>Bounds the header wait only</b>, in both streaming and buffered modes: the
+    /// timer is disarmed the moment response headers arrive, and the body is then
+    /// read with the caller's own token. A buffered (non-streaming) response that
+    /// stalls AFTER headers is therefore not bounded by this budget — nor by
+    /// anything else, since the coarse client timeout was removed. Bounding that
+    /// would need a separate body-inactivity budget, which this change does not add.
+    /// </remarks>
     public int FirstByteTimeoutSeconds { get; set; } = 240;
 
     /// <summary>

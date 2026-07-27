@@ -27,11 +27,18 @@ it SHALL be applied from outside the client's transient-retry loop, so that
 retry backoff delays do not consume the budget and each fresh send is granted
 the full budget.
 
-The configured budget SHALL be the sole bound on that phase. The shared upstream
-HTTP client SHALL NOT impose a coarse whole-request timeout of its own, because
-such a cap also bounds the **buffered (non-streaming) response body** — the path
-Claude Code uses to recover a failed streaming turn — and would silently truncate
-a legitimately slow turn at the coarse cap regardless of the configured budget.
+The configured budget SHALL be the sole bound on that phase, replacing the coarse
+whole-request timeout the shared upstream HTTP client previously imposed. That cap
+is removed because it was unconfigurable and redundant: both forward paths read
+with response-headers-only completion, under which it bounded the *same* header
+phase this budget now bounds — on buffered and streaming responses alike.
+
+The budget SHALL bound the header wait ONLY. Once response headers arrive the
+bridge SHALL disarm it and read the body under the caller's own cancellation, so
+this budget SHALL NOT be described as bounding a buffered response end-to-end. A
+buffered body that stalls after headers is consequently unbounded; bounding it
+would require a separate body-inactivity budget, which this capability does not
+define.
 
 The budget SHALL be independently configurable and SHALL be disable-able: a
 configured value of zero or less means the bridge imposes **no** first-byte bound
@@ -56,10 +63,11 @@ falling back to a coarse cap.
 - **WHEN** the first send fails transiently and the client retries after a backoff delay
 - **THEN** the retried send is granted the full first-byte budget, measured from the retry — the backoff delay is not counted against it.
 
-#### Scenario: A buffered response slower than the former coarse cap still completes
+#### Scenario: The budget stops at response headers
 
-- **WHEN** a non-streaming request's response takes longer than the previously hard-coded coarse client timeout but the configured first-byte budget has not elapsed
-- **THEN** the bridge does not abort the call, and the complete buffered body is returned to the client.
+- **WHEN** response headers arrive within the first-byte budget and the body then takes longer than that budget to arrive
+- **THEN** the bridge does not abort the call on this budget — it governs the header wait only
+- **AND** the complete body is returned to the client.
 
 #### Scenario: First-byte budget disabled
 

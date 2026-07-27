@@ -53,8 +53,10 @@ internal static class BridgeConnectionFactory
         return new BridgeConnection(
             port,
             needFallback,
-            // Derived from the SAME budgets the server enforces, so what the client
-            // stores is guaranteed to outlast what the bridge will actually apply.
+            // Stream-idle is derived from the SAME budget the server enforces, so the
+            // client's idle watchdog outlasts it. The request timeout is NOT: it is a
+            // fixed wall-clock ceiling that cannot be guaranteed to outlast an
+            // inactivity-bounded call (see ClaudeCodeTimeoutPolicy.RequestTimeoutMs).
             ClaudeCodeTimeoutPolicy.StreamIdleMsFor(upstreamTimeout.StreamIdleTimeoutSeconds),
             ClaudeCodeTimeoutPolicy.RequestTimeoutMs());
     }

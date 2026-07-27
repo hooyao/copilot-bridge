@@ -226,7 +226,8 @@ up first:
 ```
 Timeouts:  bridge first-byte 900s, stream-idle 600s (Pipeline:UpstreamTimeout — idle budgets, not total caps)
 Timeouts:  Claude Code stream-idle 15m, request 60m (global client env — applies on Claude Code's next start)
-Timeouts:  shortest bound from bridge + GLOBAL client settings: 10m (bridge stream-idle)
+Timeouts:  waiting for headers — bridge 900s; then per silent gap — bridge 600s vs
+           client 15m (whichever is shorter ends the turn)
 ```
 
 The last line is the number that matters: the shortest bound across *both* sides.

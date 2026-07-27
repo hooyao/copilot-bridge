@@ -15,8 +15,9 @@ outlast them. One bound stays outside that guarantee — see
 
 1. **Two bridge budgets** (`Pipeline:UpstreamTimeout`) bound *inactivity*, not
    total duration — a slow-but-progressing turn is never aborted:
-   - `FirstByteTimeoutSeconds` — waiting for response headers. Also bounds the
-     **buffered** (non-streaming) path end-to-end.
+   - `FirstByteTimeoutSeconds` — waiting for response headers, in **both** modes.
+     It is disarmed once headers arrive, so it does not bound a buffered body
+     end-to-end; a buffered response that stalls after headers has no bound today.
    - `StreamIdleTimeoutSeconds` — the gap between consecutive SSE events.
 2. **No coarse HTTP cap.** The shared upstream `HttpClient` uses
    `Timeout.InfiniteTimeSpan`. Setting **both** budgets `<= 0` therefore leaves
@@ -32,7 +33,8 @@ outlast them. One bound stays outside that guarantee — see
 ```
 Timeouts:  bridge first-byte 900s, stream-idle 600s (Pipeline:UpstreamTimeout — idle budgets, not total caps)
 Timeouts:  Claude Code stream-idle 15m, request 60m (global client env — applies on Claude Code's next start)
-Timeouts:  shortest bound from bridge + GLOBAL client settings: 10m (bridge stream-idle)
+Timeouts:  waiting for headers — bridge 900s; then per silent gap — bridge 600s vs
+           client 15m (whichever is shorter ends the turn)
 ```
 
 A `WARNING` naming a `CLAUDE_*` key means the client aborts first and the bridge's
@@ -95,7 +97,7 @@ clients the bridge never configured.
 | CC ④ non-streaming fallback | 300 s per attempt | on | `API_TIMEOUT_MS` |
 | Bridge ⑤ first-byte idle | 240 s | on | `FirstByteTimeoutSeconds` |
 | Bridge ⑥ stream-idle | 240 s | on | `StreamIdleTimeoutSeconds` |
-| Bridge ⑦ `HttpClient.Timeout` | **removed** (was 600 s) | — | — |
+| Bridge ⑦ `HttpClient.Timeout` | **removed** (was 600 s; bounded the header wait only) | — | — |
 | Bridge ⑧ Kestrel keep-alive | 900 s | hard-coded | — |
 
 ### The 180 s trap: a side effect of the bridge's own 1M-context flag

@@ -183,9 +183,12 @@ internal static class ClaudeCodeTimeoutReader
             && long.TryParse(raw.Trim(), out var parsed)
             && parsed > 0)
         {
-            // Report what the client will ACTUALLY apply. Claude Code silently caps
-            // this key, so echoing a larger stored number would overstate the bound —
-            // e.g. a hand-managed 9999999 is really 1800000.
+            // Report what the client will ACTUALLY apply. Claude Code caps this key,
+            // so echoing a larger stored number would overstate the bound (a stored
+            // 9999999 is really 1800000). No floor is applied: the 300 s floor lives
+            // in the EVENT-level watchdog only, while the byte-level one takes the
+            // value directly — so the smaller of the two still binds and the stored
+            // number is the honest report.
             var effective = clientMaxMs is { } max && parsed > max ? max : parsed;
             return new ClientTimeoutValue(key, (int)effective, IsExplicit: true);
         }
