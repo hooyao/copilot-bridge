@@ -114,7 +114,7 @@ public class TimeoutBudgetReportTests
         var overCeilingSeconds = (ClaudeCodeTimeoutPolicy.StreamIdleMaxMs / 1000) + 600;
         var path = WriteSettings(BridgePointedSettings(
             ClaudeCodeTimeoutPolicy.StreamIdleMsFor(overCeilingSeconds).ToString(),
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(900).ToString()));
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(900, 600).ToString()));
         var (events, log) = Recorder();
 
         TimeoutBudgetReport.Emit(
@@ -131,7 +131,7 @@ public class TimeoutBudgetReportTests
     {
         var path = WriteSettings(BridgePointedSettings(
             ClaudeCodeTimeoutPolicy.StreamIdleMsFor(600).ToString(),
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(900).ToString()));
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(900, 600).ToString()));
         var (events, log) = Recorder();
 
         TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
@@ -270,7 +270,7 @@ public class TimeoutBudgetReportTests
         {
             var path = WriteSettings(BridgePointedSettings(
                 ClaudeCodeTimeoutPolicy.StreamIdleMsFor(streamIdle).ToString(),
-                ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(firstByte).ToString()));
+                ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(firstByte, streamIdle).ToString()));
             var (events, log) = Recorder();
 
             TimeoutBudgetReport.Emit(Budgets(firstByte, streamIdle), log, path);

@@ -39,7 +39,7 @@ public class ClaudeCodeTimeoutPolicyTests
     {
         foreach (var budgetSeconds in new[] { 1, 60, 240, 900, 1800 })
         {
-            var writtenMs = ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(budgetSeconds);
+            var writtenMs = ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(budgetSeconds, budgetSeconds);
             Assert.True(
                 writtenMs > budgetSeconds * 1000,
                 $"budget {budgetSeconds}s -> written {writtenMs}ms must exceed the budget");
@@ -55,7 +55,7 @@ public class ClaudeCodeTimeoutPolicyTests
         Assert.True(
             ClaudeCodeTimeoutPolicy.StreamIdleMsFor(600) > ClaudeCodeTimeoutPolicy.StreamIdleMsFor(300));
         Assert.True(
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(900) > ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(300));
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(900, 900) > ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(300, 300));
     }
 
     [Theory]
@@ -71,7 +71,7 @@ public class ClaudeCodeTimeoutPolicyTests
             ClaudeCodeTimeoutPolicy.StreamIdleMsFor(disabledBudget));
         Assert.Equal(
             ClaudeCodeTimeoutPolicy.RequestTimeoutMaxMs,
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(disabledBudget));
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(disabledBudget, disabledBudget));
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public class ClaudeCodeTimeoutPolicyTests
         // produce a *shorter* client bound than the bridge's — the exact failure
         // this capability exists to prevent.
         Assert.True(ClaudeCodeTimeoutPolicy.StreamIdleMsFor(int.MaxValue) > 0);
-        Assert.True(ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(int.MaxValue) > 0);
+        Assert.True(ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(int.MaxValue, int.MaxValue) > 0);
         Assert.True(ClaudeCodeTimeoutPolicy.StreamIdleMsFor(int.MaxValue - 1) > 0);
     }
 
@@ -152,9 +152,9 @@ public class ClaudeCodeTimeoutPolicyTests
     [Fact]
     public void A_bridge_pointed_file_missing_a_key_is_known_bad_not_unknown()
     {
-        // The heart of the corrected design: absence is NOT unknown. The bridge's
-        // own _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL makes the client fall back
-        // to its 180 s first-party bound, so the bridge knows the number.
+        // The heart of the corrected design: absence is NOT unknown — the bridge knows
+        // which default applies. This file has no first-party flag, so the 300 s
+        // non-first-party floor is the real bound (see the first-party test below).
         var path = WriteSettings("""
             { "env": { "ANTHROPIC_BASE_URL": "http://localhost:8765/cc" } }
             """);
@@ -252,11 +252,14 @@ public class ClaudeCodeTimeoutPolicyTests
     }
 
     [Fact]
-    public void Repo_scoped_settings_win_over_global()
+    public void Repo_scoped_settings_are_reported_as_outside_what_the_bridge_can_see()
     {
-        // Contract: Claude Code layers ./.claude/settings.local.json OVER the global
-        // file, so a stale repo-scoped timeout is what actually applies. Reading only
-        // the global file would report safe values while the real bound kills turns.
+        // Contract: repo-scoped settings live in the CLAUDE SESSION's project dir,
+        // which the bridge cannot know — one long-running bridge serves sessions in
+        // many repos. Resolving "./.claude/settings.local.json" against the BRIDGE's
+        // own working directory would claim an unrelated file is authoritative, so
+        // the reader must NOT do it. It reads global only; the report discloses the
+        // gap.
         var dir = Path.Combine(Path.GetTempPath(), "cb-scope-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(dir, ".claude"));
         File.WriteAllText(
@@ -275,20 +278,87 @@ public class ClaudeCodeTimeoutPolicyTests
         {
             Environment.CurrentDirectory = dir;
 
-            // No explicit path => scope resolution applies.
             var snap = ClaudeCodeTimeoutReader.Read();
 
-            Assert.True(snap.Readable);
-            Assert.Equal(
+            // Whatever it read, it must not be the CWD-relative repo file.
+            Assert.NotEqual(
                 Path.Combine(dir, ".claude", "settings.local.json"),
                 snap.SettingsPath);
-            Assert.True(snap.StreamIdle.IsExplicit);
-            Assert.Equal(1000, snap.StreamIdle.EffectiveMs);
+            Assert.Equal(ClaudeCodeTimeoutReader.DefaultSettingsPath, snap.SettingsPath);
         }
         finally
         {
             Environment.CurrentDirectory = old;
             try { Directory.Delete(dir, true); } catch { }
         }
+    }
+
+    // ---- Absent-key default depends on the first-party flag ----
+
+    [Fact]
+    public void Absent_key_uses_the_first_party_default_only_when_that_flag_is_set()
+    {
+        // The 180 s bound is selected BY _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL,
+        // which the bridge writes for the 1M window. Applying it unconditionally
+        // would report a bound that does not exist for a hand-managed config.
+        var firstParty = WriteSettings("""
+            {
+              "env": {
+                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+                "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1"
+              }
+            }
+            """);
+
+        var snap = ClaudeCodeTimeoutReader.Read(firstParty);
+
+        Assert.True(snap.Readable);
+        Assert.False(snap.StreamIdle.IsExplicit);
+        Assert.Equal(
+            ClaudeCodeTimeoutPolicy.AbsentStreamIdleFirstPartyDefaultMs,
+            snap.StreamIdle.EffectiveMs);
+    }
+
+    [Fact]
+    public void Absent_key_without_the_first_party_flag_uses_the_longer_default()
+    {
+        var handManaged = WriteSettings("""
+            { "env": { "ANTHROPIC_BASE_URL": "http://localhost:8765/cc" } }
+            """);
+
+        var snap = ClaudeCodeTimeoutReader.Read(handManaged);
+
+        Assert.True(snap.Readable);
+        Assert.False(snap.StreamIdle.IsExplicit);
+        Assert.Equal(
+            ClaudeCodeTimeoutPolicy.AbsentStreamIdleDefaultMs, snap.StreamIdle.EffectiveMs);
+        Assert.True(
+            ClaudeCodeTimeoutPolicy.AbsentStreamIdleDefaultMs
+            > ClaudeCodeTimeoutPolicy.AbsentStreamIdleFirstPartyDefaultMs);
+    }
+
+    // ---- API_TIMEOUT_MS is a WHOLE-REQUEST cap ----
+
+    [Fact]
+    public void Request_timeout_outlasts_the_longest_phase_not_just_first_byte()
+    {
+        // Deriving from the first-byte budget alone wrote a value the stream-idle
+        // budget could outlive: first-byte 240 + stream-idle 600 gave 540 s, so the
+        // client aborted the whole request while the bridge still allowed a 600 s gap.
+        var writtenMs = ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(
+            firstByteBudgetSeconds: 240, streamIdleBudgetSeconds: 600);
+
+        Assert.True(
+            writtenMs > 600 * 1000,
+            $"{writtenMs}ms must outlast the 600s stream-idle budget, not just first-byte");
+    }
+
+    [Fact]
+    public void Request_timeout_still_outlasts_a_dominant_first_byte_budget()
+    {
+        var writtenMs = ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(
+            firstByteBudgetSeconds: 900, streamIdleBudgetSeconds: 60);
+
+        Assert.True(writtenMs > 900 * 1000);
     }
 }

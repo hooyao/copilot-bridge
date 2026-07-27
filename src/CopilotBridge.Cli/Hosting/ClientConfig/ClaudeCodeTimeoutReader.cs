@@ -62,45 +62,33 @@ internal static class ClaudeCodeTimeoutReader
         ".claude", "settings.json");
 
     /// <summary>
-    /// Repo-scoped settings path (<c>./.claude/settings.local.json</c>) — what
-    /// <c>config claude-code --scope repo</c> writes. Claude Code layers this OVER
-    /// the global file, so a stale repo-scoped value silently wins.
+    /// Inspect the Claude Code settings the bridge can actually see: the global
+    /// <c>~/.claude/settings.json</c>.
     /// </summary>
-    public static string RepoSettingsPath => Path.Combine(
-        Environment.CurrentDirectory, ".claude", "settings.local.json");
-
-    /// <summary>
-    /// Inspect the Claude Code settings that will actually apply, honoring scope
-    /// precedence: the repo-scoped file (if it exists and points at a bridge) wins
-    /// over the global one, because that is how Claude Code resolves them. Reading
-    /// only the global file would let a stale repo-scoped timeout kill the turn
-    /// while startup reported the global values as safe.
-    /// </summary>
-    /// <param name="settingsPath">Explicit file to read (tests). When supplied, no
-    /// scope resolution happens — that file is the answer.</param>
+    /// <remarks>
+    /// <para><b>Repo-scoped settings are deliberately NOT resolved here.</b>
+    /// <c>config claude-code --scope repo</c> writes
+    /// <c>./.claude/settings.local.json</c>, which Claude Code layers over the
+    /// global file — but "." means the <i>Claude session's</i> project directory,
+    /// which the bridge cannot know. A long-running bridge typically starts from its
+    /// install directory and serves sessions in many repositories at once, so
+    /// resolving that path against the bridge's own working directory would be
+    /// meaningless at best and actively misleading at worst (claiming a repo-local
+    /// file is authoritative when it belongs to an unrelated directory).</para>
+    /// <para>The report therefore states the global values and flags that a
+    /// repo-local override, if any, is outside what it can see. Doing this properly
+    /// needs per-request client context, not startup state.</para>
+    /// </remarks>
+    /// <param name="settingsPath">Explicit file to read (tests). Defaults to the
+    /// global settings file.</param>
     /// <param name="expectedBaseUrlSuffix">The route suffix that marks the file as
     /// pointed at a bridge — matching <see cref="ClaudeCodeConfigurator"/>'s own
     /// "points at bridge" test, so a config aimed at some other
     /// Anthropic-compatible endpoint reads as unrelated rather than as a
     /// misconfigured bridge client.</param>
     public static ClientTimeoutSnapshot Read(
-        string? settingsPath = null, string expectedBaseUrlSuffix = "/cc")
-    {
-        if (settingsPath is not null)
-        {
-            return ReadFile(settingsPath, expectedBaseUrlSuffix);
-        }
-
-        // Repo scope first: it overrides global for the active project.
-        var repo = ReadFile(RepoSettingsPath, expectedBaseUrlSuffix);
-        if (repo.Readable)
-        {
-            return repo;
-        }
-
-        var global = ReadFile(DefaultSettingsPath, expectedBaseUrlSuffix);
-        return global;
-    }
+        string? settingsPath = null, string expectedBaseUrlSuffix = "/cc") =>
+        ReadFile(settingsPath ?? DefaultSettingsPath, expectedBaseUrlSuffix);
 
     private static ClientTimeoutSnapshot ReadFile(string path, string expectedBaseUrlSuffix)
     {
@@ -143,17 +131,37 @@ internal static class ClaudeCodeTimeoutReader
             return Unknown(path, "settings file is not pointed at this bridge");
         }
 
+        // Which default applies in a key's ABSENCE depends on whether the request is
+        // first-party. The bridge normally writes _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL
+        // (for the 1M window), which selects Claude Code's shorter 180 s first-party
+        // idle bound. A hand-managed config that sets only ANTHROPIC_BASE_URL does NOT,
+        // and falls back to the 300 s floor — assuming 180 s there would report a
+        // bound that is not real and warn about a problem that does not exist.
+        var assumeFirstParty = IsEnabled(
+            AsStringOrNull(env?["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"]));
+        var absentStreamIdleMs = assumeFirstParty
+            ? ClaudeCodeTimeoutPolicy.AbsentStreamIdleFirstPartyDefaultMs
+            : ClaudeCodeTimeoutPolicy.AbsentStreamIdleDefaultMs;
+
         return new ClientTimeoutSnapshot(
             path,
             Readable: true,
             Reason: null,
-            StreamIdle: ValueOf(
-                env, ClaudeCodeTimeoutPolicy.StreamIdleKey,
-                ClaudeCodeTimeoutPolicy.AbsentStreamIdleDefaultMs),
+            StreamIdle: ValueOf(env, ClaudeCodeTimeoutPolicy.StreamIdleKey, absentStreamIdleMs),
             RequestTimeout: ValueOf(
                 env, ClaudeCodeTimeoutPolicy.RequestTimeoutKey,
                 ClaudeCodeTimeoutPolicy.AbsentRequestTimeoutDefaultMs));
     }
+
+    /// <summary>
+    /// Claude Code treats an env value as on when it is a non-empty, non-"0",
+    /// non-"false" string (its own truthiness check), so mirror that rather than
+    /// testing for exactly "1".
+    /// </summary>
+    private static bool IsEnabled(string? raw) =>
+        !string.IsNullOrWhiteSpace(raw)
+        && !string.Equals(raw.Trim(), "0", StringComparison.Ordinal)
+        && !string.Equals(raw.Trim(), "false", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Resolve one key: an explicit parseable value, else the built-in default

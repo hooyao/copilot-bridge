@@ -56,6 +56,7 @@ internal static class BridgeConnectionFactory
             // Derived from the SAME budgets the server enforces, so what the client
             // stores is guaranteed to outlast what the bridge will actually apply.
             ClaudeCodeTimeoutPolicy.StreamIdleMsFor(upstreamTimeout.StreamIdleTimeoutSeconds),
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(upstreamTimeout.FirstByteTimeoutSeconds));
+            ClaudeCodeTimeoutPolicy.RequestTimeoutMsFor(
+                upstreamTimeout.FirstByteTimeoutSeconds, upstreamTimeout.StreamIdleTimeoutSeconds));
     }
 }

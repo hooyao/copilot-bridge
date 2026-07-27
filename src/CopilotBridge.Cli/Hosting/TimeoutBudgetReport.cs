@@ -55,7 +55,8 @@ internal static class TimeoutBudgetReport
 
         log.LogInformation(
             "Timeouts:  Claude Code stream-idle {StreamIdle}, request {Request} "
-            + "(client env — applies on Claude Code's next start)",
+            + "(global client env — applies on Claude Code's next start; a project's own "
+            + ".claude/settings.local.json would override these and is not visible from here)",
             DescribeClient(snapshot.StreamIdle),
             DescribeClient(snapshot.RequestTimeout));
 
@@ -68,9 +69,16 @@ internal static class TimeoutBudgetReport
         WarnIfUndercut(
             log, snapshot.StreamIdle, budgets.StreamIdleTimeoutSeconds,
             "stream-idle", nameof(UpstreamTimeoutOptions.StreamIdleTimeoutSeconds));
+        // API_TIMEOUT_MS is a WHOLE-REQUEST cap, so it must outlast every phase that
+        // can elapse within one request — comparing it to the first-byte budget alone
+        // missed the case where a larger stream-idle budget outlives it mid-turn.
+        var longestPhaseSeconds = Math.Max(
+            budgets.FirstByteTimeoutSeconds, budgets.StreamIdleTimeoutSeconds);
         WarnIfUndercut(
-            log, snapshot.RequestTimeout, budgets.FirstByteTimeoutSeconds,
-            "first-byte", nameof(UpstreamTimeoutOptions.FirstByteTimeoutSeconds));
+            log, snapshot.RequestTimeout, longestPhaseSeconds,
+            "longest phase (first-byte / stream-idle)",
+            $"{nameof(UpstreamTimeoutOptions.FirstByteTimeoutSeconds)}/"
+            + nameof(UpstreamTimeoutOptions.StreamIdleTimeoutSeconds));
         WarnIfBudgetExceedsClientMaximum(log, budgets);
     }
 
@@ -97,13 +105,14 @@ internal static class TimeoutBudgetReport
         }
 
         if (ClaudeCodeTimeoutPolicy.FirstByteBudgetExceedsClientMaximum(
-                budgets.FirstByteTimeoutSeconds))
+                Math.Max(budgets.FirstByteTimeoutSeconds, budgets.StreamIdleTimeoutSeconds)))
         {
             log.LogWarning(
-                "Timeouts:  FirstByteTimeoutSeconds ({Budget}s) exceeds the largest value the bridge "
-                + "writes for {Key} ({MaxMs}ms). The client will abort BEFORE this budget and re-running "
+                "Timeouts:  the longest bridge phase ({Budget}s) exceeds the largest value the bridge "
+                + "writes for {Key} ({MaxMs}ms). The client will abort BEFORE that phase and re-running "
                 + "`{Command}` cannot fix it — lower the budget to at most {MaxSeconds}s.",
-                budgets.FirstByteTimeoutSeconds, ClaudeCodeTimeoutPolicy.RequestTimeoutKey,
+                Math.Max(budgets.FirstByteTimeoutSeconds, budgets.StreamIdleTimeoutSeconds),
+                ClaudeCodeTimeoutPolicy.RequestTimeoutKey,
                 ClaudeCodeTimeoutPolicy.RequestTimeoutMaxMs, ConfigCommand,
                 ClaudeCodeTimeoutPolicy.RequestTimeoutMaxMs / 1000);
         }

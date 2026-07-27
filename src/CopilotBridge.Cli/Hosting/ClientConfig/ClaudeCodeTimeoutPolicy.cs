@@ -63,13 +63,22 @@ internal static class ClaudeCodeTimeoutPolicy
 
     /// <summary>
     /// Effective client stream-idle bound (milliseconds) when
-    /// <see cref="StreamIdleKey"/> is absent, given the bridge also writes
-    /// <c>_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1</c> for the 1M context
-    /// window. Asserting first-party selects the client's 180 s first-party
-    /// budget in place of its 300 s default — so absence is a known-bad state
-    /// the bridge itself creates, not an unknown one.
+    /// <see cref="StreamIdleKey"/> is absent AND
+    /// <c>_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL</c> is set — which the bridge
+    /// writes for the 1M context window. Asserting first-party selects Claude
+    /// Code's 180 s first-party budget in place of its 300 s default, so absence
+    /// is a known-bad state the bridge itself creates, not an unknown one.
     /// </summary>
-    public const int AbsentStreamIdleDefaultMs = 180_000;
+    public const int AbsentStreamIdleFirstPartyDefaultMs = 180_000;
+
+    /// <summary>
+    /// Effective client stream-idle bound (milliseconds) when
+    /// <see cref="StreamIdleKey"/> is absent and the request is NOT first-party —
+    /// e.g. a hand-managed config that sets only <c>ANTHROPIC_BASE_URL</c>. Claude
+    /// Code falls back to its 300 s floor there, so reporting 180 s would name a
+    /// bound that does not apply.
+    /// </summary>
+    public const int AbsentStreamIdleDefaultMs = 300_000;
 
     /// <summary>
     /// Effective client whole-request bound (milliseconds) when
@@ -89,12 +98,27 @@ internal static class ClaudeCodeTimeoutPolicy
         DeriveMs(streamIdleBudgetSeconds, StreamIdleMaxMs);
 
     /// <summary>
-    /// Value to write for <see cref="RequestTimeoutKey"/>, derived from the
-    /// bridge's first-byte budget in seconds. Same disabled-budget rule as
+    /// Value to write for <see cref="RequestTimeoutKey"/>. This key is a
+    /// <b>whole-request</b> cap on the client, so it must outlast every bridge
+    /// phase that can elapse within one request — not just the first-byte wait.
+    /// Deriving it from the first-byte budget alone produced a known-bad config:
+    /// first-byte 240 s + stream-idle 600 s wrote 540 s, so the client aborted
+    /// mid-turn while the bridge still tolerated a 600 s idle gap. Takes the larger
+    /// of the two budgets; a disabled budget follows the same rule as
     /// <see cref="StreamIdleMsFor"/>.
     /// </summary>
-    public static int RequestTimeoutMsFor(int firstByteBudgetSeconds) =>
-        DeriveMs(firstByteBudgetSeconds, RequestTimeoutMaxMs);
+    public static int RequestTimeoutMsFor(int firstByteBudgetSeconds, int streamIdleBudgetSeconds)
+    {
+        // A disabled (non-positive) budget means "no bound", which no finite client
+        // value can outlast — so it dominates, exactly as DeriveMs treats its own.
+        if (firstByteBudgetSeconds <= 0 || streamIdleBudgetSeconds <= 0)
+        {
+            return RequestTimeoutMaxMs;
+        }
+
+        return DeriveMs(
+            Math.Max(firstByteBudgetSeconds, streamIdleBudgetSeconds), RequestTimeoutMaxMs);
+    }
 
     /// <summary>
     /// budget + margin, in milliseconds, clamped to <paramref name="maxMs"/>.
