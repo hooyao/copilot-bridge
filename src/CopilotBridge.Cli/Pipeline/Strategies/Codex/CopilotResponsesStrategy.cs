@@ -200,16 +200,21 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             // through the IR stream: only the downstream client edge knows whether
             // it must emit Anthropic event:error or Responses response.failed.
             // Budget <= 0 ⇒ the original loop (parser driven by `ct` only).
+            // NO KEEPALIVE on this path: downstream keepalive injection is /cc-only,
+            // because what a Responses client accepts as progress has not been probed.
             using var readCts = streamIdleSeconds > 0
                 ? CancellationTokenSource.CreateLinkedTokenSource(ct)
                 : null;
             var readCt = readCts?.Token ?? ct;
             var idle = TimeSpan.FromSeconds(streamIdleSeconds);
             await using var e = parser.EnumerateAsync(readCt).GetAsyncEnumerator(readCt);
+            var reader = readCts is not null
+                ? new StreamIdleReader(e, readCts, idle, TimeSpan.Zero)
+                : null;
             while (true)
             {
-                var moved = readCts is not null
-                    ? await StreamIdleReader.MoveNextAsync(e, readCts, idle, ct)
+                var moved = reader is not null
+                    ? await reader.MoveNextAsync(ct) == StreamReadOutcome.Event
                     : await e.MoveNextAsync();
                 if (!moved) break;
                 foreach (var irItem in sm.Translate(e.Current))

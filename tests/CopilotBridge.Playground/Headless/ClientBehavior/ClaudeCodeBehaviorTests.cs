@@ -261,6 +261,160 @@ public class ClaudeCodeBehaviorTests
         ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
     }
 
+    /// <summary>
+    /// <b>Keepalive: a healthy turn survives a silence longer than the client's own
+    /// watchdog.</b> The deterministic Anthropic upstream opens a thinking block and
+    /// then sends nothing for 240 s — past Claude Code's 180 s byte-level watchdog —
+    /// before completing the turn with a real tool call. This is the measured
+    /// <c>claude-opus-5 @ effort=xhigh</c> shape that made the client kill perfectly
+    /// healthy turns.
+    /// <para><b>Runs on the client's FACTORY timeout defaults</b>
+    /// (<c>ClearTimeoutEnv</c>): the point is that the bridge's injected pings alone
+    /// keep the turn alive. With the client's idle bound raised, this case would pass
+    /// whether or not a single ping was ever sent — and would prove nothing.</para>
+    /// <para>Verdict evidence: the real client completed the turn and executed the
+    /// tools (canary present), and the bridge trace shows <c>injected: true</c> ping
+    /// events spanning the silence. A client abort ("Stream idle timeout - no chunks
+    /// received") is the FAIL this case is built to catch.</para>
+    /// </summary>
+    [Fact]
+    public async Task ClaudeCode_NativeCc_SilentThinkingTurn_SurvivesViaInjectedKeepalives()
+    {
+        const string caseId = "cc-native-keepalive-survives-silence";
+        const string canary = "cc-keepalive-canary-70418";
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        var probePath = Path.Combine(work.Path, "cbridge_probe.txt");
+
+        // 240 s > the client's 180 s byte watchdog, < the bridge's 600 s budget below:
+        // the ONLY thing that can carry the turn across this gap is injected keepalives.
+        var silence = TimeSpan.FromSeconds(240);
+        await using var upstream = SilentThinkingUpstreamServer.Start(probePath, canary, silence);
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.PassthroughTestUpstream,
+            TestUpstreamBaseUrl: upstream.BaseUrl,
+            StreamIdleTimeoutSeconds: 600,
+            KeepAliveIntervalSeconds: 15));
+
+        var prompt =
+            "Actually use the Bash tool to write the exact text " + canary
+            + " to cbridge_probe.txt, then use Read on that file, then report the exact text.";
+
+        var result = await ClaudeProcess.RunAsync(new ClaudeInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: prompt,
+            Model: ClientBehaviorSupport.LatestClaude,
+            OutputFormat: "stream-json",
+            Verbose: true,
+            AllowedTools: "Bash,Read",
+            Timeout: TimeSpan.FromMinutes(10),
+            WorkingDirectory: work.Path,
+            ClearTimeoutEnv: true));
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "claude",
+                Route: "/cc",
+                Model: ClientBehaviorSupport.LatestClaude,
+                Scenario: ServeScenario.PassthroughTestUpstream,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: null,
+                DispatchSinceUnix: 0,
+                DispatchUntilUnix: 0,
+                Prompt: prompt),
+            result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
+            out _, out _);
+
+        _output.WriteLine($"silent upstream={upstream.BaseUrl} silence={silence} requests={upstream.RequestCount}");
+        _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
+        _output.WriteLine($"claude.exe exit={result.ExitCode} duration={result.Duration}");
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine(
+            "[verdict] real-client-verify: the client must have COMPLETED the turn and executed "
+            + "Bash+Read (canary present) despite a 240s upstream silence on FACTORY client timeouts; "
+            + "the inbound-resp trace must show injected:true pings spanning that silence. A client "
+            + "'Stream idle timeout - no chunks received' abort is a FAIL.");
+
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
+    /// <summary>
+    /// <b>Keepalive: the bridge still ends a genuinely hung upstream.</b> The mirror
+    /// image of the case above and the reason it is safe: injected pings stop the
+    /// CLIENT from judging silence, so the bridge's stream-idle budget must remain the
+    /// party that ends a stalled turn. Here the upstream silence (240 s) OUTLASTS the
+    /// bridge's budget (30 s), so the budget must fire while pings are being sent.
+    /// <para>Verdict evidence: the bridge summary records
+    /// <c>upstream_timeout=stream_idle</c> at roughly its configured budget — NOT at
+    /// the 240 s mark and not never — and the client receives the retryable error
+    /// rather than an unbounded ping stream. If the budget never fires, a hung
+    /// upstream has become invisible to every party at once.</para>
+    /// </summary>
+    [Fact]
+    public async Task ClaudeCode_NativeCc_HungUpstream_IsEndedByTheBridgeNotThePings()
+    {
+        const string caseId = "cc-native-keepalive-budget-still-fires";
+        const string canary = "cc-keepalive-hang-canary-31882";
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        var probePath = Path.Combine(work.Path, "cbridge_probe.txt");
+
+        // Silence (240s) >> bridge budget (30s): the budget MUST fire mid-silence even
+        // though a ping is due every 5s.
+        var silence = TimeSpan.FromSeconds(240);
+        await using var upstream = SilentThinkingUpstreamServer.Start(probePath, canary, silence);
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.PassthroughTestUpstream,
+            TestUpstreamBaseUrl: upstream.BaseUrl,
+            StreamIdleTimeoutSeconds: 30,
+            KeepAliveIntervalSeconds: 5));
+
+        var prompt =
+            "Actually use the Bash tool to write the exact text " + canary
+            + " to cbridge_probe.txt, then use Read on that file, then report the exact text.";
+
+        var result = await ClaudeProcess.RunAsync(new ClaudeInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: prompt,
+            Model: ClientBehaviorSupport.LatestClaude,
+            OutputFormat: "stream-json",
+            Verbose: true,
+            AllowedTools: "Bash,Read",
+            Timeout: TimeSpan.FromMinutes(10),
+            WorkingDirectory: work.Path,
+            ClearTimeoutEnv: true));
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "claude",
+                Route: "/cc",
+                Model: ClientBehaviorSupport.LatestClaude,
+                Scenario: ServeScenario.PassthroughTestUpstream,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: null,
+                DispatchSinceUnix: 0,
+                DispatchUntilUnix: 0,
+                Prompt: prompt),
+            result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
+            out _, out _);
+
+        _output.WriteLine($"silent upstream={upstream.BaseUrl} silence={silence} requests={upstream.RequestCount}");
+        _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
+        _output.WriteLine($"claude.exe exit={result.ExitCode} duration={result.Duration}");
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine(
+            "[verdict] real-client-verify: the bridge summary must record "
+            + "upstream_timeout=stream_idle at ~30s (its budget), NOT at 240s and NOT never, "
+            + "proving injected pings did not postpone it; the client must see the retryable "
+            + "error rather than an endless ping stream.");
+
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
     private async Task RunMultiToolCaseAsync(
         string caseId, ServeScenario scenario, string model, string route, string canary)
     {

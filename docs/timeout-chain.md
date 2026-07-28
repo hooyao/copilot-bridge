@@ -94,11 +94,57 @@ behaviour, not a bridge stall). Every bound below is really a bet on how long th
 silence may legitimately last — which is why the stream-idle default is 240 s and
 why deep workloads need more.
 
-The bridge deliberately does **not** synthesize keepalives today: a silent
-upstream stays observably silent, so a genuine hang is distinguishable from deep
-thinking. Injecting `ping` (what the real Anthropic API does) is a separate
-change; it would remove both remaining gaps — the client-restart requirement and
-clients the bridge never configured.
+The bridge **injects the keepalive the upstream omits**. While a `/cc` stream is in
+flight and upstream has been silent longer than
+`Pipeline:UpstreamTimeout:KeepAliveIntervalSeconds` (default 15 s), the bridge
+synthesizes an Anthropic `ping` and flushes it downstream, repeating once per
+interval until upstream speaks again. The client's watchdogs therefore never judge
+upstream silence at all — the bridge's own budget is the only thing that ends a
+stalled turn. That closes both gaps the client-side env keys leave open: no client
+restart is needed, and clients the bridge never configured are covered too.
+
+Why a `ping` is the right instrument — verified against the shipped `claude.exe`
+2.1.220 binary, not assumed:
+
+```js
+for await (let pi of f1_(Le, mr)) {
+  if (As(), P_r(pi)) { yield {type:"stream_event", event:pi}; continue }
+  ...business branches...
+}
+function P_r(e){ return e.type === "ping" }
+As = function(){ ...; dt = setTimeout(→ abort, Jt) }   // Jt = m7i() >= 300000
+```
+
+`As()` runs *before* the type check, so a ping re-arms watchdog ②; the `continue`
+then skips every business branch, so it can touch no content block, no usage
+accumulation and no stall statistic. Watchdog ① (`Axg`) re-arms in `pull()` on any
+chunk, so the ping's bytes feed it too, and the UI layer discards pings outright
+(`if (P_r(e.event)) return`) — no flicker.
+
+Two invariants make this safe rather than a way to hide a hang:
+
+- **Injection is silence-triggered, not periodic.** A stream whose upstream keeps
+  emitting gets no pings and arms no timer, so a ping in a trace *is* the record
+  that upstream went silent — the diagnostic gets stronger, not weaker.
+- **An injected ping never resets the bridge's stream-idle budget.** It is an event
+  the bridge *sent*, not one it *received*. Pings stop the client from judging
+  silence, so if they also fed the bridge's budget nothing would be judging it and a
+  hung upstream would stream pings forever. `StreamIdleReader` enforces this
+  structurally: one pending read, two independent deadlines, and the idle deadline is
+  never recomputed when the keepalive deadline wins.
+
+The observability cost is paid explicitly. The raw upstream capture tees *below* the
+injection point, so it structurally cannot contain a synthesized ping; the
+downstream record marks each one `injected: true`. Diffing the two artifacts shows
+exactly where upstream went quiet.
+
+**The client-side env keys remain a second line of defence, not dead weight.**
+Injection is a *runtime* mitigation delivered per stream; the env keys are a *static*
+one, and they cover what a keepalive cannot — injection turned off, a buffering
+intermediary that swallows the pings, or a bridge that itself stalls. `config
+claude-code` still writes them and startup still warns when a client bound would
+undercut a bridge budget. Set `KeepAliveIntervalSeconds` to `0` to disable injection
+and fall back to the env keys alone.
 
 ## The eight bounds
 

@@ -75,5 +75,13 @@ internal sealed class BridgeIoPayload
     public long? DurationMs { get; init; }
 }
 
-/// <summary>One SSE event captured on the response side, with a flag for whether the bridge dropped it.</summary>
-internal sealed record CapturedSseEvent(string? EventType, string Data, bool Filtered);
+/// <summary>
+/// One SSE event captured on the response side, with flags for what the bridge did
+/// to it: <paramref name="Filtered"/> — the bridge DROPPED it (it never reached the
+/// client); <paramref name="Injected"/> — the bridge INVENTED it (no upstream event
+/// corresponds to it), as with a synthesized keepalive <c>ping</c>. The two are
+/// deliberately separate flags rather than one tri-state: they answer opposite
+/// questions and an operator diffing this artifact against the raw upstream capture
+/// needs both. Upstream-originated, relayed events carry neither.
+/// </summary>
+internal sealed record CapturedSseEvent(string? EventType, string Data, bool Filtered, bool Injected = false);

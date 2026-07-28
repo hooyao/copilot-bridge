@@ -58,7 +58,7 @@ internal static class TimeoutBudgetReport
             None,
             DescribeClient(snapshot.RequestTimeout),
             DescribeClient(snapshot.RequestTimeout),
-            BuildNotes(snapshot));
+            BuildNotes(snapshot, budgets));
 
         // Warnings stay separate: they are the only lines an operator must act on,
         // so they must not be buried in the table above.
@@ -110,15 +110,25 @@ internal static class TimeoutBudgetReport
     /// The two caveats that change how the table should be read, appended only when
     /// they apply. Anything an operator does not need at startup stays in the docs.
     /// </summary>
-    private static string BuildNotes(ClientTimeoutSnapshot snapshot)
+    private static string BuildNotes(ClientTimeoutSnapshot snapshot, UpstreamTimeoutOptions budgets)
     {
+        // State the keepalive first: when it is on, the client's idle watchdogs
+        // effectively never fire, which changes how the "idle gap" row above should be
+        // read. Also warns the operator not to be surprised by pings in a trace.
+        var keepAlive = budgets.KeepAliveIntervalSeconds > 0
+            ? $"\n  keepalive: bridge sends ping every {budgets.KeepAliveIntervalSeconds}s while upstream is"
+              + "\n  silent, so the client's idle watchdogs should not fire"
+            : "\n  keepalive: OFF — the client's own idle watchdog is the only thing"
+              + "\n  protecting a silent long-thinking turn";
+
         if (!snapshot.Readable)
         {
-            return $"\n  client values unknown ({snapshot.Reason}) — a shorter client watchdog"
+            return keepAlive
+                   + $"\n  client values unknown ({snapshot.Reason}) — a shorter client watchdog"
                    + "\n  could end a turn before any bridge budget";
         }
 
-        var notes = "\n  client values take effect on Claude Code's next restart";
+        var notes = keepAlive + "\n  client values take effect on Claude Code's next restart";
         if (!snapshot.StreamIdle.IsExplicit || !snapshot.RequestTimeout.IsExplicit)
         {
             notes += "\n  * = client default (not configured); run `" + ConfigCommand + "` to set it";

@@ -19,6 +19,48 @@ public class TimeoutBudgetReportTests
     private static UpstreamTimeoutOptions Budgets(int firstByteSeconds, int streamIdleSeconds) =>
         new() { FirstByteTimeoutSeconds = firstByteSeconds, StreamIdleTimeoutSeconds = streamIdleSeconds };
 
+    // ---- Requirement: keepalive injection is visible in the report ----
+
+    /// <summary>
+    /// Contract: the report states whether the bridge is injecting keepalives. With
+    /// injection on, the client's idle watchdogs effectively never fire — which
+    /// changes how the idle-gap row is to be read — and pings will appear in traces.
+    /// An operator who cannot see this from startup would misread both.
+    /// </summary>
+    [Fact]
+    public void Report_states_that_keepalive_injection_is_active()
+    {
+        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var (events, log) = Recorder();
+
+        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
+        budgets.KeepAliveIntervalSeconds = 15;
+        TimeoutBudgetReport.Emit(budgets, log, path);
+
+        var table = Table(events);
+        Assert.Contains("keepalive", table, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("15s", table, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Contract: with injection disabled the report must NOT imply the client is
+    /// protected — the client's own watchdog is then the only thing standing between
+    /// a healthy long-thinking turn and an abort, and the report has to say so.
+    /// </summary>
+    [Fact]
+    public void Report_states_when_keepalive_injection_is_off()
+    {
+        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var (events, log) = Recorder();
+
+        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
+        budgets.KeepAliveIntervalSeconds = 0;
+        TimeoutBudgetReport.Emit(budgets, log, path);
+
+        var table = Table(events);
+        Assert.Contains("keepalive: OFF", table, StringComparison.Ordinal);
+    }
+
     private static (List<RecordedEvent> Events, ILogger Log) Recorder()
     {
         var provider = new RecordingLoggerProvider();

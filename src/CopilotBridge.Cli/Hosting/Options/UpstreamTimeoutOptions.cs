@@ -27,6 +27,9 @@ namespace CopilotBridge.Cli.Hosting.Options;
 /// "no bound on that phase" and arms no timer (zero overhead — the byte-identical
 /// passthrough / translation hot path is unchanged). Read once at startup; RESTART
 /// copilot-bridge after changing a value.</para>
+/// <para>The section also carries <see cref="KeepAliveIntervalSeconds"/>, which is
+/// NOT a budget: it does not bound anything, it keeps the <b>downstream</b> client
+/// alive while the bridge's own budgets do the judging.</para>
 /// </remarks>
 internal sealed class UpstreamTimeoutOptions
 {
@@ -73,6 +76,44 @@ internal sealed class UpstreamTimeoutOptions
     /// from failure recovery. <c>&lt;= 0</c> disables.
     /// </summary>
     public int StreamIdleTimeoutSeconds { get; set; } = 240;
+
+    /// <summary>
+    /// Interval (seconds) between synthetic keepalive (<c>ping</c>) events the
+    /// bridge injects into a <b>/cc</b> (Anthropic client) stream while the
+    /// <b>upstream is silent</b>. Copilot sends no keepalive of its own while a
+    /// model is thinking, so without this an Anthropic client's own idle watchdogs
+    /// end a perfectly healthy deep-thinking turn. Injecting the keepalive the
+    /// upstream omits makes THIS bridge the sole authority on when a stalled turn
+    /// ends. Default 15 (s). <c>&lt;= 0</c> disables injection entirely.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Silence-triggered, not periodic.</b> While upstream events arrive at
+    /// gaps shorter than this interval the bridge injects nothing and arms no
+    /// keepalive timer — the healthy path keeps its zero-overhead, byte-identical
+    /// relay. A ping appearing in a trace is therefore itself the record that
+    /// upstream went silent.</para>
+    /// <para><b>Does NOT extend <see cref="StreamIdleTimeoutSeconds"/>.</b> An
+    /// injected ping is an event the bridge SENT downstream, never one it RECEIVED
+    /// upstream, so it never resets the idle budget. That is load-bearing: pings
+    /// stop the client from judging silence, so if they also fed the bridge's budget
+    /// nothing would be judging it and a hung upstream would stream pings forever.</para>
+    /// <para><b>Must be shorter than the client's tightest watchdog to be useful.</b>
+    /// For Claude Code that is the <b>180 s</b> byte-level watchdog, which the
+    /// bridge's own <c>_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL</c> key (written to
+    /// unlock the native 1M context) selects in place of the 300 s default. The
+    /// default 15 s leaves margin for a few buffered or dropped pings. A value
+    /// <c>&gt;=</c> <see cref="StreamIdleTimeoutSeconds"/> means the idle budget
+    /// always fires first and no ping is ever due — coherent, but pointless.</para>
+    /// <para>Injection does not replace the client-side timeout keys
+    /// <c>config claude-code</c> writes; those remain a second line of defence for
+    /// the cases a runtime keepalive cannot cover (injection disabled, a buffering
+    /// intermediary, a bridge that itself stalls). See
+    /// <c>docs/timeout-chain.md</c>.</para>
+    /// <para><b>/cc only.</b> The Codex (Responses) path is unaffected — a
+    /// Responses-protocol keepalive is a separate, unprobed question.</para>
+    /// </remarks>
+    public int KeepAliveIntervalSeconds { get; set; } = 15;
+
 
     /// <summary>
     /// What the bridge does to the client stream when the stream-idle budget fires

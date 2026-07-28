@@ -30,7 +30,11 @@ internal sealed record ClaudeInvocation(
     // tasks that write relative filenames MUST pass a disposable dir so the real client
     // cannot create/overwrite files in the test runner's CWD (the checkout). null =
     // inherit the runner's directory (fine for no-tool / read-only tasks).
-    string? WorkingDirectory = null);
+    string? WorkingDirectory = null,
+    // Strip the timeout-governing env vars from the child so it runs on Claude Code's
+    // FACTORY watchdog defaults. Required by any case whose whole point is that the
+    // bridge — not a raised client bound — is what keeps a silent turn alive.
+    bool ClearTimeoutEnv = false);
 
 internal sealed record ClaudeResult(
     int ExitCode,
@@ -90,6 +94,18 @@ internal static class ClaudeProcess
         if (inv.Effort is not null)
         {
             psi.Environment["CLAUDE_CODE_EFFORT_LEVEL"] = inv.Effort;
+        }
+        if (inv.ClearTimeoutEnv)
+        {
+            // Run the client on its FACTORY timeout defaults. The keepalive behavior
+            // case exists to prove the bridge's injected pings alone keep a healthy
+            // silent turn alive; if an inherited env var had raised the client's idle
+            // watchdog, the case would pass whether or not a single ping was sent, and
+            // would therefore prove nothing. `--setting-sources ""` already blocks the
+            // settings FILES; this covers the process environment the runner inherited.
+            psi.Environment.Remove("CLAUDE_STREAM_IDLE_TIMEOUT_MS");
+            psi.Environment.Remove("CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS");
+            psi.Environment.Remove("API_TIMEOUT_MS");
         }
 
         using var proc = new Process { StartInfo = psi };

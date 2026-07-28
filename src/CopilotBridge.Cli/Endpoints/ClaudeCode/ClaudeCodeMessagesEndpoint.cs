@@ -11,6 +11,7 @@ using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 using CopilotBridge.Cli.Pipeline.Response.Detection;
 using CopilotBridge.Cli.Pipeline.Routing;
+using CopilotBridge.Cli.Pipeline.Strategies;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -269,7 +270,14 @@ internal static class ClaudeCodeMessagesEndpoint
                 var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, ct);
                 await foreach (var evt in clientStream.WithCancellation(ct))
                 {
-                    capturedEvents?.Add(new CapturedSseEvent(evt.EventType, evt.Data, Filtered: false));
+                    // Mark keepalives the bridge INVENTED so the inbound-resp artifact
+                    // stays honest: diffed against upstream-resp (which structurally
+                    // cannot contain them) it shows exactly where upstream went silent.
+                    capturedEvents?.Add(new CapturedSseEvent(
+                        evt.EventType,
+                        evt.Data,
+                        Filtered: false,
+                        Injected: StreamKeepAlive.IsInjected(evt)));
                     // Sniff usage from message_start / message_delta as they
                     // pass through — Anthropic emits cumulative values so the
                     // probe simply overwrites the snapshot on each event.

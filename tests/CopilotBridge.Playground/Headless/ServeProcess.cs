@@ -46,7 +46,8 @@ internal sealed record ServeInvocation(
     TimeSpan? ReadyTimeout = null,
     string? TestUpstreamBaseUrl = null,
     int? StreamIdleTimeoutSeconds = null,
-    bool WholeResponseBuffering = false);
+    bool WholeResponseBuffering = false,
+    int? KeepAliveIntervalSeconds = null);
 
 /// <summary>
 /// The appsettings shape a behavior run needs. Each value is applied by patching the
@@ -66,6 +67,11 @@ internal enum ServeScenario
     /// <summary>CC→gpt routing plus a deterministic test upstream supplied by the
     /// caller. Used only by the path-exercising stream-fault behavior case.</summary>
     CcToGptFaultRecovery,
+
+    /// <summary>Native /cc passthrough (no routing rewrites) against a deterministic
+    /// test upstream supplied by the caller. Used by the keepalive behavior case,
+    /// which needs an Anthropic-shaped upstream that goes silent on demand.</summary>
+    PassthroughTestUpstream,
 }
 
 /// <summary>
@@ -224,7 +230,8 @@ internal static class ServeProcess
                 inv.Scenario,
                 traceDir,
                 inv.StreamIdleTimeoutSeconds,
-                inv.WholeResponseBuffering);
+                inv.WholeResponseBuffering,
+                inv.KeepAliveIntervalSeconds);
 
             var scratchExe = Path.Combine(scratchDir, "copilot-bridge.exe");
             var port = GetFreeLoopbackPort();
@@ -357,7 +364,8 @@ internal static class ServeProcess
         ServeScenario scenario,
         string traceDir,
         int? streamIdleTimeoutSeconds,
-        bool wholeResponseBuffering)
+        bool wholeResponseBuffering,
+        int? keepAliveIntervalSeconds)
     {
         var root = JsonNode.Parse(File.ReadAllText(path))?.AsObject()
             ?? throw new ServeStartupException($"appsettings.json at {path} is not a JSON object.");
@@ -393,12 +401,15 @@ internal static class ServeProcess
             routing["Locations"] = new JsonArray();
         }
 
-        if (streamIdleTimeoutSeconds is not null)
+        if (streamIdleTimeoutSeconds is not null || keepAliveIntervalSeconds is not null)
         {
             var upstreamTimeout = root["Pipeline"]?["UpstreamTimeout"]?.AsObject()
                 ?? throw new ServeStartupException(
                     "appsettings.json has no Pipeline.UpstreamTimeout section.");
-            upstreamTimeout["StreamIdleTimeoutSeconds"] = streamIdleTimeoutSeconds.Value;
+            if (streamIdleTimeoutSeconds is not null)
+                upstreamTimeout["StreamIdleTimeoutSeconds"] = streamIdleTimeoutSeconds.Value;
+            if (keepAliveIntervalSeconds is not null)
+                upstreamTimeout["KeepAliveIntervalSeconds"] = keepAliveIntervalSeconds.Value;
         }
 
         if (wholeResponseBuffering)
