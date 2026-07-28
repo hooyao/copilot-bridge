@@ -106,7 +106,8 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             ctx.Response.RawUpstreamResponseCapture = capture;
             // Ownership of `resp` transfers to the iterator — disposed when
             // the consumer (the endpoint writer) finishes enumeration.
-            ctx.Response.EventStream = StreamEventsAsync(resp, capture, _timeout.StreamIdleTimeoutSeconds, ctx.Ct);
+            ctx.Response.EventStream = StreamEventsAsync(
+                resp, capture, _timeout.StreamIdleTimeoutSeconds, _timeout.KeepAliveIntervalSeconds, ctx.Ct);
             _log.LogDebug("strategy {Name}: streaming (content-type={ContentType})", Name, contentType);
         }
         else
@@ -129,10 +130,16 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
         }
     }
 
+    /// <summary>
+    /// Relays Copilot's SSE events, optionally bounded by the stream-idle budget and
+    /// optionally interleaved with synthetic downstream keepalives while upstream is
+    /// silent (see <see cref="StreamKeepAlive"/>).
+    /// </summary>
     private static async IAsyncEnumerable<SseItem<string>> StreamEventsAsync(
         HttpResponseMessage resp,
         RawResponseCapture? capture,
         int streamIdleSeconds,
+        int keepAliveSeconds,
         [EnumeratorCancellation] CancellationToken ct)
     {
         Stream? rawStream = null;
@@ -141,12 +148,19 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             rawStream = await resp.Content.ReadAsStreamAsync(ct);
             // Tee only when capturing; otherwise hand the raw stream straight to
             // the parser (no wrapper, no allocation, byte-identical passthrough).
+            //
+            // LOAD-BEARING ORDERING: the tee sits HERE, on the network stream, strictly
+            // BELOW the keepalive injection below. That is what makes the upstream-resp
+            // artifact structurally incapable of containing a bridge-synthesized ping —
+            // it only ever sees bytes Copilot actually sent. Moving injection below this
+            // point (or teeing above it) would silently destroy the meaning of that
+            // capture: a silent upstream would stop being observably silent.
             var readStream = capture is null ? rawStream : new TeeReadStream(rawStream, capture);
             var parser = SseParser.Create(readStream);
 
-            if (streamIdleSeconds <= 0)
+            if (streamIdleSeconds <= 0 && keepAliveSeconds <= 0)
             {
-                // Disabled: the original path — byte-identical passthrough, no timer,
+                // Both disabled: the original path — byte-identical passthrough, no timer,
                 // no linked CTS. The `await foreach` drives the parser with `ct`.
                 await foreach (var evt in parser.EnumerateAsync(ct))
                 {
@@ -155,21 +169,38 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
                 yield break;
             }
 
-            // Stream-idle inactivity budget. Each event's wait on upstream is bounded
-            // by StreamIdleReader, which races the read against an independent delay
-            // (NOT a CancelAfter armed/disarmed on the enumerator token — that has a
-            // nanosecond poison race). readCts backs the enumerator's read token so
-            // the reader can end a pending read on an idle timeout. The yield sits
-            // OUTSIDE any try/catch (C# forbids yielding inside a try with a catch).
+            // Stream-idle inactivity budget and/or downstream keepalive. Each wait on
+            // upstream is bounded by StreamIdleReader, which races the read against an
+            // independent delay (NOT a CancelAfter armed/disarmed on the enumerator
+            // token — that has a nanosecond poison race). readCts backs the enumerator's
+            // read token so the reader can end a pending read on an idle timeout. The
+            // yield sits OUTSIDE any try/catch (C# forbids yielding inside a try with a
+            // catch).
             var idle = TimeSpan.FromSeconds(streamIdleSeconds);
+            var keepAlive = TimeSpan.FromSeconds(keepAliveSeconds);
             using var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             await using var enumerator = parser.EnumerateAsync(readCts.Token).GetAsyncEnumerator(readCts.Token);
+            var reader = new StreamIdleReader(enumerator, readCts, idle, keepAlive);
+            // A keepalive before the first upstream event would make an unstarted stream
+            // look started to the client; that phase stays governed by the first-byte and
+            // stream-idle budgets alone.
+            var sawUpstreamEvent = false;
             while (true)
             {
-                if (!await StreamIdleReader.MoveNextAsync(enumerator, readCts, idle, ct))
+                var outcome = await reader.MoveNextAsync(ct);
+                if (outcome == StreamReadOutcome.EndOfStream)
                 {
                     yield break;
                 }
+                if (outcome == StreamReadOutcome.KeepAliveDue)
+                {
+                    if (sawUpstreamEvent)
+                    {
+                        yield return StreamKeepAlive.Ping();
+                    }
+                    continue;
+                }
+                sawUpstreamEvent = true;
                 yield return enumerator.Current;
             }
         }
@@ -180,4 +211,5 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
             resp.Dispose();
         }
     }
+
 }

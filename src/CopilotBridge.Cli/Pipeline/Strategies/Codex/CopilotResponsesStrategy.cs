@@ -121,8 +121,22 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             ctx.Response.RawUpstreamResponseCapture = capture;
             // T3: translate Responses SSE → IR (Anthropic) SSE on the fly. The
             // response stages + the outbound T4 adapter then operate on IR shape.
-            ctx.Response.EventStream = TranslateStreamAsync(resp, ctx.Request.Body.Model, capture, ctx.Ct);
-            _log.LogDebug("strategy {Name}: T3 streaming (content-type={ContentType})", Name, contentType);
+            //
+            // Keepalive is selected by the DOWNSTREAM CLIENT PROTOCOL, not by this
+            // (upstream) strategy: routing sends a `/cc` request to a Responses model
+            // (the CC→gpt route), and that client is Claude Code with the same idle
+            // watchdogs a native `/cc` stream faces. Scoping injection to the
+            // passthrough strategy would leave that supported route exposed. A native
+            // `/codex` client gets no keepalive — what a Responses client accepts as
+            // progress has not been probed, and T4 renders this IR back to Responses.
+            var keepAliveSeconds = IsAnthropicClientRoute(ctx.Request.Path)
+                ? _timeout.KeepAliveIntervalSeconds
+                : 0;
+            ctx.Response.EventStream = TranslateStreamAsync(
+                resp, ctx.Request.Body.Model, capture, keepAliveSeconds, ctx.Ct);
+            _log.LogDebug(
+                "strategy {Name}: T3 streaming (content-type={ContentType} keepAlive={KeepAliveSeconds}s)",
+                Name, contentType, keepAliveSeconds);
         }
         else
         {
@@ -179,10 +193,27 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
     /// (<c>message_start</c> → <c>content_block_start/_delta/_stop</c> →
     /// <c>message_delta</c> → <c>message_stop</c>). No <c>[DONE]</c> to handle.
     /// </summary>
+    /// <summary>
+    /// True when the DOWNSTREAM client speaks the Anthropic protocol — i.e. the request
+    /// arrived on a <c>/cc</c> route — regardless of which upstream backend routing
+    /// selected for it.
+    /// </summary>
+    /// <remarks>
+    /// This strategy is chosen by upstream vendor (<c>CopilotResponses</c>), which does
+    /// NOT imply a Codex client: the CC→gpt route sends a Claude Code request to a
+    /// Responses model, and that client has exactly the idle watchdogs a native
+    /// <c>/cc</c> stream faces. Keepalive eligibility therefore keys on the inbound
+    /// route, not on the strategy. Endpoints register <c>/cc/v1/messages</c> and
+    /// <c>/codex/responses</c>, so the prefix is an unambiguous protocol signal.
+    /// </remarks>
+    private static bool IsAnthropicClientRoute(string path) =>
+        path.StartsWith("/cc/", StringComparison.OrdinalIgnoreCase);
+
     private async IAsyncEnumerable<SseItem<string>> TranslateStreamAsync(
         HttpResponseMessage resp,
         string model,
         RawResponseCapture? capture,
+        int keepAliveSeconds,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var sm = new ResponsesToAnthropicStream(model, _log);
@@ -200,18 +231,42 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             // through the IR stream: only the downstream client edge knows whether
             // it must emit Anthropic event:error or Responses response.failed.
             // Budget <= 0 ⇒ the original loop (parser driven by `ct` only).
-            using var readCts = streamIdleSeconds > 0
+            //
+            // keepAliveSeconds is non-zero ONLY for an Anthropic-protocol client
+            // (the CC→gpt route): the IR is Anthropic-shaped here, so a `ping` is a
+            // valid event to interleave and reaches Claude Code unchanged through T4's
+            // identity stream. A native /codex client gets 0 — see ForwardAsync.
+            var keepAlive = TimeSpan.FromSeconds(keepAliveSeconds);
+            var needsReader = streamIdleSeconds > 0 || keepAliveSeconds > 0;
+            using var readCts = needsReader
                 ? CancellationTokenSource.CreateLinkedTokenSource(ct)
                 : null;
             var readCt = readCts?.Token ?? ct;
             var idle = TimeSpan.FromSeconds(streamIdleSeconds);
             await using var e = parser.EnumerateAsync(readCt).GetAsyncEnumerator(readCt);
+            var reader = readCts is not null
+                ? new StreamIdleReader(e, readCts, idle, keepAlive)
+                : null;
+            // A keepalive before the stream's first upstream event would make an
+            // unstarted stream look started; that phase stays with the first-byte budget.
+            var sawUpstreamEvent = false;
             while (true)
             {
-                var moved = readCts is not null
-                    ? await StreamIdleReader.MoveNextAsync(e, readCts, idle, ct)
-                    : await e.MoveNextAsync();
-                if (!moved) break;
+                if (reader is not null)
+                {
+                    var outcome = await reader.MoveNextAsync(ct);
+                    if (outcome == StreamReadOutcome.EndOfStream) break;
+                    if (outcome == StreamReadOutcome.KeepAliveDue)
+                    {
+                        if (sawUpstreamEvent) yield return StreamKeepAlive.Ping();
+                        continue;
+                    }
+                }
+                else if (!await e.MoveNextAsync())
+                {
+                    break;
+                }
+                sawUpstreamEvent = true;
                 foreach (var irItem in sm.Translate(e.Current))
                     yield return irItem;
                 // A Responses completed/incomplete event is authoritative. Do not

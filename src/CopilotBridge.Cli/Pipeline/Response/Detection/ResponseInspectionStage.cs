@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using Microsoft.Extensions.Logging;
+using CopilotBridge.Cli.Pipeline.Strategies;
 
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
@@ -392,6 +393,19 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
 
             if (withholding)
             {
+                // A bridge-synthesized keepalive must NEVER be withheld. Withholding is
+                // about not showing model CONTENT before it is verified clean; a ping
+                // carries none, and the whole reason it exists is to reach the client
+                // DURING a long silence. Buffering it to content_block_stop would hold it
+                // for exactly the interval it was invented to cover — and since a silent
+                // thinking block is the canonical case, the feature would be silently
+                // defeated in this mode. It is also nothing a detector can act on, so
+                // relaying it live cannot weaken suppression.
+                if (StreamKeepAlive.IsInjected(evt))
+                {
+                    if (effective is { } liveKeepAlive) yield return liveKeepAlive;
+                    continue;
+                }
                 if (effective is { } e) blockBuffer.Add(e);
                 if (evt.EventType == "content_block_stop")
                 {

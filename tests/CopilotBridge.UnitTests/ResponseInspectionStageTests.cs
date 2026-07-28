@@ -8,6 +8,7 @@ using CopilotBridge.Cli.Pipeline.Response.Detection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
+using CopilotBridge.Cli.Pipeline.Strategies;
 
 namespace CopilotBridge.UnitTests;
 
@@ -1045,6 +1046,62 @@ public class ResponseInspectionStageTests
             NullLogger<ResponseLeakDetector>.Instance);
 
         Assert.Equal(expected, detector.BuffersScannableBlocks);
+    }
+
+    // ── Keepalives must never be withheld (PR #57 review round 1) ────────────
+
+    /// <summary>
+    /// A thinking block that opens, receives a bridge keepalive during the silence,
+    /// and only later completes — the canonical long-thinking shape.
+    /// </summary>
+    private static async IAsyncEnumerable<SseItem<string>> SilentThinkingBlockWithKeepAlive()
+    {
+        yield return new SseItem<string>("""{"type":"message_start","message":{"model":"claude-opus-4-8"}}""", "message_start");
+        yield return new SseItem<string>("""{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}""", "content_block_start");
+        yield return StreamKeepAlive.Ping();
+        yield return new SseItem<string>("""{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"pondering"}}""", "content_block_delta");
+        yield return new SseItem<string>("""{"type":"content_block_stop","index":0}""", "content_block_stop");
+        yield return new SseItem<string>("""{"type":"message_stop"}""", "message_stop");
+        await Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task BlockBuffered_KeepAliveIsRelayedLive_NotWithheldToBlockStop()
+    {
+        // Contract: per-block withholding gates model CONTENT until it is verified
+        // clean. A bridge keepalive carries no content and exists precisely to reach
+        // the client DURING the silence a thinking block spans — so it must be relayed
+        // immediately, not buffered to content_block_stop. Withholding it would hold it
+        // for exactly the interval it was invented to cover, silently defeating
+        // keepalive injection in this supported mode (the canonical case IS a silent
+        // thinking block).
+        var ctx = Ctx(SilentThinkingBlockWithKeepAlive());
+        await Run(ctx, new ResponseLeakGuardOptions
+        {
+            Enabled = true,
+            PreserveStream = true,
+            BufferScannableBlocks = true,
+        });
+
+        var got = await Drain(ctx.Response.EventStream!);
+        var pingIndex = got.FindIndex(e => e.EventType == "ping");
+        // The withheld block's OWN events are what get held to block end. The ping must
+        // overtake them: it is emitted after content_block_start yet must reach the
+        // client before the buffered block is flushed. (Asserting against
+        // content_block_stop alone would pass trivially -- the whole withheld block,
+        // content_block_start included, is flushed at stop, so a buffered ping would
+        // still land "before" it.)
+        var blockStartIndex = got.FindIndex(e => e.EventType == "content_block_start");
+        var deltaIndex = got.FindIndex(e => e.EventType == "content_block_delta");
+
+        Assert.True(pingIndex >= 0, "the keepalive must survive the withholding mode");
+        Assert.True(deltaIndex >= 0, "the withheld block must still be delivered");
+        Assert.True(
+            pingIndex < blockStartIndex && pingIndex < deltaIndex,
+            $"the keepalive must overtake the withheld block (ping at {pingIndex}, "
+            + $"block start flushed at {blockStartIndex}, delta at {deltaIndex}) — a buffered "
+            + "keepalive is held for exactly the silence it exists to cover");
+        Assert.False(ctx.ResponseLeakDetected);
     }
 
     private sealed class CapturingLogger<T> : ILogger<T>

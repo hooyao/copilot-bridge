@@ -162,6 +162,7 @@ internal sealed class BridgeIoSink : ILogEventSink, IDisposable
                     ["data"] = ParseOrString(e.Data),
                 };
                 if (e.Filtered) item["filtered"] = true;
+                if (e.Injected) item["injected"] = true;
                 arr.Add((JsonNode?)item);
             }
             root["events"] = arr;

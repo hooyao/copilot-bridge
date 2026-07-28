@@ -391,9 +391,9 @@ prompt cache) is never aborted.
   alike. Note this budget is disarmed once headers arrive, so a **buffered** body
   that stalls afterwards has no bound today. See `docs/timeout-chain.md`.
 - **Stream-idle budget** (`StreamIdleTimeoutSeconds`, default 240) bounds the gap
-  between consecutive SSE events, reset on every event pulled from upstream. Each
-  read is driven by the shared `StreamIdleReader`, which races `MoveNextAsync`
-  against an independent `Task.Delay(idle)` rather than arming/disarming a
+  between consecutive **upstream** SSE events, reset on every event pulled from
+  upstream. Each read is driven by the shared `StreamIdleReader`, which races
+  `MoveNextAsync` against an independent `Task.Delay` rather than arming/disarming a
   `CancelAfter` on the enumerator's own token — an arm/disarm on a reused CTS has a
   nanosecond poison race (a timer firing between a successful read and the disarm
   permanently cancels the source and spuriously aborts the next read), whereas an
@@ -401,6 +401,27 @@ prompt cache) is never aborted.
   synchronously (the next event is already buffered) takes an allocation-free fast
   path; only a real wait on the network allocates the race scaffolding, and on an
   idle timeout the pending read is cancelled and awaited so it never dangles.
+- **Downstream keepalive** (`KeepAliveIntervalSeconds`, default 15) makes
+  `StreamIdleReader` carry a **second deadline over the same pending read**, so the
+  reader returns a three-state outcome (`Event` / `EndOfStream` / `KeepAliveDue`)
+  rather than a bool. Both deadlines are computed from a **single** clock reading and
+  raced against the one in-flight read; on a `KeepAliveDue` win the read is left
+  pending and untouched and the idle deadline is **not** recomputed, so no number of
+  keepalives can postpone the idle timeout (ties go to the idle budget). A caller
+  that wants no keepalive passes `TimeSpan.Zero` and gets the previous behaviour.
+  Callers emit `StreamKeepAlive.Ping()` on each `KeepAliveDue`, but only after the
+  first upstream event.
+
+  Eligibility is by **downstream client protocol, not upstream strategy**: both the
+  `/cc` passthrough strategy and the Responses strategy inject when the inbound route
+  is `/cc` (the CC→gpt route reaches a Claude Code client through the Responses
+  backend), while a native `/codex` client gets none. The injected ping is teed
+  *above* `RawResponseCapture`, so `upstream-resp` structurally cannot contain it, and
+  `ResponseInspectionStage`'s per-block withholding relays it live rather than
+  buffering it to `content_block_stop` — withholding exists to gate model *content*,
+  and holding a keepalive for the block it was invented to cover would defeat it.
+  See `docs/timeout-chain.md` and the `stream-keepalive` capability.
+
   The bridge is the earlier deterministic actor by construction: `config
   claude-code` derives Claude Code's `CLAUDE_STREAM_IDLE_TIMEOUT_MS` from this
   budget plus a margin, so the client always outlasts it, and startup warns if it

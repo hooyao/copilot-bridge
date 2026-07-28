@@ -12,6 +12,13 @@ fires, how a fired budget surfaces to the client (a pre-headers `504`; a
 mid-stream retryable error on `/cc` or a `response.failed` terminal on Codex) and
 to the operator (the request summary and log), and that a client cancellation
 always wins the race against a timeout.
+
+The stream-idle budget measures the gap between genuine **upstream** events only.
+Events the bridge synthesizes and sends downstream — the keepalives defined by
+[`stream-keepalive`](../stream-keepalive/spec.md) — never reset it. That
+separation is what lets the bridge be the sole authority on a stalled turn:
+keepalives stop the *client* from judging upstream silence, so this budget has to
+remain the party that does.
 ## Requirements
 ### Requirement: First-byte inactivity budget
 
@@ -77,11 +84,17 @@ falling back to a coarse cap.
 ### Requirement: Stream inactivity budget
 
 Once an SSE stream from Copilot has started, the bridge SHALL bound the gap
-between consecutive upstream events. The budget SHALL be reset on every event the
-bridge pulls from the upstream stream, so that a stream which keeps emitting is
-never aborted regardless of total length. If the gap between two consecutive
+between consecutive **upstream** events. The budget SHALL be reset on every event
+the bridge pulls from the upstream stream, so that a stream which keeps emitting
+is never aborted regardless of total length. If the gap between two consecutive
 upstream events exceeds the configured **stream-idle budget**, the bridge SHALL
 abort the upstream read.
+
+The budget SHALL measure the upstream gap **only**. Events the bridge synthesizes
+and sends downstream — notably the keepalives defined by the `stream-keepalive`
+capability — SHALL NOT reset, extend, or suspend it. Keepalives exist precisely to
+stop the *client* from judging upstream silence; if they also fed this budget,
+no party would be judging it and a hung upstream would never be detected.
 
 The budget SHALL be independently configurable and disable-able: a configured
 value of zero or less means the bridge imposes no stream-idle bound and incurs no
@@ -112,6 +125,12 @@ selected the Anthropic or Responses upstream backend:
 - **THEN** the bridge aborts the upstream read within approximately that budget of the last event
 - **AND** by default the bridge injects a retryable `overloaded_error` event and ends the stream
 - **AND** the request summary records an upstream stream-idle timeout, distinct from a client cancellation.
+
+#### Scenario: Injected keepalives do not postpone the budget
+
+- **WHEN** the bridge injects downstream keepalives during upstream silence and that silence continues past the stream-idle budget
+- **THEN** the budget fires at approximately its configured duration measured from the last **upstream** event
+- **AND** the number of keepalives sent in the meantime does not change when it fires.
 
 #### Scenario: Responses upstream stalls on the Claude Code path
 

@@ -19,6 +19,90 @@ public class TimeoutBudgetReportTests
     private static UpstreamTimeoutOptions Budgets(int firstByteSeconds, int streamIdleSeconds) =>
         new() { FirstByteTimeoutSeconds = firstByteSeconds, StreamIdleTimeoutSeconds = streamIdleSeconds };
 
+    // ---- Requirement: keepalive injection is visible in the report ----
+
+    /// <summary>
+    /// Contract: the report states whether the bridge is injecting keepalives. With
+    /// injection on, the client's idle watchdogs effectively never fire — which
+    /// changes how the idle-gap row is to be read — and pings will appear in traces.
+    /// An operator who cannot see this from startup would misread both.
+    /// </summary>
+    [Fact]
+    public void Report_states_that_keepalive_injection_is_active()
+    {
+        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var (events, log) = Recorder();
+
+        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
+        budgets.KeepAliveIntervalSeconds = 15;
+        TimeoutBudgetReport.Emit(budgets, log, path);
+
+        var table = Table(events);
+        Assert.Contains("keepalive", table, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("15s", table, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Contract: a POSITIVE interval does not mean pings will flow. When it is not
+    /// shorter than the stream-idle budget, StreamIdleReader deliberately lets the
+    /// budget fire first and no ping is ever due — so promising pings here would make
+    /// the report confidently wrong about the one thing an operator reads it for.
+    /// </summary>
+    [Fact]
+    public void Report_states_keepalive_inactive_when_interval_is_not_shorter_than_budget()
+    {
+        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var (events, log) = Recorder();
+
+        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 30);
+        budgets.KeepAliveIntervalSeconds = 30; // equal → the budget always wins
+        TimeoutBudgetReport.Emit(budgets, log, path);
+
+        var table = Table(events);
+        Assert.Contains("keepalive: INACTIVE", table, StringComparison.Ordinal);
+        Assert.DoesNotContain("sends ping every", table, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Contract: whole-response buffering (ResponseLeakGuard.PreserveStream=false)
+    /// drains the response and delivers it as one body, so there is no live stream to
+    /// inject into and no keepalive can reach the client mid-turn. The report must say
+    /// so rather than promise protection the configuration cannot deliver.
+    /// </summary>
+    [Fact]
+    public void Report_states_keepalive_inactive_under_whole_response_buffering()
+    {
+        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var (events, log) = Recorder();
+
+        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
+        budgets.KeepAliveIntervalSeconds = 15; // would otherwise be active
+        TimeoutBudgetReport.Emit(budgets, log, path, wholeResponseBuffering: true);
+
+        var table = Table(events);
+        Assert.Contains("keepalive: INACTIVE", table, StringComparison.Ordinal);
+        Assert.Contains("PreserveStream=false", table, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Contract: with injection disabled the report must NOT imply the client is
+    /// protected — the client's own watchdog is then the only thing standing between
+    /// a healthy long-thinking turn and an abort, and the report has to say so.
+    /// </summary>
+    [Fact]
+    public void Report_states_when_keepalive_injection_is_off()
+    {
+        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var (events, log) = Recorder();
+
+        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
+        budgets.KeepAliveIntervalSeconds = 0;
+        TimeoutBudgetReport.Emit(budgets, log, path);
+
+        var table = Table(events);
+        Assert.Contains("keepalive: OFF", table, StringComparison.Ordinal);
+    }
+
     private static (List<RecordedEvent> Events, ILogger Log) Recorder()
     {
         var provider = new RecordingLoggerProvider();
