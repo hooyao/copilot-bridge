@@ -587,8 +587,11 @@ per scope by `BuildAnthropicPipeline`). Because these inject the scoped
 `BridgeContext`, they *cannot* be singletons — a singleton capturing a scoped service
 is a captive dependency.
 
-**Singleton (process-level shared resources):** `HttpClient` and `ICopilotClient` (a
-per-request `HttpClient` is the classic socket-exhaustion anti-pattern),
+**Singleton (process-level shared resources):** `IHttpClientFactory` and
+`ICopilotClient` (a per-request `HttpClient` is the classic socket-exhaustion
+anti-pattern; a *cached* one pins a pooled handler and defeats rotation, so
+consumers lease per call — one named client per upstream surface, see
+`UpstreamHttpClientNames`),
 `AuthService`/`IAuthService` (owns the token-refresh timer and in-memory token
 cache), the immutable catalog/registry lookup tables (`ModelProfileCatalog`,
 `CodexModelProfileCatalog`, `IModelRegistry`), `CopilotHeaderFactory`,

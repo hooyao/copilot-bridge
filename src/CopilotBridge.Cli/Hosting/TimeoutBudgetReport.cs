@@ -39,47 +39,34 @@ internal static class TimeoutBudgetReport
     {
         var snapshot = ClaudeCodeTimeoutReader.Read(settingsPathOverride);
 
-        var firstByte = Describe(budgets.FirstByteTimeoutSeconds);
-        var streamIdle = Describe(budgets.StreamIdleTimeoutSeconds);
-
+        // One table, not a paragraph per bound. Each row is a phase, and the row
+        // says which side ends the turn in that phase — the question an operator
+        // actually has. Rationale and caveats live in docs/timeout-chain.md; a
+        // startup log is the wrong place to explain them.
         log.LogInformation(
-            "Timeouts:  bridge first-byte {FirstByte}, stream-idle {StreamIdle} "
-            + "(Pipeline:UpstreamTimeout — idle budgets, not total caps)",
-            firstByte, streamIdle);
+            "Timeouts (what ends a turn):\n"
+            + "  idle gap        bridge {BridgeIdle,-9} client {ClientIdle,-9} -> {IdleWinner}\n"
+            + "  first byte      bridge {BridgeFirstByte,-9} client {ClientFirstByte,-9} -> {FirstByteWinner}\n"
+            + "  whole request   bridge {BridgeWhole,-9} client {ClientWhole,-9} -> {WholeWinner}"
+            + "{Notes}",
+            Describe(budgets.StreamIdleTimeoutSeconds),
+            DescribeClient(snapshot.StreamIdle),
+            Winner(budgets.StreamIdleTimeoutSeconds, snapshot.StreamIdle),
+            Describe(budgets.FirstByteTimeoutSeconds),
+            None,
+            Describe(budgets.FirstByteTimeoutSeconds),
+            None,
+            DescribeClient(snapshot.RequestTimeout),
+            DescribeClient(snapshot.RequestTimeout),
+            BuildNotes(snapshot));
 
+        // Warnings stay separate: they are the only lines an operator must act on,
+        // so they must not be buried in the table above.
         if (!snapshot.Readable)
         {
-            // The client's bounds are unknown, so what actually ends a stalled turn
-            // is unknown too — it is not "the bridge's budgets". A
-            // separately-configured client may hold a much shorter watchdog, and
-            // claiming otherwise would falsely reassure exactly the operator most
-            // likely to be bitten.
-            log.LogInformation(
-                "Timeouts:  Claude Code client bounds UNKNOWN ({Reason}: {Path}) — the bridge's own "
-                + "budgets above are the only ones it can vouch for; a shorter client watchdog "
-                + "could end a turn before any of them",
-                snapshot.Reason, snapshot.SettingsPath);
             WarnIfBudgetExceedsClientMaximum(log, budgets);
             return;
         }
-
-        log.LogInformation(
-            "Timeouts:  Claude Code stream-idle {StreamIdle}, request {Request} "
-            + "(global client env — applies on Claude Code's next start; a project's own "
-            + ".claude/settings.local.json would override these and is not visible from here)",
-            DescribeClient(snapshot.StreamIdle),
-            DescribeClient(snapshot.RequestTimeout));
-
-        // Per PHASE, not a single minimum: these bounds do not compete over the same
-        // interval, so a global min is meaningless. With first-byte 60 s and
-        // stream-idle 600 s, headers arriving immediately DISARM the 60 s timer and
-        // a later silence is bounded at 600 s — reporting "60 s" would be wrong.
-        log.LogInformation(
-            "Timeouts:  waiting for headers — bridge {FirstByte}; then per silent gap — "
-            + "bridge {StreamIdle} vs client {ClientIdle} (whichever is shorter ends the turn)",
-            Describe(budgets.FirstByteTimeoutSeconds),
-            Describe(budgets.StreamIdleTimeoutSeconds),
-            DescribeClient(snapshot.StreamIdle));
 
         // An undercut means the client aborts a healthy in-progress turn and the
         // bridge's budget never gets to decide — the failure this report exists for.
@@ -94,40 +81,49 @@ internal static class TimeoutBudgetReport
                 log, snapshot.StreamIdle, budgets.StreamIdleTimeoutSeconds,
                 "stream-idle", nameof(UpstreamTimeoutOptions.StreamIdleTimeoutSeconds));
         }
-        // API_TIMEOUT_MS is deliberately NOT compared against a budget. It is a
-        // wall-clock cap while the budgets bound inactivity, so no finite value can
-        // outlast them — a healthy turn that keeps emitting has no total duration,
-        // and a stalled one can legally spend first-byte + stream-idle + … before
-        // any bridge timer fires. Reporting it as a residual bound is honest;
-        // "warning when it undercuts" would fire on correct configurations.
-        ReportResidualWallClockBound(log, snapshot.RequestTimeout);
         WarnIfBudgetExceedsClientMaximum(log, budgets);
     }
 
+    /// <summary>Placeholder for a cell where that side imposes no bound on the phase.</summary>
+    private const string None = "-";
+
     /// <summary>
-    /// State the client's whole-request cap as what it is: a bound the bridge cannot
-    /// out-wait, only raise. It exists mainly for Claude Code's non-streaming
-    /// recovery request (client default 300 s, far too short for a deep-thinking
-    /// turn); for a streaming turn it is a ceiling that can in principle be crossed
-    /// before a bridge budget fires.
+    /// Which side ends the turn in the idle-gap phase: the shorter of the two, since
+    /// both timers run over the same interval there. (The other rows have only one
+    /// side, so their winner is that side.)
     /// </summary>
-    private static void ReportResidualWallClockBound(ILogger log, ClientTimeoutValue requestTimeout)
+    private static string Winner(int bridgeSeconds, ClientTimeoutValue client)
     {
-        if (requestTimeout.EffectiveMs is not { } ms)
+        var bridgeMs = bridgeSeconds > 0 ? (long)bridgeSeconds * 1000L : (long?)null;
+        var clientMs = client.EffectiveMs;
+
+        return (bridgeMs, clientMs) switch
         {
-            return;
+            (null, null) => "no bound",
+            (not null, null) => client.IsUnknown ? $"{FormatMs(bridgeMs.Value)}?" : FormatMs(bridgeMs.Value),
+            (null, not null) => FormatMs(clientMs!.Value),
+            _ => FormatMs(Math.Min(bridgeMs!.Value, clientMs!.Value)),
+        };
+    }
+
+    /// <summary>
+    /// The two caveats that change how the table should be read, appended only when
+    /// they apply. Anything an operator does not need at startup stays in the docs.
+    /// </summary>
+    private static string BuildNotes(ClientTimeoutSnapshot snapshot)
+    {
+        if (!snapshot.Readable)
+        {
+            return $"\n  client values unknown ({snapshot.Reason}) — a shorter client watchdog"
+                   + "\n  could end a turn before any bridge budget";
         }
 
-        log.LogInformation(
-            "Timeouts:  {Key} = {Value} is a wall-clock cap on the whole request, not an "
-            + "inactivity budget — the bridge cannot out-wait it, so a turn running longer than "
-            + "this ends at the client regardless of the budgets above",
-            requestTimeout.Key,
-            requestTimeout.IsExplicit
-                ? FormatMs(ms)
-                : $"{FormatMs(ms)} primary / "
-                  + $"{FormatMs(ClaudeCodeTimeoutPolicy.AbsentFallbackRequestTimeoutDefaultMs)} "
-                  + "per non-streaming recovery attempt (unset — client defaults)");
+        var notes = "\n  client values take effect on Claude Code's next restart";
+        if (!snapshot.StreamIdle.IsExplicit || !snapshot.RequestTimeout.IsExplicit)
+        {
+            notes += "\n  * = client default (not configured); run `" + ConfigCommand + "` to set it";
+        }
+        return notes;
     }
 
     /// <summary>
@@ -203,12 +199,16 @@ internal static class TimeoutBudgetReport
             ConfigCommand, client.Key, bridgeMs);
     }
 
+    /// <summary>A bridge budget, in the same units as every other cell.</summary>
     private static string Describe(int budgetSeconds) =>
-        budgetSeconds <= 0 ? "no bound (disabled)" : $"{budgetSeconds}s";
+        budgetSeconds <= 0 ? "no bound" : FormatMs((long)budgetSeconds * 1000L);
 
+    /// <summary>A client bound. A trailing <c>*</c> marks a value the client falls
+    /// back to rather than one it was configured with; the note under the table
+    /// expands on it.</summary>
     private static string DescribeClient(ClientTimeoutValue value) =>
         value.EffectiveMs is { } ms
-            ? value.IsExplicit ? FormatMs(ms) : $"{FormatMs(ms)} (unset — client default)"
+            ? value.IsExplicit ? FormatMs(ms) : $"{FormatMs(ms)}*"
             : "unknown";
 
     private static string FormatMs(long ms) =>

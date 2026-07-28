@@ -10,6 +10,7 @@ using CopilotBridge.Cli.Pipeline.Strategies.Anthropic;
 using System.Net.ServerSentEvents;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CopilotBridge.UnitTests;
@@ -192,6 +193,10 @@ public class DetectorCompositionTests
         {
             UpstreamHttpClientNames.Anthropic,
             UpstreamHttpClientNames.Responses,
+            // Metadata shares the Copilot host with the two above, so it is the
+            // surface this split actually protects — omitting it would let a
+            // regression that maps it back onto a model client pass unnoticed.
+            UpstreamHttpClientNames.Metadata,
             UpstreamHttpClientNames.GitHubAuth,
         };
 
@@ -214,13 +219,15 @@ public class DetectorCompositionTests
     }
 
     [Fact]
-    public void ModelSurfaces_HaveNoCoarseRequestTimeout_ButAuthDoes()
+    public void ModelSurfaces_HaveNoCoarseRequestTimeout_ButAuthAndMetadataDo()
     {
-        // The model surfaces must not carry a whole-request cap: on the buffered
-        // (non-streaming) path such a cap bounds the entire request including the
-        // body, truncating a legitimately slow deep-thinking turn regardless of the
-        // configured first-byte budget. Auth keeps a finite one — a hung token call
-        // should fail fast rather than hang forever.
+        // The model surfaces must not carry a whole-request cap. Under
+        // ResponseHeadersRead — which both forward paths use — such a cap bounds only
+        // the wait for HEADERS (verified over a real socket by
+        // UnderResponseHeadersRead_TheClientTimeoutDoesNotCoverTheBodyRead), and the
+        // configured first-byte budget bounds that same phase and is tunable. Auth
+        // and metadata keep a finite one — short calls that should fail fast, and in
+        // metadata's case the client timeout is their ONLY bound.
         using var sp = BuildProvider();
         var factory = sp.GetRequiredService<IHttpClientFactory>();
 
@@ -234,6 +241,88 @@ public class DetectorCompositionTests
         var authTimeout = factory.CreateClient(UpstreamHttpClientNames.GitHubAuth).Timeout;
         Assert.NotEqual(Timeout.InfiniteTimeSpan, authTimeout);
         Assert.True(authTimeout > TimeSpan.Zero);
+
+        // Metadata (/models, count_tokens) must ALSO stay finite: those calls never
+        // pass through the first-byte / stream-idle budgets, so this registration is
+        // their only bound. Asserting it on the REGISTERED client (not a hand-built
+        // one) is what makes flipping it to InfiniteTimeSpan fail here.
+        var metadataTimeout = factory.CreateClient(UpstreamHttpClientNames.Metadata).Timeout;
+        Assert.NotEqual(Timeout.InfiniteTimeSpan, metadataTimeout);
+        Assert.True(metadataTimeout > TimeSpan.Zero);
+    }
+
+    [Theory]
+    // Every registered name, because logging is configured per handler-builder:
+    // guarding only one would let RemoveAllLoggers() be dropped from the other
+    // three and restore the production noise while this test stayed green.
+    [InlineData(UpstreamHttpClientNames.Anthropic)]
+    [InlineData(UpstreamHttpClientNames.Responses)]
+    [InlineData(UpstreamHttpClientNames.Metadata)]
+    [InlineData(UpstreamHttpClientNames.GitHubAuth)]
+    public async Task ForwardingARequest_EmitsNoPerSendHttpClientLogging(string clientName)
+    {
+        // Contract: a forwarded upstream call must produce NO log records of its own
+        // from the HTTP layer. The bridge already emits exactly one structured
+        // summary per turn (RequestSummaryLogger); IHttpClientFactory's default
+        // handlers would add four Information records per send ("Start processing
+        // HTTP request" / "Sending HTTP request" and their completion pair). With
+        // count_tokens fan-out that was ~10 lines per Claude Code turn, burying the
+        // summary the operator actually reads.
+        //
+        // Asserted on RECORDS, not on rendered text: a level filter in appsettings
+        // would hide the lines while the records still exist, and that fix lives in
+        // an installation's own config file — a stock config would silently lose it.
+        // Requiring zero records forces the handler itself to be gone.
+        var records = new List<string>();
+        var config = new ConfigurationBuilder().AddInMemoryCollection([]).Build();
+        var services = new ServiceCollection();
+        services.AddLogging(b => b.AddProvider(new RecordingLoggerProvider(records)));
+        services.AddBridgeServer(config, cliPort: 12345, deviceCodePrinter: null);
+        using var sp = services.BuildServiceProvider();
+
+        // Send through a registered client, aimed at a closed local port so the test
+        // never touches the network. The send still runs the whole handler chain,
+        // which is where the unwanted records would be written.
+        var factory = sp.GetRequiredService<IHttpClientFactory>();
+        var client = factory.CreateClient(clientName);
+        records.Clear();
+        try
+        {
+            await client.GetAsync("http://127.0.0.1:1/never-listening");
+        }
+        catch (HttpRequestException)
+        {
+            // Connection refused is the expected outcome and is not what is asserted.
+        }
+
+        Assert.DoesNotContain(records, r => r.StartsWith("System.Net.Http.HttpClient.", StringComparison.Ordinal));
+    }
+
+    private sealed class RecordingLoggerProvider(List<string> records) : ILoggerProvider
+    {
+        public ILogger CreateLogger(string categoryName) => new Recorder(categoryName, records);
+
+        public void Dispose() { }
+
+        private sealed class Recorder(string category, List<string> records) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                lock (records)
+                {
+                    records.Add(category);
+                }
+            }
+        }
     }
 
     [Fact]

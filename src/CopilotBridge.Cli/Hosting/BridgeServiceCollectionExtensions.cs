@@ -121,19 +121,19 @@ internal static class BridgeServiceCollectionExtensions
         {
             http.Timeout = Timeout.InfiniteTimeSpan;
             http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
-        });
+        }).RemoveAllLoggers();
         services.AddHttpClient(UpstreamHttpClientNames.Responses, http =>
         {
             http.Timeout = Timeout.InfiniteTimeSpan;
             http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
-        });
+        }).RemoveAllLoggers();
         // Auth keeps a finite timeout: these are short token calls on a refresh
         // timer, never long-lived streams, and a hung one should fail fast.
         services.AddHttpClient(UpstreamHttpClientNames.GitHubAuth, http =>
         {
             http.Timeout = TimeSpan.FromSeconds(30);
             http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
-        });
+        }).RemoveAllLoggers();
         // Metadata (/models, count_tokens) likewise keeps a finite timeout. These
         // are NOT turn forwards, so they never pass through the first-byte /
         // stream-idle budgets — without a client-level cap they would have no bound
@@ -143,7 +143,7 @@ internal static class BridgeServiceCollectionExtensions
         {
             http.Timeout = TimeSpan.FromMinutes(2);
             http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
-        });
+        }).RemoveAllLoggers();
         // AuthService keeps a factory registration: it takes the closure-captured
         // deviceCodePrinter (DI can't supply it). Everything else with a
         // straightforward constructor uses the two-param overload so the

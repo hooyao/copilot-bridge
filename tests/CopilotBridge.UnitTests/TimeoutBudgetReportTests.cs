@@ -51,6 +51,25 @@ public class TimeoutBudgetReportTests
     private static List<RecordedEvent> Warnings(List<RecordedEvent> events) =>
         events.FindAll(e => e.Level == LogLevel.Warning);
 
+    /// <summary>The report is a single Information event holding the whole table.</summary>
+    private static string Table(List<RecordedEvent> events) =>
+        events.Find(e => e.Message.Contains("what ends a turn", StringComparison.OrdinalIgnoreCase))?.Message
+        ?? throw new Xunit.Sdk.XunitException(
+            "no timeout table was emitted; got: "
+            + string.Join(" | ", events.ConvertAll(e => e.Message)));
+
+    /// <summary>
+    /// One row of the table by its phase label. Assertions about a phase must be
+    /// scoped to its own row: the table repeats units across rows, so a
+    /// table-wide substring check can pass on a value that came from a different
+    /// phase entirely.
+    /// </summary>
+    private static string Row(string table, string phase) =>
+        Array.Find(
+            table.Split('\n'),
+            l => l.TrimStart().StartsWith(phase, StringComparison.Ordinal))
+        ?? throw new Xunit.Sdk.XunitException($"no '{phase}' row in table:\n{table}");
+
     // ---- Requirement: effective end-to-end timeout is reported at startup ----
 
     [Fact]
@@ -94,15 +113,12 @@ public class TimeoutBudgetReportTests
 
         TimeoutBudgetReport.Emit(Budgets(900, 600), log, missing);
 
-        var text = string.Join("\n", events.ConvertAll(e => e.Message));
-        // The bridge's own budgets are still stated...
-        Assert.Contains("900", text, StringComparison.Ordinal);
-        // ...but the client side must be called UNKNOWN, never folded into a
+        var table = Table(events);
+        // The bridge's own budgets are still stated (900 s renders as 15m)...
+        Assert.Contains("15m", table, StringComparison.Ordinal);
+        // ...but the client side must read as unknown, never folded into a
         // confident bound.
-        var unknownLine = events.Find(e =>
-            e.Message.Contains("UNKNOWN", StringComparison.OrdinalIgnoreCase));
-        Assert.NotNull(unknownLine);
-        Assert.Contains("client", unknownLine!.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("unknown", table, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -169,15 +185,13 @@ public class TimeoutBudgetReportTests
 
         TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 0, streamIdleSeconds: 0), log, path);
 
-        var text = string.Join("\n", events.ConvertAll(e => e.Message));
-        Assert.Contains("no bound", text, StringComparison.OrdinalIgnoreCase);
-
-        // With both bridge budgets disabled, the per-phase line must show them as
-        // imposing no bound while still naming the client's own idle value.
-        var phases = events.Find(e => e.Message.Contains("per silent gap", StringComparison.OrdinalIgnoreCase));
-        Assert.NotNull(phases);
-        Assert.Contains("no bound", phases!.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("client", phases.Message, StringComparison.OrdinalIgnoreCase);
+        // Scoped to the idle row's WINNER, not a substring of the whole table: both
+        // "no bound" and the client's 15m appear in other cells regardless, so a
+        // table-wide Contains would stay green even if the arrow wrongly reported
+        // 0s or "no bound" — i.e. it would assert nothing about the exclusion.
+        var idle = Row(Table(events), "idle gap");
+        Assert.EndsWith("-> 15m", idle.TrimEnd(), StringComparison.Ordinal);
+        Assert.Contains("no bound", idle, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -192,12 +206,15 @@ public class TimeoutBudgetReportTests
 
         TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 60, streamIdleSeconds: 600), log, path);
 
-        var phases = events.Find(e => e.Message.Contains("per silent gap", StringComparison.OrdinalIgnoreCase));
-        Assert.NotNull(phases);
-        Assert.Contains("60s", phases!.Message, StringComparison.Ordinal);
-        Assert.Contains("600s", phases.Message, StringComparison.Ordinal);
+        // Each phase keeps its own row, asserted on that row's WINNER: 1m ends the
+        // header wait, 10m ends a silent gap. Collapsing them would lose the 10m
+        // exposure. Scoped per row because "1m" is also a substring of "15m" and
+        // "10m", so a table-wide check would pass on values from other phases.
+        var table = Table(events);
+        Assert.EndsWith("-> 1m", Row(table, "first byte").TrimEnd(), StringComparison.Ordinal);
+        Assert.EndsWith("-> 10m", Row(table, "idle gap").TrimEnd(), StringComparison.Ordinal);
 
-        // No line may present a single number as THE bound.
+        // No line may present a single number as THE bound for the whole turn.
         Assert.DoesNotContain(
             events,
             e => e.Message.Contains("effective end-to-end bound", StringComparison.OrdinalIgnoreCase)
@@ -242,13 +259,14 @@ public class TimeoutBudgetReportTests
 
         TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
 
+        // No warning: it cannot be "fixed", so warning would be noise on a correct
+        // configuration. It still gets its own table row, so the operator can see
+        // the cap that will end the turn.
         Assert.Empty(Warnings(events));
 
-        var residual = events.Find(e =>
-            e.Message.Contains("wall-clock cap", StringComparison.OrdinalIgnoreCase));
-        Assert.NotNull(residual);
-        Assert.Contains(
-            ClaudeCodeTimeoutPolicy.RequestTimeoutKey, residual!.Message, StringComparison.Ordinal);
+        var table = Table(events);
+        Assert.Contains("whole request", table, StringComparison.Ordinal);
+        Assert.Contains("1m", table, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -311,8 +329,7 @@ public class TimeoutBudgetReportTests
 
         TimeoutBudgetReport.Emit(Budgets(900, 600), log, path);
 
-        var text = string.Join("\n", events.ConvertAll(e => e.Message));
-        Assert.Contains("next start", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("next restart", Table(events), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
