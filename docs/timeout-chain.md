@@ -28,14 +28,25 @@ outlast them. One bound stays outside that guarantee — see
    until you do, `config status` reports drift.
    `API_TIMEOUT_MS` is written as a fixed generous maximum instead, **not**
    derived — see [the one bound the bridge cannot own](#the-one-bound-the-bridge-cannot-own).
-4. **Startup says what is really in force**, and warns when the client would win:
+4. **Startup says what is really in force**, and warns when the client would win.
+   One row per phase; the last column names the side that actually ends the turn
+   there. With bridge budgets first-byte 900 s / stream-idle 600 s and the client
+   keys at 15 m / 60 m:
 
 ```
-Timeouts:  bridge first-byte 900s, stream-idle 600s (Pipeline:UpstreamTimeout — idle budgets, not total caps)
-Timeouts:  Claude Code stream-idle 15m, request 60m (global client env — applies on Claude Code's next start)
-Timeouts:  waiting for headers — bridge 900s; then per silent gap — bridge 600s vs
-           client 15m (whichever is shorter ends the turn)
+Timeouts (what ends a turn):
+  idle gap        bridge 10m       client 15m       -> 10m
+  first byte      bridge 15m       client -         -> 15m
+  whole request   bridge -         client 60m       -> 60m
+  client values take effect on Claude Code's next restart
 ```
+
+A `-` means that side imposes no bound on that phase — the client has no
+first-byte watchdog, and the bridge has no whole-request cap. The bounds are
+listed **per phase and never reduced to one minimum**: they do not compete over
+the same interval (the first-byte timer disarms once headers arrive; stream-idle
+governs each subsequent gap), so a single "effective timeout" would understate a
+turn's real exposure.
 
 A `WARNING` naming a `CLAUDE_*` key means the client aborts first and the bridge's
 budget never applies. It fires for a **missing** key too — absence is not benign
@@ -54,15 +65,17 @@ first can be guaranteed to outlast the second:
   stream-idle 600 s the bridge may legitimately take ~1500 s, so a derived
   `max(900,600)+300 = 1200 s` would have the **client** abort first.
 
-So the bridge writes a fixed generous maximum (60 min) rather than deriving one,
-and the startup report calls it what it is — a residual bound the bridge cannot
-out-wait:
+So the bridge writes a fixed generous maximum (60 min) rather than deriving one.
+The startup report shows it as the `whole request` row, where the bridge cell is
+`-` — the bridge imposes nothing on that phase, so the client's cap is the only
+bound and wins by default:
 
 ```
-Timeouts:  API_TIMEOUT_MS = 60m is a wall-clock cap on the whole request, not an
-           inactivity budget — the bridge cannot out-wait it, so a turn running
-           longer than this ends at the client regardless of the budgets above
+  whole request   bridge -         client 60m       -> 60m
 ```
+
+That is a residual bound the bridge cannot out-wait: a turn running longer than
+this ends at the client regardless of the budgets above.
 
 It is still worth raising from the client's own default, because it *also* bounds
 each attempt of Claude Code's non-streaming recovery request (default 300 s) —

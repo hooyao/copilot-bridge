@@ -61,9 +61,11 @@ The single hard non-functional goal is a **single-file, small-footprint `.exe`**
   The bridge now has four (`/v1/messages`, `/responses`, metadata, GitHub auth),
   and the first three share a host: one pooled handler puts them in a single
   connection budget while the bridge holds connections open for *minutes* during a
-  long turn, so a Codex burst could stall Claude Code. Measured cost of the switch:
-  **+199 KB (+1.55%)**, no new package (it ships in the ASP.NET shared framework) —
-  see [`size-history.md`](size-history.md) 2026-07-27. Consumers must lease per
+  long turn, so a Codex burst could stall Claude Code. Cost: the whole span since
+  the last recorded build grew **+199 KB (+1.55%)**, an aggregate upper bound that
+  also covers eleven unrelated PRs — the factory's own share is smaller and was
+  not isolated. No new package (it ships in the ASP.NET shared framework) — see
+  [`size-history.md`](size-history.md) 2026-07-27. Consumers must lease per
   call (`CreateClient` at the send site); caching one pins a pooled handler and
   defeats the rotation that justifies the factory.
 

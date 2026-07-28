@@ -58,6 +58,18 @@ public class TimeoutBudgetReportTests
             "no timeout table was emitted; got: "
             + string.Join(" | ", events.ConvertAll(e => e.Message)));
 
+    /// <summary>
+    /// One row of the table by its phase label. Assertions about a phase must be
+    /// scoped to its own row: the table repeats units across rows, so a
+    /// table-wide substring check can pass on a value that came from a different
+    /// phase entirely.
+    /// </summary>
+    private static string Row(string table, string phase) =>
+        Array.Find(
+            table.Split('\n'),
+            l => l.TrimStart().StartsWith(phase, StringComparison.Ordinal))
+        ?? throw new Xunit.Sdk.XunitException($"no '{phase}' row in table:\n{table}");
+
     // ---- Requirement: effective end-to-end timeout is reported at startup ----
 
     [Fact]
@@ -173,12 +185,13 @@ public class TimeoutBudgetReportTests
 
         TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 0, streamIdleSeconds: 0), log, path);
 
-        // With both bridge budgets disabled the table must show them as imposing no
-        // bound, and the idle row must fall back to the client's own value (20m)
-        // rather than treating 0 as a numeric bound.
-        var table = Table(events);
-        Assert.Contains("no bound", table, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("15m", table, StringComparison.Ordinal);
+        // Scoped to the idle row's WINNER, not a substring of the whole table: both
+        // "no bound" and the client's 15m appear in other cells regardless, so a
+        // table-wide Contains would stay green even if the arrow wrongly reported
+        // 0s or "no bound" — i.e. it would assert nothing about the exclusion.
+        var idle = Row(Table(events), "idle gap");
+        Assert.EndsWith("-> 15m", idle.TrimEnd(), StringComparison.Ordinal);
+        Assert.Contains("no bound", idle, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -193,13 +206,13 @@ public class TimeoutBudgetReportTests
 
         TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 60, streamIdleSeconds: 600), log, path);
 
-        // Each phase keeps its own row: 60s (1m) for the header wait, 600s (10m) for
-        // a silent gap. Collapsing them would lose the 10m exposure.
+        // Each phase keeps its own row, asserted on that row's WINNER: 1m ends the
+        // header wait, 10m ends a silent gap. Collapsing them would lose the 10m
+        // exposure. Scoped per row because "1m" is also a substring of "15m" and
+        // "10m", so a table-wide check would pass on values from other phases.
         var table = Table(events);
-        Assert.Contains("1m", table, StringComparison.Ordinal);
-        Assert.Contains("10m", table, StringComparison.Ordinal);
-        Assert.Contains("idle gap", table, StringComparison.Ordinal);
-        Assert.Contains("first byte", table, StringComparison.Ordinal);
+        Assert.EndsWith("-> 1m", Row(table, "first byte").TrimEnd(), StringComparison.Ordinal);
+        Assert.EndsWith("-> 10m", Row(table, "idle gap").TrimEnd(), StringComparison.Ordinal);
 
         // No line may present a single number as THE bound for the whole turn.
         Assert.DoesNotContain(

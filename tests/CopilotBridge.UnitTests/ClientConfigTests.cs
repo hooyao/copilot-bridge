@@ -252,13 +252,17 @@ public class ClientConfigTests
     }
 
     [Fact]
-    public void Status_details_name_the_expected_timeout_beside_a_drifted_value()
+    public void Status_output_names_the_expected_timeout_beside_a_drifted_value()
     {
         // The spec requires a drift report to show BOTH values. Asserting the
         // Drifted flag (as the other tests do) cannot catch a renderer that prints
         // only the current one — which is exactly what shipped, leaving the operator
         // told "wrong" without the number to set.
-        var conn = Conn(port: 8765);
+        //
+        // Driven through ConfigCommand.Status with the console captured, not through
+        // Read: the requirement is about what `config status` PRINTS, and asserting
+        // the intermediate ConfigState.Details would stay green if the command
+        // stopped rendering details at all.
         var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(dir, ".claude"));
         File.WriteAllText(
@@ -267,22 +271,37 @@ public class ClientConfigTests
             + $"\"{ClaudeCodeTimeoutPolicy.StreamIdleKey}\": \"1000\" }} }}");
 
         var old = Environment.CurrentDirectory;
+        var originalOut = Console.Out;
+        var captured = new StringWriter();
+        string output;
         try
         {
             Environment.CurrentDirectory = dir;
-            var state = new ClaudeCodeConfigurator().Read(conn, ConfigScope.Repo);
-
-            Assert.True(state.Drifted);
-            var line = state.Details.Single(d => d.StartsWith(ClaudeCodeTimeoutPolicy.StreamIdleKey, StringComparison.Ordinal));
-            Assert.Contains("1000", line, StringComparison.Ordinal);
-            Assert.Contains(
-                conn.ClaudeCodeStreamIdleTimeoutMs.ToString(), line, StringComparison.Ordinal);
+            Console.SetOut(captured);
+            var exit = ConfigCommand.Status(cliPort: 8765);
+            Assert.Equal(0, exit);
         }
         finally
         {
+            Console.SetOut(originalOut);
             Environment.CurrentDirectory = old;
+            output = captured.ToString();
             try { Directory.Delete(dir, true); } catch { }
         }
+
+        // Scoped to the repo-scope block's own key line: the same key also appears
+        // in the global-scope block (this machine's real settings.json), so a
+        // whole-output substring check could pass on a value from the wrong scope.
+        var line = Array.Find(
+            output.Split('\n'),
+            l => l.TrimStart().StartsWith(ClaudeCodeTimeoutPolicy.StreamIdleKey, StringComparison.Ordinal)
+                 && l.Contains("1000", StringComparison.Ordinal))
+            ?? throw new Xunit.Sdk.XunitException(
+                $"no drifted {ClaudeCodeTimeoutPolicy.StreamIdleKey} line in:\n{output}");
+
+        Assert.Contains("DRIFTED", output, StringComparison.Ordinal);
+        Assert.Contains(
+            Conn(port: 8765).ClaudeCodeStreamIdleTimeoutMs.ToString(), line, StringComparison.Ordinal);
     }
 
     [Theory]

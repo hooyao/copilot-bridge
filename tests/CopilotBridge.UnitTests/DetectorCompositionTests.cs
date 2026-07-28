@@ -251,8 +251,15 @@ public class DetectorCompositionTests
         Assert.True(metadataTimeout > TimeSpan.Zero);
     }
 
-    [Fact]
-    public async Task ForwardingARequest_EmitsNoPerSendHttpClientLogging()
+    [Theory]
+    // Every registered name, because logging is configured per handler-builder:
+    // guarding only one would let RemoveAllLoggers() be dropped from the other
+    // three and restore the production noise while this test stayed green.
+    [InlineData(UpstreamHttpClientNames.Anthropic)]
+    [InlineData(UpstreamHttpClientNames.Responses)]
+    [InlineData(UpstreamHttpClientNames.Metadata)]
+    [InlineData(UpstreamHttpClientNames.GitHubAuth)]
+    public async Task ForwardingARequest_EmitsNoPerSendHttpClientLogging(string clientName)
     {
         // Contract: a forwarded upstream call must produce NO log records of its own
         // from the HTTP layer. The bridge already emits exactly one structured
@@ -273,11 +280,11 @@ public class DetectorCompositionTests
         services.AddBridgeServer(config, cliPort: 12345, deviceCodePrinter: null);
         using var sp = services.BuildServiceProvider();
 
-        // Send through a registered client, terminated locally so the test never
-        // touches the network. The primary handler is what the factory pipeline
-        // wraps, so replacing it leaves every bridge-installed handler in place.
+        // Send through a registered client, aimed at a closed local port so the test
+        // never touches the network. The send still runs the whole handler chain,
+        // which is where the unwanted records would be written.
         var factory = sp.GetRequiredService<IHttpClientFactory>();
-        var client = factory.CreateClient(UpstreamHttpClientNames.Metadata);
+        var client = factory.CreateClient(clientName);
         records.Clear();
         try
         {
@@ -285,8 +292,7 @@ public class DetectorCompositionTests
         }
         catch (HttpRequestException)
         {
-            // Connection refused is fine — the send still ran the handler chain,
-            // which is where the unwanted records would be written.
+            // Connection refused is the expected outcome and is not what is asserted.
         }
 
         Assert.DoesNotContain(records, r => r.StartsWith("System.Net.Http.HttpClient.", StringComparison.Ordinal));
