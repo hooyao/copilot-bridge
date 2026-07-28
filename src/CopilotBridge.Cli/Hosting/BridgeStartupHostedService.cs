@@ -28,6 +28,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
     private readonly IOptions<BridgeServerOptions> _server;
     private readonly IOptions<RoutesConfig> _routes;
     private readonly IOptions<UpstreamTimeoutOptions> _upstreamTimeout;
+    private readonly IOptions<ResponseLeakGuardOptions> _leakGuard;
     private readonly ModelProfileCatalog _catalog;
     private readonly CodexModelProfileCatalog _codexCatalog;
     private readonly Logging.BridgeIoSink? _ioSink;
@@ -38,6 +39,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
         IOptions<BridgeServerOptions> server,
         IOptions<RoutesConfig> routes,
         IOptions<UpstreamTimeoutOptions> upstreamTimeout,
+        IOptions<ResponseLeakGuardOptions> leakGuard,
         ModelProfileCatalog catalog,
         CodexModelProfileCatalog codexCatalog,
         ILogger<BridgeStartupHostedService> log,
@@ -47,6 +49,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
         _server = server;
         _routes = routes;
         _upstreamTimeout = upstreamTimeout;
+        _leakGuard = leakGuard;
         _catalog = catalog;
         _codexCatalog = codexCatalog;
         _log = log;
@@ -121,7 +124,11 @@ internal sealed class BridgeStartupHostedService : IHostedService
 
         // Per-phase timeout bounds from the bridge and the client's GLOBAL settings.
         // Best-effort: an unreadable client settings file must not fail startup.
-        TimeoutBudgetReport.Emit(_upstreamTimeout.Value, _log);
+        // PreserveStream=false drains the whole response before delivering it, so no
+        // keepalive can reach the client mid-turn — the report must say so rather than
+        // promise pings the configuration cannot deliver.
+        TimeoutBudgetReport.Emit(
+            _upstreamTimeout.Value, _log, wholeResponseBuffering: !_leakGuard.Value.PreserveStream);
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

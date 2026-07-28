@@ -34,8 +34,14 @@ internal static class TimeoutBudgetReport
     /// Emit the report. Never throws: reading the client's settings is best-effort,
     /// because a bridge is perfectly usable by a client configured some other way.
     /// </summary>
+    /// <param name="wholeResponseBuffering">
+    /// True when the response leak guard buffers the entire response
+    /// (<c>PreserveStream=false</c>). In that mode there is no live stream to inject
+    /// keepalives into, so the report must not claim they are active.
+    /// </param>
     public static void Emit(
-        UpstreamTimeoutOptions budgets, ILogger log, string? settingsPathOverride = null)
+        UpstreamTimeoutOptions budgets, ILogger log, string? settingsPathOverride = null,
+        bool wholeResponseBuffering = false)
     {
         var snapshot = ClaudeCodeTimeoutReader.Read(settingsPathOverride);
 
@@ -58,7 +64,7 @@ internal static class TimeoutBudgetReport
             None,
             DescribeClient(snapshot.RequestTimeout),
             DescribeClient(snapshot.RequestTimeout),
-            BuildNotes(snapshot, budgets));
+            BuildNotes(snapshot, budgets, wholeResponseBuffering));
 
         // Warnings stay separate: they are the only lines an operator must act on,
         // so they must not be buried in the table above.
@@ -110,16 +116,10 @@ internal static class TimeoutBudgetReport
     /// The two caveats that change how the table should be read, appended only when
     /// they apply. Anything an operator does not need at startup stays in the docs.
     /// </summary>
-    private static string BuildNotes(ClientTimeoutSnapshot snapshot, UpstreamTimeoutOptions budgets)
+    private static string BuildNotes(
+        ClientTimeoutSnapshot snapshot, UpstreamTimeoutOptions budgets, bool wholeResponseBuffering)
     {
-        // State the keepalive first: when it is on, the client's idle watchdogs
-        // effectively never fire, which changes how the "idle gap" row above should be
-        // read. Also warns the operator not to be surprised by pings in a trace.
-        var keepAlive = budgets.KeepAliveIntervalSeconds > 0
-            ? $"\n  keepalive: bridge sends ping every {budgets.KeepAliveIntervalSeconds}s while upstream is"
-              + "\n  silent, so the client's idle watchdogs should not fire"
-            : "\n  keepalive: OFF — the client's own idle watchdog is the only thing"
-              + "\n  protecting a silent long-thinking turn";
+        var keepAlive = DescribeKeepAlive(budgets, wholeResponseBuffering);
 
         if (!snapshot.Readable)
         {
@@ -134,6 +134,46 @@ internal static class TimeoutBudgetReport
             notes += "\n  * = client default (not configured); run `" + ConfigCommand + "` to set it";
         }
         return notes;
+    }
+
+    /// <summary>
+    /// Report whether keepalives will ACTUALLY reach the client, not merely whether the
+    /// interval is positive. Three configurations look "on" but deliver nothing, and each
+    /// would otherwise leave the operator believing a silent turn is protected when it is
+    /// not:
+    /// <list type="bullet">
+    ///   <item>interval &lt;= 0 — injection disabled outright;</item>
+    ///   <item>interval &gt;= a positive stream-idle budget — the budget always fires
+    ///   first, so no ping is ever due (<see cref="Pipeline.Strategies.StreamIdleReader"/>
+    ///   gives ties to the budget deliberately);</item>
+    ///   <item>whole-response buffering (<c>ResponseLeakGuard.PreserveStream=false</c>) —
+    ///   the response is drained and delivered as one buffered body, so there is no live
+    ///   stream to inject into at all.</item>
+    /// </list>
+    /// </summary>
+    private static string DescribeKeepAlive(UpstreamTimeoutOptions budgets, bool wholeResponseBuffering)
+    {
+        if (budgets.KeepAliveIntervalSeconds <= 0)
+        {
+            return "\n  keepalive: OFF — the client's own idle watchdog is the only thing"
+                   + "\n  protecting a silent long-thinking turn";
+        }
+
+        if (wholeResponseBuffering)
+        {
+            return "\n  keepalive: INACTIVE — ResponseLeakGuard.PreserveStream=false buffers the"
+                   + "\n  whole response, so no ping can reach the client mid-turn";
+        }
+
+        if (budgets.StreamIdleTimeoutSeconds > 0
+            && budgets.KeepAliveIntervalSeconds >= budgets.StreamIdleTimeoutSeconds)
+        {
+            return $"\n  keepalive: INACTIVE — interval ({budgets.KeepAliveIntervalSeconds}s) is not shorter than the"
+                   + $"\n  stream-idle budget ({budgets.StreamIdleTimeoutSeconds}s), so the budget always fires first";
+        }
+
+        return $"\n  keepalive: bridge sends ping every {budgets.KeepAliveIntervalSeconds}s while upstream is"
+               + "\n  silent, so the client's idle watchdogs should not fire";
     }
 
     /// <summary>

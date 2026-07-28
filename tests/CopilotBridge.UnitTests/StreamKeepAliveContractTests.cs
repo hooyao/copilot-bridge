@@ -69,8 +69,7 @@ public class StreamKeepAliveContractTests
             IReadOnlyDictionary<string, string?>? copilotHeaderOverrides = null,
             CancellationToken ct = default) => new(resp);
         public ValueTask<HttpResponseMessage> PostResponsesAsync(
-            ReadOnlyMemory<byte> body, bool vision = false, CancellationToken ct = default) =>
-            throw new NotSupportedException();
+            ReadOnlyMemory<byte> body, bool vision = false, CancellationToken ct = default) => new(resp);
         public ValueTask<HttpResponseMessage> PostCountTokensAsync(
             ReadOnlyMemory<byte> body, CancellationToken ct = default) =>
             throw new NotSupportedException();
@@ -245,10 +244,14 @@ public class StreamKeepAliveContractTests
     [Fact]
     public async Task KeepAliveTick_DoesNotDisturbThePendingRead()
     {
-        var keepAlive = TimeSpan.FromMilliseconds(40);
+        // Wide interval-to-wait ratio (1s wait / 20ms interval = ~50 expected ticks) so a
+        // loaded CI box cannot starve the assertion below. The contract is "the pending
+        // read survives keepalive ticks", not a tick count, so only a LOWER bound of 1 is
+        // asserted — enough to prove at least one tick was interleaved.
+        var keepAlive = TimeSpan.FromMilliseconds(20);
         using var readCts = new CancellationTokenSource();
         // One event, arriving well after several keepalive intervals have elapsed.
-        var reader = Reader(PacedEvents(1, TimeSpan.FromMilliseconds(300)), readCts,
+        var reader = Reader(PacedEvents(1, TimeSpan.FromSeconds(1)), readCts,
             idle: TimeSpan.FromSeconds(30), keepAlive, out var e);
         await using var _ = e;
 
@@ -262,7 +265,7 @@ public class StreamKeepAliveContractTests
             events.Add(e.Current.Data);
         }
 
-        Assert.True(pings >= 3, $"expected keepalive ticks while the read was pending, got {pings}");
+        Assert.True(pings >= 1, $"expected at least one keepalive tick while the read was pending, got {pings}");
         Assert.Equal(["e0"], events);
     }
 
@@ -482,6 +485,89 @@ public class StreamKeepAliveContractTests
         // Guard against the assertion passing because BOTH are empty.
         Assert.Equal(11, withPing.InputTokens);
         Assert.Equal(22, withPing.OutputTokens);
+    }
+
+    // ── Route-scoped eligibility: client protocol, not upstream strategy ─────
+
+    private static BridgeContext<MessagesRequest> ResponsesCtx(string path) => new()
+    {
+        Request = new BridgeRequest<MessagesRequest>
+        {
+            Method = "POST",
+            Path = path,
+            Body = new MessagesRequest
+            {
+                Model = "gpt-5.6-sol",
+                Messages = Array.Empty<MessageParam>(),
+                Stream = true,
+            },
+        },
+        Response = new BridgeResponse(),
+        Ct = default,
+    };
+
+    private static async Task<List<SseItem<string>>> ForwardResponsesAndDrainAsync(
+        string path, Stream upstream, int keepAliveSeconds)
+    {
+        var ctx = ResponsesCtx(path);
+        var strategy = new CopilotBridge.Cli.Pipeline.Strategies.Codex.CopilotResponsesStrategy(
+            new StubClient(StreamingResponse(upstream)),
+            new CopilotBridge.Cli.Pipeline.Routing.CodexModelProfileCatalog(),
+            ctx,
+            TestAudit.Create(false),
+            Options.Create(new UpstreamTimeoutOptions
+            {
+                FirstByteTimeoutSeconds = 0,
+                StreamIdleTimeoutSeconds = 30,
+                KeepAliveIntervalSeconds = keepAliveSeconds,
+            }),
+            NullLogger<CopilotBridge.Cli.Pipeline.Strategies.Codex.CopilotResponsesStrategy>.Instance);
+        await strategy.ForwardAsync();
+        Assert.NotNull(ctx.Response.EventStream);
+        var items = new List<SseItem<string>>();
+        await foreach (var e in ctx.Response.EventStream!) items.Add(e);
+        return items;
+    }
+
+    /// <summary>A Responses-shaped stream that opens an item, goes silent, then completes.</summary>
+    private static SilentGapStream SilentResponsesStream(TimeSpan silence) => new(
+        Encoding.UTF8.GetBytes(
+            "event: response.created\ndata: {\"type\":\"response.created\"}\n\n"),
+        silence,
+        Encoding.UTF8.GetBytes(
+            "event: response.completed\ndata: {\"type\":\"response.completed\","
+            + "\"response\":{\"status\":\"completed\"}}\n\n"));
+
+    /// <summary>
+    /// Contract: keepalive eligibility follows the DOWNSTREAM CLIENT PROTOCOL, not the
+    /// upstream strategy. A `/cc` request routed to a Responses model (the CC→gpt
+    /// route) still terminates at Claude Code, with the same idle watchdogs a native
+    /// `/cc` stream faces — so it must get keepalives even though the Responses
+    /// strategy served it. Scoping injection to the passthrough strategy would leave
+    /// this supported route exposed.
+    /// </summary>
+    [Fact]
+    public async Task ResponsesStrategy_CcRoute_InjectsKeepAlive()
+    {
+        var items = await ForwardResponsesAndDrainAsync(
+            "/cc/v1/messages", SilentResponsesStream(TimeSpan.FromMilliseconds(2500)), keepAliveSeconds: 1);
+
+        Assert.Contains(items, IsPing);
+        Assert.All(items.Where(IsPing), p => Assert.Equal("{\"type\":\"ping\"}", p.Data));
+    }
+
+    /// <summary>
+    /// Contract: a NATIVE Codex client gets no keepalive. Its stream is rendered back
+    /// to the Responses protocol by T4, and what a Responses client accepts as progress
+    /// has not been probed — so the bridge must not invent an event for it.
+    /// </summary>
+    [Fact]
+    public async Task ResponsesStrategy_CodexRoute_InjectsNoKeepAlive()
+    {
+        var items = await ForwardResponsesAndDrainAsync(
+            "/codex/responses", SilentResponsesStream(TimeSpan.FromMilliseconds(2500)), keepAliveSeconds: 1);
+
+        Assert.DoesNotContain(items, IsPing);
     }
 
     /// <summary>
