@@ -1,0 +1,114 @@
+<#
+.SYNOPSIS
+  Scans bridge logs for request durations and stream-ending causes.
+
+.DESCRIPTION
+  Backs the claims in docs/scratch/stream-cap-reconciliation.md. Answers, from a
+  local log corpus, the question that closed PR #54: does Copilot impose a fixed
+  ~300s cap on a token-less stream?
+
+  The discriminating evidence is not the maximum duration on its own but the
+  DISTRIBUTION OF `premature_eof` DURATIONS. A fixed server-side cap forces those
+  disconnects to pile up at one value; ordinary transport failure scatters them.
+  So the script reports every disconnect individually rather than summarising them.
+
+  Read-only. Skips any log a running bridge still holds open.
+
+.PARAMETER LogDir
+  Directory of bridge-*.log files. Defaults to the desktop install.
+
+.EXAMPLE
+  pwsh scripts/scan-stream-durations.ps1
+  pwsh scripts/scan-stream-durations.ps1 -LogDir C:\path\to\log
+#>
+[CmdletBinding()]
+param(
+    [string] $LogDir = "$env:USERPROFILE\Desktop\copilot-bridge\log"
+)
+
+if (-not (Test-Path $LogDir)) { throw "Log directory not found: $LogDir" }
+
+$rxDuration = [regex]'duration_ms=(\d+)'
+$rxOut      = [regex]'out:(\d+)'
+
+$rows    = New-Object System.Collections.Generic.List[object]
+$skipped = New-Object System.Collections.Generic.List[string]
+
+foreach ($file in Get-ChildItem $LogDir -File -Filter 'bridge-*.log') {
+    try {
+        $lines = [System.IO.File]::ReadLines($file.FullName)
+        foreach ($line in $lines) {
+            # Only per-request summary lines carry usage= and a duration.
+            if ($line -notmatch 'usage=') { continue }
+            $m = $rxDuration.Match($line)
+            if (-not $m.Success) { continue }
+
+            # Cause is read from the summary line's own error= text. NOTE the bridge
+            # writes the phase two different ways: `phase=stream_idle` on the separate
+            # WRN line, but `UpstreamTimeoutException: upstream stream_idle timeout` on
+            # the summary line matched here — match both or every bridge timeout is
+            # silently misfiled as 'other'.
+            $cause =
+                if     ($line -match 'premature_eof')                            { 'premature_eof' }
+                elseif ($line -match 'phase=stream_idle|upstream stream_idle')   { 'bridge_stream_idle' }
+                elseif ($line -match 'phase=first_byte|upstream first_byte')     { 'bridge_first_byte' }
+                elseif ($line -match 'cancelled by client')                      { 'cancelled_by_client' }
+                elseif ($line -match 'net_http_|No such host|ssl_connection')    { 'transport_error' }
+                elseif ($line -match 'error=\(none\)')                           { 'clean' }
+                else                                                             { 'other' }
+
+            $mo = $rxOut.Match($line)
+            $rows.Add([pscustomobject]@{
+                File      = $file.Name
+                Seconds   = [math]::Round([int]$m.Groups[1].Value / 1000.0, 1)
+                Ms        = [int]$m.Groups[1].Value
+                Cause     = $cause
+                OutTokens = if ($mo.Success) { [int]$mo.Groups[1].Value } else { $null }
+                Streaming = if ($line -match 'streaming=(\w+)') { $matches[1] } else { '?' }
+            })
+        }
+    }
+    catch [System.IO.IOException] {
+        # A running bridge holds its current log open. Reported, never silently dropped.
+        $skipped.Add($file.Name)
+    }
+}
+
+if ($rows.Count -eq 0) { throw "No request-summary lines found under $LogDir" }
+
+Write-Host "corpus: $($rows.Count) request summaries from $LogDir"
+if ($skipped.Count) { Write-Host "skipped (file in use): $($skipped -join ', ')" }
+
+Write-Host "`n--- ending cause ---"
+$rows | Group-Object Cause | Sort-Object Count -Descending |
+    Format-Table @{n='cause';e={$_.Name}}, Count -AutoSize
+
+$clean = $rows | Where-Object { $_.Cause -eq 'clean' -and $_.Streaming -eq 'true' } |
+         Sort-Object Seconds
+if ($clean.Count) {
+    Write-Host "--- clean streaming runs: $($clean.Count) ---"
+    'p50 {0,8:N1}s' -f $clean[[int]($clean.Count * 0.50)].Seconds
+    'p95 {0,8:N1}s' -f $clean[[int]($clean.Count * 0.95)].Seconds
+    'p99 {0,8:N1}s' -f $clean[[int]($clean.Count * 0.99)].Seconds
+    'max {0,8:N1}s' -f $clean[-1].Seconds
+    $past300 = @($clean | Where-Object Seconds -gt 300)
+    Write-Host "clean runs past 300s: $($past300.Count)  <-- a ~300s server cap predicts 0"
+    $past300 | ForEach-Object { '  {0,8:N1}s  out={1}' -f $_.Seconds, $_.OutTokens }
+}
+
+# The load-bearing table: where do genuine upstream disconnects actually land?
+$eof = @($rows | Where-Object Cause -eq 'premature_eof' | Sort-Object Seconds)
+Write-Host "`n--- upstream disconnects (premature_eof): $($eof.Count) ---"
+if ($eof.Count) {
+    $eof | ForEach-Object { '  {0,8:N1}s  out={1,-6} {2}' -f $_.Seconds, $_.OutTokens, $_.File }
+    $near300 = @($eof | Where-Object { $_.Seconds -ge 280 -and $_.Seconds -le 330 }).Count
+    Write-Host "  within 280-330s: $near300 of $($eof.Count)  <-- a fixed cap predicts most of them"
+}
+
+# Millisecond-exact clustering on a round number is a LOCAL timer, not a server.
+$round = @($rows | Where-Object { $_.Ms -ge 599000 -and $_.Ms -le 601000 })
+if ($round.Count) {
+    Write-Host "`n--- runs at ~600s (check for local-timer signature) ---"
+    $round | ForEach-Object { '  {0} ms  {1}' -f $_.Ms, $_.Cause }
+    Write-Host "  millisecond-tight against a round value = a fixed local timer"
+}
