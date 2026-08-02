@@ -3,7 +3,7 @@
   Scans bridge logs for request durations and stream-ending causes.
 
 .DESCRIPTION
-  Backs the claims in docs/scratch/stream-cap-reconciliation.md. Answers, from a
+  Backs the claims in docs/stream-cap-investigation.md. Answers, from a
   local log corpus, the question that closed PR #54: does Copilot impose a fixed
   ~300s cap on a token-less stream?
 
@@ -104,7 +104,11 @@ if ($clean.Count) {
     'p99 {0,8:N1}s' -f $clean[[int]($clean.Count * 0.99)].Seconds
     'max {0,8:N1}s' -f $clean[-1].Seconds
     $past300 = @($clean | Where-Object Seconds -gt 300)
-    Write-Host "clean runs past 300s: $($past300.Count)  <-- a ~300s server cap predicts 0"
+    # Deliberately NOT captioned as evidence against a token-less cap. Summary lines
+    # carry no first-token time, so a run past 300s may simply have started emitting
+    # before 300s and continued -- which such a cap permits. Reported as context only;
+    # the disconnect distribution below is what actually discriminates.
+    Write-Host "clean runs past 300s: $($past300.Count)  (total duration only -- first-token time is NOT in these logs)"
     $past300 | ForEach-Object { '  {0,8:N1}s  out={1}' -f $_.Seconds, $_.OutTokens }
 }
 
@@ -114,7 +118,10 @@ Write-Host "`n--- upstream disconnects (premature_eof): $($eof.Count) ---"
 if ($eof.Count) {
     $eof | ForEach-Object { '  {0,8:N1}s  out={1,-6} {2}' -f $_.Seconds, $_.OutTokens, $_.File }
     $near300 = @($eof | Where-Object { $_.Seconds -ge 280 -and $_.Seconds -le 330 }).Count
-    Write-Host "  within 280-330s: $near300 of $($eof.Count)  <-- a fixed cap predicts most of them"
+    # This one IS discriminating, and does not need first-token timing: whatever
+    # triggers a fixed cap, the SERVER-INITIATED CLOSES it produces must cluster at
+    # the cap value. Scatter across two orders of magnitude is not that.
+    Write-Host "  within 280-330s: $near300 of $($eof.Count)  <-- a fixed ~300s cap predicts most of them here"
 }
 
 # Millisecond-exact clustering on a round number is a LOCAL timer, not a server.

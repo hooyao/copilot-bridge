@@ -18,12 +18,16 @@ namespace CopilotBridge.Playground;
 /// upstream silence. Both would change how the bridge's budgets should be set. The
 /// corpus scan in <c>scripts/scan-stream-durations.ps1</c> answers it statistically;
 /// this probe answers it directly. See <c>docs/stream-cap-investigation.md</c>.</para>
-/// <para><b>What makes the result admissible.</b> The end of the stream is
-/// classified by its <i>cause</i>, not by elapsed time: a zero-length read means the
-/// peer closed the connection, an <see cref="OperationCanceledException"/> means this
-/// probe gave up first. The client-side budget is set far above the disputed value
-/// so a local timer cannot masquerade as a server cap — if this probe's own deadline
-/// fires, the run is reported as INCONCLUSIVE rather than as a measurement.</para>
+/// <para><b>What makes the result admissible.</b> Two things, checked independently.
+/// First, the stream's ending is classified by its <i>cause</i>: the peer closing
+/// (a zero-length read, or a mid-body cut surfaced as <c>ResponseEnded</c>) is a
+/// server decision and counts; this probe's own deadline or any other transport fault
+/// does not, and fails the run as INCONCLUSIVE rather than passing as a measurement.
+/// The client budget is set far above the disputed value so a local timer cannot
+/// masquerade as a server cap. Second, the token-less precondition is verified from
+/// the wire rather than assumed from the prompt — a run that produced content before
+/// the threshold is reported INAPPLICABLE, because total lifetime cannot test a cap
+/// that only governs streams which have produced nothing.</para>
 /// </summary>
 /// <remarks>
 /// Not part of any automated suite's meaningful signal: each run costs minutes of
@@ -47,13 +51,17 @@ public class StreamCapProbe
     /// <summary>How the stream ended — the load-bearing distinction.</summary>
     private enum Ending
     {
-        /// <summary>Peer closed the connection (read returned 0 bytes). A server-side cap.</summary>
+        /// <summary>Peer closed the connection. Reaches us two ways and both count: a
+        /// zero-length read, or (on a chunked response cut mid-body) an
+        /// <see cref="HttpIOException"/> with <see cref="HttpRequestError.ResponseEnded"/>.
+        /// A server-decided ending — the outcome this probe exists to catch.</summary>
         ServerClosed,
         /// <summary>Upstream sent a terminal <c>message_stop</c>. The turn completed.</summary>
         Completed,
         /// <summary>This probe's own deadline fired first. Proves nothing about the server.</summary>
         ClientGaveUp,
-        /// <summary>Transport threw. Reported verbatim; not evidence either way.</summary>
+        /// <summary>Transport threw for any other reason, or upstream answered non-2xx.
+        /// Not evidence either way.</summary>
         TransportError,
     }
 
@@ -61,10 +69,44 @@ public class StreamCapProbe
         Ending Ending,
         double ElapsedSeconds,
         double LongestGapSeconds,
-        double? FirstTokenAtSeconds,
+        /// <summary>When the first CONTENT delta of any kind arrived — text, thinking,
+        /// or tool-call JSON. This is what makes a run applicable or not: the disputed
+        /// cap governs a stream that has produced <i>no token</i>, so a run that starts
+        /// producing before the threshold cannot test it whatever its total length.</summary>
+        double? FirstContentAtSeconds,
         int EventCount,
         int PingCount,
-        string? Detail);
+        string? Detail)
+    {
+        /// <summary>
+        /// Whether this run can speak to a token-less cap at <paramref name="thresholdSeconds"/>.
+        /// True only if the stream was still content-free when the threshold passed — i.e.
+        /// it either produced nothing at all, or produced its first content only afterwards.
+        /// A run that began emitting at 20s and ran to 700s says nothing about a cap on
+        /// token-less streams, however impressive its duration.
+        /// </summary>
+        public bool IsApplicableTo(double thresholdSeconds) =>
+            ElapsedSeconds >= thresholdSeconds &&
+            (FirstContentAtSeconds is null || FirstContentAtSeconds > thresholdSeconds);
+    }
+
+    /// <summary>The bound under test — the disputed "token-less streams are closed at
+    /// ~300s" figure. Used only to decide whether a run is APPLICABLE, never asserted.</summary>
+    private const double DisputedCapSeconds = 305;
+
+    /// <summary>
+    /// Every Anthropic delta type that puts model-produced content on the wire. A stream
+    /// is "token-less" only until one of these appears — matching just <c>text_delta</c>
+    /// would classify a stream as silent while it streamed thinking or tool-call JSON
+    /// continuously, which is the opposite of the condition under test.
+    /// </summary>
+    private static readonly string[] ContentDeltaTypes =
+    [
+        "\"text_delta\"",
+        "\"thinking_delta\"",
+        "\"signature_delta\"",
+        "\"input_json_delta\"",
+    ];
 
     [Theory(Skip = "Live probe: minutes of wall clock and real quota per run. Remove Skip to measure.")]
     [InlineData("claude-opus-5", "xhigh")]
@@ -75,13 +117,30 @@ public class StreamCapProbe
         var run = await MeasureAsync(model, effort, HardThinkingPrompt, CancellationToken.None);
         Report($"{model} effort={effort}", run);
 
-        // No assertion on the bound itself — this probe exists to MEASURE it, and
-        // pinning a number here would freeze whichever doc happens to be right today.
-        // The one thing that must hold for the run to mean anything is that the
-        // ending was decided by the server, not by this probe's own timer.
-        Assert.True(run.Ending != Ending.ClientGaveUp,
-            $"INCONCLUSIVE: this probe's {ClientBudget.TotalSeconds}s budget fired before the server " +
-            "decided anything. Raise ClientBudget and re-run.");
+        // A run only counts as evidence if BOTH hold, and each failure mode is reported
+        // separately because they call for different corrective action.
+
+        // (1) The ending must have been decided by the peer, not by this probe's timer
+        // and not by a transport fault — those are explicitly "not evidence either way",
+        // so they must fail rather than pass as a green measurement.
+        Assert.True(
+            run.Ending is Ending.ServerClosed or Ending.Completed,
+            $"INCONCLUSIVE ({run.Ending}): the ending was not decided by the server. " +
+            $"{run.Detail}. A {ClientBudget.TotalSeconds}s probe budget or a transport " +
+            "fault proves nothing about an upstream cap; re-run.");
+
+        // (2) The stream must actually have been token-less across the disputed threshold.
+        // A prompt instruction cannot GUARANTEE wire silence — the model may narrate
+        // immediately — so the precondition this probe is named for is verified from the
+        // wire, not assumed. Without this the probe silently degrades into a
+        // total-lifetime measurement, which cannot test a token-less cap at all.
+        Assert.True(
+            run.IsApplicableTo(DisputedCapSeconds),
+            $"INAPPLICABLE: first content arrived at " +
+            $"{(run.FirstContentAtSeconds is { } c ? $"{c:F1}s" : "never")} and the stream " +
+            $"ran {run.ElapsedSeconds:F1}s, so it was not token-less across " +
+            $"{DisputedCapSeconds}s. This run cannot test a token-less cap — use a prompt " +
+            "that defers output for longer.");
     }
 
     /// <summary>
@@ -135,7 +194,7 @@ public class StreamCapProbe
         var sw = Stopwatch.StartNew();
         var events = 0;
         var pings = 0;
-        double? firstToken = null;
+        double? firstContent = null;
         var lastEventAt = 0.0;
         var longestGap = 0.0;
         var sawMessageStop = false;
@@ -177,11 +236,15 @@ public class StreamCapProbe
                     if (name == "message_stop") sawMessageStop = true;
                     _out.WriteLine($"  {at,8:F1}s  event: {name}");
                 }
-                else if (firstToken is null && line.StartsWith("data:", StringComparison.Ordinal)
-                         && line.Contains("\"text_delta\"", StringComparison.Ordinal))
+                else if (firstContent is null && line.StartsWith("data:", StringComparison.Ordinal)
+                         && ContentDeltaTypes.Any(t => line.Contains(t, StringComparison.Ordinal)))
                 {
-                    firstToken = at;
-                    _out.WriteLine($"  {at,8:F1}s  <first text token>");
+                    // Any content delta ends the token-less phase, not just visible text.
+                    // Matching text_delta alone would call a stream "token-less" while it
+                    // streamed thinking or tool-call JSON the whole time — which is exactly
+                    // the wire activity a token-less cap is about.
+                    firstContent = at;
+                    _out.WriteLine($"  {at,8:F1}s  <first content delta>");
                 }
             }
 
@@ -191,17 +254,29 @@ public class StreamCapProbe
 
             return new Run(
                 sawMessageStop ? Ending.Completed : Ending.ServerClosed,
-                elapsed, longestGap, firstToken, events, pings,
+                elapsed, longestGap, firstContent, events, pings,
                 sawMessageStop ? null : "clean EOF with no message_stop");
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested && !outerCt.IsCancellationRequested)
         {
-            return new Run(Ending.ClientGaveUp, sw.Elapsed.TotalSeconds, longestGap, firstToken, events, pings,
+            return new Run(Ending.ClientGaveUp, sw.Elapsed.TotalSeconds, longestGap, firstContent, events, pings,
                 $"probe budget {ClientBudget.TotalSeconds}s expired");
+        }
+        catch (HttpIOException ex) when (ex.HttpRequestError == HttpRequestError.ResponseEnded)
+        {
+            // A premature EOF IS the peer closing the connection — the very outcome this
+            // probe is built to detect. It surfaces as an exception rather than a
+            // zero-length read only because the response is chunked: the peer vanished
+            // mid-body, before the terminating chunk, so the transport can tell the
+            // difference between "stream finished" and "stream was cut" and says so.
+            // Classifying it as a transport fault would discard the strongest possible
+            // observation — a server-decided ending — as if it proved nothing.
+            return new Run(Ending.ServerClosed, sw.Elapsed.TotalSeconds, longestGap, firstContent, events, pings,
+                "peer closed mid-body (premature EOF, no message_stop)");
         }
         catch (Exception ex)
         {
-            return new Run(Ending.TransportError, sw.Elapsed.TotalSeconds, longestGap, firstToken, events, pings,
+            return new Run(Ending.TransportError, sw.Elapsed.TotalSeconds, longestGap, firstContent, events, pings,
                 $"{ex.GetType().Name}: {ex.Message}");
         }
     }
@@ -213,8 +288,9 @@ public class StreamCapProbe
         _out.WriteLine($"  ending           : {r.Ending}{(r.Detail is null ? "" : $" ({r.Detail})")}");
         _out.WriteLine($"  elapsed          : {r.ElapsedSeconds:F1}s");
         _out.WriteLine($"  longest gap      : {r.LongestGapSeconds:F1}s");
-        _out.WriteLine($"  first text token : {(r.FirstTokenAtSeconds is { } f ? $"{f:F1}s" : "never")}");
+        _out.WriteLine($"  first content    : {(r.FirstContentAtSeconds is { } f ? $"{f:F1}s" : "never")}");
         _out.WriteLine($"  events           : {r.EventCount} (pings: {r.PingCount})");
+        _out.WriteLine($"  tests {DisputedCapSeconds}s cap : {(r.IsApplicableTo(DisputedCapSeconds) ? "YES — token-less across the threshold" : "NO — produced content too early / ended too soon")}");
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";

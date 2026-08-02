@@ -88,19 +88,24 @@ cannot exist.
 **Copilot sends no keepalive while a model is thinking** — verified two ways: zero
 `ping` events across 137 captured response traces, and zero across all 34 events of a
 live `claude-opus-5` / `effort=xhigh` turn measured directly against the upstream.
-Extended reasoning puts nothing on the wire for minutes; the longest *verified* case
-is a 384.8 s turn that completed cleanly (`out:2307`, `error=(none)`), and a live
-probe was still receiving from a stream 663 s in. Every bound below is really a bet on
-how long that silence may legitimately last — which is why the stream-idle default is
-240 s and why deep workloads need more.
+The longest *directly measured* byte-free gap is **749 s** — a `claude-opus-5` turn at
+`effort=xhigh` that opened a thinking block 3.5 s in and then sent nothing for over
+twelve minutes before the peer closed the connection. Silence on this backend is real,
+unannounced, and can outlast every budget in this document. Treat the stream-idle
+default (240 s) as a deliberate bet against that, not as a bound derived from upstream
+behaviour: a deep enough workload will exceed it while perfectly healthy.
 
-> **Do not treat a long silence as a fixed upstream deadline.** Copilot imposes no
-> ~300 s cap on a token-less stream: across 10 352 logged requests, genuine upstream
+> **Do not treat a long silence as a fixed upstream deadline.** There is no ~300 s
+> cap. Measured directly: a `claude-opus-5` / `xhigh` turn opened a thinking block and
+> then put **nothing** on the wire for 749 s — **752.6 s token-less in total**, 2.5×
+> the proposed ceiling, verified content-free from the wire rather than assumed. The
+> corpus agrees: across 10 352 logged requests, genuine upstream
 > disconnects (`premature_eof`) number 9 and land at 8.5 / 10.2 / 21.6 / 34.7 / 113.6
 > / 120.5 / 142.7 / 608.9 / 627.5 s — **none within 280–330 s**, where a fixed cap
 > would pile them up. They are also rarer than plain transport failures (29 DNS / TLS
 > / refused-connection errors), which is not how a deliberate server policy behaves.
-> Two clean streaming runs exceeded 300 s. Re-check with
+> The two longest closes carry `out:1` on the Anthropic endpoint, so a stream with
+> essentially no output still reached 627 s. Re-check with
 > `scripts/scan-stream-durations.ps1`; see
 > [`stream-cap-investigation.md`](stream-cap-investigation.md) for the full argument.
 >
@@ -227,6 +232,7 @@ bridge clamps what it writes — a larger value is silently reduced by the clien
 | bridge `first_byte` timeout | 53 |
 | bridge `stream_idle` timeout | 52 |
 | transport error (DNS / TLS / refused) | 29 |
+| other (unclassified error text) | 12 |
 | `premature_eof` (upstream closed) | 9 |
 
 **The bridge's own budgets end 11× more requests than upstream does** — which is why
@@ -236,8 +242,11 @@ this document is mostly about *our* timers. Clean streaming runs (9 428 of them)
 |---|---|---|---|
 | 11.2 s | 61.3 s | 141.0 s | **384.8 s** |
 
-The 384.8 s run finished normally at `effort=max` with `out:2307`. Any claim of an
-upstream deadline must explain how that stream survived.
+The 384.8 s run finished normally at `effort=max` with `out:2307`, which rules out a
+cap on *total* stream duration. The token-less form of the claim is answered instead
+by the disconnect distribution — the 9 upstream closes scatter from 8.5 s to 627.5 s
+with none in 280–330 s, and the two longest carry `out:1` on the Anthropic endpoint,
+so a stream with essentially no output still reached 627 s.
 
 Keepalive injection (shipped `0.4.24-beta`, 2026-07-28) does not confound this:
 **10 269 of the 10 352 summaries predate it**, including the 384.8 s completion, both

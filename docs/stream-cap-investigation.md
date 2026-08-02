@@ -1,4 +1,4 @@
-# Does Copilot cap a token-less stream? (no)
+# Does Copilot close a long stream at a fixed ~300 s? (no)
 
 A long deep-thinking turn that dies looks like an upstream deadline, and that reading
 has been proposed twice in this repo with different numbers — once as a hard ~300 s
@@ -6,11 +6,19 @@ close of any token-less stream, once as a measured 600 s of upstream silence. Bo
 would change how the bridge's budgets should be set, so both are checked here against
 the production log corpus and a live probe.
 
-**Neither holds. Copilot imposes no fixed cap on a token-less stream**, and the
-figures that suggested one turn out to be the bridge's own timers and ordinary
-transport failure. Practical consequence: when a long turn dies, suspect a local
-budget (`Pipeline:UpstreamTimeout`, a client watchdog) before suspecting upstream —
-see [`timeout-chain.md`](timeout-chain.md).
+**Neither holds**, and the figures that suggested them turn out to be the bridge's own
+timers and ordinary transport failure. Practical consequence: when a long turn dies,
+suspect a local budget (`Pipeline:UpstreamTimeout`, a client watchdog) before
+suspecting upstream — see [`timeout-chain.md`](timeout-chain.md).
+
+**What this does and does not establish.** A live probe held a **genuinely token-less
+stream open for 752.6 s** — no content delta of any kind, verified from the wire, at
+2.5× the proposed ceiling — which settles the token-less form of the claim directly.
+The corpus agrees independently: server-initiated closes scatter from 8.5 s to 627.5 s
+with none in 280–330 s. It does **not** prove Copilot never closes such a stream — the
+752.6 s run ended in a real server close, and 9 of 10 352 logged requests did too — nor
+does it establish any upper bound in place of the one it removes. One observation at
+752.6 s fixes a floor, not a ceiling.
 
 ## Corpus
 
@@ -58,8 +66,12 @@ duration_ms=384809  effort=max  status=200  streaming=true
 usage={in:2 out:2307 cache_read:0 cache_creation:122776}  error=(none)
 ```
 
-A 384.8 s stream that finished and returned 2 307 tokens **cannot coexist with a
-300 s server-side cap.** This single line falsifies the claim.
+**How far this goes, and no further.** It rules out a cap on *total stream duration*:
+a 384.8 s stream finished and returned 2 307 tokens, so no deadline ends a stream at
+300 s unconditionally. It does **not** by itself rule out a cap that applies only
+while a stream remains token-less — summary lines record no first-token time, so this
+run may have started emitting well before 300 s and simply continued. The
+token-less form of the claim is answered by §2 and §5, not here.
 
 ### 2. Actual upstream disconnects do not cluster at 300 s
 
@@ -70,8 +82,26 @@ A 384.8 s stream that finished and returned 2 307 tokens **cannot coexist with a
 8.5s  10.2s  21.6s  34.7s  113.6s  120.5s  142.7s  608.9s  627.5s
 ```
 
-**Not one lands near 300 s.** A fixed cap would pile them up there; this is scatter,
-consistent with ordinary transport failure.
+This is the observation that discriminates, and it needs no first-token timing:
+*whatever* triggers a fixed cap, the server-initiated closes it produces have to
+cluster at the cap value. **None lands within 280–330 s.** Scatter across two orders
+of magnitude is not a deadline.
+
+The two longest are the strongest single data points against the *token-less* form
+of the claim, because they are almost token-less themselves:
+
+```
+608.9s  out:1  CopilotAnthropic:/v1/messages  premature_eof
+627.5s  out:1  CopilotAnthropic:/v1/messages  premature_eof
+```
+
+Both are on the Anthropic endpoint, both produced **one** output token across ten
+minutes, and both ran **more than twice** the proposed ~305 s ceiling. Strictly, one
+token means they are not literally token-less, so a narrow reading of the cap could
+exempt them — but a rule that closes non-producing streams at ~305 s has to call a
+stream with `out:1` at 627 s "producing" in order to survive. (Their ending is
+separately explained in §"Restating the 600 s figure" — they died together in one
+34-second window, i.e. a transport interruption.)
 
 ### 3. The long tail was mostly the bridge's own timers, not Copilot
 
@@ -120,21 +150,30 @@ start times and durations — concurrent requests dying together, i.e. one trans
 interruption. A per-request server cap would end each one ~300 s after *its own*
 start, scattering the wall-clock times.
 
-Both also report `out:1` — a token was produced, so they are not the token-less shape
-the cap claim describes.
+Both report `out:1` — a single output token across ten minutes. That is not literally
+token-less, and it is the reason §2 cites them as *near*-token-less rather than as a
+clean instance of the shape: a strict reading of the cap could exempt them. But one
+token in 627 s is not a stream that is producing, and a rule that closes silent
+streams at ~305 s would have to treat it as one to survive.
+
+**The 600 s claim's direction was right; only its evidence was wrong.** Silence really
+can run that long — the live probe measured **749 s** of it. What the corpus could not
+support was reading that figure off `duration_ms` values produced by a local timer.
+`timeout-chain.md` now cites the measured gap instead, so the same conclusion rests on
+an observation of upstream rather than of ourselves.
 
 The load-bearing point is untouched: Copilot sends no keepalive, so extended thinking
-is genuinely byte-free. Only the specific figure was wrong, so `timeout-chain.md` now
-cites the longest *verified* clean run (384.8 s) instead.
+is genuinely byte-free. Only the specific figure was wrong, so `timeout-chain.md` no
+longer states a verified silence duration at all.
 
 ## What survives
 
-- **Copilot sends no SSE `ping`.** Independently re-confirmed by live probe: a
-  `claude-opus-5` / `effort=xhigh` turn produced 34 events, **0 pings**. This is the
-  fact the bridge's keepalive injection rests on, and it is unaffected.
-- **Extended thinking produces long byte-free gaps.** The same probe showed a 17.6 s
-  gap on a *trivial* turn; production shows far longer. The phenomenon is real — only
-  the specific 600 s and 300 s numbers were unsupported.
+- **Copilot sends no SSE `ping`.** Independently re-confirmed by live probe: zero
+  pings across a 32.9 s turn (34 events) and zero across 752.6 s of silence. This is
+  the fact the bridge's keepalive injection rests on, and it is unaffected.
+- **Extended thinking produces long byte-free gaps.** Now quantified: **749 s** with
+  nothing on the wire, measured. The phenomenon was always real — only the 600 s and
+  300 s figures were derived from the wrong observations.
 
 ## Live probe
 
@@ -142,31 +181,70 @@ cites the longest *verified* clean run (384.8 s) instead.
 directly and is written to be admissible. It talks to
 `<endpoints.api>/v1/messages` through `AuthService` + `CopilotHeaderFactory`,
 **bypassing the bridge process entirely** — so no bridge budget, and no injected
-keepalive, can shape what it observes. It classifies the end of a stream by
-**cause**, not elapsed time — a zero-length read means the peer closed, an
-`OperationCanceledException` means the probe gave up — and its own budget is 900 s,
-three times the disputed value, so a local timer cannot be mistaken for a server cap.
-A run that ends on the probe's own deadline is reported INCONCLUSIVE rather than as a
-measurement.
+keepalive, can shape what it observes.
 
-It deliberately asserts nothing about the bound's value; pinning a number would
-freeze whichever claim happens to be current. The only assertion is that the server,
-not the probe, decided the ending.
+Two independent conditions must hold before a run counts as evidence, and each fails
+loudly rather than passing as a green measurement:
+
+1. **The peer decided the ending.** Classified by *cause*, not elapsed time: a
+   zero-length read means the peer closed; an `OperationCanceledException` means the
+   probe gave up; a non-2xx response or a transport throw is a fault. Only the first
+   two outcomes (`ServerClosed` / `Completed`) are admissible — the probe's own budget
+   is 900 s, three times the disputed value, so a local timer cannot masquerade as a
+   server cap.
+2. **The stream was actually token-less across the threshold.** A prompt instruction
+   cannot *guarantee* wire silence — the model may narrate immediately — so this is
+   verified from the wire: the probe records when the first content delta of any kind
+   arrives (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`, not
+   just visible text) and marks a run INAPPLICABLE if content started before the
+   threshold. Without this check the probe silently degrades into a total-lifetime
+   measurement, which cannot test a token-less cap at all — the same conflation this
+   document had to correct elsewhere.
+
+It deliberately asserts nothing about the bound's *value*; pinning a number would
+freeze whichever claim happens to be current.
 
 ### Run 1 — trivial prompt, `claude-opus-5` / `xhigh`
 
-Completed in 32.9 s: 34 events, **0 pings**, first text token at 21.4 s, longest
-byte-free gap 17.6 s. Too easy to reach any ceiling, but it independently confirms
-the no-keepalive fact.
+Completed in 32.9 s: 34 events, **0 pings**, first content at 21.4 s, longest
+byte-free gap 17.6 s. **Inapplicable to the cap** — it neither reached the threshold
+nor stayed token-less — but it is the source of the directly-measured 17.6 s silence
+and the independent confirmation that Copilot sends no `ping`.
 
-### Run 2 — hard prompt, `claude-opus-5` / `xhigh`
+### Run 2 — hard prompt, `claude-opus-5` / `xhigh` (killed, no timeline)
 
-Polled repeatedly while in flight and found the stream **still open at 383 s, 518 s,
-595 s and 663 s** — more than double the proposed ~305 s ceiling, and past the 600 s
-figure as well. The run was then killed to unblock a rebuild, and because xUnit
-buffers `ITestOutputHelper` in-process, **the event timeline and final ending were
-lost**. That is a real gap in this record: the probe shows the stream *survives* far
-past both proposed bounds, but does not characterise how it eventually ends.
+Polled while in flight and found the stream still open at 383 / 518 / 595 / 663 s,
+then killed to unblock a rebuild. xUnit buffers `ITestOutputHelper` in-process, so the
+event timeline was lost — and without it there is no record of when content first
+arrived, so this run **cannot** be claimed as a token-less stream. Superseded by Run 3,
+which instruments exactly that.
 
-It does not weaken the conclusion. A stream cannot be hard-closed at ~305 s and still
-be transmitting at 663 s. Re-run the probe to completion if the ending itself matters.
+### Run 3 — hard prompt, `claude-opus-5` / `xhigh` — the decisive measurement
+
+```
+elapsed        : 752.6 s
+first content  : never          ← genuinely token-less, verified from the wire
+events         : 2 (pings: 0)   ← message_start @2.0s, content_block_start @3.5s
+tests 305s cap : YES            ← applicable
+ending         : ServerClosed (peer closed mid-body, premature EOF, no message_stop)
+```
+
+**A stream that produced no content at all stayed open for 752.6 s — 2.5× the
+proposed ~305 s ceiling.** The wire shape is exactly the one the cap claim describes:
+`message_start`, a `content_block_start` opening a thinking block, then nothing for
+749 seconds. If Copilot closed token-less streams at ~305 s, this run could not exist.
+
+Two details worth keeping:
+
+- **The ending was a real server close**, not a probe timeout — the peer cut the
+  response mid-body. So Copilot *does* eventually close a stream like this; it simply
+  does not do so at ~305 s. This document claims no upper bound in its place: one
+  observation at 752.6 s fixes a floor, not a ceiling.
+- **Zero pings across 752 s of silence**, confirming again that the keepalive the
+  bridge injects has no upstream counterpart.
+
+The first attempt at this run was classified `TransportError` and correctly failed as
+INCONCLUSIVE — .NET surfaces a mid-body cut on a chunked response as
+`HttpIOException(ResponseEnded)` rather than a zero-length read. That is a peer close,
+not a transport fault, and the probe now classifies it as `ServerClosed`; treating it
+otherwise would discard the strongest available observation.
