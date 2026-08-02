@@ -239,6 +239,12 @@ this document is mostly about *our* timers. Clean streaming runs (9 428 of them)
 The 384.8 s run finished normally at `effort=max` with `out:2307`. Any claim of an
 upstream deadline must explain how that stream survived.
 
+Keepalive injection (shipped `0.4.24-beta`, 2026-07-28) does not confound this:
+**10 269 of the 10 352 summaries predate it**, including the 384.8 s completion, both
+runs past 300 s and 7 of the 9 disconnects. An injected ping is also a *downstream*
+event the bridge sends, never one it receives, so it cannot extend an upstream stream.
+See [`stream-cap-investigation.md`](stream-cap-investigation.md) for the split.
+
 ### Lab: real `claude.exe` against an upstream that goes silent
 
 | silence | env | outcome |

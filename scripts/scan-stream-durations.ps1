@@ -17,13 +17,22 @@
 .PARAMETER LogDir
   Directory of bridge-*.log files. Defaults to the desktop install.
 
+.PARAMETER KeepAliveSince
+  Timestamp when a keepalive-injecting build was deployed (0.4.24-beta shipped
+  2026-07-28 21:13). Splits the report either side of it. Injected pings are
+  DOWNSTREAM events the bridge sends and never reset its own stream-idle budget, so
+  they cannot extend an upstream stream -- but the split is reported anyway so a
+  reader can confirm that rather than take it on trust. Pass a far-future date to
+  disable the split.
+
 .EXAMPLE
   pwsh scripts/scan-stream-durations.ps1
   pwsh scripts/scan-stream-durations.ps1 -LogDir C:\path\to\log
 #>
 [CmdletBinding()]
 param(
-    [string] $LogDir = "$env:USERPROFILE\Desktop\copilot-bridge\log"
+    [string]   $LogDir         = "$env:USERPROFILE\Desktop\copilot-bridge\log",
+    [datetime] $KeepAliveSince = '2026-07-28 21:13:49'
 )
 
 if (-not (Test-Path $LogDir)) { throw "Log directory not found: $LogDir" }
@@ -65,6 +74,9 @@ foreach ($file in Get-ChildItem $LogDir -File -Filter 'bridge-*.log') {
                 Cause     = $cause
                 OutTokens = if ($mo.Success) { [int]$mo.Groups[1].Value } else { $null }
                 Streaming = if ($line -match 'streaming=(\w+)') { $matches[1] } else { '?' }
+                # Attributed by the log file's mtime, not a per-line timestamp: summary
+                # lines carry only a time-of-day, so the file is the only date anchor.
+                PostKeepAlive = $file.LastWriteTime -gt $KeepAliveSince
             })
         }
     }
@@ -111,4 +123,20 @@ if ($round.Count) {
     Write-Host "`n--- runs at ~600s (check for local-timer signature) ---"
     $round | ForEach-Object { '  {0} ms  {1}' -f $_.Ms, $_.Cause }
     Write-Host "  millisecond-tight against a round value = a fixed local timer"
+}
+
+# Split either side of keepalive injection, so a reader can check for themselves that
+# the headline figures predate it rather than being an artifact of it.
+Write-Host "`n--- keepalive split (injection since $($KeepAliveSince.ToString('yyyy-MM-dd HH:mm'))) ---"
+foreach ($era in @($false, $true)) {
+    $slice = @($rows | Where-Object { $_.PostKeepAlive -eq $era })
+    if (-not $slice.Count) { continue }
+    $label      = if ($era) { 'post-keepalive' } else { 'pre-keepalive ' }
+    $cleanSlice = @($slice | Where-Object { $_.Cause -eq 'clean' -and $_.Streaming -eq 'true' })
+    $maxClean   = if ($cleanSlice.Count) { ($cleanSlice | Measure-Object Seconds -Maximum).Maximum } else { 0 }
+    $eofSlice   = @($slice | Where-Object Cause -eq 'premature_eof' | Sort-Object Seconds)
+    '{0}  summaries={1,-6} clean_max={2,7:N1}s  clean>300s={3,-3} eof={4}' -f `
+        $label, $slice.Count, $maxClean,
+        @($cleanSlice | Where-Object Seconds -gt 300).Count,
+        $(if ($eofSlice.Count) { ($eofSlice | ForEach-Object { '{0:N1}' -f $_.Seconds }) -join ', ' } else { 'none' })
 }

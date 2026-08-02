@@ -18,6 +18,29 @@ see [`timeout-chain.md`](timeout-chain.md).
 lines (a live bridge's current log is skipped while it holds the handle). Reproduce
 with `scripts/scan-stream-durations.ps1`.
 
+### Keepalive injection does not confound this
+
+The bridge began injecting synthetic `ping` events on the `/cc` path in
+`0.4.24-beta` (deployed 2026-07-28 21:13). That splits the corpus, and the split
+matters, so it is stated rather than left for the reader to discover:
+
+| | summaries | longest clean stream | clean >300 s | `premature_eof` |
+|---|---|---|---|---|
+| **pre-keepalive** | 10 269 | **384.8 s** | 2 | 7 — 8.5 / 34.7 / 113.6 / 120.5 / 142.7 / 608.9 / 627.5 s |
+| **post-keepalive** | 83 | 179.6 s | 0 | 2 — 10.2 / 21.6 s |
+
+**Every figure this document rests on comes from the pre-keepalive period** — the
+384.8 s completion, both runs past 300 s, all 16 runs past 250 s, and 7 of the 9
+disconnects. Injection cannot have manufactured them, because it did not exist yet.
+The post-keepalive sample is only 83 requests and is too small to conclude anything
+from on its own; its two disconnects (10.2 s, 21.6 s) are merely consistent.
+
+Two further reasons injection cannot explain the result: it is a **downstream** event
+the bridge sends to its client, never something it receives from Copilot, so it
+cannot extend an upstream stream; and by design it never resets the bridge's own
+stream-idle budget (see `timeout-chain.md`). The live probe below bypasses the bridge
+process entirely and so is unaffected either way.
+
 ## What the corpus shows
 
 ### 1. Streams run past 300 s and complete normally
@@ -116,7 +139,10 @@ cites the longest *verified* clean run (384.8 s) instead.
 ## Live probe
 
 `tests/CopilotBridge.Playground/ApiContract/StreamCapProbe.cs` measures this
-directly and is written to be admissible: it classifies the end of a stream by
+directly and is written to be admissible. It talks to
+`<endpoints.api>/v1/messages` through `AuthService` + `CopilotHeaderFactory`,
+**bypassing the bridge process entirely** — so no bridge budget, and no injected
+keepalive, can shape what it observes. It classifies the end of a stream by
 **cause**, not elapsed time — a zero-length read means the peer closed, an
 `OperationCanceledException` means the probe gave up — and its own budget is 900 s,
 three times the disputed value, so a local timer cannot be mistaken for a server cap.
