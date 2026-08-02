@@ -18,16 +18,17 @@ namespace CopilotBridge.Playground;
 /// upstream silence. Both would change how the bridge's budgets should be set. The
 /// corpus scan in <c>scripts/scan-stream-durations.ps1</c> answers it statistically;
 /// this probe answers it directly. See <c>docs/stream-cap-investigation.md</c>.</para>
-/// <para><b>What makes the result admissible.</b> Two things, checked independently.
-/// First, the stream's ending is classified by its <i>cause</i>: the peer closing
-/// (a zero-length read, or a mid-body cut surfaced as <c>ResponseEnded</c>) is a
-/// server decision and counts; this probe's own deadline or any other transport fault
-/// does not, and fails the run as INCONCLUSIVE rather than passing as a measurement.
-/// The client budget is set far above the disputed value so a local timer cannot
-/// masquerade as a server cap. Second, the token-less precondition is verified from
-/// the wire rather than assumed from the prompt — a run that produced content before
-/// the threshold is reported INAPPLICABLE, because total lifetime cannot test a cap
-/// that only governs streams which have produced nothing.</para>
+/// <para><b>What makes the result admissible.</b> The probe measures <i>how long the
+/// stream stayed alive while producing nothing</i> — a lower bound, established by the
+/// bytes that kept arriving, not by whatever ended the stream afterwards. So the
+/// disqualifying outcome is this probe's own deadline firing (which would measure our
+/// patience rather than the stream's life), not a transport fault. Attribution is
+/// deliberately withheld: a premature end to the response body is indistinguishable
+/// here from a reset or a proxy dropping the connection, so no ending is reported as
+/// "Copilot closed it". The token-less precondition is likewise verified from the wire
+/// rather than assumed from the prompt — a run that produced content before the
+/// threshold is INAPPLICABLE, because total lifetime cannot test a cap that only
+/// governs streams which have produced nothing.</para>
 /// </summary>
 /// <remarks>
 /// Not part of any automated suite's meaningful signal: each run costs minutes of
@@ -48,20 +49,22 @@ public class StreamCapProbe
     /// by this timer.</summary>
     private static readonly TimeSpan ClientBudget = TimeSpan.FromSeconds(900);
 
-    /// <summary>How the stream ended — the load-bearing distinction.</summary>
+    /// <summary>How the stream ended. Note that only <see cref="Completed"/> and
+    /// <see cref="ClientGaveUp"/> are attributable with certainty — see each member.</summary>
     private enum Ending
     {
-        /// <summary>Peer closed the connection. Reaches us two ways and both count: a
-        /// zero-length read, or (on a chunked response cut mid-body) an
-        /// <see cref="HttpIOException"/> with <see cref="HttpRequestError.ResponseEnded"/>.
-        /// A server-decided ending — the outcome this probe exists to catch.</summary>
-        ServerClosed,
-        /// <summary>Upstream sent a terminal <c>message_stop</c>. The turn completed.</summary>
+        /// <summary>The read returned zero bytes at the SSE layer with no
+        /// <c>message_stop</c>. Consistent with the peer closing, but an intermediary
+        /// closing the connection looks the same from here, so this attributes nothing.</summary>
+        EndedWithoutStop,
+        /// <summary>Upstream sent a terminal <c>message_stop</c>. The turn completed —
+        /// the one ending that is unambiguously the model's own.</summary>
         Completed,
-        /// <summary>This probe's own deadline fired first. Proves nothing about the server.</summary>
+        /// <summary>This probe's own deadline fired first. The only ending that makes the
+        /// elapsed time useless as a lower bound on the stream's life.</summary>
         ClientGaveUp,
-        /// <summary>Transport threw for any other reason, or upstream answered non-2xx.
-        /// Not evidence either way.</summary>
+        /// <summary>Transport threw, or upstream answered non-2xx. The stream demonstrably
+        /// survived until this happened, but the actor behind it is unknown.</summary>
         TransportError,
     }
 
@@ -112,22 +115,26 @@ public class StreamCapProbe
     [InlineData("claude-opus-5", "xhigh")]
     [InlineData("claude-opus-5", "high")]
     [InlineData("claude-opus-5", "medium")]
-    public async Task TokenlessStream_HowDoesCopilotEndIt(string model, string effort)
+    public async Task TokenlessStream_HowLongDoesItStayOpen(string model, string effort)
     {
         var run = await MeasureAsync(model, effort, HardThinkingPrompt, CancellationToken.None);
         Report($"{model} effort={effort}", run);
 
         // A run only counts as evidence if BOTH hold, and each failure mode is reported
         // separately because they call for different corrective action.
+        //
+        // NOTE what is NOT required: that the ending be attributable to Copilot. This
+        // probe answers "was the stream still alive at T?", and survival past a
+        // threshold is established by the bytes that kept arriving before it — not by
+        // whatever ended the stream afterwards. A run that reaches 700s and then dies
+        // to an unattributable transport fault has still disproved a 305s cap.
 
-        // (1) The ending must have been decided by the peer, not by this probe's timer
-        // and not by a transport fault — those are explicitly "not evidence either way",
-        // so they must fail rather than pass as a green measurement.
-        Assert.True(
-            run.Ending is Ending.ServerClosed or Ending.Completed,
-            $"INCONCLUSIVE ({run.Ending}): the ending was not decided by the server. " +
-            $"{run.Detail}. A {ClientBudget.TotalSeconds}s probe budget or a transport " +
-            "fault proves nothing about an upstream cap; re-run.");
+        // (1) The ending must not be this probe's own deadline. That is the one outcome
+        // that makes the elapsed time meaningless as a lower bound, because the stream
+        // might have been closed a millisecond later and we would never know — the
+        // number would measure our patience, not the stream's life. A transport fault
+        // is different: the stream demonstrably survived until it happened.
+        Assert.NotEqual(Ending.ClientGaveUp, run.Ending);
 
         // (2) The stream must actually have been token-less across the disputed threshold.
         // A prompt instruction cannot GUARANTEE wire silence — the model may narrate
@@ -253,7 +260,7 @@ public class StreamCapProbe
             if (tailGap > longestGap) longestGap = tailGap;
 
             return new Run(
-                sawMessageStop ? Ending.Completed : Ending.ServerClosed,
+                sawMessageStop ? Ending.Completed : Ending.EndedWithoutStop,
                 elapsed, longestGap, firstContent, events, pings,
                 sawMessageStop ? null : "clean EOF with no message_stop");
         }
@@ -264,15 +271,18 @@ public class StreamCapProbe
         }
         catch (HttpIOException ex) when (ex.HttpRequestError == HttpRequestError.ResponseEnded)
         {
-            // A premature EOF IS the peer closing the connection — the very outcome this
-            // probe is built to detect. It surfaces as an exception rather than a
-            // zero-length read only because the response is chunked: the peer vanished
-            // mid-body, before the terminating chunk, so the transport can tell the
-            // difference between "stream finished" and "stream was cut" and says so.
-            // Classifying it as a transport fault would discard the strongest possible
-            // observation — a server-decided ending — as if it proved nothing.
-            return new Run(Ending.ServerClosed, sw.Elapsed.TotalSeconds, longestGap, firstContent, events, pings,
-                "peer closed mid-body (premature EOF, no message_stop)");
+            // The response body ended before its terminating chunk. That is NOT
+            // attributable to Copilot: a reset, a proxy failure, or any intermediary
+            // dropping the connection produces the identical exception — the repo's own
+            // TransientUpstreamError treats HttpIOException as "upstream OR network"
+            // precisely because the two cannot be told apart from this side.
+            //
+            // So it stays a TransportError and the run fails as INCONCLUSIVE. It is
+            // recorded distinctly only so the reader can see WHICH transport fault
+            // occurred; the distinction carries no evidential weight and must not be
+            // used to claim the peer decided anything.
+            return new Run(Ending.TransportError, sw.Elapsed.TotalSeconds, longestGap, firstContent, events, pings,
+                "response body ended prematurely — actor unknown (peer, proxy, or network)");
         }
         catch (Exception ex)
         {

@@ -90,7 +90,7 @@ cannot exist.
 live `claude-opus-5` / `effort=xhigh` turn measured directly against the upstream.
 The longest *directly measured* byte-free gap is **749 s** — a `claude-opus-5` turn at
 `effort=xhigh` that opened a thinking block 3.5 s in and then sent nothing for over
-twelve minutes before the peer closed the connection. Silence on this backend is real,
+twelve minutes before the connection ended. Silence on this backend is real,
 unannounced, and can outlast every budget in this document. Treat the stream-idle
 default (240 s) as a deliberate bet against that, not as a bound derived from upstream
 behaviour: a deep enough workload will exceed it while perfectly healthy.
@@ -99,12 +99,12 @@ behaviour: a deep enough workload will exceed it while perfectly healthy.
 > cap. Measured directly: a `claude-opus-5` / `xhigh` turn opened a thinking block and
 > then put **nothing** on the wire for 749 s — **752.6 s token-less in total**, 2.5×
 > the proposed ceiling, verified content-free from the wire rather than assumed. The
-> corpus agrees: across 10 352 logged requests, genuine upstream
+> corpus agrees: across 10 352 logged requests, mid-body
 > disconnects (`premature_eof`) number 9 and land at 8.5 / 10.2 / 21.6 / 34.7 / 113.6
 > / 120.5 / 142.7 / 608.9 / 627.5 s — **none within 280–330 s**, where a fixed cap
 > would pile them up. They are also rarer than plain transport failures (29 DNS / TLS
 > / refused-connection errors), which is not how a deliberate server policy behaves.
-> The two longest closes carry `out:1` on the Anthropic endpoint, so a stream with
+> The two longest cuts carry `out:1` on the Anthropic endpoint, so a stream with
 > essentially no output still reached 627 s. Re-check with
 > `scripts/scan-stream-durations.ps1`; see
 > [`stream-cap-investigation.md`](stream-cap-investigation.md) for the full argument.
@@ -233,7 +233,7 @@ bridge clamps what it writes — a larger value is silently reduced by the clien
 | bridge `stream_idle` timeout | 52 |
 | transport error (DNS / TLS / refused) | 29 |
 | other (unclassified error text) | 12 |
-| `premature_eof` (upstream closed) | 9 |
+| `premature_eof` (connection cut mid-body) | 9 |
 
 **The bridge's own budgets end 11× more requests than upstream does** — which is why
 this document is mostly about *our* timers. Clean streaming runs (9 428 of them):
@@ -244,7 +244,7 @@ this document is mostly about *our* timers. Clean streaming runs (9 428 of them)
 
 The 384.8 s run finished normally at `effort=max` with `out:2307`, which rules out a
 cap on *total* stream duration. The token-less form of the claim is answered instead
-by the disconnect distribution — the 9 upstream closes scatter from 8.5 s to 627.5 s
+by the disconnect distribution — the 9 mid-body cuts scatter from 8.5 s to 627.5 s
 with none in 280–330 s, and the two longest carry `out:1` on the Anthropic endpoint,
 so a stream with essentially no output still reached 627 s.
 

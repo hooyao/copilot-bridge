@@ -14,11 +14,12 @@ suspecting upstream — see [`timeout-chain.md`](timeout-chain.md).
 **What this does and does not establish.** A live probe held a **genuinely token-less
 stream open for 752.6 s** — no content delta of any kind, verified from the wire, at
 2.5× the proposed ceiling — which settles the token-less form of the claim directly.
-The corpus agrees independently: server-initiated closes scatter from 8.5 s to 627.5 s
-with none in 280–330 s. It does **not** prove Copilot never closes such a stream — the
-752.6 s run ended in a real server close, and 9 of 10 352 logged requests did too — nor
-does it establish any upper bound in place of the one it removes. One observation at
-752.6 s fixes a floor, not a ceiling.
+The corpus agrees independently: disconnects scatter from 8.5 s to 627.5 s with none
+in 280–330 s. It does **not** establish any upper bound in place of the one it
+removes: one observation at 752.6 s fixes a floor, not a ceiling. Nor does it say who
+ends these streams — a response body that stops early looks identical whether Copilot,
+a proxy, or the network dropped it, so this document deliberately attributes none of
+them.
 
 ## Corpus
 
@@ -83,7 +84,7 @@ token-less form of the claim is answered by §2 and §5, not here.
 ```
 
 This is the observation that discriminates, and it needs no first-token timing:
-*whatever* triggers a fixed cap, the server-initiated closes it produces have to
+*whatever* triggers a fixed cap, the disconnects it produces have to
 cluster at the cap value. **None lands within 280–330 s.** Scatter across two orders
 of magnitude is not a deadline.
 
@@ -113,10 +114,10 @@ separately explained in §"Restating the 600 s figure" — they died together in
 | bridge `stream_idle` timeout | 52 |
 | transport error (DNS / TLS / connect) | 29 |
 | other | 12 |
-| `premature_eof` (upstream closed) | 9 |
+| `premature_eof` (connection cut mid-body) | 9 |
 
 The bridge's own budgets ended **11× more** requests than upstream did, and ordinary
-transport failures — DNS, TLS, refused connections — outnumber upstream closes **3:1**.
+transport failures — DNS, TLS, refused connections — outnumber mid-body cuts **3:1**.
 That ratio is itself an argument: if `premature_eof` were a deliberate server policy
 it should be common and regular, and instead it is rarer than the network simply
 breaking. Every `stream_idle` line names a bridge budget (`idle=120s`, `idle=180s`),
@@ -186,12 +187,16 @@ keepalive, can shape what it observes.
 Two independent conditions must hold before a run counts as evidence, and each fails
 loudly rather than passing as a green measurement:
 
-1. **The peer decided the ending.** Classified by *cause*, not elapsed time: a
-   zero-length read means the peer closed; an `OperationCanceledException` means the
-   probe gave up; a non-2xx response or a transport throw is a fault. Only the first
-   two outcomes (`ServerClosed` / `Completed`) are admissible — the probe's own budget
-   is 900 s, three times the disputed value, so a local timer cannot masquerade as a
-   server cap.
+1. **The ending must not be the probe's own deadline.** The probe measures how long a
+   stream stayed alive while producing nothing — a *lower bound*, established by the
+   bytes that kept arriving, not by whatever ended the stream afterwards. Only its own
+   900 s budget firing destroys that reading, because the stream might have been closed
+   a millisecond later and we would never know; the number would measure our patience.
+   A transport fault is different — the stream demonstrably survived until it happened.
+   **Attribution is deliberately withheld:** a response body ending early is
+   indistinguishable here from a reset or a proxy dropping the connection (the repo's
+   own `TransientUpstreamError` classes `HttpIOException` as "upstream *or* network"
+   for exactly that reason), so no ending is reported as "Copilot closed it".
 2. **The stream was actually token-less across the threshold.** A prompt instruction
    cannot *guarantee* wire silence — the model may narrate immediately — so this is
    verified from the wire: the probe records when the first content delta of any kind
@@ -226,7 +231,7 @@ elapsed        : 752.6 s
 first content  : never          ← genuinely token-less, verified from the wire
 events         : 2 (pings: 0)   ← message_start @2.0s, content_block_start @3.5s
 tests 305s cap : YES            ← applicable
-ending         : ServerClosed (peer closed mid-body, premature EOF, no message_stop)
+ending         : TransportError (response body ended prematurely — actor unknown)
 ```
 
 **A stream that produced no content at all stayed open for 752.6 s — 2.5× the
@@ -236,15 +241,20 @@ proposed ~305 s ceiling.** The wire shape is exactly the one the cap claim descr
 
 Two details worth keeping:
 
-- **The ending was a real server close**, not a probe timeout — the peer cut the
-  response mid-body. So Copilot *does* eventually close a stream like this; it simply
-  does not do so at ~305 s. This document claims no upper bound in its place: one
-  observation at 752.6 s fixes a floor, not a ceiling.
+- **The ending is not attributed.** The response body ended before its terminating
+  chunk, which is what a peer close looks like — and also what a reset or a failed
+  intermediary looks like. The probe reports it as a transport fault with the actor
+  marked unknown. That costs nothing here: the claim under test is that the stream is
+  *closed at ~305 s*, and this stream was demonstrably still alive at 305 s. Survival
+  is established by the 749 s of connection that preceded the ending, whoever caused it.
 - **Zero pings across 752 s of silence**, confirming again that the keepalive the
   bridge injects has no upstream counterpart.
 
-The first attempt at this run was classified `TransportError` and correctly failed as
-INCONCLUSIVE — .NET surfaces a mid-body cut on a chunked response as
-`HttpIOException(ResponseEnded)` rather than a zero-length read. That is a peer close,
-not a transport fault, and the probe now classifies it as `ServerClosed`; treating it
-otherwise would discard the strongest available observation.
+The first attempt at this run failed its assertion, which is how the classification
+above got settled. .NET surfaces a mid-body cut on a chunked response as
+`HttpIOException(ResponseEnded)` rather than a zero-length read, and the probe's
+original rule ("only a peer-decided ending counts") rejected it. The rule was wrong,
+but not in the direction it first appeared: `ResponseEnded` does **not** identify the
+peer as the actor, so the fix was not to promote it to a server close — it was to stop
+requiring attribution at all. Survival to a threshold is proved by the connection that
+preceded it; only the probe's own timeout can undermine that.

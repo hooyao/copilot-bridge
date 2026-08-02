@@ -8,8 +8,10 @@
   ~300s cap on a token-less stream?
 
   The discriminating evidence is not the maximum duration on its own but the
-  DISTRIBUTION OF `premature_eof` DURATIONS. A fixed server-side cap forces those
-  disconnects to pile up at one value; ordinary transport failure scatters them.
+  DISTRIBUTION OF `premature_eof` DURATIONS. A fixed cap forces those disconnects to
+  pile up at one value; ordinary transport failure scatters them. Note the actor
+  behind each cut is UNKNOWN (peer, proxy, or network all look alike here) -- the
+  argument rests on where they land, never on who caused them.
   So the script reports every disconnect individually rather than summarising them.
 
   Read-only. Skips any log a running bridge still holds open.
@@ -112,15 +114,15 @@ if ($clean.Count) {
     $past300 | ForEach-Object { '  {0,8:N1}s  out={1}' -f $_.Seconds, $_.OutTokens }
 }
 
-# The load-bearing table: where do genuine upstream disconnects actually land?
+# The load-bearing table: where do mid-body disconnects actually land?
 $eof = @($rows | Where-Object Cause -eq 'premature_eof' | Sort-Object Seconds)
-Write-Host "`n--- upstream disconnects (premature_eof): $($eof.Count) ---"
+Write-Host "`n--- mid-body disconnects (premature_eof): $($eof.Count) ---"
 if ($eof.Count) {
     $eof | ForEach-Object { '  {0,8:N1}s  out={1,-6} {2}' -f $_.Seconds, $_.OutTokens, $_.File }
     $near300 = @($eof | Where-Object { $_.Seconds -ge 280 -and $_.Seconds -le 330 }).Count
     # This one IS discriminating, and does not need first-token timing: whatever
-    # triggers a fixed cap, the SERVER-INITIATED CLOSES it produces must cluster at
-    # the cap value. Scatter across two orders of magnitude is not that.
+    # triggers a fixed cap, the disconnects it produces must cluster at the cap value.
+    # Scatter across two orders of magnitude is not that.
     Write-Host "  within 280-330s: $near300 of $($eof.Count)  <-- a fixed ~300s cap predicts most of them here"
 }
 
