@@ -85,14 +85,36 @@ cannot exist.
 
 ### Why the silence happens at all
 
-**Copilot sends no keepalive while a model is thinking** — verified: zero `ping`
-events across 137 captured response traces. Extended reasoning puts nothing on
-the wire for minutes: a measured `claude-opus-5` turn at `effort=xhigh` emitted
-only `message_start` + a `content_block_start` opening a thinking block, then
-**nothing for 600 s** (confirmed from the raw upstream capture, so it is upstream
-behaviour, not a bridge stall). Every bound below is really a bet on how long that
-silence may legitimately last — which is why the stream-idle default is 240 s and
-why deep workloads need more.
+**Copilot sends no keepalive while a model is thinking** — verified two ways: zero
+`ping` events across 137 captured response traces, and zero across all 34 events of a
+live `claude-opus-5` / `effort=xhigh` turn measured directly against the upstream.
+The longest *directly measured* byte-free gap is **749 s** — a `claude-opus-5` turn at
+`effort=xhigh` that opened a thinking block 3.5 s in and then sent nothing for over
+twelve minutes before the connection ended. Silence on this backend is real,
+unannounced, and can outlast every budget in this document. Treat the stream-idle
+default (240 s) as a deliberate bet against that, not as a bound derived from upstream
+behaviour: a deep enough workload will exceed it while perfectly healthy.
+
+> **Do not treat a long silence as a fixed upstream deadline.** There is no ~300 s
+> cap. Measured directly: a `claude-opus-5` / `xhigh` turn opened a thinking block and
+> then put **nothing** on the wire for 749 s — **752.6 s token-less in total**, 2.5×
+> the proposed ceiling, verified content-free from the wire rather than assumed. The
+> corpus agrees: across 10 352 logged requests, mid-body
+> disconnects (`premature_eof`) number 9 and land at 8.5 / 10.2 / 21.6 / 34.7 / 113.6
+> / 120.5 / 142.7 / 608.9 / 627.5 s — **none within 280–330 s**, where a fixed cap
+> would pile them up. They are also rarer than plain transport failures (29 DNS / TLS
+> / refused-connection errors), which is not how a deliberate server policy behaves.
+> The two longest cuts carry `out:1` on the Anthropic endpoint, so a stream with
+> essentially no output still reached 627 s. Re-check with
+> `scripts/scan-stream-durations.ps1`; see
+> [`stream-cap-investigation.md`](stream-cap-investigation.md) for the full argument.
+>
+> Beware two shapes that look like an upstream cap and are not. Runs ending at
+> `600005` / `600014` ms are millisecond-tight against a round 600 s — the signature
+> of a **local** timer, here the bridge's own `HttpClient.Timeout` before it was
+> removed (see ⑦ below). And the 608.9 s / 627.5 s disconnects all fall inside one
+> 34-second wall-clock window despite different start times, i.e. one transport
+> interruption killing concurrent requests, not a per-request server deadline.
 
 The bridge **injects the keepalive the upstream omits**. While a `/cc` stream is in
 flight and upstream has been silent longer than
@@ -197,6 +219,40 @@ leaving ② pinned at its 300 s floor. The 30-minute ceiling (`Exg`) is why the
 bridge clamps what it writes — a larger value is silently reduced by the client.
 
 ## Evidence
+
+### Corpus: what actually ends a request
+
+51 bridge logs, 2026-06-05 → 2026-08-01, **10 352** request summaries. Re-run with
+`scripts/scan-stream-durations.ps1`.
+
+| ending cause | count |
+|---|---|
+| clean | 10 047 |
+| cancelled by client | 150 |
+| bridge `first_byte` timeout | 53 |
+| bridge `stream_idle` timeout | 52 |
+| transport error (DNS / TLS / refused) | 29 |
+| other (unclassified error text) | 12 |
+| `premature_eof` (connection cut mid-body) | 9 |
+
+**The bridge's own budgets end 11× more requests than upstream does** — which is why
+this document is mostly about *our* timers. Clean streaming runs (9 428 of them):
+
+| p50 | p95 | p99 | max |
+|---|---|---|---|
+| 11.2 s | 61.3 s | 141.0 s | **384.8 s** |
+
+The 384.8 s run finished normally at `effort=max` with `out:2307`, which rules out a
+cap on *total* stream duration. The token-less form of the claim is answered instead
+by the disconnect distribution — the 9 mid-body cuts scatter from 8.5 s to 627.5 s
+with none in 280–330 s, and the two longest carry `out:1` on the Anthropic endpoint,
+so a stream with essentially no output still reached 627 s.
+
+Keepalive injection (shipped `0.4.24-beta`, 2026-07-28) does not confound this:
+**10 269 of the 10 352 summaries predate it**, including the 384.8 s completion, both
+runs past 300 s and 7 of the 9 disconnects. An injected ping is also a *downstream*
+event the bridge sends, never one it receives, so it cannot extend an upstream stream.
+See [`stream-cap-investigation.md`](stream-cap-investigation.md) for the split.
 
 ### Lab: real `claude.exe` against an upstream that goes silent
 
