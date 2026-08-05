@@ -421,4 +421,30 @@ public class CodexStreamRobustnessTests
             "first\n{\"type\":\"image\",\"source\":\"opaque\"}",
             emitted["input"]!.AsArray()[0]!["output"]!.GetValue<string>());
     }
+
+    [Theory]
+    [InlineData("", "second", "\nsecond")]
+    [InlineData("first", "", "first\n")]
+    [InlineData("", "", "\n")]
+    public void ToolResultTextBlocks_PreserveSeparatorsAroundEmptyParts(
+        string first,
+        string second,
+        string expected)
+    {
+        var requestJson = $$"""
+          {
+            "model":"gpt-5.6-sol",
+            "input":[
+              {"type":"function_call_output","call_id":"c1","output":[
+                {"type":"input_text","text":{{JsonSerializer.Serialize(first)}}},
+                {"type":"input_text","text":{{JsonSerializer.Serialize(second)}}}
+              ]}
+            ],
+            "stream":true
+          }
+          """;
+
+        var emitted = CodexRoundTrip.RoundTrip(requestJson).AsObject();
+        Assert.Equal(expected, emitted["input"]!.AsArray()[0]!["output"]!.GetValue<string>());
+    }
 }

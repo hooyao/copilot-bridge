@@ -30,16 +30,28 @@ public class CodexNativeResponseFidelityTests
         var original = ParseFixture("responses-sse-fidelity.txt");
         var emitted = RoundTripNative(original);
 
-        Assert.Equal(original.Count, emitted.Count);
-        for (var i = 0; i < original.Count; i++)
-        {
-            Assert.Equal(original[i].EventType, emitted[i].EventType);
-            using var expected = JsonDocument.Parse(original[i].Data);
-            using var actual = JsonDocument.Parse(emitted[i].Data);
-            Assert.True(
-                JsonElement.DeepEquals(expected.RootElement, actual.RootElement),
-                $"event[{i}] {original[i].EventType} changed");
-        }
+        AssertEventValuesEqual(NormalizeExpectedCustomToolIds(original), emitted);
+    }
+
+    [Fact]
+    public void Native_custom_tool_ids_are_ctc_safe_without_changing_sibling_fields()
+    {
+        var emitted = RoundTripNative(ParseFixture("responses-sse-fidelity.txt"));
+        var added = Event(emitted, "response.output_item.added", outputIndex: 2);
+        var inputDelta = Event(emitted, "response.custom_tool_call_input.delta", outputIndex: 2);
+        var inputDone = Event(emitted, "response.custom_tool_call_input.done", outputIndex: 2);
+        var done = Event(emitted, "response.output_item.done", outputIndex: 2);
+        var terminal = Event(emitted, "response.completed");
+
+        Assert.Equal("ctc_exec", added["item"]!["id"]!.GetValue<string>());
+        Assert.Equal("ctc_exec", inputDelta["item_id"]!.GetValue<string>());
+        Assert.Equal("ctc_exec", inputDone["item_id"]!.GetValue<string>());
+        Assert.Equal("ctc_exec", done["item"]!["id"]!.GetValue<string>());
+        var terminalTool = terminal["response"]!["output"]!.AsArray()
+            .Single(node => node!["type"]!.GetValue<string>() == "custom_tool_call");
+        Assert.Equal("ctc_exec", terminalTool!["id"]!.GetValue<string>());
+        Assert.Equal("keep-tool", added["item"]!["future_tool"]!.GetValue<string>());
+        Assert.Equal("keep-tool", done["item"]!["future_tool"]!.GetValue<string>());
     }
 
     [Fact]
@@ -85,7 +97,7 @@ public class CodexNativeResponseFidelityTests
 
         Assert.InRange(maxEntries, 1, 1);
         Assert.Equal(0, ledger.Count);
-        AssertEventValuesEqual(original, emitted);
+        AssertEventValuesEqual(NormalizeExpectedCustomToolIds(original), emitted);
     }
 
     [Fact]
@@ -220,7 +232,7 @@ public class CodexNativeResponseFidelityTests
         var inspected = await Drain(context.Response.EventStream!);
         var emitted = RunT4(inspected, ledger);
 
-        AssertEventValuesEqual(original, emitted);
+        AssertEventValuesEqual(NormalizeExpectedCustomToolIds(original), emitted);
         Assert.Equal(ir.Count(e => !NativeResponsesEventCarrier.IsPrivate(e)), detector.InspectedEvents);
         Assert.Equal(0, detector.PrivateEventsInspected);
     }
@@ -280,11 +292,12 @@ public class CodexNativeResponseFidelityTests
 
         await stage.ApplyAsync();
         var emitted = RunT4(await Drain(context.Response.EventStream!), ledger);
+        var expectedEvents = NormalizeExpectedCustomToolIds(original);
 
-        Assert.Equal(original.Count, emitted.Count);
-        for (var i = 0; i < original.Count; i++)
+        Assert.Equal(expectedEvents.Count, emitted.Count);
+        for (var i = 0; i < expectedEvents.Count; i++)
         {
-            var expected = JsonNode.Parse(original[i].Data)!.AsObject();
+            var expected = JsonNode.Parse(expectedEvents[i].Data)!.AsObject();
             var actual = JsonNode.Parse(emitted[i].Data)!.AsObject();
             if (expected["response"] is JsonObject expectedResponse
                 && expectedResponse.ContainsKey("model"))
@@ -408,6 +421,44 @@ public class CodexNativeResponseFidelityTests
             Assert.True(JsonElement.DeepEquals(expectedDoc.RootElement, actualDoc.RootElement), $"event[{i}] changed");
         }
     }
+
+    private static List<SseItem<string>> NormalizeExpectedCustomToolIds(
+        IReadOnlyList<SseItem<string>> source)
+    {
+        var result = new List<SseItem<string>>(source.Count);
+        foreach (var evt in source)
+        {
+            var root = JsonNode.Parse(evt.Data)!.AsObject();
+            var type = root["type"]?.GetValue<string>();
+            if (type == "response.output_item.added"
+                && root["item"] is JsonObject added
+                && added["type"]?.GetValue<string>() == "custom_tool_call")
+                added["id"] = "ctc_exec";
+            else if (type is "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done")
+                root["item_id"] = "ctc_exec";
+            else if (type == "response.output_item.done"
+                && root["item"] is JsonObject done
+                && done["type"]?.GetValue<string>() == "custom_tool_call")
+                done["id"] = "ctc_exec";
+            else if (type == "response.completed"
+                && root["response"]?["output"] is JsonArray output)
+            {
+                foreach (var node in output)
+                    if (node is JsonObject item && item["type"]?.GetValue<string>() == "custom_tool_call")
+                        item["id"] = "ctc_exec";
+            }
+            result.Add(new SseItem<string>(root.ToJsonString(), evt.EventType));
+        }
+        return result;
+    }
+
+    private static JsonObject Event(
+        IEnumerable<SseItem<string>> stream,
+        string type,
+        int? outputIndex = null) =>
+        stream.Select(item => JsonNode.Parse(item.Data)!.AsObject())
+            .Single(root => root["type"]?.GetValue<string>() == type
+                && (outputIndex is null || root["output_index"]?.GetValue<int>() == outputIndex));
 
     private sealed class ModeDetector(bool requiresBuffering, bool buffersBlocks) : IResponseDetector
     {

@@ -120,6 +120,7 @@ public class CodexResponseCorpusReplayTests
                         continue;
                     }
                     var emitted = NativeRoundTrip(originalEvents, model);
+                    NormalizeExpectedNativeCustomToolIds(originalEvents);
                     var difference = FirstDifference(originalEvents, emitted);
                     if (difference is not null)
                         failures.Add($"{traceId}: response {difference}");
@@ -177,6 +178,60 @@ public class CodexResponseCorpusReplayTests
 
     private static bool HasCleanTerminal(IReadOnlyList<SseItem<string>> events) =>
         events.Any(item => item.EventType is "response.completed" or "response.incomplete");
+
+    private static void NormalizeExpectedNativeCustomToolIds(List<SseItem<string>> events)
+    {
+        var states = new Dictionary<int, (string CallId, string Synthesized, string? Stable)>();
+        var byCallId = new Dictionary<string, (string Synthesized, string? Stable)>(StringComparer.Ordinal);
+        for (var i = 0; i < events.Count; i++)
+        {
+            var root = JsonNode.Parse(events[i].Data)!.AsObject();
+            var type = root["type"]?.GetValue<string>();
+            if (type == "response.output_item.added"
+                && root["output_index"]?.GetValue<int>() is { } addedIndex
+                && root["item"] is JsonObject added
+                && added["type"]?.GetValue<string>() == "custom_tool_call"
+                && added["call_id"]?.GetValue<string>() is { Length: > 0 } callId)
+            {
+                var synth = SynthesizeCtcId(callId);
+                states[addedIndex] = (callId, synth, null);
+                byCallId[callId] = (synth, null);
+                added["id"] = synth;
+            }
+            else if (type is "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done"
+                && root["output_index"]?.GetValue<int>() is { } inputIndex
+                && states.TryGetValue(inputIndex, out var inputState))
+            {
+                var stable = root["item_id"]?.GetValue<string>() is { Length: > 0 } observed
+                    && observed.StartsWith("ctc", StringComparison.Ordinal)
+                    ? observed : inputState.Stable;
+                inputState = (inputState.CallId, inputState.Synthesized, stable);
+                states[inputIndex] = inputState;
+                byCallId[inputState.CallId] = (inputState.Synthesized, stable);
+                root["item_id"] = stable ?? inputState.Synthesized;
+            }
+            else if (type == "response.output_item.done"
+                && root["output_index"]?.GetValue<int>() is { } doneIndex
+                && states.TryGetValue(doneIndex, out var doneState)
+                && root["item"] is JsonObject done
+                && done["type"]?.GetValue<string>() == "custom_tool_call")
+                done["id"] = doneState.Stable ?? doneState.Synthesized;
+            else if (type is "response.completed" or "response.incomplete"
+                && root["response"]?["output"] is JsonArray output)
+            {
+                foreach (var node in output)
+                    if (node is JsonObject item
+                        && item["type"]?.GetValue<string>() == "custom_tool_call"
+                        && item["call_id"]?.GetValue<string>() is { } terminalCallId
+                        && byCallId.TryGetValue(terminalCallId, out var terminalState))
+                        item["id"] = terminalState.Stable ?? terminalState.Synthesized;
+            }
+            events[i] = new SseItem<string>(root.ToJsonString(), events[i].EventType);
+        }
+    }
+
+    private static string SynthesizeCtcId(string callId) =>
+        "ctc_" + (callId.StartsWith("call_", StringComparison.Ordinal) ? callId[5..] : callId);
 
     private static string? FirstDifference(
         IReadOnlyList<SseItem<string>> expected,

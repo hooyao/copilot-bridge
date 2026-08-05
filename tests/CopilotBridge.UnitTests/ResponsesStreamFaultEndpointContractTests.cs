@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
 using CopilotBridge.Cli.Endpoints.Codex;
@@ -633,6 +634,7 @@ public class ResponsesStreamFaultEndpointContractTests
 
         Assert.Equal(StatusCodes.Status200OK, outcome.Status);
         var expected = ParseSse(Encoding.UTF8.GetString(fixtureBytes));
+        NormalizeExpectedCustomToolIds(expected);
         var actual = ParseSse(outcome.Body);
         Assert.Equal(expected.Count, actual.Count);
         for (var i = 0; i < expected.Count; i++)
@@ -645,6 +647,33 @@ public class ResponsesStreamFaultEndpointContractTests
                 $"endpoint event[{i}] {expected[i].EventType} changed");
         }
         Assert.Equal(0, outcome.NativeLedgerCount);
+    }
+
+    private static void NormalizeExpectedCustomToolIds(List<(string? EventType, string Data)> events)
+    {
+        const string callId = "call_exec";
+        const string stableId = "ctc_exec";
+        for (var i = 0; i < events.Count; i++)
+        {
+            var root = JsonNode.Parse(events[i].Data)!.AsObject();
+            var type = root["type"]?.GetValue<string>();
+            if (type is "response.output_item.added" or "response.output_item.done"
+                && root["item"] is JsonObject item
+                && item["type"]?.GetValue<string>() == "custom_tool_call")
+                item["id"] = stableId;
+            else if (type is "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done")
+                root["item_id"] = stableId;
+            else if (type is "response.completed" or "response.incomplete"
+                && root["response"]?["output"] is JsonArray output)
+            {
+                foreach (var node in output)
+                    if (node is JsonObject terminalItem
+                        && terminalItem["type"]?.GetValue<string>() == "custom_tool_call"
+                        && terminalItem["call_id"]?.GetValue<string>() == callId)
+                        terminalItem["id"] = stableId;
+            }
+            events[i] = (events[i].EventType, root.ToJsonString());
+        }
     }
 
     private static List<(string? EventType, string Data)> ParseSse(string wire)

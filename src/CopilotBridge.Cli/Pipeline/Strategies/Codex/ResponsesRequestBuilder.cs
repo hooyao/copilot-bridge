@@ -578,9 +578,11 @@ internal static class ResponsesRequestBuilder
         if (c.ValueKind == JsonValueKind.Array)
         {
             var sb = new System.Text.StringBuilder();
+            var wroteBlock = false;
             foreach (var block in c.EnumerateArray())
             {
-                if (sb.Length > 0) sb.Append('\n');
+                if (wroteBlock) sb.Append('\n');
+                wroteBlock = true;
                 if (block.ValueKind == JsonValueKind.Object
                     && block.TryGetProperty("type", out var bt)
                     && bt.ValueKind == JsonValueKind.String

@@ -47,8 +47,14 @@
 
 - Contract mutation checks: the ordered fidelity fixture failed on the old T3/T4 path (20 source events became 13); reasoning summary/content and `input_text`/`output_text` tool-result tests failed before their product fixes and passed afterward.
 - Focused response/request/fault suites: 71 passed; broader Codex stream, detector, endpoint, namespace, custom-tool, marker, and hot-path regressions passed.
-- Complete unit suite: `dotnet test tests/CopilotBridge.UnitTests --no-restore` → 1,487 passed.
-- Solution non-integration gate: `dotnet test CopilotBridge.slnx --filter "Category!=Integration" --no-restore` → 1,487 passed; Playground had no matching non-integration tests.
+- Complete unit suite: `dotnet test tests/CopilotBridge.UnitTests --no-restore` → 1,491 passed after Copilot review round 1.
+- Solution non-integration gate before review follow-ups: `dotnet test CopilotBridge.slnx --filter "Category!=Integration" --no-restore` → 1,487 passed; Playground had no matching non-integration tests. The final unit gate covers all round-1 product changes.
 - Fixed-window corpus replay (`20260804-160000-0000` through `20260805-165534-0081`): 3,227 target turns; 3,222 complete request chains, 3,219 normal SSE responses, and 2 buffered responses replayed with zero undeclared differences; 5 incomplete four-file captures and 1 historical unterminated stream were classified, not counted as complete.
 - Final real-client run: `codex-xhigh-reasoning-fidelity-20260805-183458-833.json`; three rounds all 200; detailed+xhigh reasoning, namespaced `function_call` + matching output, custom `exec` + matching output, 73 reasoning-summary deltas, three exact upstream→inbound event-value pairs, no marker leak; Codex turn completed with canary and no abort; SQLite window contained 475 rows, 0 router/dispatch fatals, and 0 ERROR rows.
-- Windows Native AOT: bridge and updater published with zero trim/AOT warnings; `copilot-bridge.exe` 14,083,584 B, `copilot-updater.exe` 5,019,136 B.
+- Windows Native AOT after Copilot review round 1: bridge and updater published with zero trim/AOT warnings; `copilot-bridge.exe` 14,094,848 B, `copilot-updater.exe` 5,019,136 B.
+
+## PR Review Follow-ups
+
+- Copilot round 1: preserve newline separators around empty tool-result text blocks.
+- Copilot round 1: retain the `ctc`-prefixed custom-tool identity correction on the native Responses restoration path, including added/done/terminal lifecycle copies without changing sibling fields.
+- Copilot round 1: document that `BufferScannableBlocks` retains one complete text/thinking block's source-event ledger entries, distinct from whole-response buffering.

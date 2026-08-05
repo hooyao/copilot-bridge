@@ -323,6 +323,9 @@ internal sealed class AnthropicToResponsesStream
     private string? _nativeModelOverride;
     private string _failureCode = "upstream_error";
     private readonly List<SseItem<string>> _nativeActualSemantic = [];
+    private readonly Dictionary<int, NativeCustomToolCall> _nativeCustomToolsByOutput = [];
+    private readonly Dictionary<string, NativeCustomToolCall> _nativeCustomToolsByCallId =
+        new(StringComparer.Ordinal);
 
     public AnthropicToResponsesStream(
         string model,
@@ -371,7 +374,8 @@ internal sealed class AnthropicToResponsesStream
 
             if (unchanged)
             {
-                var restored = ApplyNativeModelOverride(original, _nativeModelOverride);
+                var restored = RewriteNativeCustomToolIds(original);
+                restored = ApplyNativeModelOverride(restored, _nativeModelOverride);
                 yield return restored;
                 if (IsResponsesTerminal(restored))
                     _nativeTerminalDelivered = true;
@@ -613,6 +617,80 @@ internal sealed class AnthropicToResponsesStream
         {
             return original;
         }
+    }
+
+    /// <summary>
+    /// Preserve the historical custom-tool echo contract while restoring native
+    /// Responses events. Copilot's output-item ids can be rolling opaque blobs;
+    /// the stable echo-safe id appears on custom_tool_call_input events. Codex may
+    /// persist either lifecycle copy, so added uses a deterministic ctc synthesis
+    /// and done/terminal use the observed stable ctc id when available.
+    /// </summary>
+    private SseItem<string> RewriteNativeCustomToolIds(in SseItem<string> original)
+    {
+        JsonObject? root;
+        try { root = JsonNode.Parse(original.Data) as JsonObject; }
+        catch (JsonException) { return original; }
+        if (root is null || root["type"]?.GetValue<string>() is not { } type)
+            return original;
+
+        var changed = false;
+        if (type == "response.output_item.added"
+            && root["output_index"]?.GetValue<int>() is { } addedIndex
+            && root["item"] is JsonObject added
+            && added["type"]?.GetValue<string>() == "custom_tool_call"
+            && added["call_id"]?.GetValue<string>() is { Length: > 0 } callId)
+        {
+            var state = new NativeCustomToolCall(callId, SynthesizeCtcId(callId));
+            _nativeCustomToolsByOutput[addedIndex] = state;
+            _nativeCustomToolsByCallId[callId] = state;
+            added["id"] = state.SynthesizedId;
+            changed = true;
+        }
+        else if (type is "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done"
+            && root["output_index"]?.GetValue<int>() is { } inputIndex
+            && _nativeCustomToolsByOutput.TryGetValue(inputIndex, out var inputState))
+        {
+            if (root["item_id"]?.GetValue<string>() is { Length: > 0 } observed
+                && observed.StartsWith("ctc", StringComparison.Ordinal))
+                inputState.StableId = observed;
+            root["item_id"] = inputState.StableId ?? inputState.SynthesizedId;
+            changed = true;
+        }
+        else if (type == "response.output_item.done"
+            && root["output_index"]?.GetValue<int>() is { } doneIndex
+            && _nativeCustomToolsByOutput.TryGetValue(doneIndex, out var doneState)
+            && root["item"] is JsonObject done
+            && done["type"]?.GetValue<string>() == "custom_tool_call")
+        {
+            done["id"] = doneState.StableId ?? doneState.SynthesizedId;
+            changed = true;
+        }
+        else if (type is "response.completed" or "response.incomplete"
+            && root["response"]?["output"] is JsonArray output)
+        {
+            foreach (var node in output)
+            {
+                if (node is not JsonObject item
+                    || item["type"]?.GetValue<string>() != "custom_tool_call"
+                    || item["call_id"]?.GetValue<string>() is not { } terminalCallId
+                    || !_nativeCustomToolsByCallId.TryGetValue(terminalCallId, out var terminalState))
+                    continue;
+                item["id"] = terminalState.StableId ?? terminalState.SynthesizedId;
+                changed = true;
+            }
+        }
+
+        return changed
+            ? new SseItem<string>(root.ToJsonString(), original.EventType)
+            : original;
+    }
+
+    private sealed class NativeCustomToolCall(string callId, string synthesizedId)
+    {
+        internal string CallId { get; } = callId;
+        internal string SynthesizedId { get; } = synthesizedId;
+        internal string? StableId { get; set; }
     }
 
     private static bool IsResponsesTerminal(in SseItem<string> item) =>

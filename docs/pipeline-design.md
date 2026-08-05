@@ -163,11 +163,14 @@ full set:
 > crosses the Anthropic client edge.
 
 > In ordinary streaming, T4 consumes each FIFO entry as soon as its carrier
-> arrives, so the ledger holds at most one source event. The opt-in
-> `PreserveStream=false` detector mode is the deliberate exception: it already
-> buffers the entire semantic response before delivery, and its ledger entries
-> remain alongside that buffer until the stage chooses replay or a real HTTP
-> error. Both are cleared before request completion.
+> arrives, so the ledger holds at most one source event. There are two deliberate
+> buffering exceptions. With `BufferScannableBlocks=true`, the stage withholds a
+> text/thinking block's semantic events **and their carriers** until
+> `content_block_stop`, so the ledger retains that block's source events. With
+> `PreserveStream=false`, the stage already buffers the entire semantic response
+> before delivery, and the ledger retains the full response alongside it until the
+> stage chooses replay or a real HTTP error. Both are opt-in and both clear their
+> ledger entries before request completion.
 
 ### 3.1 The matrix problem
 

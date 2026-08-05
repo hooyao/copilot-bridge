@@ -65,7 +65,7 @@ The existing generated-shape tests remain useful for `/cc→Responses` and detec
 
 ## Risks / Trade-offs
 
-- **[Risk] Carrier data duplicates large event JSON while it crosses the semantic pipeline.** → The stream carries a constant token and the FIFO ledger keeps the original/semantic string references without copying them. Default streaming consumes each entry at its source-group boundary (at most one in flight); explicit whole-response detector buffering necessarily retains the whole response because that mode already withholds the entire semantic stream.
+- **[Risk] Carrier data duplicates large event JSON while it crosses the semantic pipeline.** → The stream carries a constant token and the FIFO ledger keeps the original/semantic string references without copying them. Default streaming consumes each entry at its source-group boundary (at most one in flight). `BufferScannableBlocks` retains one withheld text/thinking block's entries, while explicit whole-response detector buffering retains the whole response because that mode already withholds the entire semantic stream.
 - **[Risk] A detector action could be attributed to the wrong original event.** → Use explicit monotonically increasing source ordinals and source-end boundaries; test zero/one/many semantic events per source.
 - **[Risk] Private carrier leaks to Claude Code or Codex JSON.** → Fail closed at both outbound adapters, add recursive property-name assertions, and mutation-check the scrub.
 - **[Risk] Lossless restoration bypasses model rewrite.** → Represent configured rewrite as an explicit group mutation and patch only the model field on the original event.

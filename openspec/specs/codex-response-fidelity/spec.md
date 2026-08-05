@@ -9,6 +9,8 @@ For a request received on `/codex/responses` and routed to Copilot `/responses`,
 
 Insignificant SSE framing or JSON serialization differences are allowed, but every upstream event name and JSON value MUST survive. A bridge-internal carrier or marker MUST NOT appear as a property in the downstream Responses JSON.
 
+The one protocol-corrective exception is a `custom_tool_call` item id: every client-facing lifecycle/output copy SHALL use a `ctc`-prefixed id derived from the call id until T3 observes Copilot's stable `ctc` input-event id, after which completed/terminal copies SHALL use that stable id. Every unrelated field remains value-identical.
+
 #### Scenario: Detailed reasoning survives a same-protocol stream
 - **WHEN** Codex requests a reasoning summary and Copilot emits reasoning item lifecycle events, reasoning-summary events, encrypted reasoning content, and a completed terminal
 - **THEN** Codex receives those events in the same order with the same JSON values
@@ -21,6 +23,12 @@ Insignificant SSE framing or JSON serialization differences are allowed, but eve
 #### Scenario: Unknown event type survives
 - **WHEN** Copilot emits a valid Responses event type unknown to this bridge version between two known events
 - **THEN** the unknown event reaches Codex at the same position with every JSON field intact.
+
+#### Scenario: Custom-tool identity remains echo-safe
+- **WHEN** Copilot emits rolling non-`ctc` custom-tool output-item ids and a stable `ctc` id on custom-tool input events
+- **THEN** the Codex-facing added item has a synthesized `ctc` id
+- **AND** the completed item and terminal output use the observed stable `ctc` id
+- **AND** every non-id field retains its original JSON value.
 
 ### Requirement: Semantic inspection remains authoritative
 
