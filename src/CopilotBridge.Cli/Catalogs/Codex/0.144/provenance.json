@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source_repository": "https://github.com/openai/codex",
+  "source_tag": "rust-v0.144.1",
+  "source_commit": "44918ea10c0f99151c6710411b4322c2f5c96bea",
+  "source_path": "codex-rs/models-manager/models.json",
+  "source_license": "Apache-2.0",
+  "license_asset": "LICENSE.openai-codex",
+  "supported_client_version": {
+    "minimum_inclusive": "0.144.0",
+    "maximum_exclusive": "0.145.0"
+  },
+  "models_sha256": "dcab00231a5178a9c84b7aef4cc06a1e1359e37ee0dd7e69d5822c4b1de723b1",
+  "license_sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+}

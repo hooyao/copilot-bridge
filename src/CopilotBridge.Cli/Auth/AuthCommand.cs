@@ -8,6 +8,19 @@ namespace CopilotBridge.Cli.Auth;
 
 internal static class AuthCommand
 {
+    /// <summary>
+    /// Public, non-secret bearer value used only to opt a custom Codex provider into
+    /// remote model discovery. This command deliberately has no dependency on the
+    /// token store, HTTP, or the web host.
+    /// </summary>
+    internal const string ProviderSentinel = "copilot-bridge-provider";
+
+    public static int ProviderToken()
+    {
+        Console.WriteLine(ProviderSentinel);
+        return 0;
+    }
+
     public static async Task<int> LoginAsync()
     {
         using var http = CreateHttpClient();

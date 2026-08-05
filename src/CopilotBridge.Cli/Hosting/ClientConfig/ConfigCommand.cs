@@ -134,6 +134,13 @@ internal static class ConfigCommand
                 {
                     Console.WriteLine($"  {detail}");
                 }
+                if (state.AdditionalDriftFacts is { Count: > 0 })
+                {
+                    foreach (var fact in state.AdditionalDriftFacts)
+                    {
+                        Console.WriteLine($"  drift: {fact}");
+                    }
+                }
                 if (state.Drifted)
                 {
                     Console.WriteLine($"  expected base URL: {state.ExpectedBaseUrl}");

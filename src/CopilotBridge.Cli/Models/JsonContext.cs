@@ -6,6 +6,7 @@ using CopilotBridge.Cli.Models.Anthropic.Response;
 using CopilotBridge.Cli.Models.Anthropic.Stream;
 using CopilotBridge.Cli.Models.Common;
 using CopilotBridge.Cli.Models.Copilot;
+using CopilotBridge.Cli.Models.Codex;
 using CopilotBridge.Cli.Models.GitHub;
 using CopilotBridge.Cli.Models.Responses;
 
@@ -34,6 +35,9 @@ namespace CopilotBridge.Cli.Models;
 [JsonSerializable(typeof(CopilotTokenResponse))]
 [JsonSerializable(typeof(CopilotTokenEndpoints))]
 [JsonSerializable(typeof(CopilotModelsResponse))]
+[JsonSerializable(typeof(CodexModelsResponse))]
+[JsonSerializable(typeof(CodexCatalogProvenance))]
+[JsonSerializable(typeof(CodexCatalogErrorResponse))]
 // Anthropic surface — registered top-levels are reachable from each request /
 // response shape; polymorphic derived types (ContentBlockParam variants,
 // ContentBlock variants, ImageSource variants, ToolChoice variants, ThinkingConfig

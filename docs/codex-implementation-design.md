@@ -1,11 +1,20 @@
 # Codex client — implementation design (for review)
 
-> Status: **DRAFT for human review** · 2026-06-12 (v2 — corrected to hub-IR) · gates coding
+> Status: **IMPLEMENTED** · 2026-08-05 (v3 — adds the model-metadata control plane)
 >
 > Implements the verdict of `docs/codex-protocol-research.md` (Track A 6-model
 > live probe + Track B source-read + real `codex.exe` capture). OpenSpec change:
-> `openspec/changes/add-codex-client/`. **Do not start coding until this is
-> reviewed.** Companion to `docs/pipeline-design.md` (the framework contract).
+> `openspec/changes/add-codex-client/`. The inference path is shipped; the v3
+> metadata addendum is implemented by
+> `openspec/changes/add-codex-model-catalog/`. Companion to
+> `docs/pipeline-design.md` (the framework contract).
+>
+> **v3 addendum:** the original Q6 conclusion (no `/codex/models`) became stale
+> when Copilot began advertising context beyond Codex 0.144.x's bundled ceiling.
+> Codex requests a provider catalog only for first-party/command-auth providers,
+> so the bridge now exposes a separate `GET /codex/models?client_version=...`
+> control plane and `config codex` writes command-backed discovery auth. This
+> does not alter the T1–T4 inference architecture below.
 >
 > **v2 correction:** an earlier draft treated Codex as a Responses→Responses
 > near-passthrough that skips the IR. **That was wrong** and violated the
@@ -221,15 +230,40 @@ verified during implementation (was Q5).
   audits body → deserializes `ResponsesRequest` → **`T1.AdaptAsync` → IR** →
   builds `BridgeContext<MessagesRequest>` → runs the **existing shared**
   `Pipeline<MessagesRequest>` → **`T4` adapts the IR response → Responses** →
-  writes SSE/buffered back. Same audit/summary plumbing as `/cc`. No
-  `/codex/models`, no count_tokens (was Q6: confirmed not needed).
+  writes SSE/buffered back. Same audit/summary plumbing as `/cc`.
+- `Endpoints/Codex/CodexModelsEndpoint.cs` —
+  `GET /codex/models?client_version=...`. This is not an inference adapter and
+  never enters the IR pipeline. It selects a complete upstream Codex catalog
+  baseline for the reviewed 0.144.x interval, overlays exact-slug live Copilot
+  Responses availability plus validated context limits, and returns a stable
+  ETag. Unsupported versions fail non-2xx so Codex retains its bundled catalog.
+  `Codex.ModelCatalog.Enabled` defaults to `true`; setting it to `false` omits
+  only this route while leaving `POST /codex/responses` available.
+- No count-tokens endpoint is required for Codex.
 - The Codex strategy `CopilotResponsesStrategy` registers in the **same**
   `Pipeline<MessagesRequest>` strategy registry alongside
   `CopilotMessagesPassthroughStrategy`; the registry picks by
   `target.Vendor` (`CopilotAnthropic` vs `CopilotResponses`).
 - `app.MapCodexResponses()` in `ServeCommand`; DI registers T1/T4 (Codex
-  adapters), `CopilotResponsesStrategy`, `CodexModelProfileCatalog`. The runner,
-  the IR pipeline, and the Anthropic stages are all reused.
+  adapters), `CopilotResponsesStrategy`, `CodexModelProfileCatalog`, plus
+  `app.MapCodexModels()` and the singleton baseline/overlay/projector services.
+  The runner, the IR pipeline, and the Anthropic stages are reused only for
+  inference; metadata remains outside that graph.
+
+### 7.1 Catalog ownership and command auth
+
+- Complete Codex-owned behavior is vendored from the exact upstream Codex tag
+  appropriate to `client_version`; the bridge treats fast-moving entries as
+  opaque `JsonElement` values and rewrites only the backend allow-list.
+- Copilot `/models` owns backend membership and limits. Current 1M-class entries
+  report 1,050,000 total / 922,000 maximum prompt / 128,000 maximum output;
+  Codex receives 1,050,000 total and an explicit 898,000 auto-compact threshold.
+- `config codex` manages `[model_providers.copilot-bridge.auth]`. Its hidden
+  `auth provider-token` command prints a stable public sentinel; the real
+  GitHub/Copilot credential remains exclusively inside `AuthService`.
+- A cold metadata failure returns the reviewed baseline without uplift; a
+  process with last-known-good live facts serves them stale. Neither path turns
+  a metadata outage into an inference outage.
 
 ---
 
@@ -306,6 +340,8 @@ is visible.
 - Gemini translators (separate future client).
 - WebSocket transport (custom providers default `supports_websockets=false`, research §3.1).
 - `/responses/compact`, `/memories/*` routes.
+- Generic OpenAI `/v1/models` emulation. `/codex/models` is Codex's native
+  `ModelsResponse` contract, selected by `client_version`.
 - `[DONE]` filtering on the Responses backend (Copilot `/responses` emits none, §2.5).
 
 ---
@@ -319,7 +355,7 @@ is visible.
 | Q1 | Adjust `text.verbosity` when coercing effort? | DECIDED: No (independent, universally accepted) |
 | Q3 | Strip `store` always or only when `true`? | DECIDED: only when `true` (Codex sends `false`) |
 | Q5 | `Normalize` no-op on `gpt-5.3-codex`? | DECIDED: verify in code (my task, not a review item) |
-| Q6 | `/codex/models` route? | DECIDED: No |
+| Q6 | `/codex/models` route? | **SUPERSEDED 2026-08-05: Yes, as a separate command-auth metadata control plane.** Required to raise Codex's bundled context ceiling while preserving complete client-owned model entries. |
 | ~~Q7~~ | ~~identity adapters for Codex?~~ | **DISSOLVED** — Codex adapters are real translators T1/T4, not identity |
 
 All review questions are now resolved. The remaining judgment for the reviewer

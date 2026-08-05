@@ -68,6 +68,19 @@
     <InternalsVisibleTo Include="copilot-unittests" />
   </ItemGroup>
 
+  <!-- Complete, reviewed Codex model catalogs. These are embedded so the
+       single-file Native AOT executable never depends on a mutable sidecar or
+       on GitHub availability at runtime. Each version directory includes its
+       provenance manifest and the upstream license alongside models.json. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Catalogs\Codex\0.144\models.json"
+                      LogicalName="CopilotBridge.Cli.Catalogs.Codex.0.144.models.json" />
+    <EmbeddedResource Include="Catalogs\Codex\0.144\provenance.json"
+                      LogicalName="CopilotBridge.Cli.Catalogs.Codex.0.144.provenance.json" />
+    <EmbeddedResource Include="Catalogs\Codex\0.144\LICENSE.openai-codex"
+                      LogicalName="CopilotBridge.Cli.Catalogs.Codex.0.144.LICENSE.openai-codex" />
+  </ItemGroup>
+
   <!-- Ship appsettings.json next to the exe. PreserveNewest means user edits
        in publish/ aren't clobbered on rebuild unless the source file in the
        project dir is newer. CopyToPublishDirectory is the property that

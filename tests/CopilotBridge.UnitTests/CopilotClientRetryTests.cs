@@ -18,6 +18,22 @@ namespace CopilotBridge.UnitTests;
 /// </summary>
 public class CopilotClientRetryTests
 {
+    [Fact]
+    public async Task Downstream_provider_sentinel_can_never_replace_AuthService_upstream_token()
+    {
+        const string realToken = "copilot-real-upstream-token-do-not-leak";
+        var handler = new AuthorizationCaptureHandler();
+        var client = BuildClient(handler, maxRetries: 0, auth: new FixedAuth(realToken));
+
+        _ = await client.GetModelsAsync();
+        using var responses = await client.PostResponsesAsync(
+            System.Text.Encoding.UTF8.GetBytes("{}"));
+
+        Assert.Equal(["Bearer " + realToken, "Bearer " + realToken], handler.Authorizations);
+        Assert.DoesNotContain(handler.Authorizations,
+            value => value.Contains(AuthCommand.ProviderSentinel, StringComparison.Ordinal));
+    }
+
     // ── TransientUpstreamError classification ────────────────────────────
 
     [Fact]
@@ -154,7 +170,10 @@ public class CopilotClientRetryTests
         System.Text.Encoding.UTF8.GetBytes("""{"model":"claude-opus-4.8","messages":[]}""");
 
     private static CopilotClient BuildClient(
-        ScriptedHandler handler, int maxRetries, UpstreamTimeoutOptions? timeout = null)
+        HttpMessageHandler handler,
+        int maxRetries,
+        UpstreamTimeoutOptions? timeout = null,
+        IAuthService? auth = null)
     {
         var http = new HttpClient(handler);
         var opts = Options.Create(new UpstreamRetryOptions
@@ -172,7 +191,7 @@ public class CopilotClientRetryTests
             StreamIdleTimeoutSeconds = 0,
         });
         return new CopilotClient(
-            new SingleClientHttpClientFactory(http), new FakeAuth(), new CopilotHeaderFactory(), opts, timeoutOpts,
+            new SingleClientHttpClientFactory(http), auth ?? new FakeAuth(), new CopilotHeaderFactory(), opts, timeoutOpts,
             NullLogger<CopilotClient>.Instance);
     }
 
@@ -210,5 +229,34 @@ public class CopilotClientRetryTests
         public ValueTask<string> GetCopilotTokenAsync(CancellationToken ct = default) =>
             ValueTask.FromResult("test-token");
         public void SignOut() { }
+    }
+
+    private sealed class FixedAuth(string token) : IAuthService
+    {
+        public bool IsAuthenticated => true;
+        public string TokenLocation => "(test)";
+        public string? CopilotApiBaseUrl => "https://api.test.githubcopilot.com";
+        public DateTimeOffset? CopilotTokenExpiry => DateTimeOffset.MaxValue;
+        public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default) => ValueTask.FromResult(token);
+        public ValueTask<string> GetCopilotTokenAsync(CancellationToken ct = default) => ValueTask.FromResult(token);
+        public void SignOut() { }
+    }
+
+    private sealed class AuthorizationCaptureHandler : HttpMessageHandler
+    {
+        public List<string> Authorizations { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Authorizations.Add(request.Headers.Authorization?.ToString() ?? "");
+            var body = request.Method == HttpMethod.Get
+                ? "{\"data\":[]}"
+                : "{\"id\":\"resp\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body),
+            });
+        }
     }
 }

@@ -47,7 +47,8 @@ internal sealed record ServeInvocation(
     string? TestUpstreamBaseUrl = null,
     int? StreamIdleTimeoutSeconds = null,
     bool WholeResponseBuffering = false,
-    int? KeepAliveIntervalSeconds = null);
+    int? KeepAliveIntervalSeconds = null,
+    bool ForceModelsFailure = false);
 
 /// <summary>
 /// The appsettings shape a behavior run needs. Each value is applied by patching the
@@ -262,6 +263,16 @@ internal static class ServeProcess
                         + $"selected '{selectedConfiguration ?? "unknown"}' output and refusing to run "
                         + "the fault-recovery scenario against live Copilot.");
                 psi.Environment["COPILOT_BRIDGE_TEST_UPSTREAM_BASE_URL"] = inv.TestUpstreamBaseUrl;
+            }
+            if (inv.ForceModelsFailure)
+            {
+                var selectedConfiguration = Directory.GetParent(buildOutputDir)?.Name;
+                if (!string.Equals(selectedConfiguration, "Debug", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "Forced Copilot /models failure requires a Debug bridge build; "
+                        + $"selected '{selectedConfiguration ?? "unknown"}' output and refusing to "
+                        + "claim failure-fallback coverage without the Debug-only seam.");
+                psi.Environment["COPILOT_BRIDGE_TEST_FAIL_MODELS"] = "1";
             }
 
             proc = new Process { StartInfo = psi };

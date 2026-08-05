@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using CopilotBridge.Cli.Hosting.ClientConfig;
 
 namespace CopilotBridge.Playground.Headless;
 
@@ -31,7 +32,16 @@ internal sealed record CodexInvocation(
     // ["web_search=live"] forces codex's hosted web-search into live-fetch mode (default
     // is "cached") so a native-search test actually hits the network. Each entry becomes a
     // separate `-c <entry>` pair.
-    IReadOnlyList<string>? ExtraConfig = null);
+    IReadOnlyList<string>? ExtraConfig = null,
+    // Enables the production configuration path: write the bridge provider through
+    // CodexConfigurator, including nested command auth, so Codex fetches /models.
+    bool UseCommandAuth = false,
+    // Feed Prompt through stdin (`codex exec -`) to support long-context fixtures
+    // beyond Windows' process command-line limit.
+    bool PromptViaStdin = false,
+    // Pin a reviewed client binary when endpoint schema/version compatibility is
+    // part of the scenario. null preserves the existing latest-installed behavior.
+    string? ExpectedCodexVersion = null);
 
 internal sealed record CodexResult(
     int ExitCode, string Stdout, string Stderr, TimeSpan Duration, string CodexHome,
@@ -68,24 +78,32 @@ internal static class CodexProcess
 
     public static async Task<CodexResult> RunAsync(CodexInvocation inv, CancellationToken ct = default)
     {
-        var codexExe = ResolveCodexExe();
+        var codexExe = ResolveCodexExe(inv.ExpectedCodexVersion);
         const string providerId = "bridge";
         var baseUrl = inv.BridgeBaseUrl.TrimEnd('/') + "/codex";
 
-        // Inject the provider purely via -c overrides (config.toml untouched).
         var args = new List<string>
         {
             "exec", "--json",
             "--skip-git-repo-check",
-            "-c", $"model_provider={providerId}",
-            "-c", $"model_providers.{providerId}.name=bridge",
-            "-c", $"model_providers.{providerId}.base_url={baseUrl}",
-            "-c", $"model_providers.{providerId}.wire_api=responses",
-            "-c", $"model_providers.{providerId}.env_key=BRIDGE_DUMMY_KEY",
             "-m", inv.Model,
             "--dangerously-bypass-approvals-and-sandbox",
-            inv.Prompt,
+            inv.PromptViaStdin ? "-" : inv.Prompt,
         };
+
+        if (!inv.UseCommandAuth)
+        {
+            // Existing behavior tests inject a provider through -c and use a dummy
+            // env key. This path intentionally does not opt into remote discovery.
+            args.InsertRange(3,
+            [
+                "-c", $"model_provider={providerId}",
+                "-c", $"model_providers.{providerId}.name=bridge",
+                "-c", $"model_providers.{providerId}.base_url={baseUrl}",
+                "-c", $"model_providers.{providerId}.wire_api=responses",
+                "-c", $"model_providers.{providerId}.env_key=BRIDGE_DUMMY_KEY",
+            ]);
+        }
 
         // Append any extra -c overrides (e.g. web_search=live). Inserted before the
         // positional prompt would also work, but codex accepts flags after the prompt too;
@@ -106,6 +124,7 @@ internal static class CodexProcess
             FileName = codexExe,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = inv.PromptViaStdin,
             UseShellExecute = false,
             CreateNoWindow = true,
         };
@@ -120,6 +139,16 @@ internal static class CodexProcess
             ?? Path.Combine(Path.GetTempPath(), "codex-e1-home-" + Guid.NewGuid().ToString("N"));
         psi.Environment["CODEX_HOME"] = codexHome;
         Directory.CreateDirectory(codexHome);
+        if (inv.UseCommandAuth)
+        {
+            var connection = new BridgeConnection(
+                new Uri(inv.BridgeBaseUrl).Port, false, 0, 0);
+            var (content, _) = CodexConfigurator.BuildContent(
+                original: null,
+                connection,
+                CodexProviderAuthInvocation.ResolveCurrent());
+            File.WriteAllText(Path.Combine(codexHome, "config.toml"), content);
+        }
 
         // Stamp the start time (whole seconds, floored) so the verdict windows this run's
         // rows out of the long-lived ~/.codex/logs_2.sqlite. Minus 2s for clock/rounding
@@ -129,6 +158,12 @@ internal static class CodexProcess
         using var proc = new Process { StartInfo = psi };
         var sw = Stopwatch.StartNew();
         proc.Start();
+        if (inv.PromptViaStdin)
+        {
+            await proc.StandardInput.WriteAsync(inv.Prompt.AsMemory(), ct);
+            await proc.StandardInput.FlushAsync(ct);
+            proc.StandardInput.Close();
+        }
         var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
         var stderrTask = proc.StandardError.ReadToEndAsync(ct);
 
@@ -155,10 +190,11 @@ internal static class CodexProcess
             RealDispatchLog, startedUnix, endedUnix);
     }
 
-    private static string ResolveCodexExe()
+    internal static string ResolveCodexExe(string? expectedVersion = null)
     {
+        var candidates = new List<string>();
         var fromEnv = Environment.GetEnvironmentVariable(CodexExeEnv);
-        if (!string.IsNullOrEmpty(fromEnv) && File.Exists(fromEnv)) return fromEnv;
+        if (!string.IsNullOrEmpty(fromEnv) && File.Exists(fromEnv)) candidates.Add(fromEnv);
         // Prefer the NEWEST codex.exe under the versioned bin root — Codex
         // self-updates into a fresh hash dir, so "newest by write time" tracks the
         // active install without a hardcoded hash (or user name) going stale.
@@ -168,16 +204,52 @@ internal static class CodexProcess
                 .Select(p => new FileInfo(p))
                 .OrderByDescending(fi => fi.LastWriteTimeUtc)
                 .FirstOrDefault();
-            if (newest is not null) return newest.FullName;
+            candidates.AddRange(Directory.EnumerateFiles(CodexBinRoot, "codex.exe", SearchOption.AllDirectories)
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Select(file => file.FullName));
         }
         // Walk PATH.
         foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
         {
             if (string.IsNullOrWhiteSpace(dir)) continue;
             var candidate = Path.Combine(dir, "codex.exe");
-            if (File.Exists(candidate)) return candidate;
+            if (File.Exists(candidate)) candidates.Add(candidate);
+        }
+        foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (expectedVersion is null || HasVersion(candidate, expectedVersion)) return candidate;
         }
         throw new FileNotFoundException(
-            "Could not locate codex.exe. Set CODEX_EXE or ensure codex is on PATH.");
+            expectedVersion is null
+                ? "Could not locate codex.exe. Set CODEX_EXE or ensure codex is on PATH."
+                : $"Could not locate codex.exe version {expectedVersion}. Set CODEX_EXE to that reviewed binary.");
+    }
+
+    private static bool HasVersion(string executable, string expectedVersion)
+    {
+        try
+        {
+            var start = new ProcessStartInfo
+            {
+                FileName = executable,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            start.ArgumentList.Add("--version");
+            using var process = Process.Start(start);
+            if (process is null || !process.WaitForExit(5_000))
+            {
+                try { process?.Kill(entireProcessTree: true); } catch { }
+                return false;
+            }
+            return process.ExitCode == 0 && string.Equals(
+                process.StandardOutput.ReadToEnd().Trim(),
+                $"codex-cli {expectedVersion}",
+                StringComparison.Ordinal);
+        }
+        catch { return false; }
     }
 }

@@ -468,6 +468,7 @@ public class ClientConfigTests
         model = "gpt-5.5"
         model_provider = "agent-maestro"
         model_context_window = 921793
+        model_auto_compact_token_limit = 812345
         notify = [ "C:\\Users\\HuYao\\bin\\notify.exe", "turn-ended" ]
         model_reasoning_effort = "xhigh"
 
@@ -504,6 +505,153 @@ public class ClientConfigTests
     }
 
     [Fact]
+    public void Codex_writes_native_command_auth_for_model_discovery()
+    {
+        var invocation = CodexProviderAuthInvocation.Resolve(
+            @"C:\Program Files\copilot-bridge\copilot-bridge.exe", assemblyLocation: null);
+
+        var (content, _) = CodexConfigurator.BuildContent(
+            DenseCodexToml, Conn(), invocation);
+
+        Assert.Contains("[model_providers.copilot-bridge.auth]", content);
+        Assert.Contains("command = \"C:\\\\Program Files\\\\copilot-bridge\\\\copilot-bridge.exe\"", content);
+        Assert.Contains("args = [ \"auth\", \"provider-token\" ]", content);
+        Assert.Contains("timeout_ms = 5000", content);
+        Assert.Contains("refresh_interval_ms = 0", content);
+        Assert.DoesNotContain("github_pat", content, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ghu_", content, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Codex_writes_dotnet_dll_command_auth_for_jit_development()
+    {
+        var dll = Path.GetFullPath(@"C:\src\bridge\copilot-bridge.dll");
+        var invocation = CodexProviderAuthInvocation.Resolve(
+            processPath: @"C:\Program Files\dotnet\dotnet.exe", assemblyLocation: dll);
+
+        Assert.Equal("dotnet", invocation.Command);
+        Assert.Equal([dll, "auth", "provider-token"], invocation.Args);
+
+        var (content, _) = CodexConfigurator.BuildContent(null, Conn(), invocation);
+        Assert.Contains("command = \"dotnet\"", content);
+        Assert.Contains("copilot-bridge.dll\", \"auth\", \"provider-token\"", content);
+    }
+
+    [Fact]
+    public void Codex_upgrades_legacy_provider_block_with_nested_auth()
+    {
+        var legacy = """
+            model_provider = "copilot-bridge"
+
+            [model_providers.copilot-bridge]
+            name = "copilot-bridge"
+            base_url = "http://localhost:8765/codex"
+            wire_api = "responses"
+            """;
+        var invocation = new CodexProviderAuthInvocation("bridge.exe", ["auth", "provider-token"]);
+
+        var (content, _) = CodexConfigurator.BuildContent(legacy, Conn(), invocation);
+
+        Assert.Contains("[model_providers.copilot-bridge.auth]", content);
+        Assert.Equal(1, Count(content, "[model_providers.copilot-bridge]"));
+        Assert.Equal(1, Count(content, "[model_providers.copilot-bridge.auth]"));
+    }
+
+    [Fact]
+    public void Codex_replaces_stale_auth_without_touching_rival_nested_tables()
+    {
+        var original = """
+            model_provider = "copilot-bridge"
+            model_context_window = 900001 # user-owned
+            model_auto_compact_token_limit = 800001
+
+            [model_providers.rival]
+            name = "keep"
+
+            [model_providers.rival.auth]
+            command = 'rival-token --literal'
+            args = [ "--one", "two" ] # rival comment
+
+            [model_providers.copilot-bridge]
+            name = "old"
+            base_url = "http://localhost:1/codex"
+            wire_api = "responses"
+
+            [model_providers.copilot-bridge.auth]
+            command = "stale"
+            args = []
+            timeout_ms = 1
+            refresh_interval_ms = 1
+            """;
+        var invocation = new CodexProviderAuthInvocation(
+            @"C:\bridge\copilot-bridge.exe", ["auth", "provider-token"]);
+
+        var (content, _) = CodexConfigurator.BuildContent(original, Conn(), invocation);
+
+        var rivalStart = original.IndexOf("[model_providers.rival.auth]", StringComparison.Ordinal);
+        var bridgeStart = original.IndexOf("[model_providers.copilot-bridge]", rivalStart, StringComparison.Ordinal);
+        var rivalAuthBlock = original[rivalStart..bridgeStart].TrimEnd('\r', '\n');
+        Assert.Contains(rivalAuthBlock, content, StringComparison.Ordinal);
+        Assert.Contains("model_context_window = 900001 # user-owned", content);
+        Assert.Contains("model_auto_compact_token_limit = 800001", content);
+        Assert.DoesNotContain("command = \"stale\"", content);
+        Assert.Equal(1, Count(content, "[model_providers.copilot-bridge.auth]"));
+    }
+
+    [Fact]
+    public void Codex_auth_merge_is_byte_idempotent()
+    {
+        var invocation = new CodexProviderAuthInvocation(
+            @"C:\bridge path\copilot-bridge.exe", ["auth", "provider-token"]);
+        var (first, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn(), invocation);
+        var (second, _) = CodexConfigurator.BuildContent(first, Conn(), invocation);
+
+        Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public void Codex_read_reports_discovery_auth_drift_without_values()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var configPath = Path.Combine(dir, "config.toml");
+        File.WriteAllText(configPath, """
+            model_provider = "copilot-bridge"
+
+            [model_providers.copilot-bridge]
+            name = "copilot-bridge"
+            base_url = "http://localhost:8765/codex"
+            wire_api = "responses"
+
+            [model_providers.copilot-bridge.auth]
+            command = "DO-NOT-PRINT-THIS"
+            args = [ "SECRET-ARG" ]
+            timeout_ms = 1
+            refresh_interval_ms = 1
+            """);
+        var old = Environment.GetEnvironmentVariable("CODEX_HOME");
+        try
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", dir);
+            var state = new CodexConfigurator().Read(Conn(), ConfigScope.Global);
+
+            Assert.True(state.ConfiguredForBridge);
+            Assert.True(state.Drifted);
+            Assert.Contains(state.AdditionalDriftFacts!, f => f.Contains("command", StringComparison.Ordinal));
+            Assert.Contains(state.AdditionalDriftFacts!, f => f.Contains("arguments", StringComparison.Ordinal));
+            Assert.DoesNotContain(state.Details, d => d.Contains("DO-NOT-PRINT-THIS", StringComparison.Ordinal));
+            Assert.DoesNotContain(state.Details, d => d.Contains("SECRET-ARG", StringComparison.Ordinal));
+            Assert.DoesNotContain(state.AdditionalDriftFacts!, d => d.Contains("DO-NOT-PRINT-THIS", StringComparison.Ordinal));
+            Assert.DoesNotContain(state.AdditionalDriftFacts!, d => d.Contains("SECRET-ARG", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", old);
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
     public void Codex_preserves_model_and_effort()
     {
         var (content, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn());
@@ -537,6 +685,7 @@ public class ClientConfigTests
         // The multi-line notify array and its double-backslash escapes preserved.
         Assert.Contains("""notify = [ "C:\\Users\\HuYao\\bin\\notify.exe", "turn-ended" ]""", content);
         Assert.Contains("model_context_window = 921793", content);
+        Assert.Contains("model_auto_compact_token_limit = 812345", content);
     }
 
     [Fact]
@@ -564,6 +713,19 @@ public class ClientConfigTests
         Assert.False(doc.HasErrors);
         Assert.Contains("model_provider = \"copilot-bridge\"", content);
         Assert.Contains("[model_providers.copilot-bridge]", content);
+        Assert.Contains("[model_providers.copilot-bridge.auth]", content);
+    }
+
+    private static int Count(string text, string value)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+        return count;
     }
 
     // ---- Refuse-on-unparseable (PR review #1: surgical merge must not silently
@@ -1053,5 +1215,71 @@ public class ClientConfigWriteTests : IDisposable
         Assert.Null(provider.GetService<CopilotBridge.Cli.Auth.AuthService>());
         Assert.Null(provider.GetService<CopilotBridge.Cli.Copilot.ICopilotClient>());
         Assert.Empty(provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>());
+    }
+
+    [Fact]
+    public void Codex_dry_run_plans_command_auth_without_writing()
+    {
+        var codexHome = Path.Combine(_dir, "codex-dry-run");
+        var old = Environment.GetEnvironmentVariable("CODEX_HOME");
+        var originalOut = Console.Out;
+        var stdout = new StringWriter();
+        try
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", codexHome);
+            Console.SetOut(stdout);
+
+            var exit = ConfigCommand.Configure(
+                "codex", ConfigScope.Global, cliPort: 18765, dryRun: true, showContent: true);
+
+            Assert.Equal(0, exit);
+            Assert.False(File.Exists(Path.Combine(codexHome, "config.toml")));
+            Assert.Contains("[model_providers.copilot-bridge.auth]", stdout.ToString());
+            Assert.Contains("refresh_interval_ms = 0", stdout.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            Environment.SetEnvironmentVariable("CODEX_HOME", old);
+        }
+    }
+
+    [Fact]
+    public void Codex_config_write_backs_up_legacy_file_before_auth_upgrade()
+    {
+        var codexHome = Path.Combine(_dir, "codex-upgrade");
+        Directory.CreateDirectory(codexHome);
+        var configPath = Path.Combine(codexHome, "config.toml");
+        const string legacy = """
+            model = "gpt-5.5"
+            model_provider = "copilot-bridge"
+
+            [model_providers.copilot-bridge]
+            name = "copilot-bridge"
+            base_url = "http://localhost:8765/codex"
+            wire_api = "responses"
+            """;
+        File.WriteAllText(configPath, legacy);
+        var old = Environment.GetEnvironmentVariable("CODEX_HOME");
+        var originalOut = Console.Out;
+        Console.SetOut(TextWriter.Null);
+        try
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", codexHome);
+
+            var exit = ConfigCommand.Configure(
+                "codex", ConfigScope.Global, cliPort: 8765, dryRun: false);
+
+            Assert.Equal(0, exit);
+            Assert.Equal(legacy, File.ReadAllText(configPath + ".bak"));
+            var upgraded = File.ReadAllText(configPath);
+            Assert.Contains("model = \"gpt-5.5\"", upgraded);
+            Assert.Contains("[model_providers.copilot-bridge.auth]", upgraded);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            Environment.SetEnvironmentVariable("CODEX_HOME", old);
+        }
     }
 }

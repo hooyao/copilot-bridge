@@ -65,7 +65,8 @@ internal sealed record ConfigState(
     string? CurrentStreamIdleTimeout,
     string? ExpectedRequestTimeout,
     string? CurrentRequestTimeout,
-    IReadOnlyList<string> Details)
+    IReadOnlyList<string> Details,
+    IReadOnlyList<string>? AdditionalDriftFacts = null)
 {
     /// <summary>
     /// True when the client is configured for the bridge but its stored config no
@@ -84,5 +85,6 @@ internal sealed record ConfigState(
          !string.Equals(CurrentAssume1m, ExpectedAssume1m, System.StringComparison.Ordinal) ||
          !string.Equals(CurrentDisableErrorReporting, ExpectedDisableErrorReporting, System.StringComparison.Ordinal) ||
          !string.Equals(CurrentStreamIdleTimeout, ExpectedStreamIdleTimeout, System.StringComparison.Ordinal) ||
-         !string.Equals(CurrentRequestTimeout, ExpectedRequestTimeout, System.StringComparison.Ordinal));
+         !string.Equals(CurrentRequestTimeout, ExpectedRequestTimeout, System.StringComparison.Ordinal) ||
+         AdditionalDriftFacts is { Count: > 0 });
 }

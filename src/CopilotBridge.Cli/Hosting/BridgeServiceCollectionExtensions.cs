@@ -1,4 +1,5 @@
 using CopilotBridge.Cli.Auth;
+using CopilotBridge.Cli.Catalogs.Codex;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
 using CopilotBridge.Cli.Hosting.Logging;
@@ -77,6 +78,7 @@ internal static class BridgeServiceCollectionExtensions
             services.PostConfigure<BridgeServerOptions>(opts => opts.Port = port);
         }
         services.Configure<TracingOptions>(config.GetSection("Tracing"));
+        services.Configure<CodexModelCatalogOptions>(config.GetSection("Codex:ModelCatalog"));
         services.Configure<RoutesConfig>(config.GetSection("Routing"));
         services.Configure<OutboundBetaPolicyOptions>(config.GetSection("Pipeline:OutboundBeta"));
         services.Configure<ResponseModelRewriteOptions>(config.GetSection("Pipeline:Detectors:ModelRewrite"));
@@ -160,6 +162,9 @@ internal static class BridgeServiceCollectionExtensions
         services.AddSingleton<IAuthService>(sp => sp.GetRequiredService<AuthService>());
         services.AddSingleton<CopilotHeaderFactory>();
         services.AddSingleton<ICopilotClient, CopilotClient>();
+        services.AddSingleton<CodexCatalogBaselineStore>();
+        services.AddSingleton<CodexCatalogOverlayService>();
+        services.AddSingleton<CodexCatalogProjector>();
 
         // --- Logging sink (DI-owned, optional based on TracingOptions) ----
         // Registered via the non-generic overload because the factory may

@@ -35,6 +35,18 @@ internal sealed class CopilotClient(
     {
         var (token, baseUrl) = await ResolveAuthAsync(ct);
 
+#if DEBUG
+        // Real-client behavior coverage needs to prove that a cold Copilot metadata
+        // outage degrades only the catalog, while live /responses inference remains
+        // healthy. Keep this seam out of Release/AOT binaries entirely; ServeProcess
+        // enables it only for the explicit failure-fallback phase.
+        if (string.Equals(
+                Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_FAIL_MODELS"),
+                "1",
+                StringComparison.Ordinal))
+            throw new HttpRequestException("Forced Copilot /models failure for behavior testing.");
+#endif
+
         using var req = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/models");
         headers.ApplyTo(req, token);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));

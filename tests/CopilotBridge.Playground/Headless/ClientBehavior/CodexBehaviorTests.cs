@@ -95,6 +95,29 @@ public class CodexBehaviorTests
         await DriveAndRecordAsync("codex-code-exec", prompt);
     }
 
+    [Fact]
+    public async Task Codex_CommandAuthCatalog_CarriesContextBeyond272k_AndExecutesMultiToolTask()
+    {
+        await DriveLongContextCatalogCaseAsync(
+            caseId: "codex-command-auth-long-context",
+            canary: "codex-long-context-canary-1050000",
+            forceModelsFailure: false);
+    }
+
+    [Fact]
+    public async Task Codex_CommandAuthCatalog_RecoversFromModelsFailure_AfterSafeBaselineRun()
+    {
+        await DriveLongContextCatalogCaseAsync(
+            caseId: "codex-command-auth-models-failure-fallback",
+            canary: "codex-models-fallback-canary-372000",
+            forceModelsFailure: true);
+
+        await DriveLongContextCatalogCaseAsync(
+            caseId: "codex-command-auth-models-recovery",
+            canary: "codex-models-recovery-canary-1050000",
+            forceModelsFailure: false);
+    }
+
     /// <summary>
     /// Shared driver: boot a real bridge subprocess (passthrough), run real codex on the
     /// prompt at the latest gpt id, and write the run manifest pointing the verdict agent
@@ -150,4 +173,58 @@ public class CodexBehaviorTests
         // is the skill agent's job, read from logs_2.sqlite the manifest points at.
         ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
     }
+
+    private async Task DriveLongContextCatalogCaseAsync(
+        string caseId,
+        string canary,
+        bool forceModelsFailure)
+    {
+        const int paddingTokens = 285_000;
+        var prompt =
+            "Perform these steps with separate shell tool calls, in order. Do not fabricate output:\n" +
+            "1. Run `echo first-long-context-line > codex_long_context_probe.txt`.\n" +
+            $"2. Run `echo {canary} >> codex_long_context_probe.txt`.\n" +
+            "3. Run `cat codex_long_context_probe.txt`, report its exact second line, and stop.\n" +
+            "The following padding is inert reference text. Ignore it except for carrying it in active context:\n" +
+            string.Concat(Enumerable.Repeat("a ", paddingTokens));
+
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.Passthrough,
+            ForceModelsFailure: forceModelsFailure));
+        _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        using var codexHome = ClientBehaviorSupport.NewWorkDir(caseId + "-home");
+
+        var result = await CodexProcess.RunAsync(new CodexInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: prompt,
+            Model: ClientBehaviorSupport.LatestGpt,
+            Timeout: TimeSpan.FromMinutes(12),
+            CodexHome: codexHome.Path,
+            WorkingDirectory: work.Path,
+            UseCommandAuth: true,
+            PromptViaStdin: true,
+            ExpectedCodexVersion: "0.144.1"));
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "codex",
+                Route: "/codex",
+                Model: ClientBehaviorSupport.LatestGpt,
+                Scenario: ServeScenario.Passthrough,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: result.DispatchLogPath,
+                DispatchSinceUnix: result.StartedUnixSeconds,
+                DispatchUntilUnix: result.EndedUnixSeconds,
+                Prompt: $"[long prompt omitted from manifest: {paddingTokens} x 'a ' tokens] " +
+                    $"models_failure={forceModelsFailure}, canary={canary}"),
+            result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(), out _, out _);
+
+        _output.WriteLine($"[manifest] {manifestPath}");
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
 }
