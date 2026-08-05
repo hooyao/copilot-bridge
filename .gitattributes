@@ -1,3 +1,9 @@
 src/CopilotBridge.Cli/Catalogs/Codex/0.144/models.json text eol=lf
 src/CopilotBridge.Cli/Catalogs/Codex/0.144/provenance.json text eol=lf
 src/CopilotBridge.Cli/Catalogs/Codex/0.144/LICENSE.openai-codex text eol=lf
+
+# Captured official source bytes are hash-verified by contract tests. Keep the
+# models payload byte-exact on Windows runners even when Git's global autocrlf
+# setting differs from a developer checkout.
+tests/Fixtures/Codex/**/models.json -text
+tests/Fixtures/Codex/**/capture.json text eol=lf
