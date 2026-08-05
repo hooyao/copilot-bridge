@@ -49,7 +49,7 @@ Implication: M1 implementation shrinks from "full Anthropic↔OpenAI translation
 | --- | --- | --- |
 | At startup | `GET /v1/models` | Discover the gateway's models, populate the model picker. **If you don't expose this, Claude Code stalls before the first message.** |
 | Each turn | `POST /v1/messages` | Main conversation. Streaming (default) or non-streaming. |
-| Before a large request | `POST /v1/messages/count_tokens` | Estimate input tokens; decides whether to trigger auto-compact. |
+| Before some context-sensitive operations | `POST /v1/messages/count_tokens` | Estimate the supplied input. Claude Code also uses prior response usage/local accounting, so this is not the sole auto-compact gate. |
 
 > Claude Code does NOT call `/v1/messages/streaming`, `/responses`, or `/chat/completions`. Our server only needs the three above.
 
@@ -372,7 +372,10 @@ enterprise   → https://api.enterprise.githubcopilot.com
 | `POST /chat/completions` | OpenAI Chat Completions | Older GPT-4o / Gemini / Grok |
 | `POST /embeddings` | OpenAI embeddings | Out of scope for M1 |
 
-`GET /v1/messages/count_tokens` **does not exist** on Copilot — it's an upstream-Anthropic-only endpoint. Our gateway exposes it but internally either does a local estimate (`o200k_base` tokenizer + 1.15× claude multiplier) or forwards to `https://api.anthropic.com/v1/messages/count_tokens` (if `ANTHROPIC_API_KEY` is configured).
+`POST /v1/messages/count_tokens` was absent from the early reference
+implementation's route table but is live on Copilot (§15.4). The bridge uses it
+directly: raw passthrough for native Anthropic targets and canonical Responses
+T2 bytes plus admission calibration for cross-routed targets.
 
 ### 3.3 `GET /models` response shape (key)
 
@@ -879,13 +882,19 @@ Copilot returns `copilot-rate-limit-*` headers in responses. M1 doesn't actively
 When request messages contain `image` content blocks, add `copilot-vision-request: true` to the headers. Images nested inside `tool_result.content` count too (recurse).
 
 ### 8.9 Token counting
-Claude Code calls `/v1/messages/count_tokens` to decide when to auto-compact. Copilot **doesn't have this endpoint**. Three options:
+Claude Code calls `/v1/messages/count_tokens` for main-context and auxiliary
+accounting. Copilot was later live-confirmed to expose this Anthropic-named
+endpoint (§15.4), so native Claude routes use raw request/response passthrough.
 
-1. Implement a local estimate (gpt-family tokenizer + 1.15× multiplier)
-2. Forward to upstream `https://api.anthropic.com/v1/messages/count_tokens` (requires the user to provide `ANTHROPIC_API_KEY`)
-3. Always return a constant `1` (Claude Code thinks compaction is never needed)
-
-`caozhiyuan/copilot-api` defaults to option 3, switches to option 2 when `ANTHROPIC_API_KEY` is configured. M1 recommendation: **return `1`** — simple, non-blocking. Improve later.
+A Location may instead resolve the request to a Responses model. Counting the
+source Anthropic body is then wrong because Anthropic history/tools expand into
+different Responses framing. The bridge transforms the actual count request with
+the shared T2 builder, sends those exact bytes once to Copilot's count endpoint,
+and applies the versioned admission calibration in §15.4. It does not send a
+generation request to `/responses` for counting. Route-aware counting is
+advisory: Claude Code 2.1.221 does not use it as the sole main-loop admission
+gate, so the exact Responses context 400 is also translated at the `/cc` edge to
+Anthropic `prompt is too long` for reactive compact/retry.
 
 ---
 
@@ -1170,7 +1179,40 @@ HTTP 200
 { "input_tokens": 8 }
 ```
 
-Verified by `CopilotGapProbes.CountTokens_ProbeCopilotUpstream` on a minimal `claude-sonnet-4.6` payload. The bridge's `ClaudeCodeCountTokensEndpoint` (`src/CopilotBridge.Cli/Endpoints/ClaudeCode/ClaudeCodeCountTokensEndpoint.cs:31`) currently returns a hardcoded `{input_tokens:1}` stub — this can be replaced with a passthrough to get real counts. The wire format matches Anthropic's spec exactly, so passthrough is a one-line swap.
+Verified by `CopilotGapProbes.CountTokens_ProbeCopilotUpstream` on a minimal
+`claude-sonnet-4.6` payload. Native Anthropic bridge routes now preserve the
+request and response bytes exactly.
+
+The same endpoint also accepts canonical Responses T2 bodies, but its returned
+`input_tokens` is not reliably equal to `/responses` input usage. Paired live
+calibration on 2026-08-05 built each T2 body once, SHA-256 identified it, and sent
+the identical bytes to the count endpoint and the test-only Responses usage
+oracle:
+
+| Shape | T2 SHA-256 | Raw count | Responses input usage | usage/count |
+| --- | --- | ---: | ---: | ---: |
+| minimal | `3055f85a583157242a21b68449189cb42e02876b34f50c6acfe1947a4b19d8c5` | 40 | 14 | 0.350000000 |
+| long history | `b262c3224d91c65c9f9c24e66db1317b5707a427d94ef2ccdf95569837b21a87` | 126,668 | 129,901 | 1.025523416 |
+| tool-heavy (58 tools) | `ce6c2ccd1bd374363ff39b825c415a473b19e0dc824b8e82de656a76bcaae3db` | 4,039 | 1,657 | 0.410250062 |
+| sanitized production shape (1,681 messages, 911 tool pairs, 58 tools) | `9c16722d6aba660e241196ec88b0503b1b204444393e8c7246997d7306a0a4af` | 774,204 | 811,607 | 1.048311556 |
+
+The frozen `gpt-5.6-sol` record is `gpt-5.6-sol-v2-20260805`:
+`ceil(raw × 1.05) + 16`. It returns 58 for the paired minimal raw count and
+812,931 for the production-shaped raw count, covering the observed 811,607.
+Other Responses models, including unprobed GPT-5.6 siblings, use
+`responses-fallback-v2-20260805`:
+`ceil(raw × 1.075) + 32`, with a warning. Both saturate at `Int32.MaxValue`.
+These constants describe exact count inputs only; they do not reserve a
+hypothetical system prompt or output turn.
+
+The production failure also established Copilot's exact context error:
+HTTP 400 with a JSON body sometimes labeled `text/plain; charset=utf-8`,
+`error.code=invalid_request_body`, and message
+`Your input exceeds the context window of this model. Please adjust your input and try again.`
+Claude Code 2.1.221 did not compact for that Responses-native wording. On `/cc`
+resolved to Responses only, the bridge rewrites this exact pair to Anthropic
+`invalid_request_error` containing `prompt is too long`; every near miss and the
+native `/codex` path remain unchanged. Raw upstream wording stays in tracing.
 
 #### Cache value non-determinism
 
@@ -1367,13 +1409,15 @@ Anything below uses a different base URL constant. The bridge sees none of these
 | Surface | Bridge action | Reasoning |
 | --- | --- | --- |
 | `POST /v1/messages` | ✅ implemented (passthrough) | Hot path; verified by full playground suite |
-| `POST /v1/messages/count_tokens` | ✅ implemented (passthrough, 2026-05-21) | Copilot returns real counts ([§15.4 probe](#-v1messagescount_tokens--is-supported-2026-05-21)); bridge forwards body raw via `ICopilotClient.PostCountTokensAsync`. Old `{input_tokens:1}` stub removed |
+| `POST /v1/messages/count_tokens` | ✅ route-aware | Native Anthropic remains raw passthrough; a Responses-resolved Location sends exact shared-T2 bytes to Copilot's count endpoint and returns a calibrated target-equivalent estimate (§15.4). |
 | `GET /v1/models` | 🪦 dead code under bridge flow | Gated by `isFirstPartyAnthropicBaseUrl()`; never hit. Can remove |
 | `GET /v1/files/{id}/content`, `POST /v1/files`, `GET /v1/files` | ❌ not implemented; consider friendly 404 | Copilot returns plain-text 404; Claude Code's axios path will fail at the parse step. If we want clean UX when BriefTool / teleport is triggered, return `{"error": {"type": "not_supported", "message": "Files API is not supported on the Copilot backend."}}` from the bridge instead of forwarding |
 | `web_search_20250305` server tool in `tools[]` | ❌ bridge passthrough returns Copilot's clear 400 | Acceptable as-is; future UX nicety is to detect and short-circuit at the bridge (see [§15.4 web search probe](#web-search-server-tool--not-supported-2026-05-21)) |
 | Anthropic Batches / Skills / Completions / Admin Usage / claude.ai-side endpoints | n/a | Either not called by Claude Code (§16.3) or doesn't route via `ANTHROPIC_BASE_URL` (§16.4) |
 
-**Net** (post 2026-05-21): `count_tokens` now passthrough — see §16.5 row. Remaining: one cleanup option (remove dead `/cc/v1/models`), one optional polish (bridge-side 404 for `/v1/files/*` with a helpful body). The bridge's coverage of what Claude Code actually sends is otherwise complete.
+**Net**: `count_tokens` is passthrough for native Anthropic and route-aware for
+Responses targets. Remaining: one cleanup option (remove dead `/cc/v1/models`),
+one optional polish (bridge-side 404 for `/v1/files/*` with a helpful body).
 
 ### 16.6 How Claude Code emits `output_config.effort` (verified 2026-05-21)
 

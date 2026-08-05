@@ -226,7 +226,12 @@ public class SummaryTraceIdCollisionTests
             new CountTokensStubClient(),
             new StubAuth(),
             new RequestSummaryLogger(factory.CreateLogger<RequestSummaryLogger>()),
-            TestAudit.Create(false));
+            TestAudit.Create(false),
+            CountTokensTestServices.Planner(loggerFactory: factory),
+            CountTokensTestServices.Context(),
+            new CopilotBridge.Cli.Pipeline.Routing.CodexModelProfileCatalog(),
+            CountTokensTestServices.Estimator(factory),
+            CountTokensTestServices.CcOptions());
 
         // Find the summary event (its template leads with the literal "summary")
         // and render it as production does; it must carry the [<id>] prefix.

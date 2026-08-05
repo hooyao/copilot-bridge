@@ -150,6 +150,17 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
                 // Stash the original reference for upstream-resp before any stage
                 // could rewrite BufferedBody (mirrors the /cc passthrough path).
                 if (_audit.Enabled) ctx.Response.RawUpstreamResponseBody = ctx.Response.BufferedBody;
+                // Copilot's Responses context-window rejection is JSON mislabeled
+                // text/plain. Rewrite only the confirmed shape and only for a
+                // Claude client edge; native /codex remains Responses-native.
+                ResponsesContextWindowErrorRewriter.TryRewrite(
+                    ctx.Request.Path,
+                    BackendVendor.CopilotResponses,
+                    ctx.Response.Status,
+                    ctx.Response.BufferedBody,
+                    ctx.Response.Headers,
+                    out var downstreamBody);
+                ctx.Response.BufferedBody = downstreamBody;
                 // Response stages operate on the Anthropic-shaped hub IR. A
                 // successful non-streaming /responses object must therefore enter
                 // buffered T3 here, before leak/runaway/tool-input detectors run.

@@ -262,6 +262,112 @@ public class ClaudeCodeBehaviorTests
     }
 
     /// <summary>
+    /// Reactive context recovery: a deterministic Responses upstream injects the
+    /// exact production context-window 400 into a small tool-bearing request. The
+    /// bridge must expose Anthropic prompt-too-long, after which the real client
+    /// owns compaction and resumes through Bash and Read. Session persistence is
+    /// enabled only here so the semantic verifier can inspect compact_boundary.
+    /// </summary>
+    [Fact]
+    public async Task ClaudeCode_RoutedToGpt_Context400_CompactsAndResumesTools()
+    {
+        const string caseId = "cc-to-gpt-context-recovery";
+        const string canary = "cc-context-recovery-canary-82541";
+        var stamp = ClientBehaviorSupport.Stamp();
+        var sessionId = Guid.NewGuid().ToString();
+        var configDir = Path.Combine(
+            ServeProcess.EvidenceRoot(), "claude-config", $"{caseId}-{stamp}");
+        Directory.CreateDirectory(configDir);
+
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        var probePath = Path.Combine(work.Path, "cbridge_probe.txt");
+        await using var upstream = ResponsesContextRecoveryServer.Start(probePath, canary);
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.CcToGptContextRecovery,
+            TestUpstreamBaseUrl: upstream.BaseUrl));
+
+        // Reactive compact refuses a single-exchange conversation because
+        // there is no old history to summarize. Build a tiny persisted history
+        // through the same real client/bridge first, then arm the injected 400.
+        for (var i = 1; i <= 3; i++)
+        {
+            var warm = await ClaudeProcess.RunAsync(new ClaudeInvocation(
+                BridgeBaseUrl: bridge.BaseUrl,
+                Prompt: $"Remember that deterministic prewarm fact {i} is value-{i}; reply briefly.",
+                Model: ClientBehaviorSupport.LatestClaude,
+                OutputFormat: "stream-json",
+                Verbose: true,
+                AllowedTools: "Bash,Read",
+                Timeout: TimeSpan.FromMinutes(1),
+                WorkingDirectory: work.Path,
+                PersistSession: true,
+                ClaudeConfigDir: configDir,
+                SessionId: i == 1 ? sessionId : null,
+                ResumeSessionId: i == 1 ? null : sessionId));
+            Assert.Equal(0, warm.ExitCode);
+        }
+        upstream.ArmContextRejection();
+
+        var prompt =
+            "Actually use Bash to write the exact text " + canary
+            + " to cbridge_probe.txt, then use Read on that file, then report the exact text.";
+        var result = await ClaudeProcess.RunAsync(new ClaudeInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: prompt,
+            Model: ClientBehaviorSupport.LatestClaude,
+            OutputFormat: "stream-json",
+            Verbose: true,
+            AllowedTools: "Bash,Read",
+            Timeout: TimeSpan.FromMinutes(4),
+            WorkingDirectory: work.Path,
+            PersistSession: true,
+            ClaudeConfigDir: configDir,
+            ResumeSessionId: sessionId));
+
+        var transcriptPath = Directory
+            .EnumerateFiles(configDir, "*.jsonl", SearchOption.AllDirectories)
+            .FirstOrDefault(path => string.Equals(
+                Path.GetFileNameWithoutExtension(path), sessionId,
+                StringComparison.OrdinalIgnoreCase));
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "claude",
+                Route: "/cc->gpt/context-recovery",
+                Model: ClientBehaviorSupport.LatestClaude,
+                Scenario: ServeScenario.CcToGptContextRecovery,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: transcriptPath,
+                DispatchSinceUnix: 0,
+                DispatchUntilUnix: 0,
+                Prompt: prompt),
+            result.Stdout, result.Stderr, stamp,
+            out _, out _);
+
+        _output.WriteLine(
+            $"context upstream={upstream.BaseUrl} phases={upstream.MainPhase} "
+            + $"rejections={upstream.ContextRejections} summaries={upstream.SummaryRequests} "
+            + $"prewarm={upstream.PrewarmRequests} counts={upstream.CountRequests} "
+            + $"kinds={string.Join(',', upstream.RequestKinds)}");
+        _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
+        _output.WriteLine($"claude transcript={transcriptPath ?? "<missing>"}");
+        _output.WriteLine($"claude.exe exit={result.ExitCode} duration={result.Duration}");
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine(
+            "[verdict] require client compact_boundary(trigger=auto), post-boundary "
+            + "Bash/Read tool_use→tool_result, final canary, and no bridge markers; "
+            + "also require raw 400 and rewritten prompt-too-long at distinct trace boundaries.");
+
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(
+            result.ExitCode, bridge.TraceDir, manifestPath);
+        Assert.True(File.Exists(transcriptPath),
+            $"Claude session transcript missing under isolated config dir {configDir}");
+    }
+
+    /// <summary>
     /// <b>Keepalive: a healthy turn survives a silence longer than the client's own
     /// watchdog.</b> The deterministic Anthropic upstream opens a thinking block and
     /// then sends nothing for 240 s — past Claude Code's 180 s byte-level watchdog —

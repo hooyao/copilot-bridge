@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
 using CopilotBridge.Cli.Endpoints.Codex;
@@ -197,13 +198,16 @@ public class ResponsesStreamFaultEndpointContractTests
         return response;
     }
 
-    private static HttpResponseMessage BufferedResponse(byte[] body)
+    private static HttpResponseMessage BufferedResponse(
+        byte[] body,
+        HttpStatusCode status = HttpStatusCode.OK,
+        string contentType = "application/json")
     {
-        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        var response = new HttpResponseMessage(status)
         {
             Content = new ByteArrayContent(body),
         };
-        response.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+        response.Content.Headers.TryAddWithoutValidation("Content-Type", contentType);
         return response;
     }
 
@@ -335,14 +339,16 @@ public class ResponsesStreamFaultEndpointContractTests
 
     private static async Task<Outcome> RunClaudeBufferedAsync(
         byte[] upstreamBody,
-        bool inspectForLeaks)
+        bool inspectForLeaks,
+        HttpStatusCode status = HttpStatusCode.OK,
+        string contentType = "application/json")
     {
         var recorder = new RecordingLoggerProvider();
         using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(recorder));
         var audit = TestAudit.Create(true, loggerFactory.CreateLogger<MessagesRequest>());
         var context = new BridgeContext<MessagesRequest>();
         var strategy = BuildStrategy(
-            new StubClient(BufferedResponse(upstreamBody)), context, audit, loggerFactory);
+            new StubClient(BufferedResponse(upstreamBody, status, contentType)), context, audit, loggerFactory);
         var pipeline = inspectForLeaks
             ? PipelineWithLeakDetector(context, loggerFactory)
             : DummyPipeline;
@@ -640,6 +646,33 @@ public class ResponsesStreamFaultEndpointContractTests
         Assert.Equal("error", doc.RootElement.GetProperty("type").GetString());
         Assert.Equal("api_error", doc.RootElement.GetProperty("error").GetProperty("type").GetString());
         Assert.DoesNotContain("\"object\":\"response\"", outcome.Body);
+    }
+
+    [Fact]
+    public async Task ConfirmedContext400_IsAnthropicPromptTooLong_AndTraceKeepsRawUpstream()
+    {
+        var raw = Encoding.UTF8.GetBytes(
+            "{\"error\":{\"message\":\"Your input exceeds the context window of this model. Please adjust your input and try again.\",\"code\":\"invalid_request_body\"}}");
+
+        var outcome = await RunClaudeBufferedAsync(
+            raw, inspectForLeaks: false,
+            HttpStatusCode.BadRequest, "text/plain; charset=utf-8");
+
+        Assert.Equal(StatusCodes.Status400BadRequest, outcome.Status);
+        using (var downstream = JsonDocument.Parse(outcome.Body))
+        {
+            Assert.Equal("invalid_request_error",
+                downstream.RootElement.GetProperty("error").GetProperty("type").GetString());
+            Assert.Contains("prompt is too long",
+                downstream.RootElement.GetProperty("error").GetProperty("message").GetString());
+        }
+
+        var up = outcome.Audits.Single(a => a.Kind == "upstream-resp");
+        Assert.Equal(raw, up.Body[..up.BodyLength]);
+        var down = outcome.Audits.Single(a => a.Kind == "inbound-resp");
+        var downText = Encoding.UTF8.GetString(down.Body, 0, down.BodyLength);
+        Assert.Contains("prompt is too long", downText);
+        Assert.DoesNotContain("Your input exceeds the context window", downText);
     }
 
     [Theory]

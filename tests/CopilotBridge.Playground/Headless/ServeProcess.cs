@@ -69,6 +69,10 @@ internal enum ServeScenario
     /// caller. Used only by the path-exercising stream-fault behavior case.</summary>
     CcToGptFaultRecovery,
 
+    /// <summary>CC→gpt routing against a deterministic test upstream that injects
+    /// the confirmed context-window 400 and then serves compact recovery.</summary>
+    CcToGptContextRecovery,
+
     /// <summary>Native /cc passthrough (no routing rewrites) against a deterministic
     /// test upstream supplied by the caller. Used by the keepalive behavior case,
     /// which needs an Anthropic-shaped upstream that goes silent on demand.</summary>
@@ -392,7 +396,9 @@ internal static class ServeProcess
         var routing = root["Routing"]?.AsObject()
             ?? throw new ServeStartupException("appsettings.json has no Routing section.");
 
-        if (scenario is ServeScenario.CcToGpt or ServeScenario.CcToGptFaultRecovery)
+        if (scenario is ServeScenario.CcToGpt
+            or ServeScenario.CcToGptFaultRecovery
+            or ServeScenario.CcToGptContextRecovery)
         {
             var disabled = routing["_Locations_disabled"]?.AsArray()
                 ?? throw new ServeStartupException(

@@ -75,9 +75,9 @@ internal sealed class PlaygroundClient : IDisposable
 
     /// <summary>
     /// POST <c>/v1/messages/count_tokens</c>. Returns status + body without
-    /// throwing so a probe can OBSERVE whether Copilot exposes the endpoint at
-    /// all (expected: 404 / 405 / similar — every reference impl works around its
-    /// absence rather than proxying it).
+    /// throwing so probes can compare Copilot's raw count with a paired usage
+    /// oracle. The endpoint was live-confirmed in 2026-05 despite being absent
+    /// from the early reference implementations.
     /// </summary>
     public async Task<(System.Net.HttpStatusCode Status, string Body)> TryPostCountTokensAsync(
         string jsonBody,

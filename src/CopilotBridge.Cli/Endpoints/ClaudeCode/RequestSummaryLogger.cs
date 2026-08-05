@@ -41,6 +41,8 @@ internal sealed class RequestSummaryLogger
             + "target={TargetVendor}:{TargetEndpoint} "
             + "betas_in=[{InboundBetasCsv}] betas_out=[{OutboundBetasCsv}] "
             + "effort={EffortDisplay} max_tokens={MaxTokensDisplay} usage={UsageDisplay} "
+            + "count_raw={RawCountInputTokens} count_calibration={CountCalibrationId} "
+            + "count_reserve={CountCalibrationReserve} count_returned={ReturnedCountInputTokens} "
             + "status={StatusCode} streaming={Streaming} response_leak={ResponseLeakDetected} runaway={RunawayDetected} tool_input_invalid={ToolInputInvalidDetected} "
             + "upstream_timeout={UpstreamTimeout} "
             + "poisoned_tool_results={PoisonedToolResults} duration_ms={DurationMs} error={ErrorDisplay}",
@@ -55,6 +57,10 @@ internal sealed class RequestSummaryLogger
             s.EffortDisplay,
             s.MaxTokensDisplay,
             s.Usage.Display,
+            s.RawCountInputTokens?.ToString() ?? "(none)",
+            s.CountCalibrationId ?? "(none)",
+            s.CountCalibrationReserve?.ToString() ?? "(none)",
+            s.ReturnedCountInputTokens?.ToString() ?? "(none)",
             s.StatusCode,
             s.Streaming,
             s.ResponseLeakDetected,

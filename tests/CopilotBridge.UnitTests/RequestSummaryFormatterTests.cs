@@ -121,6 +121,34 @@ public class RequestSummaryFormatterTests
         Assert.Contains("in:42", Assert.IsType<string>(evt.Properties["UsageDisplay"]));
     }
 
+    [Fact]
+    public void CrossRoutedCount_RendersBoundedAccountingMetadata()
+    {
+        var (rsl, rec) = BuildLogger();
+        rsl.Log(new RequestSummary
+        {
+            Kind = "count_tokens",
+            RequestedModel = "claude-opus-5",
+            ResolvedModel = "gpt-5.6-sol",
+            TargetVendor = "CopilotResponses",
+            TargetEndpoint = "/v1/messages/count_tokens",
+            RawCountInputTokens = 774_204,
+            CountCalibrationId = "gpt-5.6-sol-v2-20260805",
+            CountCalibrationReserve = 16,
+            ReturnedCountInputTokens = 812_931,
+            StatusCode = 200,
+        });
+
+        var evt = Assert.Single(rec.Events);
+        Assert.Equal("claude-opus-5", evt.Properties["RequestedModel"]);
+        Assert.Equal("gpt-5.6-sol", evt.Properties["ResolvedModel"]);
+        Assert.Equal("774204", evt.Properties["RawCountInputTokens"]);
+        Assert.Equal("gpt-5.6-sol-v2-20260805", evt.Properties["CountCalibrationId"]);
+        Assert.Equal("16", evt.Properties["CountCalibrationReserve"]);
+        Assert.Equal("812931", evt.Properties["ReturnedCountInputTokens"]);
+        Assert.Contains("count_calibration=", evt.Message);
+    }
+
     // --- Level-per-status: success at Info, 4xx at Warning, 5xx at Error.
     // Without this mapping a 400 from Copilot hid behind LogInformation
     // alongside 200s and was easy to miss in tail -f output.
