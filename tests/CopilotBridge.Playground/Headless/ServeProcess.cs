@@ -48,7 +48,9 @@ internal sealed record ServeInvocation(
     int? StreamIdleTimeoutSeconds = null,
     bool WholeResponseBuffering = false,
     int? KeepAliveIntervalSeconds = null,
-    bool ForceModelsFailure = false);
+    bool ForceModelsFailure = false,
+    string? CodexCatalogCacheDirectory = null,
+    bool ForceCodexCatalogSourceFailure = false);
 
 /// <summary>
 /// The appsettings shape a behavior run needs. Each value is applied by patching the
@@ -90,6 +92,7 @@ internal sealed class ServeHandle : IAsyncDisposable
     private readonly Process _process;
     private readonly string _scratchDir;
     private readonly StringBuilder _stderrTail;
+    private readonly StringBuilder _stderrAll;
 
     public string BaseUrl { get; }
     public string TraceDir { get; }
@@ -103,13 +106,14 @@ internal sealed class ServeHandle : IAsyncDisposable
     }
 
     internal ServeHandle(Process process, string scratchDir, string baseUrl, string traceDir,
-        StringBuilder stderrTail)
+        StringBuilder stderrTail, StringBuilder stderrAll)
     {
         _process = process;
         _scratchDir = scratchDir;
         BaseUrl = baseUrl;
         TraceDir = traceDir;
         _stderrTail = stderrTail;
+        _stderrAll = stderrAll;
     }
 
     public async ValueTask DisposeAsync()
@@ -148,6 +152,13 @@ internal sealed class ServeHandle : IAsyncDisposable
         {
             _process.Dispose();
         }
+
+        try
+        {
+            lock (_stderrAll)
+                File.WriteAllText(Path.Combine(TraceDir, "bridge.stderr.txt"), _stderrAll.ToString());
+        }
+        catch { /* best effort evidence persistence */ }
 
         // Best-effort scratch cleanup. A locked log/trace file (still-flushing sink)
         // must not fail the test — the OS temp dir is reclaimed anyway.
@@ -236,7 +247,8 @@ internal static class ServeProcess
                 traceDir,
                 inv.StreamIdleTimeoutSeconds,
                 inv.WholeResponseBuffering,
-                inv.KeepAliveIntervalSeconds);
+                inv.KeepAliveIntervalSeconds,
+                inv.CodexCatalogCacheDirectory);
 
             var scratchExe = Path.Combine(scratchDir, "copilot-bridge.exe");
             var port = GetFreeLoopbackPort();
@@ -278,9 +290,19 @@ internal static class ServeProcess
                         + "claim failure-fallback coverage without the Debug-only seam.");
                 psi.Environment["COPILOT_BRIDGE_TEST_FAIL_MODELS"] = "1";
             }
+            if (inv.ForceCodexCatalogSourceFailure)
+            {
+                var selectedConfiguration = Directory.GetParent(buildOutputDir)?.Name;
+                if (!string.Equals(selectedConfiguration, "Debug", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "Forced Codex catalog source failure requires a Debug bridge build; "
+                        + $"selected '{selectedConfiguration ?? "unknown"}' output.");
+                psi.Environment["COPILOT_BRIDGE_TEST_FAIL_CODEX_CATALOG_SOURCE"] = "1";
+            }
 
             proc = new Process { StartInfo = psi };
             var stderrTail = new StringBuilder();
+            var stderrAll = new StringBuilder();
             var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var readyMarker = $"listening on http://localhost:{port}";
 
@@ -295,6 +317,7 @@ internal static class ServeProcess
                     if (stderrTail.Length > 8192)
                         stderrTail.Remove(0, stderrTail.Length - 8192);
                 }
+                lock (stderrAll) stderrAll.AppendLine(e.Data);
                 if (e.Data.Contains(readyMarker, StringComparison.Ordinal))
                     ready.TrySetResult(true);
             };
@@ -345,7 +368,7 @@ internal static class ServeProcess
                     $"Bridge process exited (code {SafeExitCode(proc)}) before listening. Stderr:\n{Snapshot(stderrTail)}");
             }
 
-            return new ServeHandle(proc, scratchDir, baseUrl, traceDir, stderrTail);
+            return new ServeHandle(proc, scratchDir, baseUrl, traceDir, stderrTail, stderrAll);
         }
         catch
         {
@@ -380,7 +403,8 @@ internal static class ServeProcess
         string traceDir,
         int? streamIdleTimeoutSeconds,
         bool wholeResponseBuffering,
-        int? keepAliveIntervalSeconds)
+        int? keepAliveIntervalSeconds,
+        string? codexCatalogCacheDirectory)
     {
         var root = JsonNode.Parse(File.ReadAllText(path))?.AsObject()
             ?? throw new ServeStartupException($"appsettings.json at {path} is not a JSON object.");
@@ -392,6 +416,13 @@ internal static class ServeProcess
             ?? throw new ServeStartupException("appsettings.json has no Tracing section to enable.");
         tracing["Enabled"] = true;
         tracing["Directory"] = traceDir;
+
+        if (codexCatalogCacheDirectory is not null)
+        {
+            var catalog = root["Codex"]?["ModelCatalog"]?.AsObject()
+                ?? throw new ServeStartupException("appsettings.json has no Codex.ModelCatalog section.");
+            catalog["CacheDirectory"] = Path.GetFullPath(codexCatalogCacheDirectory);
+        }
 
         var routing = root["Routing"]?.AsObject()
             ?? throw new ServeStartupException("appsettings.json has no Routing section.");

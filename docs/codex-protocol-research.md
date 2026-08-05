@@ -75,6 +75,27 @@ OpenAI-Chat translation" assumption (§4.4).
 > does not claim that a 1,050,000-token input is valid. The distinct 922,000
 > prompt ceiling remains the catalog projection's safety boundary.
 
+> **Addendum — 2026-08-05 exact-version official catalog source.** Codex sends
+> a three-part `client_version` query value; prerelease builds retain their
+> complete identity in the leading Codex User-Agent product instead. The
+> matching official catalog is available at
+> `https://raw.githubusercontent.com/openai/codex/rust-v{complete-version}/codex-rs/models-manager/models.json`.
+> Live probes for `rust-v0.144.1` and `rust-v0.147.0-alpha.1.2` returned 200.
+> Raw GitHub serves the JSON as `text/plain` with a weak ETag; replaying that
+> ETag in `If-None-Match` returned 304. Therefore the bridge validates JSON from
+> exact bytes rather than trusting MIME, preserves the full version in the tag,
+> and uses ETag only as an upstream revalidation token. It never falls back to a
+> stable, adjacent, latest, branch, or embedded catalog.
+>
+> A real `0.147.0-alpha.1.2` capture corrected the identity detail: Codex's
+> `client_version_to_whole()` intentionally sends `client_version=0.147.0`, while
+> desktop requests carry `User-Agent: Codex Desktop/0.147.0-alpha.1.2 (...)`,
+> while real `codex exec` carries `User-Agent: codex_exec/0.147.0-alpha.1.2 (...)`.
+> The bridge therefore extracts a complete recognized Codex user-agent version
+> only when its three-part core matches the query; explicit complete queries must
+> match it exactly. Contradictory identity fails before I/O. No tag enumeration is
+> used to guess which alpha produced a three-part query.
+
 
 
 ## 0. Provenance (stamp every finding against this)

@@ -233,10 +233,13 @@ verified during implementation (was Q5).
   writes SSE/buffered back. Same audit/summary plumbing as `/cc`.
 - `Endpoints/Codex/CodexModelsEndpoint.cs` —
   `GET /codex/models?client_version=...`. This is not an inference adapter and
-  never enters the IR pipeline. It selects a complete upstream Codex catalog
-  baseline for the reviewed 0.144.x interval, overlays exact-slug live Copilot
-  Responses availability plus validated context limits, and returns a stable
-  ETag. Unsupported versions fail non-2xx so Codex retains its bundled catalog.
+  never enters the IR pipeline. It resolves the complete official catalog for
+  the exact stable or prerelease client version—corroborated from the whole-version
+  query and recognized Codex user-agent version—through process memory, a
+  self-validating per-user disk record, then the fixed `openai/codex`
+  `rust-v{version}` source. It overlays exact-slug live Copilot Responses
+  availability plus validated context limits and returns a stable projected ETag.
+  A cold exact-source failure returns non-2xx so Codex retains its bundled catalog.
   `Codex.ModelCatalog.Enabled` defaults to `true`; setting it to `false` omits
   only this route while leaving `POST /codex/responses` available.
 - No count-tokens endpoint is required for Codex.
@@ -246,24 +249,58 @@ verified during implementation (was Q5).
   `target.Vendor` (`CopilotAnthropic` vs `CopilotResponses`).
 - `app.MapCodexResponses()` in `ServeCommand`; DI registers T1/T4 (Codex
   adapters), `CopilotResponsesStrategy`, `CodexModelProfileCatalog`, plus
-  `app.MapCodexModels()` and the singleton baseline/overlay/projector services.
+  `app.MapCodexModels()` and the singleton source-cache/disk/overlay/projector services.
   The runner, the IR pipeline, and the Anthropic stages are reused only for
   inference; metadata remains outside that graph.
 
 ### 7.1 Catalog ownership and command auth
 
-- Complete Codex-owned behavior is vendored from the exact upstream Codex tag
-  appropriate to `client_version`; the bridge treats fast-moving entries as
-  opaque `JsonElement` values and rewrites only the backend allow-list.
+- Complete Codex-owned behavior comes from the exact canonical source URL
+  `https://raw.githubusercontent.com/openai/codex/rust-v{client_version}/codex-rs/models-manager/models.json`;
+  the bridge treats fast-moving entries as opaque `JsonElement` values and
+  rewrites only the backend allow-list. It never tries a neighboring or latest tag.
+- Codex prerelease builds intentionally truncate the `/models` query to three
+  components but retain their complete version in `Codex Desktop/{version}`,
+  `codex_cli_rs/{version}`, or headless `codex_exec/{version}` User-Agent. The bridge requires matching cores before
+  using that complete identity; contradictory recognized identity fails before I/O.
 - Copilot `/models` owns backend membership and limits. Current 1M-class entries
   report 1,050,000 total / 922,000 maximum prompt / 128,000 maximum output;
   Codex receives 1,050,000 total and an explicit 898,000 auto-compact threshold.
 - `config codex` manages `[model_providers.copilot-bridge.auth]`. Its hidden
   `auth provider-token` command prints a stable public sentinel; the real
   GitHub/Copilot credential remains exclusively inside `AuthService`.
-- A cold metadata failure returns the reviewed baseline without uplift; a
-  process with last-known-good live facts serves them stale. Neither path turns
-  a metadata outage into an inference outage.
+- Official source freshness defaults to 24 hours. TTL means “check whether the
+  source changed”; it is not an expiry. After the TTL, ETag revalidation refreshes
+  metadata on 304 and validates/atomically promotes changed bytes on 200. If
+  GitHub is unavailable or a replacement is invalid, an exact-version validated
+  memory/disk LKG is served stale. A cold miss returns a metadata error. The live
+  Copilot overlay keeps its separate five-minute policy. Neither path turns a
+  metadata outage into an inference outage.
+
+### 7.2 Source cache concurrency and persistence
+
+- Microsoft `HybridCache` owns the process-memory level and combines same-version
+  misses/revalidations into one factory execution while any caller still waits.
+  Failed resolutions are not cached. Different versions may perform network,
+  hashing, and validation work concurrently. Catalog operations disable
+  `IDistributedCache`; the persistent file remains inside the factory so expired
+  exact-version bytes are still available for stale-if-error. A trim-safe local-only
+  serializer satisfies HybridCache's pre-L1 serialization step without introducing
+  a second persisted representation; deserialization fails closed because L2 is
+  forbidden for this cache.
+- All persistent mutations across all versions use one process-wide async writer
+  lock. The lock covers temporary-file creation/removal, atomic promotion,
+  freshness-only replacement, and retention deletion. A waiter rechecks the
+  destination or protected state after entering the lock.
+- One binary record binds schema version, canonical client version, canonical
+  source URL, optional ETag, exact-byte SHA-256, and UTC timestamps to the exact
+  upstream bytes. Every restart revalidates framing, bounded lengths, identity,
+  digest, and catalog schema before use.
+- Defaults: 24-hour source TTL, 10-second fetch timeout, 4 MiB source limit,
+  90-day inactive retention, and 32 inactive versions. `CacheDirectory` may be
+  set only to an absolute path; otherwise the OS per-user cache directory is used.
+  Cleanup protects the version that triggered it; HybridCache's private L1 key set
+  is not mirrored solely to protect other inactive disk records.
 
 ---
 

@@ -13,6 +13,10 @@
          Microsoft-maintained, MIT, no dependencies on net6.0+. Reads the request
          body Stream into pooled chunks — no hand-rolled buffer growth. -->
     <PackageVersion Include="Microsoft.IO.RecyclableMemoryStream" Version="3.0.1" />
+    <!-- Official .NET L1 cache + per-key stampede protection for exact Codex
+         catalogs. Catalog persistence remains our validated local file store;
+         HybridCache is intentionally used without an IDistributedCache. -->
+    <PackageVersion Include="Microsoft.Extensions.Caching.Hybrid" Version="10.8.0" />
     <!-- TOML read/write for `config codex`. Only the low-level, trivia-preserving
          syntax tree (Tomlyn.Syntax.DocumentSyntax) is used — NOT the model DOM
          (TomlTable/TomlSerializer), which discards comments and formatting. The

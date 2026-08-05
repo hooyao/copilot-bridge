@@ -192,6 +192,9 @@ only touch it to tune. Each detector row is toggled by its own `Enabled` flag
 | --- | --- | --- |
 | **`Server.Port`** | `8765` | Listen port. Change it and update `base_url` in your CLI config to match. |
 | **`Codex.ModelCatalog.Enabled`** | `true` | Map Codex-native `GET /codex/models` discovery so command-auth Codex can learn reviewed live Copilot context limits. Set `false` to remove only the metadata route and fall back to Codex's bundled catalog; `/codex/responses` inference remains available. |
+| **`Codex.ModelCatalog.SourceTtlHours`** | `24` | How often an exact-version official Codex catalog is checked for source changes. Microsoft `HybridCache` supplies the process-memory level and per-version request coalescing; the validated file remains available stale when GitHub is unavailable. Range 1–168. |
+| **`Codex.ModelCatalog.CacheDirectory`** | OS per-user cache | Optional absolute persistent-cache override. Records are keyed by the complete stable/prerelease client version, bounded by `RetentionDays` (90) and `MaxRetainedVersions` (32). |
+| **`Codex.ModelCatalog.SourceTimeoutSeconds` / `MaxSourceBytes`** | `10` / `4194304` | Bound anonymous exact-tag GitHub raw downloads. A cold failure affects only `/codex/models`; inference remains available and Codex keeps its bundled catalog. |
 | **`AutoUpdate.EnableAutoUpdate`** | `true` | Check GitHub Releases once, synchronously, before binding the port; prompts `Install this update now? [y/N]` and installs only on an interactive `y`. Offline/non-interactive just logs and starts current. Set `AllowBetaUpdates` to `true` (default `false`) to also consider prereleases. Maintenance commands and `*-dev` builds never check. → [`docs/auto-update.md`](docs/auto-update.md) |
 | **`Tracing.Enabled`** | `false` | Dump every request/response as JSON under `request-traces/`. Contains full prompts — turn back off after debugging. |
 | **`Pipeline:Detectors:ResponseLeakGuard`** | on | Auto-repairs a leaked tool call / Claude Code control envelope by forcing a clean retry. Turn off individual `Signatures` (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`, `SystemReminder`) to clear a false positive — the retry error names the exact switch. `Signal` (`OverloadedError`/`ApiError`) picks the retry error surface. `BufferScannableBlocks: true` withholds each `text`/`thinking` block until scanned so a leak in one never reaches the client (`tool_use` blocks still stream live; default relays until detection). |
@@ -199,6 +202,11 @@ only touch it to tune. Each detector row is toggled by its own `Enabled` flag
 | **`Pipeline:UpstreamTimeout`** | on | Two *idle* timers (not total caps; `<= 0` disables): `FirstByteTimeoutSeconds` (240) for response headers, `StreamIdleTimeoutSeconds` (240) for the gap between streamed events. `StreamIdleAction` (`Retry`/`Truncate`) and `StreamIdleSignal` (`OverloadedError`/`ApiError`) govern mid-stream surfacing. These are the **only** upstream bound (no coarse HTTP cap), and `StreamIdleTimeoutSeconds` also derives Claude Code's idle env key — see [Long-thinking timeouts](#long-thinking-timeouts). |
 | **`Pipeline:Detectors:ToolInputValidation`** | observe-only | Validates `tool_use` input against the tool schema and flags `tool_input_invalid=true`, but does **not** abort — Claude Code self-heals. Set `MalformedJsonAction` / `SchemaViolationAction` to `AbortOverloaded`/`AbortApiError` only for a backend that doesn't; `PreserveStream` then picks delta-before-error (`true`) vs buffer-for-a-real-HTTP-error (`false`). |
 | **`Routing.Locations`** | `[]` | nginx-style per-request model/header rewrites. See below. |
+
+Catalog resolution is visible in the always-on bridge log as one structured line
+containing the exact version, `cache=memory|disk|source-200|source-304|stale`,
+freshness, source/validation outcome, elapsed time, and abbreviated digest/ETag.
+Catalog bodies and GitHub/Copilot authorization values are never logged.
 
 **`Routing.Locations`** ships empty. `appsettings.json` carries a disabled example
 under `_Locations_disabled` (a key the binder ignores). To enable it, rename
@@ -309,10 +317,14 @@ native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
   clamps) an effort the target rejects instead of letting it fail.
 - **Codex 1.05M is total context, not prompt capacity.** The current backend
   maximum prompt is 922k and the bridge's safe auto-compact threshold is 898k.
-  If Copilot model discovery is temporarily unavailable, Codex receives the
-  reviewed baseline limits rather than an unsafe uplift; restart/retry after
-  discovery recovers. A newer unsupported Codex client version also keeps its
-  own bundled catalog until the bridge adds a reviewed matching baseline.
+  Official Codex catalogs are resolved from the exact complete client version
+  (corroborating Codex's three-part query with its complete prerelease User-Agent)
+  through Microsoft `HybridCache` memory, persistent disk, then the matching
+  `openai/codex` release tag.
+  The 24-hour TTL only controls when the source is rechecked. If GitHub is
+  temporarily unavailable but a validated exact-version disk record exists, the
+  bridge serves it stale. On a cold miss, only `/codex/models` fails and Codex
+  keeps its own bundled catalog; `/codex/responses` inference remains available.
 - **Resume drops the `[1m]` flag back to 200k.** Claude Code stores the 1M toggle
   in the model string (`opus[1m]`), which isn't persisted across `--resume`. The
   backend still serves the larger window, but Claude Code's own auto-compaction

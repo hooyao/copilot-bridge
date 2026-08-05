@@ -37,6 +37,7 @@
     <None Update="Headless\mcp-echo-server.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <Content Include="..\Fixtures\Codex\**\*" Link="Fixtures\Codex\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

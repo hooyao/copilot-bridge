@@ -1,0 +1,25 @@
+<linker>
+  <!--
+    Microsoft.Extensions.Caching.Hybrid 10.8.0 contains a reflection-based
+    fallback serializer. The bridge replaces this TryAdd registration with
+    ExplicitOnlyHybridCacheSerializerFactory before AddHybridCache runs, so
+    none of the four warning-producing members below can be reached by runtime
+    DI. Replace only their NativeAOT method bodies with fail-closed throwing
+    stubs. The JIT assembly is unchanged, all warning IDs remain enabled, and
+    the csproj pins both the audited package version and assembly SHA-256.
+
+    Upstream: https://github.com/dotnet/extensions/issues/5624
+  -->
+  <assembly fullname="Microsoft.Extensions.Caching.Hybrid">
+    <type fullname="Microsoft.Extensions.Caching.Hybrid.Internal.DefaultJsonSerializerFactory">
+      <method signature="System.Text.Json.JsonSerializerOptions get_SystemDefaultJsonOptions()" body="remove" />
+      <method signature="Microsoft.Extensions.Caching.Hybrid.Internal.DefaultJsonSerializerFactory/FieldOnlyResult IsFieldOnlyType(System.Type,System.Collections.Generic.Dictionary`2&lt;System.Type,Microsoft.Extensions.Caching.Hybrid.Internal.DefaultJsonSerializerFactory/FieldOnlyResult&gt;&amp;)" body="remove" />
+    </type>
+    <type fullname="Microsoft.Extensions.Caching.Hybrid.Internal.DefaultJsonSerializerFactory/DefaultJsonSerializer`1">
+      <!-- NativeAOT's Cecil-compatible signature formatter renders owning-type
+           signature variables as empty slots (leading return type / first arg). -->
+      <method signature=" Microsoft.Extensions.Caching.Hybrid.IHybridCacheSerializer&lt;T&gt;.Deserialize(System.Buffers.ReadOnlySequence`1&lt;System.Byte&gt;)" body="remove" />
+      <method signature="System.Void Microsoft.Extensions.Caching.Hybrid.IHybridCacheSerializer&lt;T&gt;.Serialize(,System.Buffers.IBufferWriter`1&lt;System.Byte&gt;)" body="remove" />
+    </type>
+  </assembly>
+</linker>
