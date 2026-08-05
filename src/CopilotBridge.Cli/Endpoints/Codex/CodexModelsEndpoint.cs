@@ -1,10 +1,13 @@
 using System.Text.Json;
 using CopilotBridge.Cli.Catalogs.Codex;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Codex;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Endpoints.Codex;
 
@@ -13,6 +16,9 @@ internal static class CodexModelsEndpoint
 {
     public static IEndpointRouteBuilder MapCodexModels(this IEndpointRouteBuilder app)
     {
+        if (!app.ServiceProvider.GetRequiredService<IOptions<CodexModelCatalogOptions>>().Value.Enabled)
+            return app;
+
         app.MapGet("/codex/models", HandleAsync);
         return app;
     }

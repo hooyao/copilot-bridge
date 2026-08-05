@@ -3,17 +3,44 @@ using System.Text.Json;
 using CopilotBridge.Cli.Catalogs.Codex;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Endpoints.Codex;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Copilot;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Routing;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace CopilotBridge.UnitTests;
 
 public sealed class CodexModelsEndpointContractTests
 {
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task SettingControlsOnlyTheCatalogRoute(bool enabled, bool expectedCatalogRoute)
+    {
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.Services.AddSingleton<IOptions<CodexModelCatalogOptions>>(
+            Options.Create(new CodexModelCatalogOptions { Enabled = enabled }));
+        await using var app = builder.Build();
+
+        app.MapCodexModels();
+        app.MapCodexResponses();
+
+        var patterns = ((IEndpointRouteBuilder)app).DataSources
+            .SelectMany(source => source.Endpoints)
+            .OfType<RouteEndpoint>()
+            .Select(endpoint => endpoint.RoutePattern.RawText)
+            .ToArray();
+        Assert.Equal(expectedCatalogRoute, patterns.Contains("/codex/models", StringComparer.Ordinal));
+        Assert.Contains("/codex/responses", patterns);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("?client_version=0.144.1&client_version=0.144.2")]

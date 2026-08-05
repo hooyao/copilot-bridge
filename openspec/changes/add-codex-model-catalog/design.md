@@ -32,7 +32,7 @@ The bridge is a Native AOT binary. The implementation must remain source-generat
 
 ### 1. Add a Codex-native metadata endpoint at the existing provider base URL
 
-The server will map `GET /codex/models`; Codex forms that path from the configured `base_url = http://localhost:{port}/codex`. The endpoint requires exactly one parseable `client_version` query value and returns the Codex `ModelsResponse` envelope. Missing, malformed, or unsupported versions return a non-2xx response so Codex retains its own bundled catalog.
+The server will map `GET /codex/models` when `Codex.ModelCatalog.Enabled` is true; the option defaults to true in code and in the stock configuration. Codex forms that path from the configured `base_url = http://localhost:{port}/codex`. The endpoint requires exactly one parseable `client_version` query value and returns the Codex `ModelsResponse` envelope. Missing, malformed, unsupported, or administratively disabled discovery leaves Codex on its own bundled catalog without disabling `POST /codex/responses` inference.
 
 The endpoint will emit an `ETag` derived from the selected baseline version plus the effective Copilot overlay. This supports Codex's model cache without coupling catalog refresh to inference responses. The bridge will not add `X-Models-Etag` to `/responses` in this change; Codex's normal startup/cache refresh remains sufficient.
 

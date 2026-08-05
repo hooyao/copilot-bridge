@@ -78,6 +78,7 @@ internal static class BridgeServiceCollectionExtensions
             services.PostConfigure<BridgeServerOptions>(opts => opts.Port = port);
         }
         services.Configure<TracingOptions>(config.GetSection("Tracing"));
+        services.Configure<CodexModelCatalogOptions>(config.GetSection("Codex:ModelCatalog"));
         services.Configure<RoutesConfig>(config.GetSection("Routing"));
         services.Configure<OutboundBetaPolicyOptions>(config.GetSection("Pipeline:OutboundBeta"));
         services.Configure<ResponseModelRewriteOptions>(config.GetSection("Pipeline:Detectors:ModelRewrite"));

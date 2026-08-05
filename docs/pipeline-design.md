@@ -643,7 +643,11 @@ its context to them as an argument — the only place `ctx` still flows as a par
 
 Codex remote-model discovery is deliberately outside
 `Pipeline<MessagesRequest>`. It carries no prompt and performs no model
-translation:
+translation. `Codex.ModelCatalog.Enabled` controls only whether this metadata
+route is mapped; it defaults to `true` in code and in the stock configuration,
+so upgraded installations without the new key remain enabled. Setting it to
+`false` leaves `POST /codex/responses` inference registered and makes Codex
+fall back to its bundled catalog:
 
 ```
 Codex 0.144.x

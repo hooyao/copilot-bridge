@@ -237,6 +237,8 @@ verified during implementation (was Q5).
   baseline for the reviewed 0.144.x interval, overlays exact-slug live Copilot
   Responses availability plus validated context limits, and returns a stable
   ETag. Unsupported versions fail non-2xx so Codex retains its bundled catalog.
+  `Codex.ModelCatalog.Enabled` defaults to `true`; setting it to `false` omits
+  only this route while leaving `POST /codex/responses` available.
 - No count-tokens endpoint is required for Codex.
 - The Codex strategy `CopilotResponsesStrategy` registers in the **same**
   `Pipeline<MessagesRequest>` strategy registry alongside

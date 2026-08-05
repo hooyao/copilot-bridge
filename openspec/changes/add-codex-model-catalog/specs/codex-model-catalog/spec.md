@@ -2,7 +2,7 @@
 
 ### Requirement: Codex-native model discovery endpoint
 
-The bridge SHALL serve `GET /codex/models?client_version=<version>` at the path formed by Codex from the managed provider base URL. A successful response SHALL use Codex's `ModelsResponse` envelope with a `models` array of complete Codex `ModelInfo` entries, SHALL be valid under Native AOT, and SHALL NOT expose GitHub Copilot's incompatible raw model envelope.
+The bridge SHALL serve `GET /codex/models?client_version=<version>` at the path formed by Codex from the managed provider base URL when `Codex.ModelCatalog.Enabled` is true. The option SHALL default to true both in code and in the stock `appsettings.json`, so upgraded installations that do not yet carry the key retain discovery. A successful response SHALL use Codex's `ModelsResponse` envelope with a `models` array of complete Codex `ModelInfo` entries, SHALL be valid under Native AOT, and SHALL NOT expose GitHub Copilot's incompatible raw model envelope.
 
 #### Scenario: Supported Codex client requests its catalog
 
@@ -18,6 +18,11 @@ The bridge SHALL serve `GET /codex/models?client_version=<version>` at the path 
 
 - **WHEN** `client_version` is absent, repeated, malformed, or outside every reviewed catalog interval
 - **THEN** the bridge returns a non-2xx metadata error without changing inference state, allowing Codex to retain its bundled catalog
+
+#### Scenario: Operator disables model catalog discovery
+
+- **WHEN** `Codex.ModelCatalog.Enabled` is false at bridge startup
+- **THEN** `/codex/models` is not mapped while `POST /codex/responses` remains available, so Codex safely retains its bundled catalog
 
 ### Requirement: Catalog baseline is client-version compatible
 
