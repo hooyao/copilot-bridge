@@ -366,7 +366,7 @@ enterprise   → https://api.enterprise.githubcopilot.com
 
 | Path | Shape | Note |
 | --- | --- | --- |
-| `GET /models` | OpenAI-style models list, but each model has `supported_endpoints` and `capabilities` | Required for routing |
+| `GET /models` | OpenAI-style models list, but each model has `supported_endpoints` and `capabilities` | Live backend membership/limit input; request profiles still require probes |
 | `POST /v1/messages` | **Anthropic Messages API** (native) | Claude models |
 | `POST /responses` | OpenAI Responses API | GPT-5, o-mini family |
 | `POST /chat/completions` | OpenAI Chat Completions | Older GPT-4o / Gemini / Grok |
@@ -425,6 +425,44 @@ From `references/copilot-api-anthropic/src/services/copilot/get-models.ts`:
 - Neither → older OpenAI shape, **not in M1**
 
 > Note: Claude Code calls `GET /v1/models` at startup (see §2.1). Our gateway must convert Copilot's model list to **Anthropic-style** (drop `supported_endpoints`, rename `capabilities` etc.) so Claude Code can render it. Or simplify maximally: only expose `/v1/messages`-supporting models.
+
+#### 3.3.1 Codex catalog projection (verified 2026-08-05)
+
+Copilot's raw `/models` envelope is not compatible with Codex's remote catalog.
+Codex 0.144.x, when configured with command-backed provider auth, requests:
+
+```http
+GET /codex/models?client_version=0.144.1
+```
+
+and expects `{ "models": [ModelInfo, ...] }`, where each complete entry carries
+Codex-owned instructions and tool behavior. The bridge therefore starts from the
+reviewed `openai/codex` `rust-v0.144.1` catalog and overlays only exact-slug
+Copilot facts. It does not forward Copilot's `data`, `capabilities`, or
+`supported_endpoints` entry shape and does not invent Codex behavior for a
+live-only slug.
+
+Captured Copilot metadata for the current Responses models:
+
+| Models | Total context | Maximum prompt | Maximum output | Bridge auto-compact |
+| --- | ---: | ---: | ---: | ---: |
+| `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,terra}` | 1,050,000 | 922,000 | 128,000 | 898,000 |
+| `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 | 265,000 |
+| `gpt-5-mini`, `mai-code-1-flash-picker` | 264,000 | 136,000 | 128,000 | 132,000 |
+
+The projection publishes total context as `context_window` and
+`max_context_window`, then compacts at `min(90% total, 97.5% prompt)` rounded
+down to 1,000. Thus 1,050,000 is not a claim of 1,050,000-token prompt capacity:
+the safe working threshold is 898,000, below Copilot's 922,000 prompt ceiling.
+Missing, non-positive, or inconsistent limits keep the reviewed Codex baseline.
+
+These limits are accepted as metadata only after live real-Codex-shaped requests
+cross the previous 272k boundary. The 2026-08 probe recorded successful input
+usage around 308k for all five 1M-class exact slugs; the real command-auth Codex
+behavior run carried 285k padding units, consumed the 1.05M catalog entry, and
+completed a multi-tool loop. `/models` capability arrays remain unsuitable for
+request-shape rules such as effort/thinking; `CodexModelProfileCatalog` continues
+to come from active probes.
 
 ### 3.4 Request headers Copilot expects (for `/v1/messages`)
 

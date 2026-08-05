@@ -179,13 +179,12 @@ something else — exactly one `Locations` key may be active):
 > in the 2026-07 reconciliation. Change both together or the scenario's routing
 > silently stops matching.
 
-> Earlier releases shipped an active `gpt-5.5-1m -> gpt-5.5` Codex context-window
-> alias here; it was removed when the active list was emptied. The `-1m` alias
-> was a Codex-side trick (name the model `gpt-5.5-1m` with
-> `model_context_window=1000000` to sidestep a client-side context cap Codex
-> applies to the literal `gpt-5.5`, then map it back so Copilot's natively-1M
-> `gpt-5.5` is used); if you still drive gpt-5.5 from Codex you can re-add it as a
-> location.
+> Earlier releases shipped an active `gpt-5.5-1m -> gpt-5.5` alias plus a manual
+> `model_context_window` override to evade Codex's bundled 272k-era cap. Do not
+> re-add that alias for context discovery. Current `config codex` enables
+> command-auth model discovery, and `GET /codex/models?client_version=...`
+> returns the exact live limit for the real model slug. Locations remain useful
+> for intentional model/effort/header preferences, not for advertising capacity.
 
 ### Retired: the opus 1M redirects
 

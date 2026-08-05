@@ -50,6 +50,31 @@ OpenAI-Chat translation" assumption (§4.4).
 >   Probe trap: the 400 body for `minimal` on these ids lists supported values
 >   WITHOUT `max`, yet `max` live-probes 200 — the advertised list lies.
 
+> **Addendum — 2026-08-05 Codex model-catalog metadata and large-context confirmation.**
+> `ResponsesProbe.CaptureBridgeResponsesModelCapabilities` captured the complete
+> live `/models` entries for all nine exact `CodexModelProfileCatalog.KnownIds`
+> into `docs/copilot-codex-model-capabilities-snapshot.json` (Enterprise account;
+> no bridge profile was missing). The advertised limits are:
+>
+> | models | total context | max prompt | max output |
+> | --- | ---: | ---: | ---: |
+> | `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,terra}` | 1,050,000 | 922,000 | 128,000 |
+> | `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 |
+> | `gpt-5-mini` | 264,000 | 128,000 | 64,000 |
+> | `mai-code-1-flash-picker` | 256,000 | 128,000 | 128,000 |
+>
+> Because `/models` is not authoritative for request acceptance, the five
+> 1M-class models were independently re-probed by
+> `ResponsesProbe.OneMillionClass_RealCodexBytes_AcceptBeyondFormer272kCeiling`.
+> The probe replayed a real Codex 0.144.x `Kind=ClientBehavior` upstream request
+> (complete instructions, tools, metadata, streaming and headers), changing only
+> the exact model id and appending a padding input. On 2026-08-05 all five
+> returned HTTP 200 and reported input usage beyond the former 272,000-token
+> catalog ceiling: 308,792 (`gpt-5.4`, `gpt-5.5`) and 308,758 (each gpt-5.6
+> codename). This establishes that the advertised uplift is real at >272k; it
+> does not claim that a 1,050,000-token input is valid. The distinct 922,000
+> prompt ceiling remains the catalog projection's safety boundary.
+
 
 
 ## 0. Provenance (stamp every finding against this)

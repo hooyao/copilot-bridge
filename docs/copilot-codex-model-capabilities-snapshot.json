@@ -1,0 +1,695 @@
+{
+  "_meta": {
+    "captured_utc": "2026-08-05T04:36:58.7958653\u002B00:00",
+    "endpoint": "/models",
+    "account_type": "enterprise",
+    "selection": "exact CodexModelProfileCatalog.KnownIds; no fuzzy matches",
+    "warning": "Advertised capabilities are hints. Live request probes remain authoritative."
+  },
+  "missing_bridge_profile_ids": [],
+  "data": [
+    {
+      "billing": {
+        "restricted_to": [
+          "pro",
+          "edu",
+          "pro_plus",
+          "individual_trial",
+          "business",
+          "enterprise",
+          "max"
+        ],
+        "token_prices": {
+          "batch_size": 1000000,
+          "cache_price": 17500000000,
+          "input_price": 175000000000,
+          "output_price": 1400000000000
+        }
+      },
+      "capabilities": {
+        "family": "gpt-5.3-codex",
+        "limits": {
+          "max_context_window_tokens": 400000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 272000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif",
+              "application/pdf"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "gpt-5.3-codex",
+      "is_chat_default": true,
+      "is_chat_fallback": true,
+      "model_picker_category": "powerful",
+      "model_picker_enabled": true,
+      "model_picker_price_category": "medium",
+      "name": "GPT-5.3-Codex",
+      "object": "model",
+      "preview": false,
+      "supported_endpoints": [
+        "/responses",
+        "ws:/responses"
+      ],
+      "vendor": "OpenAI",
+      "version": "gpt-5.3-codex",
+      "warning_messages": [
+        {
+          "code": "client_version_deprecated",
+          "message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
+        }
+      ]
+    },
+    {
+      "billing": {
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "individual_trial",
+          "edu",
+          "business",
+          "enterprise",
+          "max"
+        ],
+        "token_prices": {
+          "batch_size": 1000000,
+          "cache_price": 7500000000,
+          "input_price": 75000000000,
+          "output_price": 450000000000
+        }
+      },
+      "capabilities": {
+        "family": "gpt-5.4-mini",
+        "limits": {
+          "max_context_window_tokens": 400000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 272000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif",
+              "application/pdf"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "gpt-5.4-mini",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "lightweight",
+      "model_picker_enabled": true,
+      "model_picker_price_category": "low",
+      "name": "GPT-5.4 mini",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest GPT-5.4 mini model from OpenAI. [Learn more about how GitHub Copilot serves GPT-5.4 mini](https://gh.io/copilot-openai)."
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/responses",
+        "ws:/responses"
+      ],
+      "vendor": "OpenAI",
+      "version": "gpt-5.4-mini",
+      "warning_messages": [
+        {
+          "code": "client_version_deprecated",
+          "message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
+        }
+      ]
+    },
+    {
+      "billing": {
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "individual_trial",
+          "business",
+          "enterprise",
+          "max"
+        ],
+        "token_prices": {
+          "batch_size": 1000000,
+          "cache_price": 25000000000,
+          "input_price": 250000000000,
+          "output_price": 1500000000000
+        }
+      },
+      "capabilities": {
+        "family": "gpt-5.4",
+        "limits": {
+          "max_context_window_tokens": 1050000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 922000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif",
+              "application/pdf"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "gpt-5.4",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "powerful",
+      "model_picker_enabled": true,
+      "model_picker_price_category": "medium",
+      "name": "GPT-5.4",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest GPT-5.4 model from OpenAI. [Learn more about how GitHub Copilot serves GPT-5.4](https://gh.io/copilot-openai)."
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/responses",
+        "/chat/completions",
+        "ws:/responses"
+      ],
+      "vendor": "OpenAI",
+      "version": "gpt-5.4",
+      "warning_messages": [
+        {
+          "code": "client_version_deprecated",
+          "message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
+        }
+      ]
+    },
+    {
+      "billing": {
+        "restricted_to": [
+          "pro_plus",
+          "business",
+          "enterprise",
+          "max"
+        ],
+        "token_prices": {
+          "batch_size": 1000000,
+          "cache_price": 50000000000,
+          "input_price": 500000000000,
+          "output_price": 3000000000000
+        }
+      },
+      "capabilities": {
+        "family": "gpt-5.5",
+        "limits": {
+          "max_context_window_tokens": 1050000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 922000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif",
+              "application/pdf"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "gpt-5.5",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "powerful",
+      "model_picker_enabled": true,
+      "model_picker_price_category": "high",
+      "name": "GPT-5.5",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest GPT-5.5 model from OpenAI. [Learn more about how GitHub Copilot serves GPT-5.5](https://gh.io/copilot-openai)."
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/responses",
+        "ws:/responses"
+      ],
+      "vendor": "OpenAI",
+      "version": "gpt-5.5",
+      "warning_messages": [
+        {
+          "code": "client_version_deprecated",
+          "message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
+        }
+      ]
+    },
+    {
+      "billing": {
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "business",
+          "enterprise",
+          "max"
+        ],
+        "token_prices": {
+          "batch_size": 1000000,
+          "cache_price": 2000000000,
+          "input_price": 20000000000,
+          "output_price": 120000000000
+        }
+      },
+      "capabilities": {
+        "family": "gpt-5.6-luna",
+        "limits": {
+          "max_context_window_tokens": 1050000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 922000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif",
+              "application/pdf"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "gpt-5.6-luna",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "lightweight",
+      "model_picker_enabled": true,
+      "model_picker_price_category": "low",
+      "name": "GPT-5.6 Luna",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest GPT-5.6 Luna model from OpenAI. [Learn more about how GitHub Copilot serves GPT-5.6 Luna](https://gh.io/copilot-openai)."
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/responses",
+        "ws:/responses"
+      ],
+      "vendor": "OpenAI",
+      "version": "gpt-5.6-luna",
+      "warning_messages": [
+        {
+          "code": "client_version_deprecated",
+          "message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
+        }
+      ]
+    },
+    {
+      "billing": {
+        "restricted_to": [
+          "pro_plus",
+          "business",
+          "enterprise",
+          "max"
+        ],
+        "token_prices": {
+          "batch_size": 1000000,
+          "cache_price": 50000000000,
+          "input_price": 500000000000,
+          "output_price": 3000000000000
+        }
+      },
+      "capabilities": {
+        "family": "gpt-5.6-sol",
+        "limits": {
+          "max_context_window_tokens": 1050000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 922000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif",
+              "application/pdf"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "gpt-5.6-sol",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "powerful",
+      "model_picker_enabled": true,
+      "model_picker_price_category": "high",
+      "name": "GPT-5.6 Sol",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest GPT-5.6 Sol model from OpenAI. [Learn more about how GitHub Copilot serves GPT-5.6 Sol](https://gh.io/copilot-openai)."
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/responses",
+        "ws:/responses"
+      ],
+      "vendor": "OpenAI",
+      "version": "gpt-5.6-sol",
+      "warning_messages": [
+        {
+          "code": "client_version_deprecated",
+          "message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
+        }
+      ]
+    },
+    {
+      "billing": {
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "business",
+          "enterprise",
+          "max"
+        ],
+        "token_prices": {
+          "batch_size": 1000000,
+          "cache_price": 20000000000,
+          "input_price": 200000000000,
+          "output_price": 1200000000000
+        }
+      },
+      "capabilities": {
+        "family": "gpt-5.6-terra",
+        "limits": {
+          "max_context_window_tokens": 1050000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 922000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif",
+              "application/pdf"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "gpt-5.6-terra",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "versatile",
+      "model_picker_enabled": true,
+      "model_picker_price_category": "medium",
+      "name": "GPT-5.6 Terra",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest GPT-5.6 Terra model from OpenAI. [Learn more about how GitHub Copilot serves GPT-5.6 Terra](https://gh.io/copilot-openai)."
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/responses",
+        "ws:/responses"
+      ],
+      "vendor": "OpenAI",
+      "version": "gpt-5.6-terra",
+      "warning_messages": [
+        {
+          "code": "client_version_deprecated",
+          "message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
+        }
+      ]
+    },
+    {
+      "billing": {
+        "restricted_to": [
+          "free",
+          "edu",
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ],
+        "token_prices": {
+          "batch_size": 1000000,
+          "cache_price": 7500000000,
+          "input_price": 75000000000,
+          "output_price": 450000000000
+        }
+      },
+      "capabilities": {
+        "family": "oswe-vscode-modelD",
+        "limits": {
+          "max_context_window_tokens": 256000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 128000
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "mai-code-1-flash-picker",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "lightweight",
+      "model_picker_enabled": true,
+      "model_picker_price_category": "low",
+      "name": "MAI-Code-1-Flash",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": ""
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/responses"
+      ],
+      "vendor": "Microsoft",
+      "version": "mai-code-1-flash-picker",
+      "warning_messages": [
+        {
+          "code": "client_version_deprecated",
+          "message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
+        }
+      ]
+    },
+    {
+      "billing": {
+        "token_prices": {
+          "batch_size": 1000000,
+          "cache_price": 2500000000,
+          "input_price": 25000000000,
+          "output_price": 200000000000
+        }
+      },
+      "capabilities": {
+        "family": "gpt-5-mini",
+        "limits": {
+          "max_context_window_tokens": 264000,
+          "max_output_tokens": 64000,
+          "max_prompt_tokens": 128000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif",
+              "application/pdf"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "gpt-5-mini",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "lightweight",
+      "model_picker_enabled": true,
+      "model_picker_price_category": "low",
+      "name": "GPT-5 mini",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest GPT-5 mini model from OpenAI. [Learn more about how GitHub Copilot serves GPT-5 mini](https://gh.io/copilot-openai)."
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses",
+        "ws:/responses"
+      ],
+      "vendor": "Azure OpenAI",
+      "version": "gpt-5-mini",
+      "warning_messages": [
+        {
+          "code": "client_version_deprecated",
+          "message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
+        }
+      ]
+    }
+  ]
+}

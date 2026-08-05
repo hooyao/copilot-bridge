@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using Tomlyn.Syntax;
 
 namespace CopilotBridge.Cli.Hosting.ClientConfig;
@@ -23,6 +25,7 @@ internal sealed class CodexConfigurator : IClientConfigurator
     private const string ProviderName = "copilot-bridge";
     private const string ModelProviderKey = "model_provider";
     private const string ProviderTableName = "model_providers.copilot-bridge";
+    private const string ProviderAuthTableName = ProviderTableName + ".auth";
     private const string WireApi = "responses";
 
     public string ClientId => "codex";
@@ -34,7 +37,8 @@ internal sealed class CodexConfigurator : IClientConfigurator
         var path = ResolvePath();
         var original = File.Exists(path) ? File.ReadAllText(path) : null;
 
-        var (newContent, summary) = BuildContent(original, connection, path);
+        var (newContent, summary) = BuildContent(
+            original, connection, CodexProviderAuthInvocation.ResolveCurrent(), path);
 
         return new ConfigPlan(ClientId, scope, path, newContent, original, summary);
     }
@@ -50,7 +54,14 @@ internal sealed class CodexConfigurator : IClientConfigurator
     /// unrelated content, so the merge refuses rather than risk it — the caller aborts
     /// without touching the file.</exception>
     internal static (string Content, IReadOnlyList<string> Summary) BuildContent(
-        string? original, BridgeConnection connection, string sourcePath = "config.toml")
+        string? original, BridgeConnection connection, string sourcePath = "config.toml") =>
+        BuildContent(original, connection, CodexProviderAuthInvocation.ResolveCurrent(), sourcePath);
+
+    internal static (string Content, IReadOnlyList<string> Summary) BuildContent(
+        string? original,
+        BridgeConnection connection,
+        CodexProviderAuthInvocation authInvocation,
+        string sourcePath = "config.toml")
     {
         var doc = Tomlyn.Parsing.SyntaxParser.Parse(original ?? string.Empty, sourcePath);
         if (!string.IsNullOrWhiteSpace(original) && doc.HasErrors)
@@ -72,7 +83,7 @@ internal sealed class CodexConfigurator : IClientConfigurator
             doc = Tomlyn.Parsing.SyntaxParser.Parse(original + "\n", sourcePath);
         }
 
-        var summary = MergeInto(doc, connection);
+        var summary = MergeInto(doc, connection, authInvocation);
         return (doc.ToString(), summary);
     }
 
@@ -113,13 +124,33 @@ internal sealed class CodexConfigurator : IClientConfigurator
         }
 
         var provider = FindTopLevelString(doc, ModelProviderKey);
-        var baseUrl = FindProviderBaseUrl(doc);
+        var providerTable = FindTable(doc, ProviderTableName);
+        var authTable = FindTable(doc, ProviderAuthTableName);
+        var baseUrl = FindTableString(providerTable, "base_url");
+        var expectedInvocation = CodexProviderAuthInvocation.ResolveCurrent();
 
         var configured = provider == ProviderName;
+        var drift = new List<string>();
+        if (configured)
+        {
+            if (!string.Equals(FindTableString(providerTable, "name"), ProviderName, StringComparison.Ordinal))
+                drift.Add("provider name differs from the managed value");
+            if (!string.Equals(FindTableString(providerTable, "wire_api"), WireApi, StringComparison.Ordinal))
+                drift.Add("provider wire API differs from the managed value");
+            if (!string.Equals(FindTableString(authTable, "command"), expectedInvocation.Command, StringComparison.Ordinal))
+                drift.Add("discovery-auth command is missing or stale");
+            if (!SequenceEqual(FindTableStringArray(authTable, "args"), expectedInvocation.Args))
+                drift.Add("discovery-auth arguments are missing or stale");
+            if (FindTableInteger(authTable, "timeout_ms") != CodexProviderAuthInvocation.TimeoutMs)
+                drift.Add("discovery-auth timeout is missing or stale");
+            if (FindTableInteger(authTable, "refresh_interval_ms") != CodexProviderAuthInvocation.RefreshIntervalMs)
+                drift.Add("discovery-auth refresh policy is missing or stale");
+        }
         var details = new List<string>
         {
             $"{ModelProviderKey} = {provider ?? "(unset)"}",
             $"[{ProviderTableName}].base_url = {baseUrl ?? "(unset)"}",
+            $"[{ProviderAuthTableName}] = {(authTable is null ? "missing" : "present")}",
         };
 
         return new ConfigState(ClientId, scope, path, Exists: true,
@@ -131,14 +162,18 @@ internal sealed class CodexConfigurator : IClientConfigurator
             // env vars); null expected + null current keeps them out of drift.
             ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
             ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
-            Details: details);
+            Details: details,
+            AdditionalDriftFacts: drift);
     }
 
     /// <summary>
     /// Apply the two managed edits to the document, preserving everything else.
     /// Returns human-readable summary lines for <c>--dry-run</c>.
     /// </summary>
-    private static IReadOnlyList<string> MergeInto(DocumentSyntax doc, BridgeConnection connection)
+    private static IReadOnlyList<string> MergeInto(
+        DocumentSyntax doc,
+        BridgeConnection connection,
+        CodexProviderAuthInvocation authInvocation)
     {
         var summary = new List<string>();
 
@@ -147,8 +182,9 @@ internal sealed class CodexConfigurator : IClientConfigurator
         summary.Add($"set {ModelProviderKey} = \"{ProviderName}\"");
 
         // Region 2: the named provider table, replaced by name if it already exists.
-        UpsertProviderTable(doc, connection.CodexBaseUrl);
+        UpsertProviderTable(doc, connection.CodexBaseUrl, authInvocation);
         summary.Add($"set [{ProviderTableName}] base_url = \"{connection.CodexBaseUrl}\", wire_api = \"{WireApi}\"");
+        summary.Add("enable command-auth model discovery (timeout 5000 ms, refresh-on-401)");
 
         return summary;
     }
@@ -200,31 +236,57 @@ internal sealed class CodexConfigurator : IClientConfigurator
     /// document, so no extra newline is added — this is what makes a re-run byte-stable
     /// (idempotent): a leading newline on replace would accumulate a blank line each run.
     /// </remarks>
-    private static void UpsertProviderTable(DocumentSyntax doc, string baseUrl)
+    private static void UpsertProviderTable(
+        DocumentSyntax doc,
+        string baseUrl,
+        CodexProviderAuthInvocation authInvocation)
     {
-        var existingIndex = -1;
+        var existingProviderIndex = -1;
+        var existingAuthIndex = -1;
         for (var i = 0; i < doc.Tables.ChildrenCount; i++)
         {
-            if (doc.Tables.GetChild(i) is TableSyntax existing && TableName(existing) == ProviderTableName)
+            if (doc.Tables.GetChild(i) is not TableSyntax existing) continue;
+            var tableName = TableName(existing);
+            if (tableName == ProviderTableName)
             {
-                existingIndex = i;
-                break;
+                existingProviderIndex = i;
+            }
+            else if (tableName == ProviderAuthTableName)
+            {
+                existingAuthIndex = i;
             }
         }
 
-        var leading = existingIndex >= 0 ? string.Empty : "\n";
+        var leading = existingProviderIndex >= 0 ? string.Empty : "\n";
+        var args = string.Join(", ", authInvocation.Args.Select(TomlBasicString));
         var fragment = Tomlyn.Parsing.SyntaxParser.Parse(
-            $"{leading}[{ProviderTableName}]\nname = \"{ProviderName}\"\nbase_url = \"{baseUrl}\"\nwire_api = \"{WireApi}\"\n",
+            $"{leading}[{ProviderTableName}]\n" +
+            $"name = {TomlBasicString(ProviderName)}\n" +
+            $"base_url = {TomlBasicString(baseUrl)}\n" +
+            $"wire_api = {TomlBasicString(WireApi)}\n\n" +
+            $"[{ProviderAuthTableName}]\n" +
+            $"command = {TomlBasicString(authInvocation.Command)}\n" +
+            $"args = [ {args} ]\n" +
+            $"timeout_ms = {CodexProviderAuthInvocation.TimeoutMs}\n" +
+            $"refresh_interval_ms = {CodexProviderAuthInvocation.RefreshIntervalMs}\n",
             "fragment");
-        var newTable = fragment.Tables.GetChild(0)!;
+        if (fragment.HasErrors)
+            throw new InvalidOperationException("Could not construct the managed Codex provider tables.");
+
+        var newProviderTable = fragment.Tables.GetChild(0)!;
+        fragment.Tables.RemoveChildAt(0);
+        var newAuthTable = fragment.Tables.GetChild(0)!;
         fragment.Tables.RemoveChildAt(0);
 
-        if (existingIndex >= 0)
+        // Remove from highest index first so the other saved index remains valid.
+        foreach (var index in new[] { existingProviderIndex, existingAuthIndex }
+            .Where(i => i >= 0).OrderByDescending(i => i))
         {
-            doc.Tables.RemoveChildAt(existingIndex);
+            doc.Tables.RemoveChildAt(index);
         }
 
-        doc.Tables.Add(newTable);
+        doc.Tables.Add(newProviderTable);
+        doc.Tables.Add(newAuthTable);
     }
 
     private static string? FindTopLevelString(DocumentSyntax doc, string key)
@@ -239,23 +301,89 @@ internal sealed class CodexConfigurator : IClientConfigurator
         return null;
     }
 
-    private static string? FindProviderBaseUrl(DocumentSyntax doc)
+    private static TableSyntax? FindTable(DocumentSyntax doc, string name)
     {
         for (var i = 0; i < doc.Tables.ChildrenCount; i++)
         {
-            if (doc.Tables.GetChild(i) is TableSyntax t && TableName(t) == ProviderTableName)
+            if (doc.Tables.GetChild(i) is TableSyntax table && TableName(table) == name)
             {
-                foreach (var item in t.Items)
-                {
-                    if (item is KeyValueSyntax kv && KeyName(kv.Key) == "base_url"
-                        && kv.Value is StringValueSyntax sv)
-                    {
-                        return sv.Value;
-                    }
-                }
+                return table;
             }
         }
         return null;
+    }
+
+    private static string? FindTableString(TableSyntax? table, string key)
+    {
+        if (table is null) return null;
+        foreach (var item in table.Items)
+        {
+            if (item is KeyValueSyntax kv && KeyName(kv.Key) == key
+                && kv.Value is StringValueSyntax value)
+                return value.Value;
+        }
+        return null;
+    }
+
+    private static long? FindTableInteger(TableSyntax? table, string key)
+    {
+        if (table is null) return null;
+        foreach (var item in table.Items)
+        {
+            if (item is KeyValueSyntax kv && KeyName(kv.Key) == key
+                && kv.Value is IntegerValueSyntax value)
+                return value.Value;
+        }
+        return null;
+    }
+
+    private static IReadOnlyList<string>? FindTableStringArray(TableSyntax? table, string key)
+    {
+        if (table is null) return null;
+        foreach (var item in table.Items)
+        {
+            if (item is not KeyValueSyntax kv || KeyName(kv.Key) != key
+                || kv.Value is not ArraySyntax array)
+                continue;
+
+            var values = new List<string>();
+            foreach (var arrayItem in array.Items)
+            {
+                if (arrayItem.Value is not StringValueSyntax value) return null;
+                if (value.Value is not { } text) return null;
+                values.Add(text);
+            }
+            return values;
+        }
+        return null;
+    }
+
+    private static bool SequenceEqual(IReadOnlyList<string>? actual, IReadOnlyList<string> expected) =>
+        actual is not null && actual.SequenceEqual(expected, StringComparer.Ordinal);
+
+    private static string TomlBasicString(string value)
+    {
+        var result = new StringBuilder(value.Length + 2).Append('"');
+        foreach (var ch in value)
+        {
+            switch (ch)
+            {
+                case '"': result.Append("\\\""); break;
+                case '\\': result.Append("\\\\"); break;
+                case '\b': result.Append("\\b"); break;
+                case '\t': result.Append("\\t"); break;
+                case '\n': result.Append("\\n"); break;
+                case '\f': result.Append("\\f"); break;
+                case '\r': result.Append("\\r"); break;
+                default:
+                    if (ch < 0x20 || ch == 0x7f)
+                        result.Append("\\u").Append(((int)ch).ToString("X4", CultureInfo.InvariantCulture));
+                    else
+                        result.Append(ch);
+                    break;
+            }
+        }
+        return result.Append('"').ToString();
     }
 
     /// <summary>The dotted-key name of a key-value's key, e.g. <c>model_provider</c>.</summary>

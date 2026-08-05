@@ -54,12 +54,22 @@ internal static class RootCli
             "Exchange the GitHub token for a Copilot token, print expiry + base URL");
         authCopilotStatus.SetAction((_, _) => AuthCommand.CopilotStatusAsync());
 
+        // Hidden command-auth helper for Codex model discovery. It prints a stable,
+        // public sentinel and deliberately does not construct AuthService or a host.
+        var authProviderToken = new Command("provider-token",
+            "Print the non-secret Codex provider sentinel")
+        {
+            Hidden = true,
+        };
+        authProviderToken.SetAction((_, _) => Task.FromResult(AuthCommand.ProviderToken()));
+
         var authCommand = new Command("auth", "GitHub authentication");
         authCommand.Subcommands.Add(authLogin);
         authCommand.Subcommands.Add(authWhoami);
         authCommand.Subcommands.Add(authStatus);
         authCommand.Subcommands.Add(authLogout);
         authCommand.Subcommands.Add(authCopilotStatus);
+        authCommand.Subcommands.Add(authProviderToken);
 
         // --- debug ----------------------------------------------------------
         var allOption = new Option<bool>("--all", "-a")

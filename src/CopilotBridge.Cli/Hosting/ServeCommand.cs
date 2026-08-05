@@ -83,6 +83,7 @@ internal static class ServeCommand
         app.MapMessages();
         app.MapCountTokens();
         app.MapModels();
+        app.MapCodexModels();
         app.MapCodexResponses();
 
         try

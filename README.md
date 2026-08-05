@@ -15,7 +15,7 @@ Codex       (Responses shape) ──► /codex/responses       ├─► copilot
 Gemini CLI  (Gemini shape)    ──► /gemini/v1/...  (soon)  ┘
 ```
 
-It ships as a single ~12 MB native executable with **no .NET runtime to install**,
+It ships as a single ~14 MB native executable with **no .NET runtime to install**,
 for win-x64, win-arm64, linux-x64, and osx-arm64.
 
 ## Why use it
@@ -25,7 +25,8 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 - **The full Claude line-up, with native 1M context.** opus-4.6/4.7/4.8/**5**,
   sonnet-4.6/**5**, haiku-4.5 — 1M on everything except haiku-4.5. Codex runs on
   Copilot's gpt-5.x, up to the newest **gpt-5.6**
-  (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`).
+  (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`), with live model-catalog
+  discovery instead of Codex's older bundled context ceiling.
 - **Run Claude Code on a GPT model.** One `Routing.Locations` rule points
   `claude-opus-5` at `gpt-5.6-sol`; the bridge translates the full Anthropic
   tool-use protocol to and from the Responses API, so an agentic session runs end
@@ -136,12 +137,27 @@ matching Copilot model.
 copilot-bridge config codex
 ```
 
+**Upgrading from an older bridge?** Run that command again, then fully restart
+Codex. The current config adds command-backed provider auth, which is the signal
+Codex uses to fetch `GET /codex/models?client_version=...`; an already-running
+Codex process or a legacy provider block keeps the old bundled catalog.
+
 This edits `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) in place,
 preserving every unrelated table, comment, and literal — it only repoints
-`model_provider` and writes the `[model_providers.copilot-bridge]` block, leaving
-any existing provider block intact so switching back is a one-line change. Codex
-honors a single global config, so there is no `--scope` here. `--dry-run` and
-`--port` work the same as above.
+`model_provider` and writes the bridge provider plus its nested `auth` block,
+leaving every rival provider and explicit context/auto-compact override intact.
+The auth command emits a stable public sentinel only; your GitHub/Copilot token
+stays inside the bridge's `AuthService` and is never written to Codex config.
+Codex honors a single global config, so there is no `--scope` here. `--dry-run`
+and `--port` work the same as above.
+
+For the current 1M-class gpt models (`gpt-5.4`, `gpt-5.5`, and the three
+`gpt-5.6` codenames), Copilot reports **1,050,000 total context**, **922,000
+maximum prompt**, and 128,000 maximum output. The bridge advertises the truthful
+1.05M total window but tells Codex to auto-compact at **898,000 tokens**. Think
+of it as a safe roughly 900k working threshold — not 1.05M tokens of prompt
+capacity. Explicit user context overrides are preserved and may intentionally
+select a smaller window.
 
 **Or do it by hand** — edit `~/.codex/config.toml`, set the default model +
 provider at the top and add the provider block:
@@ -154,7 +170,16 @@ model_provider = "copilot-bridge"
 name = "copilot-bridge"
 base_url = "http://localhost:8765/codex"
 wire_api = "responses"
+
+[model_providers.copilot-bridge.auth]
+command = "/absolute/path/to/copilot-bridge"
+args = [ "auth", "provider-token" ]
+timeout_ms = 5000
+refresh_interval_ms = 0
 ```
+
+The command path differs for native and `dotnet <dll>` development installs, so
+`copilot-bridge config codex` is strongly preferred over hand-editing.
 
 ## Configuration (`appsettings.json`)
 
@@ -281,6 +306,12 @@ native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
   models (`luna`/`sol`/`terra`) are the first to also accept `max`, while smaller
   ones like `gpt-5-mini` top out at `high` (no `xhigh`). The bridge strips (or
   clamps) an effort the target rejects instead of letting it fail.
+- **Codex 1.05M is total context, not prompt capacity.** The current backend
+  maximum prompt is 922k and the bridge's safe auto-compact threshold is 898k.
+  If Copilot model discovery is temporarily unavailable, Codex receives the
+  reviewed baseline limits rather than an unsafe uplift; restart/retry after
+  discovery recovers. A newer unsupported Codex client version also keeps its
+  own bundled catalog until the bridge adds a reviewed matching baseline.
 - **Resume drops the `[1m]` flag back to 200k.** Claude Code stores the 1M toggle
   in the model string (`opus[1m]`), which isn't persisted across `--resume`. The
   backend still serves the larger window, but Claude Code's own auto-compaction
@@ -428,7 +459,7 @@ Two log channels:
 | --- | --- |
 | ✅ M1 | Claude Code → Copilot Anthropic; identity adapters; full preprocessing pipeline |
 | ✅ M2 | Cross-platform publish (win-x64, win-arm64, linux-x64, osx-arm64) |
-| ✅ M3 | Codex (Responses shape) → `/codex/responses`; T1–T4 translators through the shared IR; per-model effort profile catalog; live `codex.exe` end-to-end |
+| ✅ M3 | Codex (Responses shape) → `/codex/responses`; T1–T4 translators through the shared IR; command-auth `/codex/models` discovery with safe large-context limits; live `codex.exe` end-to-end |
 | M4 | Gemini CLI client + IR↔Gemini translators |
 
 ## References
@@ -437,6 +468,6 @@ Two log channels:
 - [`docs/routing.md`](docs/routing.md) — `Routing.Locations` config reference
 - [`docs/timeout-chain.md`](docs/timeout-chain.md) — timeouts along the Claude Code → bridge → Copilot chain
 - [`docs/copilot-api-research.md`](docs/copilot-api-research.md) — Copilot API protocol notes
-- [`docs/codex-implementation-design.md`](docs/codex-implementation-design.md) — Codex `/responses` path
+- [`docs/codex-implementation-design.md`](docs/codex-implementation-design.md) — Codex inference + model-metadata paths
 - [`docs/token-storage.md`](docs/token-storage.md) — token-at-rest threat model
 - [`docs/design.md`](docs/design.md) — original design doc

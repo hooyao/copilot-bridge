@@ -1,11 +1,20 @@
 # Bridge Pipeline Design
 
-> Status: v0.5 · 2026-06-01
+> Status: v0.6 · 2026-08-05
 >
 > This document is the architectural contract for the bridge's request/response
 > transformation framework. New stages, new clients, new backends should
 > conform to the abstractions defined here. Diverging requires updating this
 > document first.
+>
+> **2026-08-05 (v0.6) — Codex metadata is a separate control plane**:
+> `GET /codex/models?client_version=...` now serves complete, version-reviewed
+> Codex `ModelInfo` entries. Codex-owned behavior (instructions, tools, picker
+> metadata, review override) comes from an embedded upstream Codex baseline;
+> backend-owned availability and safe context limits come from a bounded,
+> process-local Copilot `/models` overlay. The endpoint does not enter the
+> request/response IR pipeline. Command-backed provider auth makes Codex request
+> the catalog without exposing the real Copilot token. See §4.9 and §7.6.
 >
 > **2026-06-01 (v0.5) — routing config redesigned nginx-style**: the flat
 > `Routing.Rules` (`Match` → `Rewrite.Model`) list became `Routing.Locations`,
@@ -585,7 +594,7 @@ handler picks the right pair based on its URL prefix:
 
 ```
 /cc/v1/messages    → ClaudeCode adapters (identity for Anthropic shape == IR)
-/codex/v1/...      → Codex adapters (translate OpenAI shape ↔ IR)
+/codex/responses   → Codex adapters (translate Responses shape ↔ IR)
 /gemini/v1/...     → Gemini adapters (translate Gemini shape ↔ IR)
 ```
 
@@ -615,7 +624,9 @@ consumers lease per call — one named client per upstream surface, see
 `UpstreamHttpClientNames`),
 `AuthService`/`IAuthService` (owns the token-refresh timer and in-memory token
 cache), the immutable catalog/registry lookup tables (`ModelProfileCatalog`,
-`CodexModelProfileCatalog`, `IModelRegistry`), `CopilotHeaderFactory`,
+`CodexModelProfileCatalog`, `IModelRegistry`), the Codex metadata services
+(`CodexCatalogBaselineStore`, `CodexCatalogOverlayService`, and
+`CodexCatalogProjector`), `CopilotHeaderFactory`,
 `BridgeIoSink`, `RequestSummaryLogger`, all options, and the hosted services.
 
 **Guardrail.** The host container is built with
@@ -627,6 +638,48 @@ fails fast at startup and in `DetectorCompositionTests`, rather than silently le
 one request's state into another. The static routing helpers (`ModelRouteResolver`,
 `ProfileAdjuster`, `MatchExpression`) are not DI services; the injecting stage passes
 its context to them as an argument — the only place `ctx` still flows as a parameter.
+
+### 4.9 Codex model metadata control plane
+
+Codex remote-model discovery is deliberately outside
+`Pipeline<MessagesRequest>`. It carries no prompt and performs no model
+translation:
+
+```
+Codex 0.144.x
+  GET /codex/models?client_version=0.144.1
+      ├─ CodexCatalogBaselineStore  → complete reviewed Codex client facts
+      ├─ CodexCatalogOverlayService → bounded live Copilot /models facts
+      └─ CodexCatalogProjector      → exact-slug allow-list overlay + stable ETag
+```
+
+Ownership is strict:
+
+- **Codex owns client behavior.** Complete entries, including
+  `base_instructions`, tool/shell mode, reasoning descriptions, picker fields,
+  compatibility hashes, and `auto_review_model_override`, originate from the
+  embedded catalog for the requesting client's reviewed version interval.
+- **Copilot owns backend capacity.** Only exact bridge Responses profiles that
+  are also advertised live with `/responses` remain API-supported. Valid live
+  `max_context_window_tokens` raises `context_window` and
+  `max_context_window`; `auto_compact_token_limit` is the lower of 90% total
+  and 97.5% maximum prompt, rounded down to 1,000. Invalid or missing limits do
+  not raise the reviewed baseline.
+- **The bridge owns the safe join.** Live-only models are never synthesized,
+  retired/baseline-only models are hidden, and review overrides are retained
+  only when their target remains routable.
+
+`CodexCatalogOverlayService` is a singleton, single-flight, five-minute
+process-local cache. A refresh failure serves its last known good overlay; a
+cold failure returns the compatible baseline without uplift, so metadata
+degradation never prevents otherwise healthy inference. Unknown, malformed,
+missing, or repeated `client_version` values receive a non-2xx metadata error,
+allowing Codex to keep its own bundled catalog.
+
+The command-auth token is only the stable public sentinel emitted by
+`auth provider-token`. Inbound provider authorization is never promoted to an
+upstream credential: both metadata and inference obtain the real Copilot token
+only through `IAuthService`.
 
 ## 5. Request pipeline (current: `Pipeline<MessagesRequest>`)
 
@@ -1229,16 +1282,17 @@ complete change-set applied to the request. Each location is a self-contained
 closure — everything that should happen for "this kind of request" lives in
 one block.
 
-Schema:
+Schema (model aliases are for preference/routing only; Codex context discovery
+does not require an alias):
 
 ```jsonc
 {
   "Routing": {
     "Locations": [
       {
-        "When": { "Model": "gpt-5.5-1m" },
-        "Use": { "Model": "gpt-5.5" },
-        "Note": "Codex alias: gpt-5.5-1m -> gpt-5.5 (sidesteps Codex's client-side context cap)"
+        "When": { "Model": "claude-opus-5" },
+        "Use": { "Model": "gpt-5.6-sol", "EffortMap": { "max": "xhigh" } },
+        "Note": "Optional Claude Code to Codex-model substitution"
       }
     ]
   }
@@ -1298,11 +1352,11 @@ Note:
   map caps it at `xhigh` instead (drop the `EffortMap` to send `max` through). It
   ships disabled because it's a cross-model substitution, not because the target
   is a poor fit.
-- Earlier releases shipped an active `gpt-5.5-1m → gpt-5.5` Codex context-window
-  alias here (naming the model `gpt-5.5-1m` with `model_context_window=1000000`
-  sidesteps a client-side context cap Codex applies to the literal `gpt-5.5`; the
-  bridge maps it back so Copilot's natively-1M `gpt-5.5` is used, `Normalize`
-  keeping the `-1m` suffix). It was removed when the active list was emptied.
+- Earlier releases used a `gpt-5.5-1m → gpt-5.5` alias plus a manual
+  `model_context_window` override to evade Codex's bundled 272k-era cap. That
+  workaround is retired. `config codex` now enables command-auth discovery and
+  Codex obtains exact live limits from `GET /codex/models`; routing aliases are
+  no longer part of context-window negotiation.
 
 **Retired: the opus 1M redirects.** Earlier releases shipped
 `"opus 4.x + 1M beta → dedicated 1M model id"` redirects (opus-4.7/4.8 →
@@ -1353,9 +1407,13 @@ handle `invalid_request_error` display it correctly) with a
 `ModelRouterStage` also `Log.Error`s the same diagnostic so it lands in
 the bridge's runtime log without needing the client transcript.
 
-### 7.6 Refreshing the catalog when Copilot changes
+### 7.6 Refreshing model profiles and the Codex client catalog
 
-The probe → catalog refresh cycle:
+These are two different maintenance loops. Do not use catalog metadata as a
+substitute for live request-shape probes.
+
+**Backend request profiles (`CodexModelProfileCatalog` and
+`ModelProfileCatalog`):**
 
 1. Run `tests/CopilotBridge.Playground/CopilotGapProbes.DumpClaudeModelsAndCapabilities`
    to see what Copilot exposes on the current account.
@@ -1376,6 +1434,28 @@ the request with a clear 400) and then as a profile after probes confirm
 the wire shape. This is by design — silent breakage is worse than an
 explicit "I don't know this model yet."
 
+**Codex remote catalog baseline (`Catalogs/Codex/<minor>/`):**
+
+1. Choose an exact upstream `openai/codex` release tag. For a new minor,
+   create a new reviewed directory and provenance manifest first; never widen
+   the old version interval by inference.
+2. Run `scripts/update-codex-catalog.ps1 -Tag rust-vX.Y.Z` to check the current
+   vendored bytes, hashes, required models, complete instruction sources, and
+   schema keys. Add `-Update` only after reviewing the upstream diff.
+3. If the script reports key/schema drift, update the source-generated envelope,
+   baseline validator, projector allow-list, and the pinned real-Codex consumer
+   test before accepting the snapshot.
+4. Re-run the live Copilot model snapshot and >272k real-Codex-shaped probes.
+   Update `docs/copilot-codex-model-capabilities-snapshot.json` and protocol
+   research only from captured evidence.
+5. Run unit and `Kind=ApiContract` suites, then the command-auth
+   `Kind=ClientBehavior` long-context task. The final verdict must include the
+   real Codex dispatch log, not merely an HTTP 200.
+
+At runtime the baseline never downloads from GitHub. The endpoint selects only
+a declared client-version interval, overlays exact-slug live facts, and degrades
+to the reviewed baseline if Copilot discovery fails.
+
 ## 8. Per-client URL prefixes
 
 Each client is mounted on its own URL prefix. This eliminates body sniffing
@@ -1384,7 +1464,7 @@ entirely — the URL **is** the client identity.
 | Prefix | Client | Inbound shape | Endpoints |
 | --- | --- | --- | --- |
 | `/cc/v1/...` | Claude Code | Anthropic Messages | `messages`, `messages/count_tokens`, `models` |
-| `/codex/v1/...` (M3) | Codex | OpenAI Chat Completions / Responses | `chat/completions`, `responses`, `models` |
+| `/codex/...` (M3+) | Codex | OpenAI Responses + Codex metadata | `POST responses`, `GET models?client_version=...` |
 | `/gemini/v1/...` (future) | Gemini CLI | Google Gemini | `models/.../generateContent`, etc. |
 
 `Endpoints/` becomes shape-organized:
@@ -1397,8 +1477,8 @@ Endpoints/
     ClaudeCodeModelsEndpoint.cs              # GET  /cc/v1/models
     ClaudeCodeEndpoints.Map(app);            # registers all of the above
   Codex/                                     # M3+
-    CodexChatCompletionsEndpoint.cs
-    ...
+    CodexResponsesEndpoint.cs                # POST /codex/responses
+    CodexModelsEndpoint.cs                   # GET  /codex/models?client_version=...
 ```
 
 Configuration impact: Claude Code's `ANTHROPIC_BASE_URL` environment variable
@@ -1667,8 +1747,9 @@ src/CopilotBridge.Cli/
 │   │   ├── ClaudeCodeMessagesEndpoint.cs        # POST /cc/v1/messages
 │   │   ├── ClaudeCodeCountTokensEndpoint.cs     # POST /cc/v1/messages/count_tokens
 │   │   └── ClaudeCodeModelsEndpoint.cs          # GET  /cc/v1/models
-│   ├── Codex/                                   # M3
-│   │   └── (CodexChatCompletionsEndpoint, CodexResponsesEndpoint, CodexModelsEndpoint)
+│   ├── Codex/                                   # M3+
+│   │   ├── CodexResponsesEndpoint.cs            # POST /codex/responses
+│   │   └── CodexModelsEndpoint.cs               # GET  /codex/models?client_version=...
 │   └── Gemini/                                  # M4
 │
 ├── Hosting/
@@ -1692,14 +1773,16 @@ src/CopilotBridge.Cli/
 
 ## 11. Evolution path
 
-### 11.1 Adding a new client (e.g. Codex)
+### 11.1 Adding a new client (e.g. Gemini)
 
-1. Define `Models/OpenAi/ChatCompletionsRequest.cs` (and friends).
-2. Add `Endpoints/Codex/CodexEndpoints.cs` mounting `/codex/v1/...`.
-3. Add `Pipeline/Stages/OpenAi/` with OpenAI-specific stages
-   (CodexInboundCaptureStage, CodexModelRouterStage, ...).
-4. Build `Pipeline<ChatCompletionsRequest>` in `Hosting/BridgePipelines.cs`.
-5. Register Codex strategies in the strategy registry.
+1. Define source-generated DTOs for the client's request and response shape.
+2. Add the client's URL-prefixed endpoints.
+3. Implement the client-edge inbound/outbound adapters to and from the shared
+   Anthropic-shape IR.
+4. Register those adapters and endpoints against the existing scoped
+   `Pipeline<MessagesRequest>`.
+5. Add a backend strategy only if the client introduces a backend shape that
+   the bridge does not already expose through Copilot.
 
 The pipeline framework, runner, response stages, audit log — all reused.
 
