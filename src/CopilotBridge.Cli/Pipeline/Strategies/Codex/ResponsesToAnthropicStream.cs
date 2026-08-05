@@ -1,4 +1,5 @@
 using System.Net.ServerSentEvents;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
@@ -32,6 +33,7 @@ internal sealed class ResponsesToAnthropicStream
 {
     private readonly string _model;
     private readonly ILogger? _log;
+    private string _messageId = "msg_bridge";
     private bool _messageStarted;
     // Latched true once a terminal (message_delta + message_stop) has been emitted,
     // so a following FlushTerminal() is a genuine no-op. Without it, the normal
@@ -138,6 +140,7 @@ internal sealed class ResponsesToAnthropicStream
                 case "response.created":
                     if (!_messageStarted)
                     {
+                        _messageId = MessageIdFromResponse(root);
                         _messageStarted = true;
                         yield return Sse("message_start", MessageStartJson());
                     }
@@ -434,7 +437,23 @@ internal sealed class ResponsesToAnthropicStream
     }
 
     private string MessageStartJson() =>
-        $"{{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_codex\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{JsonEncode(_model)},\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\"input_tokens\":0,\"output_tokens\":0}}}}}}";
+        $"{{\"type\":\"message_start\",\"message\":{{\"id\":{JsonEncode(_messageId)},\"type\":\"message\",\"role\":\"assistant\",\"model\":{JsonEncode(_model)},\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\"input_tokens\":0,\"output_tokens\":0}}}}}}";
+
+    private static string MessageIdFromResponse(JsonElement root)
+    {
+        if (!root.TryGetProperty("response", out var response)
+            || response.ValueKind != JsonValueKind.Object
+            || !response.TryGetProperty("id", out var id)
+            || id.ValueKind != JsonValueKind.String
+            || id.GetString() is not { Length: > 0 } value)
+            return "msg_bridge";
+
+        // Copilot response ids can be long encrypted/base64 strings whose
+        // alphabet is not valid for an Anthropic message id. Hashing preserves
+        // stable per-response identity without leaking or truncating that value.
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        return "msg_" + Convert.ToHexString(hash).ToLowerInvariant();
+    }
 
     private static string BlockDeltaJson(int index, string deltaJson) =>
         $"{{\"type\":\"content_block_delta\",\"index\":{index},\"delta\":{deltaJson}}}";

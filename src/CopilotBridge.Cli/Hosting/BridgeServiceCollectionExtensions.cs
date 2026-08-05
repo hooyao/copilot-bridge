@@ -183,6 +183,8 @@ internal static class BridgeServiceCollectionExtensions
         // --- Pipeline ------------------------------------------------------
         services.AddSingleton<ModelProfileCatalog>();
         services.AddSingleton<IModelRegistry, CopilotModelRegistry>();
+        services.AddSingleton<ModelRoutePlanner>();
+        services.AddSingleton<ResponsesAdmissionEstimator>();
 
         // The per-request context is a SCOPED service: the container creates one
         // empty shell per request scope, the endpoint populates it, and every

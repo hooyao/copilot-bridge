@@ -34,6 +34,13 @@ internal sealed class RequestSummary
     public bool Streaming { get; set; }
     public long DurationMs { get; set; }
 
+    /// <summary>Cross-routed count accounting details. Null on ordinary messages
+    /// and native-Anthropic count passthrough.</summary>
+    public int? RawCountInputTokens { get; set; }
+    public string? CountCalibrationId { get; set; }
+    public int? CountCalibrationReserve { get; set; }
+    public int? ReturnedCountInputTokens { get; set; }
+
     /// <summary>
     /// True when the response-leak guard detected a leak — a leaked tool call or a
     /// leaked control envelope — and forced a client retry this turn. Lets the

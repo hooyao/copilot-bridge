@@ -24,6 +24,14 @@ A location fires first (rewriting model / effort / headers); then the resolved
 target's profile coerces the body to what Copilot's gateway will actually
 accept. **Locations express what you want; profiles enforce what's possible.**
 
+The same Location evaluation applies independently to both
+`POST /cc/v1/messages` and `POST /cc/v1/messages/count_tokens`. This matters for
+cross-protocol routes such as `claude-opus-5 → gpt-5.6-sol`: count-tokens is also
+routed to the Responses target and counts the canonical Responses T2 input, not
+the original Anthropic framing. Each request is evaluated from its own fields;
+an auxiliary count request that omits effort does not inherit effort from a main
+messages request.
+
 ## Location shape
 
 ```jsonc
@@ -61,6 +69,12 @@ this". So for `Name: "anthropic-beta"`:
 
 For any other header name, `Eq`/`Contains` match the raw header value
 (case-insensitive equality / substring).
+
+Claude Code's SDK sends `token-counting-2024-11-01` in the actual
+`anthropic-beta` header on count requests; it is not a `betas` JSON-body field.
+Locations that distinguish token-counting calls should therefore use the header
+leaf shown above. Matching still uses token-set membership, including when the
+header contains several comma-separated betas.
 
 ### Composites
 
@@ -229,7 +243,10 @@ about. One location holds the whole story (e.g. `opus-4.8 + 1M → 1m-internal`
   `MatchExpressionTests` (leaves, composites, the nested shapes above),
   `RoutesBindingTests` (nested `AllOf`/`AnyOf` binds from JSON to non-null
   lists), `RoutesValidatorTests` (the fail-fast rules, incl. the empty-When
-  guard), `ModelRouteResolverTests` (the `Use` change-set mutates the context).
+  guard), `ModelRouteResolverTests` (the `Use` change-set mutates the context),
+  and `ModelRoutePlannerParityTests` / `CountTokensResponsesEndpointTests`
+  (messages/count parity, beta/effort matching, first-match/no-chain, concurrent
+  request isolation, and exact shared-T2 count bytes).
   Run: `dotnet test tests/CopilotBridge.UnitTests`.
 - **AOT binding**: the JIT unit tests can't prove the AOT source-generated
   config binder handles the recursive `List<MatchExpression>`. That's verified

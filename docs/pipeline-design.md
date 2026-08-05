@@ -702,7 +702,7 @@ inbound bytes (POST /cc/v1/messages)
                                   look up the target's ModelProfile; run
                                   ProfileAdjuster to shape the body to what
                                   the profile accepts; resolve ctx.Target.
-                                  See §7.
+                                   See §7.
     │
     ▼
 [2] AssistantThinkingFilterStage  drop unsigned thinking blocks from
@@ -733,8 +733,16 @@ ctx.Target now resolved + ctx.Request.Body transformed
     ▼
 strategy = pipeline.Strategies.Resolve(ctx.Target)
 strategy.ForwardAsync(ctx)        executes HTTP call to upstream;
-                                  populates ctx.Response.EventStream
+                                   populates ctx.Response.EventStream
 ```
+
+`ModelRouterStage` is an adapter around the singleton, I/O-free
+`ModelRoutePlanner`. The planner holds only immutable catalogs/options and mutates
+the `BridgeContext` supplied for that request; it is also used by
+`POST /cc/v1/messages/count_tokens`. Thus normalization, first-match Location
+selection, effort mapping, target-profile validation, and vendor selection have
+one implementation. The count endpoint creates its own request context and never
+borrows state from a messages request.
 
 ### 5.1 Claude Code sub-agent delegation on a Responses target
 
@@ -756,6 +764,13 @@ Root Claude Code requests retain `Agent`, and the IR is not mutated. Consequentl
 native Anthropic `/cc` passthrough and native `/codex` traffic are unaffected;
 disabling the option restores the previous CC-to-Responses translation behavior.
 
+The same T2 builder and recursive-Agent decision are used when a count request is
+routed to Responses. Count-time Anthropic `thinking` configuration is a control
+with no Responses input equivalent; when no `output_config.effort` is present it
+is an explicit T2 drop, as are historical plaintext `thinking` blocks. Their
+visible sibling text remains in the input. Encrypted reasoning blocks retain the
+existing T2 mapping.
+
 This is deliberately a translation-boundary compatibility policy. Claude Code may
 legitimately expose delegation recursively, but a non-Claude backend can interpret the
 tool as an unrestricted fan-out primitive: many individually valid, bounded responses
@@ -772,6 +787,43 @@ data in `ModelProfileCatalog`, applied uniformly by `ProfileAdjuster`. User
 `Routing.Locations` express operator preference only (model swap, per-target
 effort remap, whitelisted header tweaks) — the target's profile decides every
 wire-shape fact. See §7.
+
+### 5.2 Route-aware count-tokens and Responses admission accounting
+
+`POST /cc/v1/messages/count_tokens` first executes the shared route plan using
+the request's own model, headers/betas, optional effort, and content:
+
+- A `CopilotAnthropic` target remains byte passthrough in both directions,
+  including non-success status and content type. Unknown native fields are not
+  parsed or discarded.
+- A `CopilotResponses` target is strictly parsed into the supported count shape,
+  then built by `ResponsesRequestBuilder` (T2). Those exact T2 bytes are sent once
+  to Copilot's existing `/v1/messages/count_tokens`; the bridge never calls
+  `/responses` to count and cannot execute a prompt. Unknown top-level or nested
+  count fields fail explicitly instead of disappearing during translation.
+- The successful upstream `input_tokens` value is parsed as a non-negative
+  32-bit integer and converted by `ResponsesAdmissionEstimator`. The 2026-08-05
+  GPT-5.6 calibration is `ceil(raw * 1.05) + 16`; an uncalibrated Responses model
+  uses `ceil(raw * 1.075) + 32` and emits a bounded warning. Arithmetic is
+  monotonic and saturates at `Int32.MaxValue`. The exact record is scoped to
+  `gpt-5.6-sol`; unprobed sibling ids use the fallback rather than borrowing a
+  family-name guess. See
+  `docs/copilot-api-research.md` §15.4 for the exact-body evidence corpus.
+
+The estimate covers the exact count input only. It does not synthesize a main
+turn's system prompt, stream flag, output budget, or effort. A transformed-body
+count failure is returned as failure; there is no fallback to the smaller source
+Anthropic framing.
+
+For a `/cc` messages request resolved to Responses, the buffered error path also
+recognizes only Copilot's confirmed HTTP 400 pair
+`code=invalid_request_body` plus the exact context-window sentence. It rewrites
+that body to Anthropic `invalid_request_error` containing `prompt is too long`,
+which Claude Code can compact and retry. Status, code, message, `/cc` edge, and
+Responses target are all required; native `/codex`, native Anthropic `/cc`, and
+near-miss 400s remain unchanged. The raw Copilot body is captured at
+`upstream-resp` before the rewritten Claude envelope is captured at
+`inbound-resp`.
 
 ## 6. Response pipeline
 
@@ -1033,6 +1085,9 @@ inbound (model, effort, thinking, betas, ...)
    ↓ Resolve            vendor + endpoint dispatch
 outbound to upstream
 ```
+
+This sequence is implemented by `ModelRoutePlanner` and shared by messages and
+count-tokens; endpoint-specific code must not duplicate the Location scan.
 
 The split is **"profile = fact, location = preference, adjuster = mechanism"**:
 
@@ -1489,6 +1544,11 @@ Configuration impact: Claude Code's `ANTHROPIC_BASE_URL` environment variable
 must be set to `http://localhost:8765/cc` (note the `/cc` suffix), so its
 client appends `/v1/messages` and lands on our `/cc/v1/messages`.
 
+When a Location rewrites a Claude model to a Responses model, the same rewrite
+also applies to `/cc/v1/messages/count_tokens`. The count route still calls the
+Anthropic-named Copilot count endpoint, but its body is the canonical Responses
+T2 shape and its returned count is calibrated as described in §5.2.
+
 ## 9. Logging
 
 Two log channels, both flowing through a single Serilog pipeline configured
@@ -1517,6 +1577,13 @@ channel, no background writer. The startup banner says `Req trace: disabled`.
 The separate Serilog **text** log (`<exe-dir>/log/bridge-<stamp>.log`,
 startup banner + stage debug + errors) is always on; only the per-request
 JSON capture is opt-in.
+
+For cross-routed count requests, the four bodies deliberately differ:
+`inbound-req` is the original Anthropic count body, `upstream-req` is the exact T2
+Responses body, `upstream-resp` is Copilot's raw count, and `inbound-resp` is the
+calibrated Anthropic count response. The ordinary summary logs only requested and
+resolved model, raw count, calibration id/reserve, and returned count—not prompt
+or tool content.
 
 When enabled, each inbound request produces **four** JSON files in
 `<exe-dir>/request-traces/` (or the configured `Directory`), sharing a stamp

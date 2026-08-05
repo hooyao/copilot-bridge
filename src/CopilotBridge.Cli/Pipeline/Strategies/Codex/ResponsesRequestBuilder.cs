@@ -130,6 +130,11 @@ internal static class ResponsesRequestBuilder
                     w.WriteString("summary", reasoningSummary);
                 w.WriteEndObject();
             }
+            // Anthropic's top-level thinking configuration is a control for the
+            // Anthropic backend, not replayable Responses input. Responses uses
+            // reasoning.effort above; without an output_config.effort the count
+            // shape deliberately emits no reasoning field. Historical plaintext
+            // thinking blocks are likewise explicitly dropped in WriteInputItem.
 
             // max_output_tokens: T1 maps the IR's MaxTokens from Codex's
             // max_output_tokens (default 0 when Codex omits it). Emit only when set

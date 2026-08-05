@@ -22,15 +22,16 @@ namespace CopilotBridge.UnitTests;
 public class ModelRouterStageFuzzyTests
 {
     private static ModelRouterStage Stage(BridgeContext<MessagesRequest> ctx) => new(
-        new CopilotModelRegistry(),
-        new ModelProfileCatalog(),
-        new CodexModelProfileCatalog(),
-        Options.Create(new RoutesConfig()),
-        Options.Create(new OutboundBetaPolicyOptions()),
-        ctx,
-        NullLogger<ModelRouterStage>.Instance,
-        NullLogger<ModelRouteResolverLog>.Instance,
-        NullLogger<ProfileAdjusterLog>.Instance);
+        new ModelRoutePlanner(
+            new CopilotModelRegistry(),
+            new ModelProfileCatalog(),
+            new CodexModelProfileCatalog(),
+            Options.Create(new RoutesConfig()),
+            Options.Create(new OutboundBetaPolicyOptions()),
+            NullLogger<ModelRoutePlanner>.Instance,
+            NullLogger<ModelRouteResolverLog>.Instance,
+            NullLogger<ProfileAdjusterLog>.Instance),
+        ctx);
 
     // ── Anthropic path: unknown-but-close claude id is forwarded ──────────────
 

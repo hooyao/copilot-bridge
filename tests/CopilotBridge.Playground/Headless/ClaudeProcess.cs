@@ -34,7 +34,13 @@ internal sealed record ClaudeInvocation(
     // Strip the timeout-governing env vars from the child so it runs on Claude Code's
     // FACTORY watchdog defaults. Required by any case whose whole point is that the
     // bridge — not a raised client bound — is what keeps a silent turn alive.
-    bool ClearTimeoutEnv = false);
+    bool ClearTimeoutEnv = false,
+    // Compact-recovery cases need Claude Code's own persisted JSONL as the
+    // semantic evidence. Ordinary behavior cases stay ephemeral by default.
+    bool PersistSession = false,
+    string? ClaudeConfigDir = null,
+    string? SessionId = null,
+    string? ResumeSessionId = null);
 
 internal sealed record ClaudeResult(
     int ExitCode,
@@ -71,7 +77,17 @@ internal static class ClaudeProcess
         }
         args.Add("--setting-sources");
         args.Add("");
-        args.Add("--no-session-persistence");
+        if (!inv.PersistSession) args.Add("--no-session-persistence");
+        if (inv.SessionId is not null)
+        {
+            args.Add("--session-id");
+            args.Add(inv.SessionId);
+        }
+        if (inv.ResumeSessionId is not null)
+        {
+            args.Add("--resume");
+            args.Add(inv.ResumeSessionId);
+        }
 
         var psi = new ProcessStartInfo
         {
@@ -87,6 +103,8 @@ internal static class ClaudeProcess
         // refuses to start without one set.
         psi.Environment["ANTHROPIC_BASE_URL"] = inv.BridgeBaseUrl + "/cc";
         psi.Environment["ANTHROPIC_API_KEY"] = "dummy-bridge-bypass";
+        if (inv.ClaudeConfigDir is not null)
+            psi.Environment["CLAUDE_CONFIG_DIR"] = inv.ClaudeConfigDir;
         // CLAUDE_CODE_EFFORT_LEVEL takes precedence over persisted settings.json's
         // effortLevel — see restored-src/src/utils/effort.ts resolveAppliedEffort.
         // The --effort CLI flag alone gets shadowed by a user's persisted setting,
