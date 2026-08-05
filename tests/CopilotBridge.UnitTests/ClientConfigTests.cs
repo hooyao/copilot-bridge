@@ -588,7 +588,10 @@ public class ClientConfigTests
 
         var (content, _) = CodexConfigurator.BuildContent(original, Conn(), invocation);
 
-        Assert.Contains("[model_providers.rival.auth]\ncommand = 'rival-token --literal'\nargs = [ \"--one\", \"two\" ] # rival comment", content);
+        var rivalStart = original.IndexOf("[model_providers.rival.auth]", StringComparison.Ordinal);
+        var bridgeStart = original.IndexOf("[model_providers.copilot-bridge]", rivalStart, StringComparison.Ordinal);
+        var rivalAuthBlock = original[rivalStart..bridgeStart].TrimEnd('\r', '\n');
+        Assert.Contains(rivalAuthBlock, content, StringComparison.Ordinal);
         Assert.Contains("model_context_window = 900001 # user-owned", content);
         Assert.Contains("model_auto_compact_token_limit = 800001", content);
         Assert.DoesNotContain("command = \"stale\"", content);

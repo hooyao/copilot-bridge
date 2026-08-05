@@ -45,6 +45,7 @@ public sealed class CodexModelsEndpointContractTests
     [InlineData("")]
     [InlineData("?client_version=0.144.1&client_version=0.144.2")]
     [InlineData("?client_version=garbage")]
+    [InlineData("?client_version=0.144.0-alpha.4")]
     [InlineData("?client_version=0.145.0")]
     public async Task InvalidVersionQueryFailsSafely(string query)
     {

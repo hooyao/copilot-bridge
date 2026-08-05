@@ -141,7 +141,7 @@ New-Item -ItemType Directory -Path $resolvedTempRoot | Out-Null
 try {
     $downloadedModels = Join-Path $resolvedTempRoot 'models.json'
     $downloadedLicense = Join-Path $resolvedTempRoot 'LICENSE'
-    $rawRoot = "https://raw.githubusercontent.com/openai/codex/$Tag"
+    $rawRoot = "https://raw.githubusercontent.com/openai/codex/$sourceCommit"
     Invoke-WebRequest -Uri "$rawRoot/codex-rs/models-manager/models.json" -OutFile $downloadedModels
     Invoke-WebRequest -Uri "$rawRoot/LICENSE" -OutFile $downloadedLicense
 

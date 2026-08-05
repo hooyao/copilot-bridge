@@ -93,7 +93,10 @@ internal readonly record struct CodexClientVersion(int Major, int Minor, int Pat
     {
         version = default;
         if (string.IsNullOrWhiteSpace(value)) return false;
-        var core = value.Split(['-', '+'], 2)[0];
+        // Reviewed release intervals do not implicitly cover prerelease wire shapes.
+        // Build metadata is non-semantic and may still identify a locally built release.
+        if (value.Contains('-', StringComparison.Ordinal)) return false;
+        var core = value.Split('+', 2)[0];
         var pieces = core.Split('.');
         if (pieces.Length != 3 || pieces.Any(piece => piece.Length == 0 || piece.Any(ch => !char.IsAsciiDigit(ch))))
             return false;

@@ -13,7 +13,7 @@ namespace CopilotBridge.Playground.Headless;
 /// <c>ModelsResponse</c>/<c>ModelInfo</c> consumer. A successful
 /// <c>codex debug models</c> means every remote entry deserialized before Codex
 /// rendered the merged raw catalog; the per-slug instruction comparison then proves
-/// the complete instruction source survived that consumer boundary.
+/// the complete instruction source and capacity fields survived that consumer boundary.
 /// </summary>
 [SupportedOSPlatform("windows")]
 [Trait("Category", "Integration")]
@@ -68,11 +68,29 @@ public sealed class PinnedCodexCatalogConsumerTests
             var actualInstructions = actual.GetProperty("base_instructions").GetString();
             Assert.False(string.IsNullOrWhiteSpace(expectedInstructions));
             Assert.Equal(expectedInstructions, actualInstructions);
+            Assert.Equal(
+                expected.GetProperty("context_window").GetInt32(),
+                actual.GetProperty("context_window").GetInt32());
+            Assert.Equal(
+                expected.GetProperty("max_context_window").GetInt32(),
+                actual.GetProperty("max_context_window").GetInt32());
         }
+
+        var expectedLatest = endpointModels[ClientBehaviorSupport.LatestGpt];
+        Assert.Equal(1_050_000, expectedLatest.GetProperty("context_window").GetInt32());
+        Assert.Equal(898_000, expectedLatest.GetProperty("auto_compact_token_limit").GetInt32());
+
+        var cachePath = Path.Combine(home.Path, "models_cache.json");
+        Assert.True(File.Exists(cachePath), "real Codex did not persist the remote catalog");
+        using var cache = JsonDocument.Parse(File.ReadAllText(cachePath));
+        Assert.Equal(PinnedVersion, cache.RootElement.GetProperty("client_version").GetString());
+        var cachedLatest = BySlug(cache.RootElement)[ClientBehaviorSupport.LatestGpt];
+        Assert.Equal(1_050_000, cachedLatest.GetProperty("context_window").GetInt32());
+        Assert.Equal(898_000, cachedLatest.GetProperty("auto_compact_token_limit").GetInt32());
 
         _output.WriteLine(
             $"Codex {PinnedVersion} consumed {renderedModels.Count} endpoint entries; " +
-            "every base_instructions source remained intact.");
+            "every base_instructions source and capacity field remained intact.");
     }
 
     private static Dictionary<string, JsonElement> BySlug(JsonElement envelope) =>

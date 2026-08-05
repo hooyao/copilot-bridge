@@ -14,27 +14,32 @@ internal sealed record CodexCatalogOverlaySnapshot
 internal sealed class CodexCatalogOverlayService
 {
     private static readonly TimeSpan DefaultTtl = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan DefaultRefreshTimeout = TimeSpan.FromSeconds(5);
     private readonly ICopilotClient _copilot;
     private readonly ILogger<CodexCatalogOverlayService> _log;
     private readonly TimeSpan _ttl;
+    private readonly TimeSpan _refreshTimeout;
     private readonly Func<DateTimeOffset> _utcNow;
     private readonly object _gate = new();
     private CacheEntry? _lastKnownGood;
     private Task<CodexCatalogOverlaySnapshot>? _refresh;
 
     public CodexCatalogOverlayService(ICopilotClient copilot, ILogger<CodexCatalogOverlayService> log)
-        : this(copilot, log, DefaultTtl, () => DateTimeOffset.UtcNow) { }
+        : this(copilot, log, DefaultTtl, DefaultRefreshTimeout, () => DateTimeOffset.UtcNow) { }
 
     internal CodexCatalogOverlayService(
         ICopilotClient copilot,
         ILogger<CodexCatalogOverlayService> log,
         TimeSpan ttl,
+        TimeSpan refreshTimeout,
         Func<DateTimeOffset> utcNow)
     {
         if (ttl <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(ttl));
+        if (refreshTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(refreshTimeout));
         _copilot = copilot;
         _log = log;
         _ttl = ttl;
+        _refreshTimeout = refreshTimeout;
         _utcNow = utcNow;
     }
 
@@ -58,11 +63,14 @@ internal sealed class CodexCatalogOverlayService
         await Task.Yield();
         try
         {
-            // ICopilotClient's named metadata HttpClient owns the finite two-minute
-            // upper bound. The shared refresh is deliberately not tied to one
-            // caller's cancellation: a cancelled Codex startup must not cancel the
-            // result awaited by other concurrent clients.
-            var response = await _copilot.GetModelsAsync(CancellationToken.None);
+            // Catalog discovery is startup-critical, so it has a short bound independent
+            // of both the metadata client's coarse timeout and any one caller. WaitAsync
+            // enforces that bound even if an ICopilotClient implementation ignores the
+            // cancellation token. The shared refresh remains alive when one caller leaves.
+            using var refreshCts = new CancellationTokenSource(_refreshTimeout);
+            var response = await _copilot.GetModelsAsync(refreshCts.Token)
+                .AsTask()
+                .WaitAsync(refreshCts.Token);
             var models = response.Data.ToArray();
             lock (_gate) _lastKnownGood = new CacheEntry(models, _utcNow());
             return Snapshot(models, validated: true, stale: false);

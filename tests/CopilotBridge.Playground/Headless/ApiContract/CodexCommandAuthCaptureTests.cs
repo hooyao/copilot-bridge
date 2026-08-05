@@ -47,7 +47,7 @@ public sealed class CodexCommandAuthCaptureTests
 
         var start = new ProcessStartInfo
         {
-            FileName = ResolveCodex0144(),
+            FileName = CodexProcess.ResolveCodexExe("0.144.1"),
             WorkingDirectory = work.Path,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -77,24 +77,6 @@ public sealed class CodexCommandAuthCaptureTests
         Assert.Contains(requests, request => request.Path == "/responses");
         Assert.All(requests.Where(request => request.Path is "/models" or "/responses"),
             request => Assert.Equal($"Bearer {AuthCommand.ProviderSentinel}", request.Authorization));
-    }
-
-    private static string ResolveCodex0144()
-    {
-        var command = GetCommandPath("codex.exe") ?? GetCommandPath("codex");
-        if (command is null) throw new FileNotFoundException("codex 0.144.1 is not on PATH");
-        return command;
-    }
-
-    private static string? GetCommandPath(string name)
-    {
-        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? "")
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var path = Path.Combine(directory, name);
-            if (File.Exists(path)) return path;
-        }
-        return null;
     }
 
     private static string Toml(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");

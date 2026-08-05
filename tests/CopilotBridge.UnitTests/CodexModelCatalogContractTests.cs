@@ -29,7 +29,6 @@ public sealed class CodexModelCatalogContractTests
 
     [Theory]
     [InlineData("0.144.0")]
-    [InlineData("0.144.0-alpha.4")]
     [InlineData("0.144.1")]
     [InlineData("0.144.99+local")]
     public void Reviewed0144FamilySelectsThePinnedCompleteBaseline(string version)
@@ -57,6 +56,7 @@ public sealed class CodexModelCatalogContractTests
     [InlineData("v0.144.1")]
     [InlineData("0.144")]
     [InlineData("0.144.1.2")]
+    [InlineData("0.144.0-alpha.4")]
     public void UnknownOrMalformedClientVersionDoesNotGuessABaseline(string? version)
     {
         var store = new CodexCatalogBaselineStore();
@@ -152,6 +152,23 @@ public sealed class CodexModelCatalogContractTests
         Assert.True(JsonElement.DeepEquals(
             before.GetProperty("auto_compact_token_limit"),
             after.GetProperty("auto_compact_token_limit")));
+    }
+
+    [Fact]
+    public void UnvalidatedLiveOverlayKeepsReviewedSafeBaselineWithoutAdvertisingAnUplift()
+    {
+        var baseline = LoadBaseline();
+        var projector = new CodexCatalogProjector(
+            new CodexModelProfileCatalog(),
+            new CopilotModelRegistry(),
+            NullLogger<CodexCatalogProjector>.Instance);
+
+        var result = projector.Project(baseline, [], liveOverlayValidated: false);
+        var model = Find(result.Models, "gpt-5.6-sol");
+
+        Assert.True(model.GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal(372_000, model.GetProperty("context_window").GetInt32());
+        Assert.Equal(JsonValueKind.Null, model.GetProperty("auto_compact_token_limit").ValueKind);
     }
 
     [Fact]

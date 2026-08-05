@@ -61,6 +61,48 @@ public sealed class CodexCatalogOverlayServiceTests
     }
 
     [Fact]
+    public async Task HangingColdRefreshReturnsStaticFallbackWithinCatalogBudget()
+    {
+        var never = new TaskCompletionSource<CopilotModelsResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new FakeClient(() => never.Task);
+
+        var result = await NewService(
+            client,
+            refreshTimeout: TimeSpan.FromMilliseconds(50)).GetAsync().AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.False(result.IsValidated);
+        Assert.False(result.IsStale);
+        Assert.Empty(result.Models);
+        Assert.Equal(1, client.CallCount);
+    }
+
+    [Fact]
+    public async Task HangingRefreshAfterSuccessReturnsLastKnownGoodWithinCatalogBudget()
+    {
+        var now = DateTimeOffset.Parse("2026-08-05T00:00:00Z");
+        var never = new TaskCompletionSource<CopilotModelsResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new FakeClient(
+            () => Task.FromResult(Response("gpt-5.4")),
+            () => never.Task);
+        var service = NewService(
+            client,
+            () => now,
+            refreshTimeout: TimeSpan.FromMilliseconds(50));
+        _ = await service.GetAsync();
+        now = now.AddMinutes(6);
+
+        var result = await service.GetAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(result.IsValidated);
+        Assert.True(result.IsStale);
+        Assert.Equal("gpt-5.4", Assert.Single(result.Models).Id);
+        Assert.Equal(2, client.CallCount);
+    }
+
+    [Fact]
     public async Task FreshTtlDoesNotRefetch()
     {
         var now = DateTimeOffset.Parse("2026-08-05T00:00:00Z");
@@ -74,8 +116,16 @@ public sealed class CodexCatalogOverlayServiceTests
         Assert.Equal(1, client.CallCount);
     }
 
-    private static CodexCatalogOverlayService NewService(FakeClient client, Func<DateTimeOffset>? utcNow = null) =>
-        new(client, NullLogger<CodexCatalogOverlayService>.Instance, TimeSpan.FromMinutes(5), utcNow ?? (() => DateTimeOffset.UtcNow));
+    private static CodexCatalogOverlayService NewService(
+        FakeClient client,
+        Func<DateTimeOffset>? utcNow = null,
+        TimeSpan? refreshTimeout = null) =>
+        new(
+            client,
+            NullLogger<CodexCatalogOverlayService>.Instance,
+            TimeSpan.FromMinutes(5),
+            refreshTimeout ?? TimeSpan.FromSeconds(5),
+            utcNow ?? (() => DateTimeOffset.UtcNow));
 
     private static CopilotModelsResponse Response(string id) => new()
     {
