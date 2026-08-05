@@ -2,6 +2,7 @@ using System.Net.ServerSentEvents;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Models.Anthropic.Request;
+using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
@@ -59,7 +60,11 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
     {
         _log.LogDebug("adapter {Name}: identity-stream (with CC-edge marker scrub)", Name);
         await foreach (var evt in irStream.WithCancellation(ct))
+        {
+            if (NativeResponsesEventCarrier.IsPrivate(evt))
+                continue;
             yield return ScrubMarkers(evt);
+        }
     }
 
     public ValueTask<byte[]> AdaptBufferedAsync(

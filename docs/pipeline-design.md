@@ -140,6 +140,35 @@ full set:
 > these Codex translators. Gemini (M4) remains genuinely IR-translated for the
 > same reasons.
 
+> **2026-08 — native Codex response fidelity.** The request still follows the
+> architecture above (`Responses → T1 → IR → T2 → Responses`). The streaming
+> response also still produces the T3 Anthropic-shaped semantic events because
+> the shared response detectors must inspect text, tool input, block boundaries,
+> usage and terminals. However, a clean Codex→Copilot-Responses response is no
+> longer reconstructed from that necessarily lossy subset. T3 records each
+> original Responses event plus its semantic expansion in a request-scoped
+> `NativeResponsesEventLedger` and sends a constant, allocation-free carrier token immediately
+> after the semantic events. Detectors never inspect the carrier itself. At T4,
+> an exact match between the detector-approved semantic sequence and the recorded
+> expansion authorizes the original event; any drop/rewrite/abort prevents blind
+> restoration and uses the detector-owned replacement/failure path. This preserves
+> reasoning summaries and encrypted content, message phases, response/item ids,
+> full usage details, unknown event/field extensions and terminal metadata without
+> growing the frozen Anthropic IR for every Responses feature. The ledger is
+> allocated only for a native `/codex` streaming route, removes entries as T4
+> consumes them. Source ordinals live in the FIFO ledger and are checked on add/take;
+> the ledger is cleared on normal completion, fault and cancellation. The
+> native `/cc` hot path pays no ledger allocation. `ClaudeCodeOutboundAdapter`
+> drops any carrier defensively on `/cc→Responses`, so raw Responses data never
+> crosses the Anthropic client edge.
+
+> In ordinary streaming, T4 consumes each FIFO entry as soon as its carrier
+> arrives, so the ledger holds at most one source event. The opt-in
+> `PreserveStream=false` detector mode is the deliberate exception: it already
+> buffers the entire semantic response before delivery, and its ledger entries
+> remain alongside that buffer until the stage chooses replay or a real HTTP
+> error. Both are cleared before request completion.
+
 ### 3.1 The matrix problem
 
 3 client shapes × 2 effective backend shapes = 6 (client, backend) pairs:
@@ -897,6 +926,42 @@ ResponseInspectionStage   injected with IEnumerable<IResponseDetector> (each a
     ▼
 endpoint writes ctx.Response.EventStream (streaming) or BufferedBody (buffered)
 ```
+
+For a native `/codex` request routed to `/responses`, the stream entering this
+stage is interleaved as `semantic IR event(s) → private ordinal carrier` for each
+upstream source event. Only the semantic IR events are fanned out to detectors;
+the carrier stays in relative order through normal streaming, whole-response
+buffering and per-block buffering. T4 releases the corresponding original
+Responses event only if the semantic sequence still matches exactly. Consequently
+the fidelity channel cannot undo `DropEvent`, `RewriteEvent` or `Abort`. The sole
+accepted clean rewrite is `ModelRewriteDetector`: T4 proves that the only semantic
+change was `message_start.message.model` and patches just `response.model` into
+original Responses envelopes, preserving every unrelated field.
+
+A non-cancelled native Codex stream always ends in exactly one Responses terminal.
+Clean `response.completed` / `response.incomplete` events are restored whole.
+An upstream `response.failed` remains a typed fault so generated error text cannot
+leak; Codex receives the bounded bridge-owned failed envelope. Premature EOF,
+upstream exception, stream-idle timeout or detector abort discards any open partial
+block and emits `response.failed` without fabricating tool-argument `.done`,
+`output_item.done` or a successful terminal. If the downstream request token is
+already cancelled, writing stops and endpoint accounting records client
+cancellation instead.
+
+On the native Codex request side, `function_call_output.output` arrays are
+normalized only because Copilot `/responses` requires one output value. Textual
+content blocks in any client-observed spelling (`text`, `input_text`, or
+`output_text`) contribute their text values separated by newlines. Other block
+types remain visible as compact JSON. Treating `input_text`/`output_text` as
+non-text would inject their JSON wrappers into model context; the two-day corpus
+replay guards this independently by call id.
+
+Modeled Responses reasoning input items also require an opaque extension lane.
+T1 maps `encrypted_content` to the IR redacted-thinking data slot and stores every
+present `id`, `summary`, and `content` value in that block's provider bag; T2 writes
+them back unchanged. This is not optional metadata under detailed reasoning:
+Codex echoes a reasoning item after custom-tool execution, and Copilot rejects the
+next turn when the present (sometimes empty) `summary` array was dropped.
 
 Each detector returns a `DetectionAction` — `None` (pass through), `DropEvent`
 (swallow + record in `ctx.DroppedEvents`), `RewriteEvent` (replace payload), or

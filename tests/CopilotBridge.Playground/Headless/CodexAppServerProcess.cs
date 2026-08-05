@@ -17,7 +17,9 @@ internal sealed record CodexAppServerInvocation(
     string CodexHome,
     string WorkingDirectory,
     string ExpectedCodexVersion,
-    TimeSpan? Timeout = null);
+    TimeSpan? Timeout = null,
+    string? ModelReasoningEffort = null,
+    string? ModelReasoningSummary = null);
 
 internal sealed record CodexAppServerResult(
     int ExitCode,
@@ -111,23 +113,44 @@ internal static class CodexAppServerProcess
                 ?? throw new InvalidDataException("Codex initialize response did not include userAgent.");
             await SendAsync(process, new JsonObject { ["method"] = "initialized" }, token);
 
+            var threadStartParams = new JsonObject
+            {
+                ["model"] = invocation.Model,
+                ["modelProvider"] = "copilot-bridge",
+                ["cwd"] = Path.GetFullPath(invocation.WorkingDirectory),
+                ["approvalPolicy"] = "never",
+                ["sandbox"] = "danger-full-access",
+            };
+            JsonObject? configOverrides = null;
+            if (invocation.ModelReasoningEffort is { Length: > 0 } reasoningEffort)
+            {
+                configOverrides ??= [];
+                configOverrides["model_reasoning_effort"] = reasoningEffort;
+            }
+            if (invocation.ModelReasoningSummary is { Length: > 0 } reasoningSummary)
+            {
+                configOverrides ??= [];
+                configOverrides["model_reasoning_summary"] = reasoningSummary;
+            }
+            if (configOverrides is not null)
+                threadStartParams["config"] = configOverrides;
             await SendAsync(process, new JsonObject
             {
                 ["method"] = "thread/start",
                 ["id"] = 2,
-                ["params"] = new JsonObject
-                {
-                    ["model"] = invocation.Model,
-                    ["modelProvider"] = "copilot-bridge",
-                    ["cwd"] = Path.GetFullPath(invocation.WorkingDirectory),
-                    ["approvalPolicy"] = "never",
-                    ["sandbox"] = "danger-full-access",
-                },
+                ["params"] = threadStartParams,
             }, token);
             var threadStart = await ReadUntilAsync(process, stdout,
                 message => ResponseId(message) == 2, token);
             var threadId = threadStart["result"]?["thread"]?["id"]?.GetValue<string>()
                 ?? throw new InvalidDataException("Codex thread/start response did not include thread.id.");
+            if (invocation.ModelReasoningEffort is { Length: > 0 } expectedEffort)
+            {
+                var actualEffort = threadStart["result"]?["reasoningEffort"]?.GetValue<string>();
+                if (!string.Equals(actualEffort, expectedEffort, StringComparison.Ordinal))
+                    throw new InvalidDataException(
+                        $"Codex thread/start reasoningEffort was '{actualEffort ?? "<null>"}', expected '{expectedEffort}'.");
+            }
 
             await SendAsync(process, new JsonObject
             {

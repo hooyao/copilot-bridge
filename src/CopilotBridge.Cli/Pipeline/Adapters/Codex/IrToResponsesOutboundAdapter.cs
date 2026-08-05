@@ -1,6 +1,9 @@
 using System.Net.ServerSentEvents;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Models.Anthropic.Request;
+using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Adapters.Codex;
@@ -37,8 +40,6 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
         _log.LogDebug("adapter {Name}: streaming IR→Responses", Name);
-        var sm = new AnthropicToResponsesStream(_ctx.Request.Body.Model, _log);
-
         // C2 — Codex's parser REQUIRES a terminal (response.completed/failed). The
         // happy-path Flush below only runs if the await-foreach completes; if the
         // upstream IR stream throws mid-relay (transient disconnect / premature
@@ -46,20 +47,39 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         // and hand Codex a headless stream that hangs. So iterate manually,
         // capture any fault, ALWAYS flush a terminal (response.failed on fault,
         // response.completed otherwise), then rethrow it for endpoint accounting.
+        var ledger = _ctx.Response.NativeResponsesEvents;
+        var sm = new AnthropicToResponsesStream(_ctx.Request.Body.Model, _log, ledger);
         await using var e = irStream.GetAsyncEnumerator(ct);
         Exception? fault = null;
-        while (true)
+        try
         {
-            bool moved;
-            try { moved = await e.MoveNextAsync(); }
-            catch (Exception ex) { fault = ex; break; }
-            if (!moved) break;
-            foreach (var outEvt in sm.Translate(e.Current))
-                yield return outEvt;
-        }
+            while (true)
+            {
+                bool moved;
+                try { moved = await e.MoveNextAsync(); }
+                catch (Exception ex) { fault = ex; break; }
+                if (!moved) break;
+                foreach (var outEvt in sm.Translate(e.Current))
+                    yield return outEvt;
+            }
 
-        foreach (var tail in sm.FlushTerminal(failed: fault is not null))
-            yield return tail;
+            var downstreamCancelled = fault is OperationCanceledException
+                && ct.IsCancellationRequested;
+            if (!downstreamCancelled)
+            {
+                var failureCode = fault is UpstreamResponseFailedException upstreamFailure
+                    ? upstreamFailure.Code
+                    : null;
+                foreach (var tail in sm.FlushTerminal(
+                             failed: fault is not null,
+                             failureCode: failureCode))
+                    yield return tail;
+            }
+        }
+        finally
+        {
+            ledger?.Clear();
+        }
 
         if (fault is not null)
         {
@@ -79,6 +99,10 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         byte[] irBody,
         CancellationToken ct)
     {
+        // Whole-response detector delivery can convert a streaming response into
+        // a real buffered HTTP error before this adapter's streaming enumerator is
+        // ever created. Release any native-event references that T3 accumulated.
+        _ctx.Response.NativeResponsesEvents?.Clear();
         if (ReferenceEquals(irBody, _ctx.Response.InitialBufferedIrBody)
             && _ctx.Response.BufferedResponsesWireBody is { } original)
         {
@@ -237,6 +261,7 @@ internal sealed class AnthropicToResponsesStream
     private const string FailedStopReason = "error";
     private readonly string _model;
     private readonly ILogger? _log;
+    private readonly NativeResponsesEventLedger? _nativeLedger;
     private int _seq;
     private bool _created;
     private int _outputIndex = -1;
@@ -291,14 +316,99 @@ internal sealed class AnthropicToResponsesStream
     private long _reasoningOutputTokens;
     // Accumulated completed output items, for the response.completed `output[]`.
     private readonly List<string> _completedItems = [];
+    private bool _nativeMode;
+    private bool _nativeTerminalDelivered;
+    private bool _nativeMutationFailed;
+    private int _nativeExpectedOrdinal;
+    private string? _nativeModelOverride;
+    private string _failureCode = "upstream_error";
+    private readonly List<SseItem<string>> _nativeActualSemantic = [];
 
-    public AnthropicToResponsesStream(string model, ILogger? log = null)
+    public AnthropicToResponsesStream(
+        string model,
+        ILogger? log = null,
+        NativeResponsesEventLedger? nativeLedger = null)
     {
         _model = model;
         _log = log;
+        _nativeLedger = nativeLedger;
     }
 
     public IEnumerable<SseItem<string>> Translate(SseItem<string> irEvt)
+    {
+        if (irEvt.EventType == NativeResponsesEventCarrier.BeginType)
+        {
+            _nativeMode = true;
+            _nativeTerminalDelivered = false;
+            _nativeMutationFailed = false;
+            _nativeExpectedOrdinal = 0;
+            _nativeActualSemantic.Clear();
+            yield break;
+        }
+
+        if (irEvt.EventType == NativeResponsesEventCarrier.EventType)
+        {
+            if (!_nativeMode
+                || !NativeResponsesEventCarrier.TryRead(
+                    irEvt, _nativeLedger, out var ordinal, out var original, out var expectedSemantic))
+            {
+                _log?.LogWarning("T4: malformed or out-of-context native Responses carrier; failing closed");
+                _nativeMutationFailed = true;
+                _stopReason = FailedStopReason;
+                yield break;
+            }
+
+            var unchanged = !_nativeMutationFailed
+                && ordinal == _nativeExpectedOrdinal
+                && SemanticSequenceEquals(_nativeActualSemantic, expectedSemantic);
+            if (!unchanged
+                && ordinal == _nativeExpectedOrdinal
+                && TryAcceptModelOnlyRewrite(expectedSemantic, _nativeActualSemantic, out var rewrittenModel))
+            {
+                _nativeModelOverride = rewrittenModel;
+                unchanged = true;
+            }
+
+            if (unchanged)
+            {
+                var restored = ApplyNativeModelOverride(original, _nativeModelOverride);
+                yield return restored;
+                if (IsResponsesTerminal(restored))
+                    _nativeTerminalDelivered = true;
+            }
+            else
+            {
+                // The original semantic group was dropped or rewritten in a way
+                // other than the one proven model-only rewrite. Do not try to
+                // reconstruct a partial replacement from state already accumulated
+                // by the streaming grammar machine: that could reintroduce content
+                // a detector intentionally removed. Fail closed through the native
+                // terminal; current production detectors use Abort for content
+                // rejection and the exact model-only path above for rewriting.
+                _log?.LogWarning(
+                    "T4: native Responses source event {Ordinal} was changed by response inspection; failing closed",
+                    ordinal);
+                _nativeMutationFailed = true;
+                _stopReason = FailedStopReason;
+            }
+
+            _nativeExpectedOrdinal = ordinal + 1;
+            _nativeActualSemantic.Clear();
+            yield break;
+        }
+
+        if (_nativeMode)
+        {
+            _nativeActualSemantic.Add(irEvt);
+            foreach (var _ in TranslateSemantic(irEvt)) { }
+            yield break;
+        }
+
+        foreach (var generated in TranslateSemantic(irEvt))
+            yield return generated;
+    }
+
+    private IEnumerable<SseItem<string>> TranslateSemantic(SseItem<string> irEvt)
     {
         JsonDocument doc;
         try { doc = JsonDocument.Parse(irEvt.Data); }
@@ -316,6 +426,14 @@ internal sealed class AnthropicToResponsesStream
 
             switch (type)
             {
+                case "error":
+                    // A response detector aborted the semantic IR stream. There is
+                    // deliberately no native carrier after the aborting event, so
+                    // latch a failed terminal here. Flush must NOT close an open
+                    // tool/text block as a successful output item first.
+                    _stopReason = FailedStopReason;
+                    break;
+
                 case "message_start":
                     if (!_created)
                     {
@@ -364,7 +482,19 @@ internal sealed class AnthropicToResponsesStream
 
     public IEnumerable<SseItem<string>> Flush()
     {
+        if (_nativeTerminalDelivered) yield break;
         if (!_created) yield break;
+        if (IsFailed())
+        {
+            // A fault/abort is not a successful block boundary. Discard the
+            // partially assembled block and emit only the honest failed terminal;
+            // synthesizing arguments.done/output_item.done here makes Codex commit
+            // a tool call the upstream never completed.
+            ResetOpenBlock();
+            yield return Ev("response.failed", FailedEnvelope());
+            _created = false;
+            yield break;
+        }
         foreach (var s in OnBlockStop()) yield return s;
         // Honest terminal: an IR-internal error stop (T3's marker for an upstream
         // response.failed) becomes a real response.failed; everything else is
@@ -375,16 +505,33 @@ internal sealed class AnthropicToResponsesStream
         _created = false;
     }
 
+    private void ResetOpenBlock()
+    {
+        _currentBlockType = null;
+        _argsBuffer = "";
+        _textBuffer = "";
+        _toolNamespace = "";
+        _toolIsCustom = false;
+        _customToolCallId = "";
+        _blockIsWebSearch = false;
+        _webSearchItemAdded = "";
+    }
+
     /// <summary>
     /// Guarantee a terminal even when the IR stream ended/threw without a
     /// message_stop (C2). <paramref name="failed"/> forces response.failed. If no
     /// message_start was seen (empty stream), synthesize the opening envelopes so
     /// the terminal is well-formed and Codex's parser always sees a complete turn.
     /// </summary>
-    public IEnumerable<SseItem<string>> FlushTerminal(bool failed)
+    public IEnumerable<SseItem<string>> FlushTerminal(
+        bool failed,
+        string? failureCode = null)
     {
+        if (_nativeTerminalDelivered) yield break;
         if (failed && _stopReason != FailedStopReason)
             _stopReason = FailedStopReason;
+        if (failed && !string.IsNullOrEmpty(failureCode))
+            _failureCode = failureCode;
         if (!_created)
         {
             _created = true;
@@ -393,6 +540,83 @@ internal sealed class AnthropicToResponsesStream
         }
         foreach (var s in Flush()) yield return s;
     }
+
+    private static bool SemanticSequenceEquals(
+        IReadOnlyList<SseItem<string>> actual,
+        in NativeSemanticSequence expected)
+    {
+        if (actual.Count != expected.Count) return false;
+        for (var i = 0; i < actual.Count; i++)
+        {
+            var expectedItem = expected.At(i);
+            if (!string.Equals(actual[i].EventType, expectedItem.EventType, StringComparison.Ordinal)
+                || !string.Equals(actual[i].Data, expectedItem.Data, StringComparison.Ordinal))
+                return false;
+        }
+        return true;
+    }
+
+    private static bool TryAcceptModelOnlyRewrite(
+        in NativeSemanticSequence expected,
+        IReadOnlyList<SseItem<string>> actual,
+        out string rewrittenModel)
+    {
+        rewrittenModel = "";
+        if (expected.Count != actual.Count) return false;
+        var rewrites = 0;
+        for (var i = 0; i < expected.Count; i++)
+        {
+            var expectedItem = expected.At(i);
+            if (!string.Equals(expectedItem.EventType, actual[i].EventType, StringComparison.Ordinal))
+                return false;
+            if (string.Equals(expectedItem.Data, actual[i].Data, StringComparison.Ordinal))
+                continue;
+            if (expectedItem.EventType != "message_start") return false;
+
+            try
+            {
+                var expectedNode = JsonNode.Parse(expectedItem.Data) as JsonObject;
+                var actualNode = JsonNode.Parse(actual[i].Data) as JsonObject;
+                var expectedMessage = expectedNode?["message"] as JsonObject;
+                var actualMessage = actualNode?["message"] as JsonObject;
+                if (expectedMessage is null || actualMessage is null
+                    || actualMessage["model"]?.GetValue<string>() is not { Length: > 0 } model)
+                    return false;
+                expectedMessage["model"] = model;
+                if (!JsonNode.DeepEquals(expectedNode, actualNode)) return false;
+                rewrittenModel = model;
+                rewrites++;
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+            {
+                return false;
+            }
+        }
+        return rewrites == 1;
+    }
+
+    private static SseItem<string> ApplyNativeModelOverride(
+        in SseItem<string> original,
+        string? model)
+    {
+        if (string.IsNullOrEmpty(model)) return original;
+        try
+        {
+            if (JsonNode.Parse(original.Data) is not JsonObject root
+                || root["response"] is not JsonObject response
+                || !response.ContainsKey("model"))
+                return original;
+            response["model"] = model;
+            return new SseItem<string>(root.ToJsonString(), original.EventType);
+        }
+        catch (JsonException)
+        {
+            return original;
+        }
+    }
+
+    private static bool IsResponsesTerminal(in SseItem<string> item) =>
+        item.EventType is "response.completed" or "response.incomplete" or "response.failed";
 
     private IEnumerable<SseItem<string>> OnBlockStart(JsonElement root)
     {
@@ -675,7 +899,7 @@ internal sealed class AnthropicToResponsesStream
         // Honest failure terminal. Codex's parser models response.failed; carry
         // whatever output was assembled before the failure plus an error object.
         var output = "[" + string.Join(",", _completedItems) + "]";
-        return $"{{\"type\":\"response.failed\",\"sequence_number\":{_seq++},\"response\":{{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":\"failed\",\"model\":{Enc(_model)},\"output\":{output},\"error\":{{\"code\":\"upstream_error\",\"message\":\"the upstream model backend failed mid-stream\"}},\"usage\":{UsageJson()}}}}}";
+        return $"{{\"type\":\"response.failed\",\"sequence_number\":{_seq++},\"response\":{{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":\"failed\",\"model\":{Enc(_model)},\"output\":{output},\"error\":{{\"code\":{Enc(_failureCode)},\"message\":\"the upstream model backend failed mid-stream\"}},\"usage\":{UsageJson()}}}}}";
     }
 
     private string UsageJson() =>

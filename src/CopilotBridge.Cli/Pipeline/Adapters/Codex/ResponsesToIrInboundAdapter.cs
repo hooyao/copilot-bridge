@@ -137,8 +137,8 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                     // Encrypted reasoning echo → a redacted-thinking block on an
                     // assistant message (opaque blob slot). The item's id rides the
                     // part-level ProviderExtensions bag so multi-turn reasoning
-                    // identity survives the round trip; summary/content are still
-                    // dropped (no typed home, not echoed by Codex on the way out).
+                    // identity plus opaque summary/content ride the part-level bag
+                    // so a detailed-reasoning echo remains a valid Responses item.
                     // If there's no blob, skip — a redacted_thinking block needs
                     // Data, and an id-only reasoning item carries nothing forwardable.
                     if (!string.IsNullOrEmpty(reasoning.EncryptedContent))
@@ -149,7 +149,8 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                             Content = [new RedactedThinkingBlockParam
                             {
                                 Data = reasoning.EncryptedContent,
-                                ProviderExtensions = BuildReasoningPartBag(reasoning.Id),
+                                ProviderExtensions = BuildReasoningPartBag(
+                                    reasoning.Id, reasoning.Summary, reasoning.Content),
                             }],
                         });
                     }
@@ -440,22 +441,36 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
     }
 
     /// <summary>
-    /// Build the part-level <c>openai</c> bag for a reasoning item, carrying its
-    /// <c>id</c> so multi-turn reasoning identity survives T1→IR→T2 (T2 has no
-    /// other place to recover it from a <see cref="RedactedThinkingBlockParam"/>).
-    /// Null when there's no id — keeps the block's bag <c>null</c> so it stays
-    /// inert for every Claude Code block (H1). Same AOT-clean
+    /// Build the part-level <c>openai</c> bag for a reasoning item, carrying every
+    /// opaque field the frozen IR cannot type: <c>id</c>, <c>summary</c>, and
+    /// <c>content</c>. A detailed-reasoning tool turn can omit id while summary is
+    /// required on echo, so the bag must not be gated on id alone. Null only when
+    /// all three are absent — keeping every Claude Code block inert (H1). Same AOT-clean
     /// <see cref="Utf8JsonWriter"/> style as <see cref="BuildOpenAiBag"/>.
     /// </summary>
-    private static ProviderExtensions? BuildReasoningPartBag(string? id)
+    private static ProviderExtensions? BuildReasoningPartBag(
+        string? id,
+        JsonElement? summary,
+        JsonElement? content)
     {
-        if (string.IsNullOrEmpty(id)) return null;
+        if (string.IsNullOrEmpty(id) && summary is null && content is null) return null;
 
         using var buffer = new MemoryStream();
         using (var w = new Utf8JsonWriter(buffer))
         {
             w.WriteStartObject();
-            w.WriteString("reasoning_id", id);
+            if (!string.IsNullOrEmpty(id))
+                w.WriteString("reasoning_id", id);
+            if (summary is { } summaryValue)
+            {
+                w.WritePropertyName("reasoning_summary");
+                summaryValue.WriteTo(w);
+            }
+            if (content is { } contentValue)
+            {
+                w.WritePropertyName("reasoning_content");
+                contentValue.WriteTo(w);
+            }
             w.WriteEndObject();
         }
 

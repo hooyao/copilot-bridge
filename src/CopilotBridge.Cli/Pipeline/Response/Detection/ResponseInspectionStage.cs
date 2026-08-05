@@ -4,6 +4,7 @@ using System.Text;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using Microsoft.Extensions.Logging;
 using CopilotBridge.Cli.Pipeline.Strategies;
+using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 
 namespace CopilotBridge.Cli.Pipeline.Response.Detection;
 
@@ -159,6 +160,7 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
             var action = DetectionAction.None;
             foreach (var d in detectors)
             {
+                if (NativeResponsesEventCarrier.IsPrivate(evt)) break;
                 var a = d.InspectEvent(evt);
                 if (a.Kind != DetectionActionKind.None)
                 {
@@ -254,6 +256,7 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
             var action = DetectionAction.None;
             foreach (var d in detectors)
             {
+                if (NativeResponsesEventCarrier.IsPrivate(evt)) break;
                 var a = d.InspectEvent(evt);
                 if (a.Kind != DetectionActionKind.None)
                 {
@@ -333,6 +336,7 @@ internal sealed class ResponseInspectionStage : IResponseStage<MessagesRequest>
             var action = DetectionAction.None;
             foreach (var d in detectors)
             {
+                if (NativeResponsesEventCarrier.IsPrivate(evt)) break;
                 var a = d.InspectEvent(evt);
                 if (a.Kind != DetectionActionKind.None)
                 {

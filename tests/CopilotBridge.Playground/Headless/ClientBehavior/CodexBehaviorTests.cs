@@ -98,6 +98,23 @@ public class CodexBehaviorTests
     }
 
     [Fact]
+    public async Task Codex_XhighReasoningAndCustomExec_PreservesNativeResponse_ForVerdict()
+    {
+        const string canary = "codex-reasoning-fidelity-canary-73159";
+        var prompt =
+            "Use xhigh reasoning. First call the collaboration.list_agents function tool once and inspect its result. "
+            + "After that, use your code-execution tool (run actual code, do not compute by hand). "
+            + "Compute 37 * 41, append the exact suffix "
+            + $"\"-{canary}\", report the resulting string verbatim, and then STOP.";
+
+        await DriveAndRecordAsync(
+            "codex-xhigh-reasoning-fidelity",
+            prompt,
+            modelReasoningEffort: "xhigh",
+            modelReasoningSummary: "detailed");
+    }
+
+    [Fact]
     public async Task Codex_CommandAuthCatalog_CarriesContextBeyond272k_AndExecutesMultiToolTask()
     {
         await DriveLongContextCatalogCaseAsync(
@@ -151,7 +168,11 @@ public class CodexBehaviorTests
     /// dispatch evidence to the run manifest. The xUnit layer asserts ONLY the harness
     /// contract; the verdict skill reads the per-run database and exact thread id.
     /// </summary>
-    private async Task DriveAndRecordAsync(string caseId, string prompt)
+    private async Task DriveAndRecordAsync(
+        string caseId,
+        string prompt,
+        string? modelReasoningEffort = null,
+        string? modelReasoningSummary = null)
     {
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(ServeScenario.Passthrough));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
@@ -168,7 +189,9 @@ public class CodexBehaviorTests
             Timeout: TimeSpan.FromMinutes(6),
             CodexHome: codexHome.Path,
             WorkingDirectory: work.Path,
-            ExpectedCodexVersion: ClientBehaviorSupport.CodexVersion));
+            ExpectedCodexVersion: ClientBehaviorSupport.CodexVersion,
+            ModelReasoningEffort: modelReasoningEffort,
+            ModelReasoningSummary: modelReasoningSummary));
 
         _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration}");
         _output.WriteLine($"dispatch log={result.DispatchLogPath} thread={result.ThreadId} window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
