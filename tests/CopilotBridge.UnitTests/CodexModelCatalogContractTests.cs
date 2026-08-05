@@ -43,6 +43,47 @@ public sealed class CodexModelCatalogContractTests
     }
 
     [Fact]
+    public void CapturedFixtureBytesMustMatchRecordedOfficialSourceDigest()
+    {
+        var source = Path.Combine(
+            AppContext.BaseDirectory, "Fixtures", "Codex", "rust-v" + CodexCatalogTestFixtures.CapturedVersion);
+        var scratch = Path.Combine(Path.GetTempPath(), "codex-fixture-integrity-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(scratch);
+        try
+        {
+            File.Copy(Path.Combine(source, "capture.json"), Path.Combine(scratch, "capture.json"));
+            var bytes = File.ReadAllBytes(Path.Combine(source, "models.json"));
+            File.WriteAllBytes(Path.Combine(scratch, "models.json"), [.. bytes, (byte)' ']);
+
+            Assert.Throws<InvalidDataException>(() =>
+                CodexCatalogTestFixtures.LoadFromDirectory(scratch));
+        }
+        finally
+        {
+            Directory.Delete(scratch, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ValidationErrorsDoNotEchoUntrustedCatalogIdentifiers()
+    {
+        const string canary = "untrusted-slug\r\nforged-log-line";
+        var baseline = SyntheticBaseline($$"""
+          {"models":[
+            {"slug":"{{canary.Replace("\r", "\\r").Replace("\n", "\\n")}}","base_instructions":"one","context_window":100,"max_context_window":100,"auto_compact_token_limit":90,"supported_in_api":true,"visibility":"list"},
+            {"slug":"{{canary.Replace("\r", "\\r").Replace("\n", "\\n")}}","base_instructions":"two","context_window":100,"max_context_window":100,"auto_compact_token_limit":90,"supported_in_api":true,"visibility":"list"}
+          ]}
+          """);
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            CodexCatalogBaselineValidator.Validate(baseline));
+
+        Assert.DoesNotContain(canary, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("forged-log-line", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("index 1", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ValidUpliftPreservesEveryCodexOwnedProperty()
     {
         var baseline = LoadBaseline();

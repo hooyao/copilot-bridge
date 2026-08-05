@@ -58,7 +58,13 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $fixtureRoot "rust-v$ClientVersion"
 }
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
-if (-not $outputRoot.StartsWith($fixtureRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+$pathComparison = if ([OperatingSystem]::IsWindows()) {
+    [StringComparison]::OrdinalIgnoreCase
+}
+else {
+    [StringComparison]::Ordinal
+}
+if (-not $outputRoot.StartsWith($fixtureRoot + [IO.Path]::DirectorySeparatorChar, $pathComparison)) {
     throw "OutputDirectory must resolve beneath the Codex fixture root: $fixtureRoot"
 }
 

@@ -59,3 +59,9 @@
 - [x] 8.1 Add contract-first tests proving HybridCache owns fresh-memory hits and same-version single-flight, stale source timestamps force a coordinated factory refresh, different versions remain concurrent, failed resolutions are not retained, and no distributed cache participates.
 - [x] 8.2 Replace the private memory/in-flight dictionaries and memory-retention state in `CodexCatalogSourceCache` with Microsoft `HybridCache`, leaving the factory as the straight-line disk → GitHub resolver and retaining the separate process-wide persistent-writer lock.
 - [x] 8.3 Update durable architecture text, run unit/non-integration and real online/offline Codex acceptance, publish win-x64 Native AOT with zero trim/AOT warnings, record the size delta, and re-run strict OpenSpec validation.
+
+## 9. PR review follow-ups
+
+- [x] 9.1 Keep stale-if-error inside HybridCache's shared factory outcome so coalesced waiters do not launch duplicate revalidation, and add the failure-path concurrency contract test.
+- [x] 9.2 Preserve the client-owned verdict contract by migrating every Codex `Kind=ClientBehavior` actuator to app-server with an isolated `logs_2.sqlite` and exact thread id.
+- [x] 9.3 Remove untrusted catalog identifiers from validation exceptions, restore the README configuration table, use OS-appropriate fixture path containment, and validate fixture bytes against recorded capture provenance.

@@ -95,7 +95,7 @@ internal sealed class CodexCatalogSourceCache(
                 async sharedCancellationToken =>
                 {
                     factoryRan = true;
-                    return RequireSuccess(await ResolveDiskThenSourceAsync(
+                    return RequireCacheable(await ResolveDiskThenSourceAsync(
                         version, fallback: null, sharedCancellationToken));
                 },
                 EntryOptions(),
@@ -123,7 +123,7 @@ internal sealed class CodexCatalogSourceCache(
         {
             return await memory.GetOrCreateAsync(
                 CacheKey(version),
-                async sharedCancellationToken => RequireSuccess(
+                async sharedCancellationToken => RequireCacheable(
                     await ResolveDiskThenSourceAsync(version, stale.Entry, sharedCancellationToken)),
                 RefreshOptions(),
                 cancellationToken: cancellationToken);
@@ -273,8 +273,14 @@ internal sealed class CodexCatalogSourceCache(
 
     private static string CacheKey(CodexClientVersion version) => "codex-catalog:" + version;
 
-    private static CodexCatalogResolution RequireSuccess(CodexCatalogResolution resolution) =>
-        resolution.Success ? resolution : throw new CatalogResolutionException(resolution);
+    // Throwing prevents HybridCache from publishing failures or stale fallback as a
+    // fresh L1 entry. The exception itself is shared by HybridCache's stampede task,
+    // so the owner and every coalesced waiter observe the same stale outcome without
+    // any waiter launching a second refresh.
+    private static CodexCatalogResolution RequireCacheable(CodexCatalogResolution resolution) =>
+        resolution.Success && resolution.Outcome != "stale"
+            ? resolution
+            : throw new CatalogResolutionException(resolution);
 
     private CodexCatalogResolution Stale(
         CodexClientVersion version,

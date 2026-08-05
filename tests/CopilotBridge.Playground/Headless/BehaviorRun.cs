@@ -31,7 +31,7 @@ internal sealed record BehaviorManifest(
     int ClientExitCode,
     double DurationSeconds,
     string TraceDir,      // bridge four-file audit (BridgeLogReader reads this)
-    string? DispatchLogPath, // codex app-server: per-run logs_2.sqlite; null for codex exec/claude
+    string? DispatchLogPath, // codex behavior: per-run logs_2.sqlite; null for claude
     long DispatchSinceUnix,  // codex: lower bound within the per-run log (0 for claude)
     long DispatchUntilUnix,  // codex: upper bound (0 for claude → treated as no upper bound)
     string Prompt,

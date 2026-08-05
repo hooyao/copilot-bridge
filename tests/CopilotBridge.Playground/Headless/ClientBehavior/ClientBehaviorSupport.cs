@@ -6,7 +6,7 @@ namespace CopilotBridge.Playground.Headless;
 /// Shared plumbing for the <b>client-behavior flywheel</b> tests. These are
 /// deliberately THIN xUnit "actuators": each starts a real bridge subprocess
 /// (<see cref="ServeProcess"/>) with a scenario config, drives a real headless
-/// client (<see cref="CodexProcess"/> / <see cref="ClaudeProcess"/>) on a task
+/// client (<see cref="CodexAppServerProcess"/> / <see cref="ClaudeProcess"/>) on a task
 /// chosen to exercise a specific code path, captures the evidence, and writes a
 /// <see cref="BehaviorManifest"/>. The xUnit assertions cover only the HARNESS
 /// CONTRACT — bridge came up, the client actually ran to completion (not a timeout /
@@ -14,7 +14,7 @@ namespace CopilotBridge.Playground.Headless;
 /// client executed the tool correctly: that verdict is the job of the
 /// <c>real-client-verify</c> skill's agent, which reads the strongest client-owned
 /// evidence exposed by that surface (codex app-server <c>logs_2.sqlite</c> / claude
-/// transcript; codex exec has no SQLite log). Encoding the semantic
+/// transcript). Encoding the semantic
 /// verdict in xUnit is exactly what let three green-but-broken gpt-5.6 releases ship.
 /// </summary>
 /// <remarks>
@@ -35,6 +35,9 @@ internal static class ClientBehaviorSupport
     /// <summary>Newest gpt (Codex) id under behavior test (<c>/codex</c> and the
     /// CC→gpt route target).</summary>
     public const string LatestGpt = "gpt-5.6-sol";
+
+    /// <summary>Reviewed Codex app-server build used by the behavior flywheel.</summary>
+    public const string CodexVersion = "0.147.0-alpha.1.2";
 
     /// <summary>Filename-safe UTC stamp for manifest/IO filenames. Test code, so a
     /// direct clock read is fine (unlike workflow scripts).</summary>
@@ -71,9 +74,7 @@ internal static class ClientBehaviorSupport
     /// (a client that crashed / errored out is a run failure, not a green actuator). What
     /// is deliberately NOT checked is whether the tool executed correctly — a client that
     /// ran to a clean exit but produced a broken tool call still passes here; the verdict
-    /// agent judges that from the client-owned evidence named by the manifest. A scenario
-    /// requiring SQLite proof must use <see cref="CodexAppServerProcess"/> rather than
-    /// <see cref="CodexProcess"/>.
+    /// agent judges that from the client-owned evidence named by the manifest.
     /// </summary>
     public static void AssertHarnessProducedEvidence(int clientExitCode, string traceDir, string manifestPath)
     {

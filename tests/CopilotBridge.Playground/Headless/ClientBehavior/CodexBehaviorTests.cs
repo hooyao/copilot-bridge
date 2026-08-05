@@ -23,10 +23,9 @@ namespace CopilotBridge.Playground.Headless;
 /// is written ONLY to <c>logs_2.sqlite</c> — the bridge stays 200 with
 /// <c>function_call</c> on the wire, so every signal the smoke asserted stayed green
 /// while exec was 100% broken. This suite fixes both: a load task that drives the
-/// real tool loop, and a manifest that hands the verdict agent the available client
-/// evidence. The exact-catalog acceptance scenario uses headless <c>codex app-server</c>,
-/// which starts the SQLite log layer and writes an isolated per-run database under
-/// <c>CODEX_SQLITE_HOME</c>.</para>
+/// real tool loop, and a manifest that hands the verdict agent an isolated client-owned
+/// <c>logs_2.sqlite</c>. Every case uses headless <c>codex app-server</c>, which starts
+/// the SQLite log layer under a per-run <c>CODEX_SQLITE_HOME</c>.</para>
 /// <para><b>Thin by design.</b> The xUnit assertions here only prove the harness
 /// produced evidence (bridge up, client ran, trace + log captured). Whether the tool
 /// actually executed — output present, no <c>ERROR codex_core::tools::router</c> /
@@ -54,9 +53,8 @@ public class CodexBehaviorTests
     /// <summary>
     /// A genuinely multi-step tool task that forces several <c>function_call</c> /
     /// <c>function_call_output</c> round-trips (two writes then a read-back), so the
-    /// real Codex tool loop actually happens for the latest gpt id. This legacy
-    /// <c>codex exec</c> actuator has no SQLite log; SQLite-required acceptance cases
-    /// use <see cref="CodexAppServerProcess"/>.
+    /// real Codex tool loop and its client-owned dispatch evidence actually happen for
+    /// the latest gpt id.
     /// </summary>
     [Fact]
     public async Task Codex_MultiStepToolChain_ProducesDispatchLogForVerdict()
@@ -148,17 +146,12 @@ public class CodexBehaviorTests
     }
 
     /// <summary>
-    /// Shared driver: boot a real bridge subprocess (passthrough), run real codex on the
-    /// prompt at the latest gpt id, and write the available client and bridge evidence to
-    /// the run manifest. The xUnit layer asserts ONLY the harness contract. Codex exec
-    /// 0.147 does not create <c>logs_2.sqlite</c>, so this helper must not be used for a
-    /// scenario whose acceptance contract requires a SQLite dispatch verdict.
+    /// Shared driver: boot a real bridge subprocess (passthrough), run real Codex
+    /// app-server on the prompt at the latest gpt id, and write its isolated SQLite
+    /// dispatch evidence to the run manifest. The xUnit layer asserts ONLY the harness
+    /// contract; the verdict skill reads the per-run database and exact thread id.
     /// </summary>
     private async Task DriveAndRecordAsync(string caseId, string prompt)
-        => await DriveAndRecordAsync(caseId, prompt, extraConfig: null);
-
-    private async Task DriveAndRecordAsync(
-        string caseId, string prompt, IReadOnlyList<string>? extraConfig)
     {
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(ServeScenario.Passthrough));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
@@ -166,17 +159,19 @@ public class CodexBehaviorTests
         // Disposable work dir so codex's file-writing tools mutate a throwaway dir, never
         // the test runner's checkout.
         using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        using var codexHome = ClientBehaviorSupport.NewWorkDir(caseId + "-home");
 
-        var result = await CodexProcess.RunAsync(new CodexInvocation(
+        var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
             BridgeBaseUrl: bridge.BaseUrl,
             Prompt: prompt,
             Model: ClientBehaviorSupport.LatestGpt,
             Timeout: TimeSpan.FromMinutes(6),
+            CodexHome: codexHome.Path,
             WorkingDirectory: work.Path,
-            ExtraConfig: extraConfig));
+            ExpectedCodexVersion: ClientBehaviorSupport.CodexVersion));
 
         _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration}");
-        _output.WriteLine($"dispatch log={result.DispatchLogPath ?? "<not exposed by codex exec>"} window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
+        _output.WriteLine($"dispatch log={result.DispatchLogPath} thread={result.ThreadId} window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
 
         var manifestPath = BehaviorRun.Write(
             new BehaviorManifest(
@@ -191,15 +186,15 @@ public class CodexBehaviorTests
                 DispatchLogPath: result.DispatchLogPath,
                 DispatchSinceUnix: result.StartedUnixSeconds,
                 DispatchUntilUnix: result.EndedUnixSeconds,
-                Prompt: prompt),
+                Prompt: prompt,
+                DispatchThreadId: result.ThreadId),
             result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
             out _, out _);
 
         _output.WriteLine($"[manifest] {manifestPath}");
-        _output.WriteLine("[verdict] run `/real-client-verify`; this codex exec surface exposes bridge/client IO evidence but no SQLite dispatch log.");
+        _output.WriteLine("[verdict] run `/real-client-verify`; it reads the isolated SQLite log for this exact thread.");
 
-        // Harness contract only. Do not treat this codex exec run as SQLite dispatch proof;
-        // SQLite-required scenarios are driven through CodexAppServerProcess.
+        // Harness contract only. The skill owns the semantic SQLite verdict.
         ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
     }
 
@@ -224,16 +219,14 @@ public class CodexBehaviorTests
         using var work = ClientBehaviorSupport.NewWorkDir(caseId);
         using var codexHome = ClientBehaviorSupport.NewWorkDir(caseId + "-home");
 
-        var result = await CodexProcess.RunAsync(new CodexInvocation(
+        var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
             BridgeBaseUrl: bridge.BaseUrl,
             Prompt: prompt,
             Model: ClientBehaviorSupport.LatestGpt,
             Timeout: TimeSpan.FromMinutes(12),
             CodexHome: codexHome.Path,
             WorkingDirectory: work.Path,
-            UseCommandAuth: true,
-            PromptViaStdin: true,
-            ExpectedCodexVersion: "0.144.1"));
+            ExpectedCodexVersion: ClientBehaviorSupport.CodexVersion));
 
         var manifestPath = BehaviorRun.Write(
             new BehaviorManifest(
@@ -249,7 +242,8 @@ public class CodexBehaviorTests
                 DispatchSinceUnix: result.StartedUnixSeconds,
                 DispatchUntilUnix: result.EndedUnixSeconds,
                 Prompt: $"[long prompt omitted from manifest: {paddingTokens} x 'a ' tokens] " +
-                    $"models_failure={forceModelsFailure}, canary={canary}"),
+                    $"models_failure={forceModelsFailure}, canary={canary}",
+                DispatchThreadId: result.ThreadId),
             result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(), out _, out _);
 
         _output.WriteLine($"[manifest] {manifestPath}");
@@ -284,7 +278,7 @@ public class CodexBehaviorTests
             Timeout: TimeSpan.FromMinutes(12),
             CodexHome: codexHome,
             WorkingDirectory: work.Path,
-            ExpectedCodexVersion: "0.147.0-alpha.1.2"));
+            ExpectedCodexVersion: ClientBehaviorSupport.CodexVersion));
 
         var manifestPath = BehaviorRun.Write(
             new BehaviorManifest(

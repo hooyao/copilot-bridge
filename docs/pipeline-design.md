@@ -701,8 +701,10 @@ The process-memory level and same-version stampede protection are provided by
 Microsoft `HybridCache`; no `IDistributedCache` participates. Its factory owns the
 straight-line persistent-disk → GitHub path. A stale L1 entry repeats the canonical
 key lookup with local reads disabled, so the framework coordinates one refresh and
-does not require a private memory or in-flight dictionary. Different versions may
-download and validate concurrently. Because HybridCache serializes factory results
+does not require a private memory or in-flight dictionary. A stale-if-error result
+is surfaced to the owner and all coalesced waiters through the shared factory task,
+but is deliberately not published as fresh L1 state; a later request can retry the
+source. Different versions may download and validate concurrently. Because HybridCache serializes factory results
 before L1 publication even with L2 disabled, the catalog registers a trim-safe
 local-only serializer; its deserialize path fails closed if the no-distributed-cache
 contract is ever violated. One process-wide asynchronous writer lock serializes

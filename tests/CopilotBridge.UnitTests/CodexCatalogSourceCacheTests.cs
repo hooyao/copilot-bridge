@@ -357,6 +357,45 @@ public sealed class CodexCatalogSourceCacheTests
     }
 
     [Fact]
+    public async Task ConcurrentStaleFallbackIsOneSharedOutcomeWithoutASecondRevalidation()
+    {
+        var clock = new ManualTimeProvider(Epoch);
+        var behaviorCall = 0;
+        var refreshEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRefresh = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var source = new FakeSource(async (version, _, _) =>
+        {
+            if (Interlocked.Increment(ref behaviorCall) == 1) return Modified(version, "initial");
+            refreshEntered.TrySetResult();
+            await releaseRefresh.Task;
+            return new CodexCatalogSourceResult
+            {
+                Status = CodexCatalogSourceStatus.TransportFailure,
+                Error = "offline",
+            };
+        });
+        var cache = Cache(source, new MemoryDisk(), clock);
+
+        Assert.True((await cache.ResolveAsync("0.147.0")).Success);
+        clock.Advance(TimeSpan.FromHours(24));
+
+        var owner = cache.ResolveAsync("0.147.0").AsTask();
+        await refreshEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var waiter = cache.ResolveAsync("0.147.0").AsTask();
+        await Task.Delay(30);
+        releaseRefresh.TrySetResult();
+
+        var results = await Task.WhenAll(owner, waiter);
+        Assert.Equal(2, source.Calls); // initial load + one failed shared revalidation
+        Assert.All(results, result =>
+        {
+            Assert.True(result.Success);
+            Assert.Equal("stale", result.Outcome);
+            Assert.Equal("initial", Assert.Single(result.Baseline!.Models).GetProperty("slug").GetString());
+        });
+    }
+
+    [Fact]
     public async Task DiagnosticsAreStructuredAndNeverContainCatalogOrCredentialContents()
     {
         const string catalogCanary = "catalog-body-secret-canary";

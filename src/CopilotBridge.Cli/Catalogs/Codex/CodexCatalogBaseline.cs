@@ -177,42 +177,46 @@ internal static class CodexCatalogBaselineValidator
             throw new InvalidDataException("Codex catalog must contain at least one model.");
 
         var slugs = new HashSet<string>(StringComparer.Ordinal);
-        var overrides = new List<(string Slug, string Target)>();
-        foreach (var model in baseline.Models)
+        var overrides = new List<(int Index, string Target)>();
+        for (var index = 0; index < baseline.Models.Count; index++)
         {
+            var model = baseline.Models[index];
             if (model.ValueKind != JsonValueKind.Object || !model.TryGetProperty("slug", out var slugProperty) ||
                 slugProperty.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(slugProperty.GetString()))
-                throw new InvalidDataException("Every Codex catalog entry must have a non-empty slug.");
+                throw InvalidEntry(index, "must have a non-empty slug");
             var slug = slugProperty.GetString()!;
-            if (!slugs.Add(slug)) throw new InvalidDataException($"Duplicate Codex catalog slug '{slug}'.");
+            if (!slugs.Add(slug)) throw InvalidEntry(index, "duplicates an earlier slug");
             if (!model.TryGetProperty("base_instructions", out var instructions) ||
                 instructions.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(instructions.GetString()))
-                throw new InvalidDataException($"Codex catalog entry '{slug}' has no instruction source.");
+                throw InvalidEntry(index, "has no instruction source");
             if (!TryReadPositiveInt(model, "context_window", out var contextWindow) ||
                 !TryReadPositiveInt(model, "max_context_window", out var maximumWindow) || maximumWindow < contextWindow)
-                throw new InvalidDataException($"Codex catalog entry '{slug}' has invalid context-window fields.");
+                throw InvalidEntry(index, "has invalid context-window fields");
             if (!model.TryGetProperty("auto_compact_token_limit", out var compact) ||
                 compact.ValueKind != JsonValueKind.Null &&
                 (compact.ValueKind != JsonValueKind.Number || !compact.TryGetInt32(out var compactValue) ||
                  compactValue <= 0 || compactValue >= contextWindow))
-                throw new InvalidDataException($"Codex catalog entry '{slug}' has invalid compaction behavior.");
+                throw InvalidEntry(index, "has invalid compaction behavior");
             if (!model.TryGetProperty("supported_in_api", out var supported) ||
                 supported.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
-                throw new InvalidDataException($"Codex catalog entry '{slug}' has invalid API support metadata.");
+                throw InvalidEntry(index, "has invalid API support metadata");
             if (!model.TryGetProperty("visibility", out var visibility) ||
                 visibility.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(visibility.GetString()))
-                throw new InvalidDataException($"Codex catalog entry '{slug}' has invalid visibility metadata.");
+                throw InvalidEntry(index, "has invalid visibility metadata");
             if (model.TryGetProperty("auto_review_model_override", out var review))
             {
                 if (review.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(review.GetString()))
-                    overrides.Add((slug, review.GetString()!));
+                    overrides.Add((index, review.GetString()!));
                 else if (review.ValueKind != JsonValueKind.Null)
-                    throw new InvalidDataException($"Codex catalog entry '{slug}' has invalid review override metadata.");
+                    throw InvalidEntry(index, "has invalid review override metadata");
             }
         }
-        foreach (var (slug, target) in overrides)
-            if (!slugs.Contains(target)) throw new InvalidDataException($"Codex catalog entry '{slug}' has unknown review override '{target}'.");
+        foreach (var (index, target) in overrides)
+            if (!slugs.Contains(target)) throw InvalidEntry(index, "has an unknown review override");
     }
+
+    private static InvalidDataException InvalidEntry(int index, string reason) =>
+        new($"Codex catalog entry at index {index} {reason}.");
 
     private static bool IsHex(string? value, int expectedLength) =>
         value is { } && value.Length == expectedLength &&
