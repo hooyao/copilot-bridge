@@ -132,8 +132,12 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             var keepAliveSeconds = IsAnthropicClientRoute(ctx.Request.Path)
                 ? _timeout.KeepAliveIntervalSeconds
                 : 0;
+            var preserveNativeEvents = ctx.Request.Path.StartsWith(
+                "/codex/", StringComparison.OrdinalIgnoreCase);
+            if (preserveNativeEvents)
+                ctx.Response.NativeResponsesEvents = new NativeResponsesEventLedger();
             ctx.Response.EventStream = TranslateStreamAsync(
-                resp, ctx.Request.Body.Model, capture, keepAliveSeconds, ctx.Ct);
+                resp, ctx.Request.Body.Model, capture, keepAliveSeconds, preserveNativeEvents, ctx.Ct);
             _log.LogDebug(
                 "strategy {Name}: T3 streaming (content-type={ContentType} keepAlive={KeepAliveSeconds}s)",
                 Name, contentType, keepAliveSeconds);
@@ -225,9 +229,14 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         string model,
         RawResponseCapture? capture,
         int keepAliveSeconds,
+        bool preserveNativeEvents,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        var sm = new ResponsesToAnthropicStream(model, _log);
+        var sm = new ResponsesToAnthropicStream(
+            model,
+            _log,
+            preserveNativeEvents,
+            preserveNativeEvents ? _ctx.Response.NativeResponsesEvents : null);
         Stream? rawStream = null;
         var streamIdleSeconds = _timeout.StreamIdleTimeoutSeconds;
         try

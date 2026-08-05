@@ -210,6 +210,14 @@ internal sealed class BridgeResponse
     /// </summary>
     public IAsyncEnumerable<SseItem<string>>? EventStream { get; set; }
 
+    /// <summary>
+    /// Request-scoped ledger for native Codex Responses event fidelity. T3 stores
+    /// one original event plus its semantic IR expansion; the stream carries only
+    /// a compact ordinal token through response inspection, and T4 removes each
+    /// entry as soon as it consumes that token. Empty on every non-Codex route.
+    /// </summary>
+    public Strategies.Codex.NativeResponsesEventLedger? NativeResponsesEvents { get; set; }
+
     /// <summary>Non-streaming response payload. Stages parse / mutate / re-serialize.</summary>
     public byte[]? BufferedBody { get; set; }
 

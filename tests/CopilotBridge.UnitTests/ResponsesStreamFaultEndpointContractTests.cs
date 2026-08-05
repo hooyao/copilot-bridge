@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
 using CopilotBridge.Cli.Endpoints.Codex;
@@ -49,7 +50,8 @@ public class ResponsesStreamFaultEndpointContractTests
         string Body,
         IReadOnlyDictionary<string, object?> Summary,
         IReadOnlyList<BridgeIoPayload> Audits,
-        IReadOnlyList<RecordedEvent> Logs);
+        IReadOnlyList<RecordedEvent> Logs,
+        int NativeLedgerCount = 0);
 
     private sealed class StubClient(HttpResponseMessage response) : ICopilotClient
     {
@@ -264,7 +266,7 @@ public class ResponsesStreamFaultEndpointContractTests
             }),
             loggerFactory.CreateLogger<ClaudeCodeMessagesEndpointTag>());
 
-        return OutcomeFrom(http, responseBytes, recorder.Events);
+        return OutcomeFrom(http, responseBytes, recorder.Events, context.Response.NativeResponsesEvents?.Count ?? 0);
     }
 
     private static async Task<Outcome> RunCodexAsync(Stream upstream, bool tracing = true)
@@ -288,7 +290,7 @@ public class ResponsesStreamFaultEndpointContractTests
             audit,
             loggerFactory.CreateLogger<CodexResponsesEndpointTag>());
 
-        return OutcomeFrom(http, responseBytes, recorder.Events);
+        return OutcomeFrom(http, responseBytes, recorder.Events, context.Response.NativeResponsesEvents?.Count ?? 0);
     }
 
     private static async Task<Outcome> RunCodexAsync(
@@ -318,24 +320,24 @@ public class ResponsesStreamFaultEndpointContractTests
             audit,
             loggerFactory.CreateLogger<CodexResponsesEndpointTag>());
 
-        return OutcomeFrom(http, responseBytes, recorder.Events);
+        return OutcomeFrom(http, responseBytes, recorder.Events, context.Response.NativeResponsesEvents?.Count ?? 0);
     }
 
     private static Pipeline<MessagesRequest> PipelineWithWholeResponseBuffering(
         BridgeContext<MessagesRequest> context,
         ILoggerFactory loggerFactory) => new()
-    {
-        Name = "whole-response-buffering-contract",
-        RequestStages = [],
-        ResponseStages =
+        {
+            Name = "whole-response-buffering-contract",
+            RequestStages = [],
+            ResponseStages =
         [
             new ResponseInspectionStage(
                 [new WholeResponseBufferingDetector()],
                 context,
                 loggerFactory.CreateLogger<ResponseInspectionStage>()),
         ],
-        Strategies = new StrategyRegistry<MessagesRequest>([]),
-    };
+            Strategies = new StrategyRegistry<MessagesRequest>([]),
+        };
 
     private static async Task<Outcome> RunClaudeBufferedAsync(
         byte[] upstreamBody,
@@ -445,7 +447,8 @@ public class ResponsesStreamFaultEndpointContractTests
     private static Outcome OutcomeFrom(
         DefaultHttpContext http,
         MemoryStream responseBytes,
-        IReadOnlyList<RecordedEvent> logs)
+        IReadOnlyList<RecordedEvent> logs,
+        int nativeLedgerCount = 0)
     {
         var summary = logs.Single(e =>
             e.Category == typeof(RequestSummaryLogger).FullName
@@ -460,7 +463,8 @@ public class ResponsesStreamFaultEndpointContractTests
             Encoding.UTF8.GetString(responseBytes.ToArray()),
             summary.Properties,
             audits,
-            logs);
+            logs,
+            nativeLedgerCount);
     }
 
     private static UpstreamTimeoutException StreamIdleFault() =>
@@ -593,6 +597,7 @@ public class ResponsesStreamFaultEndpointContractTests
         Assert.DoesNotContain("event: response.completed", outcome.Body);
         Assert.Equal("stream_idle", outcome.Summary["UpstreamTimeout"]?.ToString());
         Assert.NotEqual("(none)", outcome.Summary["ErrorDisplay"]?.ToString());
+        Assert.Equal(0, outcome.NativeLedgerCount);
     }
 
     [Fact]
@@ -612,6 +617,87 @@ public class ResponsesStreamFaultEndpointContractTests
         Assert.Equal(StatusCodes.Status200OK, codex.Status);
         Assert.Equal(1, Count(codex.Body, "event: response.failed"));
         Assert.DoesNotContain("event: error", codex.Body);
+        Assert.Equal(0, codex.NativeLedgerCount);
+    }
+
+    [Fact]
+    public async Task Codex_CompletedNativeStream_PreservesEveryEventValue_ThroughRealEndpoint()
+    {
+        var fixturePath = Path.Combine(
+            AppContext.BaseDirectory, "Fixtures", "responses-sse-fidelity.txt");
+        var fixtureText = await File.ReadAllTextAsync(fixturePath);
+        // Keep the committed text asset free of an extra blank line at EOF, but
+        // frame the final SSE event exactly as the HTTP wire does (double LF).
+        var fixtureWire = fixtureText + "\n";
+        var fixtureBytes = Encoding.UTF8.GetBytes(fixtureWire);
+        var outcome = await RunCodexAsync(new MemoryStream(fixtureBytes));
+
+        Assert.Equal(StatusCodes.Status200OK, outcome.Status);
+        var expected = ParseSse(Encoding.UTF8.GetString(fixtureBytes));
+        NormalizeExpectedCustomToolIds(expected);
+        var actual = ParseSse(outcome.Body);
+        Assert.Equal(expected.Count, actual.Count);
+        for (var i = 0; i < expected.Count; i++)
+        {
+            Assert.Equal(expected[i].EventType, actual[i].EventType);
+            using var expectedJson = JsonDocument.Parse(expected[i].Data);
+            using var actualJson = JsonDocument.Parse(actual[i].Data);
+            Assert.True(
+                JsonElement.DeepEquals(expectedJson.RootElement, actualJson.RootElement),
+                $"endpoint event[{i}] {expected[i].EventType} changed");
+        }
+        Assert.Equal(0, outcome.NativeLedgerCount);
+    }
+
+    private static void NormalizeExpectedCustomToolIds(List<(string? EventType, string Data)> events)
+    {
+        const string callId = "call_exec";
+        const string stableId = "ctc_exec";
+        for (var i = 0; i < events.Count; i++)
+        {
+            var root = JsonNode.Parse(events[i].Data)!.AsObject();
+            var type = root["type"]?.GetValue<string>();
+            if (type is "response.output_item.added" or "response.output_item.done"
+                && root["item"] is JsonObject item
+                && item["type"]?.GetValue<string>() == "custom_tool_call")
+                item["id"] = stableId;
+            else if (type is "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done")
+                root["item_id"] = stableId;
+            else if (type is "response.completed" or "response.incomplete"
+                && root["response"]?["output"] is JsonArray output)
+            {
+                foreach (var node in output)
+                    if (node is JsonObject terminalItem
+                        && terminalItem["type"]?.GetValue<string>() == "custom_tool_call"
+                        && terminalItem["call_id"]?.GetValue<string>() == callId)
+                        terminalItem["id"] = stableId;
+            }
+            events[i] = (events[i].EventType, root.ToJsonString());
+        }
+    }
+
+    private static List<(string? EventType, string Data)> ParseSse(string wire)
+    {
+        var result = new List<(string?, string)>();
+        string? eventType = null;
+        var data = new StringBuilder();
+        foreach (var rawLine in wire.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        {
+            if (rawLine.StartsWith("event:", StringComparison.Ordinal))
+                eventType = rawLine[6..].Trim();
+            else if (rawLine.StartsWith("data:", StringComparison.Ordinal))
+            {
+                if (data.Length > 0) data.Append('\n');
+                data.Append(rawLine[5..].TrimStart());
+            }
+            else if (rawLine.Length == 0 && (eventType is not null || data.Length > 0))
+            {
+                result.Add((eventType, data.ToString()));
+                eventType = null;
+                data.Clear();
+            }
+        }
+        return result;
     }
 
     [Fact]
@@ -786,6 +872,7 @@ public class ResponsesStreamFaultEndpointContractTests
         Assert.Equal(StatusCodes.Status200OK, codex.Status);
         Assert.Equal(1, Count(codex.Body, "event: response.failed"));
         Assert.DoesNotContain("event: response.completed", codex.Body);
+        Assert.Contains("\"code\":\"server_error\"", codex.Body);
         Assert.DoesNotContain("secret generated response text", codex.Body);
         Assert.NotEqual("(none)", codex.Summary["ErrorDisplay"]?.ToString());
     }

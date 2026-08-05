@@ -1,0 +1,59 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"future_top":"keep-created","response":{"id":"resp_original","object":"response","status":"in_progress","model":"gpt-5.6-sol","output":[],"future_response":{"keep":true}}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_original","object":"response","status":"in_progress","model":"gpt-5.6-sol","output":[]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":2,"output_index":0,"item":{"type":"reasoning","id":"rs_original","content":[],"encrypted_content":"ENCRYPTED-REASONING-ONE","summary":[],"future_reasoning":"keep-reasoning"}}
+
+event: response.reasoning_summary_part.added
+data: {"type":"response.reasoning_summary_part.added","sequence_number":3,"item_id":"rs_original","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","sequence_number":4,"item_id":"rs_original","output_index":0,"summary_index":0,"delta":"Inspecting the contract.","obfuscation":"reason-obf"}
+
+event: response.reasoning_summary_text.done
+data: {"type":"response.reasoning_summary_text.done","sequence_number":5,"item_id":"rs_original","output_index":0,"summary_index":0,"text":"Inspecting the contract."}
+
+event: response.reasoning_summary_part.done
+data: {"type":"response.reasoning_summary_part.done","sequence_number":6,"item_id":"rs_original","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":"Inspecting the contract."}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":7,"output_index":0,"item":{"type":"reasoning","id":"rs_original","content":[],"encrypted_content":"ENCRYPTED-REASONING-TWO","summary":[{"type":"summary_text","text":"Inspecting the contract."}],"future_reasoning":"keep-reasoning"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":8,"output_index":1,"item":{"type":"message","id":"msg_original","phase":"commentary","role":"assistant","status":"in_progress","content":[],"future_message":17}}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","sequence_number":9,"item_id":"msg_original","output_index":1,"content_index":0,"part":{"type":"output_text","text":"","annotations":[],"logprobs":[],"future_part":"keep-part"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":10,"item_id":"msg_original","output_index":1,"content_index":0,"delta":"Audit complete.","obfuscation":"text-obf","logprobs":[],"future_delta":42}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","sequence_number":11,"item_id":"msg_original","output_index":1,"content_index":0,"text":"Audit complete.","logprobs":[]}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","sequence_number":12,"item_id":"msg_original","output_index":1,"content_index":0,"part":{"type":"output_text","text":"Audit complete.","annotations":[],"logprobs":[],"future_part":"keep-part"}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":13,"output_index":1,"item":{"type":"message","id":"msg_original","phase":"commentary","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Audit complete.","annotations":[],"logprobs":[],"future_part":"keep-part"}],"future_message":17}}
+
+event: response.future_extension
+data: {"type":"response.future_extension","sequence_number":14,"opaque":{"nested":[1,true,"keep"]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":15,"output_index":2,"item":{"type":"custom_tool_call","id":"opaque-added-id","call_id":"call_exec","name":"exec","input":"","status":"in_progress","future_tool":"keep-tool"}}
+
+event: response.custom_tool_call_input.delta
+data: {"type":"response.custom_tool_call_input.delta","sequence_number":16,"item_id":"ctc_exec","output_index":2,"delta":"await tools.shell({cmd:\"echo ok\"});","obfuscation":"tool-obf","future_delta":"keep-tool-delta"}
+
+event: response.custom_tool_call_input.done
+data: {"type":"response.custom_tool_call_input.done","sequence_number":17,"item_id":"ctc_exec","output_index":2,"input":"await tools.shell({cmd:\"echo ok\"});","future_done":"keep-tool-done"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":18,"output_index":2,"item":{"type":"custom_tool_call","id":"opaque-done-id","call_id":"call_exec","name":"exec","input":"await tools.shell({cmd:\"echo ok\"});","status":"completed","future_tool":"keep-tool"}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":19,"future_terminal":"keep-terminal","response":{"id":"resp_original","object":"response","status":"completed","model":"gpt-5.6-sol","output":[{"type":"reasoning","id":"rs_original","encrypted_content":"ENCRYPTED-REASONING-TWO","summary":[{"type":"summary_text","text":"Inspecting the contract."}]},{"type":"message","id":"msg_original","phase":"commentary","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Audit complete.","annotations":[],"logprobs":[]}]},{"type":"custom_tool_call","id":"opaque-done-id","call_id":"call_exec","name":"exec","input":"await tools.shell({cmd:\"echo ok\"});","status":"completed"}],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":80,"cache_write_tokens":19,"future_usage":7},"output_tokens":25,"output_tokens_details":{"reasoning_tokens":20},"total_tokens":125},"prompt_cache_retention":"24h","future_response":{"keep":true}}}

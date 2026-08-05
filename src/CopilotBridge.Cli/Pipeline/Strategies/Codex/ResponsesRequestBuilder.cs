@@ -307,6 +307,7 @@ internal static class ResponsesRequestBuilder
                     if (TryGetReasoningId(rt.ProviderExtensions, out var reasoningId))
                         w.WriteString("id", reasoningId);
                     w.WriteString("encrypted_content", rt.Data);
+                    WriteReasoningOpaqueFields(w, rt.ProviderExtensions);
                     w.WriteEndObject();
                     break;
                 case ThinkingBlockParam:
@@ -553,10 +554,10 @@ internal static class ResponsesRequestBuilder
     /// which is <c>string | Array&lt;block&gt; | null</c>, OR a Codex round-trip's
     /// raw <c>JsonElement</c> output (string / object / scalar):
     /// <list type="bullet">
-    ///   <item><b>Array</b> (Claude Code content blocks like
-    ///         <c>[{type:text,text:…}]</c>) → the <c>text</c> fields concatenated
-    ///         with newlines; a non-text block is kept as compact JSON so nothing
-    ///         is lost. gpt-5.5 can't read the Anthropic block shape as a Responses
+    ///   <item><b>Array</b> (Claude Code <c>text</c> blocks or Codex
+    ///         <c>input_text</c>/<c>output_text</c> blocks) → the <c>text</c>
+    ///         fields concatenated with newlines; a non-text block is kept as
+    ///         compact JSON so nothing is lost. gpt-5.5 can't read the Anthropic block shape as a Responses
     ///         output-content array, so it MUST be flattened to a string.</item>
     ///   <item><b>Anything else</b> (string, object, scalar) → written verbatim.
     ///         This preserves two contracts at once: the common string case is
@@ -577,13 +578,15 @@ internal static class ResponsesRequestBuilder
         if (c.ValueKind == JsonValueKind.Array)
         {
             var sb = new System.Text.StringBuilder();
+            var wroteBlock = false;
             foreach (var block in c.EnumerateArray())
             {
-                if (sb.Length > 0) sb.Append('\n');
+                if (wroteBlock) sb.Append('\n');
+                wroteBlock = true;
                 if (block.ValueKind == JsonValueKind.Object
                     && block.TryGetProperty("type", out var bt)
                     && bt.ValueKind == JsonValueKind.String
-                    && bt.GetString() == "text"
+                    && bt.GetString() is "text" or "input_text" or "output_text"
                     && block.TryGetProperty("text", out var txt)
                     && txt.ValueKind == JsonValueKind.String)
                 {
@@ -636,6 +639,32 @@ internal static class ResponsesRequestBuilder
             return id.Length > 0;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Re-emit opaque Responses reasoning fields T1 stored on the redacted-thinking
+    /// block. These have no Anthropic IR equivalent but can be required by Copilot
+    /// on the tool-result echo turn (live: detailed summary without an item id).
+    /// </summary>
+    private static void WriteReasoningOpaqueFields(
+        Utf8JsonWriter writer,
+        Models.Common.ProviderExtensions? ext)
+    {
+        if (ext?.ByProvider.TryGetValue(
+                ResponsesToIrInboundAdapter.OpenAiProviderKey, out var bag) != true
+            || bag.ValueKind != JsonValueKind.Object)
+            return;
+
+        if (bag.TryGetProperty("reasoning_summary", out var summary))
+        {
+            writer.WritePropertyName("summary");
+            summary.WriteTo(writer);
+        }
+        if (bag.TryGetProperty("reasoning_content", out var content))
+        {
+            writer.WritePropertyName("content");
+            content.WriteTo(writer);
+        }
     }
 
     /// <summary>

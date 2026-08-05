@@ -108,6 +108,37 @@ public class CodexARoundTripTests
         Assert.Equal(origApply!.ToJsonString(), emitApply!.ToJsonString());
     }
 
+    [Fact]
+    public void A2b_ReasoningItem_PreservesSummaryContentAndEncryptedBlob()
+    {
+        const string requestJson = """
+          {
+            "model":"gpt-5.6-sol",
+            "input":[
+              {
+                "type":"reasoning",
+                "id":"rs_live",
+                "encrypted_content":"ENCRYPTED-LIVE-BLOB",
+                "summary":[{"type":"summary_text","text":"checked the tool"}],
+                "content":[{"type":"reasoning_text","text":"opaque content"}]
+              },
+              {"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+            ],
+            "reasoning":{"effort":"xhigh","summary":"detailed"},
+            "stream":true
+          }
+          """;
+
+        var original = CodexRoundTrip.ParseNode(requestJson).AsObject()["input"]!.AsArray()[0]!.AsObject();
+        var emitted = CodexRoundTrip.RoundTrip(requestJson).AsObject()["input"]!.AsArray()[0]!.AsObject();
+
+        Assert.Equal("reasoning", emitted["type"]!.GetValue<string>());
+        Assert.Equal(original["id"]!.ToJsonString(), emitted["id"]!.ToJsonString());
+        Assert.Equal(original["encrypted_content"]!.ToJsonString(), emitted["encrypted_content"]!.ToJsonString());
+        Assert.Equal(original["summary"]!.ToJsonString(), emitted["summary"]!.ToJsonString());
+        Assert.Equal(original["content"]!.ToJsonString(), emitted["content"]!.ToJsonString());
+    }
+
     // ── A3: bag survival canary ──────────────────────────────────────────────
 
     [Fact]

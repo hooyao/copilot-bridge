@@ -373,4 +373,78 @@ public class CodexStreamRobustnessTests
         // The structured output object survives as an object (not stringified).
         Assert.Equal("""{"rows":[1,2],"ok":true}""", fco!["output"]!.ToJsonString());
     }
+
+    [Theory]
+    [InlineData("text")]
+    [InlineData("input_text")]
+    [InlineData("output_text")]
+    public void ToolResultTextBlockVariants_FlattenToTextWithoutJsonWrapper(string partType)
+    {
+        var requestJson = $$"""
+          {
+            "model":"gpt-5.6-sol",
+            "input":[
+              {"type":"function_call_output","call_id":"c1","output":[
+                {"type":"{{partType}}","text":"first"},
+                {"type":"{{partType}}","text":"second"}
+              ]}
+            ],
+            "stream":true
+          }
+          """;
+
+        var emitted = CodexRoundTrip.RoundTrip(requestJson).AsObject();
+        var output = emitted["input"]!.AsArray()[0]!["output"]!.GetValue<string>();
+
+        Assert.Equal("first\nsecond", output);
+        Assert.DoesNotContain("\"type\"", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ToolResultMixedArray_PreservesNonTextBlockAsCompactJson()
+    {
+        const string requestJson = """
+          {
+            "model":"gpt-5.6-sol",
+            "input":[
+              {"type":"function_call_output","call_id":"c1","output":[
+                {"type":"input_text","text":"first"},
+                {"type":"image","source":"opaque"}
+              ]}
+            ],
+            "stream":true
+          }
+          """;
+
+        var emitted = CodexRoundTrip.RoundTrip(requestJson).AsObject();
+        Assert.Equal(
+            "first\n{\"type\":\"image\",\"source\":\"opaque\"}",
+            emitted["input"]!.AsArray()[0]!["output"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData("", "second", "\nsecond")]
+    [InlineData("first", "", "first\n")]
+    [InlineData("", "", "\n")]
+    public void ToolResultTextBlocks_PreserveSeparatorsAroundEmptyParts(
+        string first,
+        string second,
+        string expected)
+    {
+        var requestJson = $$"""
+          {
+            "model":"gpt-5.6-sol",
+            "input":[
+              {"type":"function_call_output","call_id":"c1","output":[
+                {"type":"input_text","text":{{JsonSerializer.Serialize(first)}}},
+                {"type":"input_text","text":{{JsonSerializer.Serialize(second)}}}
+              ]}
+            ],
+            "stream":true
+          }
+          """;
+
+        var emitted = CodexRoundTrip.RoundTrip(requestJson).AsObject();
+        Assert.Equal(expected, emitted["input"]!.AsArray()[0]!["output"]!.GetValue<string>());
+    }
 }

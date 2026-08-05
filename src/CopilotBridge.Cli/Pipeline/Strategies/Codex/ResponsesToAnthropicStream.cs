@@ -33,6 +33,11 @@ internal sealed class ResponsesToAnthropicStream
 {
     private readonly string _model;
     private readonly ILogger? _log;
+    private readonly bool _preserveNativeEvents;
+    private readonly NativeResponsesEventLedger? _nativeLedger;
+    private bool _nativeBeginEmitted;
+    private int _nativeOrdinal;
+    private bool _sourceEventParsed;
     private string _messageId = "msg_bridge";
     private bool _messageStarted;
     // Latched true once a terminal (message_delta + message_stop) has been emitted,
@@ -95,10 +100,16 @@ internal sealed class ResponsesToAnthropicStream
     private long _cacheReadInputTokens;
     private long _reasoningOutputTokens;
 
-    public ResponsesToAnthropicStream(string model, ILogger? log = null)
+    public ResponsesToAnthropicStream(
+        string model,
+        ILogger? log = null,
+        bool preserveNativeEvents = false,
+        NativeResponsesEventLedger? nativeLedger = null)
     {
         _model = model;
         _log = log;
+        _preserveNativeEvents = preserveNativeEvents;
+        _nativeLedger = nativeLedger;
     }
 
     /// <summary>True after any non-empty upstream event was observed, including
@@ -111,6 +122,34 @@ internal sealed class ResponsesToAnthropicStream
 
     public IEnumerable<SseItem<string>> Translate(SseItem<string> evt)
     {
+        if (!_preserveNativeEvents)
+        {
+            foreach (var item in TranslateSemantic(evt))
+                yield return item;
+            yield break;
+        }
+
+        if (!_nativeBeginEmitted)
+        {
+            _nativeBeginEmitted = true;
+            yield return NativeResponsesEventCarrier.Begin();
+        }
+
+        var semantic = new NativeSemanticSequence();
+        foreach (var item in TranslateSemantic(evt))
+        {
+            semantic.Add(item);
+            yield return item;
+        }
+        if (!_sourceEventParsed)
+            yield break;
+        yield return NativeResponsesEventCarrier.Create(
+            _nativeOrdinal++, evt, semantic, _nativeLedger);
+    }
+
+    private IEnumerable<SseItem<string>> TranslateSemantic(SseItem<string> evt)
+    {
+        _sourceEventParsed = false;
         if (!string.IsNullOrWhiteSpace(evt.Data))
             _sawUpstreamActivity = true;
 
@@ -132,6 +171,7 @@ internal sealed class ResponsesToAnthropicStream
         }
         using (doc)
         {
+            _sourceEventParsed = true;
             var root = doc.RootElement;
             var type = root.TryGetProperty("type", out var t) ? t.GetString() : evt.EventType;
 
@@ -251,8 +291,8 @@ internal sealed class ResponsesToAnthropicStream
                     // carry only the bounded machine code, never generated detail.
                     throw new UpstreamResponseFailedException(ExtractErrorCode(root));
 
-                // in_progress, content_part.*, reasoning_*, etc. — no IR equivalent
-                // needed for the bridge's purposes; swallow.
+                    // in_progress, content_part.*, reasoning_*, etc. — no IR equivalent
+                    // needed for the bridge's purposes; swallow.
             }
         }
     }
