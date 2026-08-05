@@ -288,6 +288,77 @@ public sealed class CountTokensResponsesEndpointTests
         Assert.Contains("output_config.task_budget", outcome.Body);
     }
 
+    [Theory]
+    [InlineData("{\"role\":\"user\",\"content\":\"x\",\"future_budget\":4096}", "messages[0].future_budget")]
+    [InlineData("{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\",\"future_budget\":4096}]}", "messages[0].content[0].future_budget")]
+    public async Task UnsupportedNestedMessageField_FailsBeforeAnyUpstreamCall(
+        string message, string expectedPath)
+    {
+        var request = "{\"model\":\"claude-opus-5\",\"messages\":[" + message + "]}";
+
+        var outcome = await Run(request);
+
+        Assert.Equal(400, outcome.Status);
+        Assert.Equal(0, outcome.Client.CountCalls);
+        Assert.Contains(expectedPath, outcome.Body);
+    }
+
+    [Fact]
+    public async Task UnsupportedToolField_FailsButOpaqueSchemaPropertiesAndInputRemainAllowed()
+    {
+        const string unsupported =
+            "{\"model\":\"claude-opus-5\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],"
+            + "\"tools\":[{\"name\":\"Bash\",\"future_budget\":4096,"
+            + "\"input_schema\":{\"type\":\"object\"}}]}";
+        var rejected = await Run(unsupported);
+        Assert.Equal(400, rejected.Status);
+        Assert.Equal(0, rejected.Client.CountCalls);
+        Assert.Contains("tools[0].future_budget", rejected.Body);
+
+        const string unsupportedSchema =
+            "{\"model\":\"claude-opus-5\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],"
+            + "\"tools\":[{\"name\":\"Bash\",\"input_schema\":{\"type\":\"object\","
+            + "\"additionalProperties\":false}}]}";
+        var schemaRejected = await Run(unsupportedSchema);
+        Assert.Equal(400, schemaRejected.Status);
+        Assert.Equal(0, schemaRejected.Client.CountCalls);
+        Assert.Contains("tools[0].input_schema.additionalProperties", schemaRejected.Body);
+
+        const string opaqueJson =
+            "{\"model\":\"claude-opus-5\",\"messages\":[{\"role\":\"assistant\",\"content\":["
+            + "{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"Bash\","
+            + "\"input\":{\"future_nested\":{\"budget\":4096}}}]}],"
+            + "\"tools\":[{\"name\":\"Bash\",\"input_schema\":{\"type\":\"object\","
+            + "\"properties\":{\"future_nested\":{\"type\":\"object\",\"x-vendor-budget\":4096}}}}]}";
+        var accepted = await Run(opaqueJson);
+        Assert.Equal(200, accepted.Status);
+        Assert.Equal(1, accepted.Client.CountCalls);
+        Assert.Contains("future_nested", Encoding.UTF8.GetString(accepted.Client.CountBody!));
+    }
+
+    [Theory]
+    [InlineData(
+        "{\"type\":\"tool_result\",\"tool_use_id\":\"call-1\",\"content\":[{\"type\":\"text\",\"text\":\"x\",\"future_budget\":4096}]}",
+        "messages[0].content[0].content[0].future_budget")]
+    [InlineData(
+        "{\"type\":\"document\",\"source\":{\"type\":\"text\",\"data\":\"count me\"}}",
+        "type=document")]
+    [InlineData(
+        "{\"type\":\"image\",\"source\":{\"type\":\"file\",\"file_id\":\"file-1\"}}",
+        "source.type=file")]
+    public async Task NestedContentThatT2CannotPreserve_FailsExplicitly(
+        string block, string expectedPath)
+    {
+        var request = "{\"model\":\"claude-opus-5\",\"messages\":["
+            + "{\"role\":\"user\",\"content\":[" + block + "]}]}";
+
+        var outcome = await Run(request);
+
+        Assert.Equal(400, outcome.Status);
+        Assert.Equal(0, outcome.Client.CountCalls);
+        Assert.Contains(expectedPath, outcome.Body);
+    }
+
     [Fact]
     public async Task TransformedCountFailure_IsRelayedWithoutSourceCountFallback()
     {

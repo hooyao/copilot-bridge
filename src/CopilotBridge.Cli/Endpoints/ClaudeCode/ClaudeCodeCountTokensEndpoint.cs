@@ -91,7 +91,8 @@ internal static class ClaudeCodeCountTokensEndpoint
             }
             catch (JsonException ex)
             {
-                await WriteAnthropicErrorAsync(
+                responseHeaders["Content-Type"] = "application/json";
+                responseBody = await WriteAnthropicErrorAsync(
                     httpCtx, StatusCodes.Status400BadRequest,
                     "invalid request body: " + ex.Message, ct);
                 responseStatus = StatusCodes.Status400BadRequest;
@@ -103,7 +104,9 @@ internal static class ClaudeCodeCountTokensEndpoint
             {
                 responseStatus = StatusCodes.Status400BadRequest;
                 error = "count_tokens body requires model and messages";
-                await WriteAnthropicErrorAsync(httpCtx, responseStatus, error, ct);
+                responseHeaders["Content-Type"] = "application/json";
+                responseBody = await WriteAnthropicErrorAsync(
+                    httpCtx, responseStatus, error, ct);
                 return;
             }
 
@@ -146,7 +149,9 @@ internal static class ClaudeCodeCountTokensEndpoint
                 {
                     responseStatus = StatusCodes.Status400BadRequest;
                     error = shapeError;
-                    await WriteAnthropicErrorAsync(httpCtx, responseStatus, error!, ct);
+                    responseHeaders["Content-Type"] = "application/json";
+                    responseBody = await WriteAnthropicErrorAsync(
+                        httpCtx, responseStatus, error!, ct);
                     return;
                 }
 
@@ -174,7 +179,9 @@ internal static class ClaudeCodeCountTokensEndpoint
             {
                 responseStatus = StatusCodes.Status400BadRequest;
                 error = $"count_tokens does not support target backend {target.Vendor}";
-                await WriteAnthropicErrorAsync(httpCtx, responseStatus, error, ct);
+                responseHeaders["Content-Type"] = "application/json";
+                responseBody = await WriteAnthropicErrorAsync(
+                    httpCtx, responseStatus, error, ct);
                 return;
             }
 
@@ -241,6 +248,7 @@ internal static class ClaudeCodeCountTokensEndpoint
             responseStatus = StatusCodes.Status400BadRequest;
             error = ex.Message;
             responseBody = SerializeAnthropicError(ex.Message);
+            responseHeaders["Content-Type"] = "application/json";
             await WriteBytesAsync(httpCtx, responseStatus, responseBody, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -249,6 +257,7 @@ internal static class ClaudeCodeCountTokensEndpoint
             error = ex.Message;
             responseBody = SerializeAnthropicError(
                 "upstream error: " + ex.Message, "api_error");
+            responseHeaders["Content-Type"] = "application/json";
             if (!httpCtx.Response.HasStarted)
                 await WriteBytesAsync(httpCtx, responseStatus, responseBody, CancellationToken.None);
         }
@@ -340,12 +349,16 @@ internal static class ClaudeCodeCountTokensEndpoint
             },
             JsonContext.Default.ErrorResponse);
 
-    private static async Task WriteAnthropicErrorAsync(
+    private static async Task<byte[]> WriteAnthropicErrorAsync(
         HttpContext context,
         int status,
         string message,
-        CancellationToken ct) =>
-        await WriteBytesAsync(context, status, SerializeAnthropicError(message), ct);
+        CancellationToken ct)
+    {
+        var body = SerializeAnthropicError(message);
+        await WriteBytesAsync(context, status, body, ct);
+        return body;
+    }
 
     private static async Task WriteBytesAsync(
         HttpContext context,

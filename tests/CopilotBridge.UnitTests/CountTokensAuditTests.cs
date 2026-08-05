@@ -33,13 +33,15 @@ public class CountTokensAuditTests
     private sealed class StubClient(
         byte[] response,
         HttpStatusCode status = HttpStatusCode.OK,
-        string contentType = "application/json") : ICopilotClient
+        string contentType = "application/json",
+        Exception? failure = null) : ICopilotClient
     {
         public byte[]? LastPosted { get; private set; }
 
         public ValueTask<HttpResponseMessage> PostCountTokensAsync(
             ReadOnlyMemory<byte> body, CancellationToken ct = default)
         {
+            if (failure is not null) throw failure;
             LastPosted = body.ToArray();
             var resp = new HttpResponseMessage(status)
             {
@@ -72,24 +74,28 @@ public class CountTokensAuditTests
         public void SignOut() { }
     }
 
-    private sealed record Result(List<BridgeIoPayload> Audits, byte[]? PostedBody, string ClientBody);
+    private sealed record Result(
+        List<BridgeIoPayload> Audits, byte[]? PostedBody,
+        int Status, string ClientBody, string? ClientContentType);
 
     private static async Task<Result> Run(
         string baseUrl,
         byte[] copilotResponse,
         HttpStatusCode status = HttpStatusCode.OK,
         string contentType = "application/json",
-        RoutesConfig? routes = null)
+        RoutesConfig? routes = null,
+        string requestJson = RequestJson,
+        Exception? failure = null)
     {
         var recorder = new RecordingLoggerProvider();
         using var loggerFactory = LoggerFactory.Create(b => b.AddProvider(recorder));
         var audit = TestAudit.Create(true, loggerFactory.CreateLogger<MessagesRequest>());
-        var client = new StubClient(copilotResponse, status, contentType);
+        var client = new StubClient(copilotResponse, status, contentType, failure);
 
         var http = new DefaultHttpContext();
         http.Request.Method = "POST";
         http.Request.Path = "/cc/v1/messages/count_tokens";
-        http.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(RequestJson));
+        http.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(requestJson));
         var respStream = new MemoryStream();
         http.Response.Body = respStream;
 
@@ -108,7 +114,9 @@ public class CountTokensAuditTests
         var audits = recorder.Events
             .Select(e => e.Properties.TryGetValue("Payload", out var p) ? p as BridgeIoPayload : null)
             .Where(p => p is not null).Select(p => p!).ToList();
-        return new Result(audits, client.LastPosted, Encoding.UTF8.GetString(respStream.ToArray()));
+        return new Result(
+            audits, client.LastPosted, http.Response.StatusCode,
+            Encoding.UTF8.GetString(respStream.ToArray()), http.Response.ContentType);
     }
 
     private static string BodyText(BridgeIoPayload p) => Encoding.UTF8.GetString(p.Body, 0, p.BodyLength);
@@ -207,5 +215,68 @@ public class CountTokensAuditTests
             downstream.Body.AsMemory(0, downstream.BodyLength));
         Assert.Equal(121,
             downstreamJson.RootElement.GetProperty("input_tokens").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("not-json")]
+    [InlineData("{\"model\":\"claude-opus-4-8\",\"messages\":[],\"future_budget\":4096}")]
+    public async Task LocalFailure_AuditMatchesExactClientResponse(string request)
+    {
+        var routes = new RoutesConfig
+        {
+            Locations =
+            [
+                new RouteLocation
+                {
+                    When = new MatchExpression { Model = "claude-opus-4.8" },
+                    Use = new LocationUse { Model = "gpt-5.6-sol" },
+                },
+            ],
+        };
+        var r = await Run(
+            "https://api.githubcopilot.com", Encoding.UTF8.GetBytes("unused"),
+            routes: routes, requestJson: request);
+
+        Assert.Equal(400, r.Status);
+        Assert.Equal("application/json", r.ClientContentType);
+        Assert.Null(r.PostedBody);
+        var downstream = r.Audits.Single(a => a.Kind == "inbound-resp");
+        Assert.Equal(r.Status, downstream.Status);
+        Assert.Equal(r.ClientBody, BodyText(downstream));
+        Assert.Equal(r.ClientContentType, downstream.Headers["Content-Type"]);
+    }
+
+    [Fact]
+    public async Task UnknownModelFailure_AuditMatchesExactClientResponse()
+    {
+        var r = await Run(
+            "https://api.githubcopilot.com", Encoding.UTF8.GetBytes("unused"),
+            requestJson:
+                "{\"model\":\"future-unknown-model\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]}");
+
+        Assert.Equal(400, r.Status);
+        Assert.Equal("application/json", r.ClientContentType);
+        Assert.Null(r.PostedBody);
+        AssertClientAndAuditResponseEqual(r);
+    }
+
+    [Fact]
+    public async Task UpstreamException_AuditMatchesExactClientResponse()
+    {
+        var r = await Run(
+            "https://api.githubcopilot.com", Encoding.UTF8.GetBytes("unused"),
+            failure: new HttpRequestException("forced count failure"));
+
+        Assert.Equal(502, r.Status);
+        Assert.Equal("application/json", r.ClientContentType);
+        AssertClientAndAuditResponseEqual(r);
+    }
+
+    private static void AssertClientAndAuditResponseEqual(Result result)
+    {
+        var downstream = result.Audits.Single(a => a.Kind == "inbound-resp");
+        Assert.Equal(result.Status, downstream.Status);
+        Assert.Equal(result.ClientBody, BodyText(downstream));
+        Assert.Equal(result.ClientContentType, downstream.Headers["Content-Type"]);
     }
 }

@@ -58,6 +58,16 @@ internal static class CountTokensResponseParser
                 found = true;
             }
 
+            if (reader.TokenType != JsonTokenType.EndObject)
+            {
+                error = "malformed count_tokens response";
+                return false;
+            }
+            if (reader.Read())
+            {
+                error = "count_tokens response contains trailing JSON";
+                return false;
+            }
             if (!found)
             {
                 error = "count_tokens response omitted input_tokens";

@@ -36,3 +36,9 @@
 - [x] 5.4 Add a `CcToGptContextRecovery` deterministic upstream/scenario using a real Debug bridge subprocess. Accept and record any small real count request without making its presence a prerequisite for recovery, inject the exact context 400 on the first qualifying tool-bearing `/responses` request, identify and serve the compact-summary turn, then issue Bash/Read and a final canary; keep auxiliary title traffic outside the main phase counter.
 - [x] 5.5 Extend `ClaudeProcess` only for this case to use an isolated `CLAUDE_CONFIG_DIR` and retain session persistence (or first prove stream-json emits equivalent compact evidence). Run real headless `claude.exe` and require its own transcript to contain `compact_boundary(trigger=auto)`, a retry and `tool_use`→`tool_result` after the boundary, the final canary, and no internal T3 markers.
 - [x] 5.6 Review traces together with client evidence: raw Copilot 400 at `upstream-resp`, rewritten prompt-too-long at `inbound-resp`, no production count call to `/responses`, post-compact target/tool execution, and no behavior change outside Claude-to-Responses. Treat exit zero, request count, bridge 200, trace success, or canary without a client compact boundary as insufficient.
+
+## 6. PR review follow-ups
+
+- [x] 6.1 Recursively validate the message, interpreted content-block, tool, and schema-container shapes used by cross-routed counting while preserving opaque tool input, tool-result payload, and JSON-Schema property JSON; explicitly fail T2-unsupported document/file-image inputs.
+- [x] 6.2 Reject a count response with any trailing second JSON value after the top-level object.
+- [x] 6.3 Make every locally generated count error audit the exact body and content type written to the client, including malformed/unsupported input, unknown-model, and upstream-exception branches.

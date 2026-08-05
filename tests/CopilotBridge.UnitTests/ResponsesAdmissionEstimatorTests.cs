@@ -109,6 +109,7 @@ public sealed class ResponsesAdmissionEstimatorTests
     [InlineData("{\"input_tokens\":1.5}")]
     [InlineData("{\"input_tokens\":\"9\"}")]
     [InlineData("{\"input_tokens\":2147483648}")]
+    [InlineData("{\"input_tokens\":1}{\"unexpected\":true}")]
     public void InvalidUpstreamCount_IsRejected(string json)
     {
         Assert.False(CountTokensResponseParser.TryParse(
