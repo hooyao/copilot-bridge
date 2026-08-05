@@ -12,8 +12,9 @@ namespace CopilotBridge.Playground.Headless;
 /// CONTRACT — bridge came up, the client actually ran to completion (not a timeout /
 /// missing-exe), and evidence was captured. They intentionally do NOT assert the
 /// client executed the tool correctly: that verdict is the job of the
-/// <c>real-client-verify</c> skill's agent, which reads the client's OWN dispatch
-/// log (codex <c>logs_2.sqlite</c> / claude transcript). Encoding the semantic
+/// <c>real-client-verify</c> skill's agent, which reads the strongest client-owned
+/// evidence exposed by that surface (codex app-server <c>logs_2.sqlite</c> / claude
+/// transcript; codex exec has no SQLite log). Encoding the semantic
 /// verdict in xUnit is exactly what let three green-but-broken gpt-5.6 releases ship.
 /// </summary>
 /// <remarks>
@@ -70,7 +71,9 @@ internal static class ClientBehaviorSupport
     /// (a client that crashed / errored out is a run failure, not a green actuator). What
     /// is deliberately NOT checked is whether the tool executed correctly — a client that
     /// ran to a clean exit but produced a broken tool call still passes here; the verdict
-    /// agent judges that from the client's own log the manifest points at.
+    /// agent judges that from the client-owned evidence named by the manifest. A scenario
+    /// requiring SQLite proof must use <see cref="CodexAppServerProcess"/> rather than
+    /// <see cref="CodexProcess"/>.
     /// </summary>
     public static void AssertHarnessProducedEvidence(int clientExitCode, string traceDir, string manifestPath)
     {

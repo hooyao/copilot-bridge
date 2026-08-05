@@ -1,4 +1,6 @@
 using System.Runtime.Versioning;
+using System.Buffers.Binary;
+using System.Text.Json.Nodes;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -9,7 +11,7 @@ namespace CopilotBridge.Playground.Headless;
 /// real bridge SUBPROCESS (<see cref="ServeProcess"/>, passthrough scenario, native
 /// <c>/codex</c>) on tasks chosen to exercise the code paths where the shipped
 /// gpt-5.6 bugs actually lived — then records a manifest pointing at codex's OWN
-/// dispatch log so the <c>real-client-verify</c> skill can render the verdict.
+/// evidence so the <c>real-client-verify</c> skill can render the verdict.
 /// </summary>
 /// <remarks>
 /// <para><b>Why this exists / what the old smokes missed.</b> The previous
@@ -21,9 +23,10 @@ namespace CopilotBridge.Playground.Headless;
 /// is written ONLY to <c>logs_2.sqlite</c> — the bridge stays 200 with
 /// <c>function_call</c> on the wire, so every signal the smoke asserted stayed green
 /// while exec was 100% broken. This suite fixes both: a load task that drives the
-/// real tool loop, and a manifest that hands the verdict agent the path to codex's
-/// dispatch log in the real <c>~/.codex/logs_2.sqlite</c> (windowed to this run's
-/// start — codex logs there regardless of <c>CODEX_HOME</c>).</para>
+/// real tool loop, and a manifest that hands the verdict agent the available client
+/// evidence. The exact-catalog acceptance scenario uses headless <c>codex app-server</c>,
+/// which starts the SQLite log layer and writes an isolated per-run database under
+/// <c>CODEX_SQLITE_HOME</c>.</para>
 /// <para><b>Thin by design.</b> The xUnit assertions here only prove the harness
 /// produced evidence (bridge up, client ran, trace + log captured). Whether the tool
 /// actually executed — output present, no <c>ERROR codex_core::tools::router</c> /
@@ -51,8 +54,9 @@ public class CodexBehaviorTests
     /// <summary>
     /// A genuinely multi-step tool task that forces several <c>function_call</c> /
     /// <c>function_call_output</c> round-trips (two writes then a read-back), so the
-    /// real Codex tool loop — and its dispatch outcome in <c>logs_2.sqlite</c> —
-    /// actually happens for the latest gpt id.
+    /// real Codex tool loop actually happens for the latest gpt id. This legacy
+    /// <c>codex exec</c> actuator has no SQLite log; SQLite-required acceptance cases
+    /// use <see cref="CodexAppServerProcess"/>.
     /// </summary>
     [Fact]
     public async Task Codex_MultiStepToolChain_ProducesDispatchLogForVerdict()
@@ -118,12 +122,37 @@ public class CodexBehaviorTests
             forceModelsFailure: false);
     }
 
+    [Fact]
+    public async Task Codex_ExactCatalog_OnlineThenOfflineRestart_UsesPersistentStaleCache()
+    {
+        using var cache = ClientBehaviorSupport.NewWorkDir("codex-source-cache-persistent");
+        using var onlineHome = ClientBehaviorSupport.NewWorkDir("codex-source-cache-online-home");
+        using var offlineHome = ClientBehaviorSupport.NewWorkDir("codex-source-cache-offline-home");
+
+        await DrivePersistentCatalogRunAsync(
+            "codex-exact-catalog-online",
+            "codex-exact-online-canary-1050000",
+            cache.Path,
+            onlineHome.Path,
+            forceSourceFailure: false);
+
+        var record = Assert.Single(Directory.EnumerateFiles(cache.Path, "catalog-*.cache"));
+        AgeDiskRecordBeyondSourceTtl(record);
+
+        await DrivePersistentCatalogRunAsync(
+            "codex-exact-catalog-offline-restart",
+            "codex-exact-offline-canary-1050000",
+            cache.Path,
+            offlineHome.Path,
+            forceSourceFailure: true);
+    }
+
     /// <summary>
     /// Shared driver: boot a real bridge subprocess (passthrough), run real codex on the
-    /// prompt at the latest gpt id, and write the run manifest pointing the verdict agent
-    /// at codex's own dispatch log. The xUnit layer asserts ONLY the harness contract —
-    /// the "did the tool execute / any incompatible-payload fatal" verdict is the skill's
-    /// job from <c>~/.codex/logs_2.sqlite</c>.
+    /// prompt at the latest gpt id, and write the available client and bridge evidence to
+    /// the run manifest. The xUnit layer asserts ONLY the harness contract. Codex exec
+    /// 0.147 does not create <c>logs_2.sqlite</c>, so this helper must not be used for a
+    /// scenario whose acceptance contract requires a SQLite dispatch verdict.
     /// </summary>
     private async Task DriveAndRecordAsync(string caseId, string prompt)
         => await DriveAndRecordAsync(caseId, prompt, extraConfig: null);
@@ -147,7 +176,7 @@ public class CodexBehaviorTests
             ExtraConfig: extraConfig));
 
         _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration}");
-        _output.WriteLine($"dispatch log (real ~/.codex)={result.DispatchLogPath} window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
+        _output.WriteLine($"dispatch log={result.DispatchLogPath ?? "<not exposed by codex exec>"} window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
 
         var manifestPath = BehaviorRun.Write(
             new BehaviorManifest(
@@ -167,10 +196,10 @@ public class CodexBehaviorTests
             out _, out _);
 
         _output.WriteLine($"[manifest] {manifestPath}");
-        _output.WriteLine("[verdict] run `/real-client-verify` — it reads ~/.codex/logs_2.sqlite (windowed) for the dispatch outcome.");
+        _output.WriteLine("[verdict] run `/real-client-verify`; this codex exec surface exposes bridge/client IO evidence but no SQLite dispatch log.");
 
-        // Harness contract only. The dispatch verdict (did exec run? any router fatal?)
-        // is the skill agent's job, read from logs_2.sqlite the manifest points at.
+        // Harness contract only. Do not treat this codex exec run as SQLite dispatch proof;
+        // SQLite-required scenarios are driven through CodexAppServerProcess.
         ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
     }
 
@@ -225,6 +254,85 @@ public class CodexBehaviorTests
 
         _output.WriteLine($"[manifest] {manifestPath}");
         ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
+    private async Task DrivePersistentCatalogRunAsync(
+        string caseId,
+        string canary,
+        string cacheDirectory,
+        string codexHome,
+        bool forceSourceFailure)
+    {
+        const int paddingTokens = 285_000;
+        var prompt =
+            "Perform these steps with separate shell tool calls, in order. Do not fabricate output:\n" +
+            "1. Run `echo first-catalog-cache-line > codex_catalog_cache_probe.txt`.\n" +
+            $"2. Run `echo {canary} >> codex_catalog_cache_probe.txt`.\n" +
+            "3. Run `cat codex_catalog_cache_probe.txt`, report its exact second line, and stop.\n" +
+            "The following padding is inert reference text. Ignore it except for carrying it in active context:\n" +
+            string.Concat(Enumerable.Repeat("a ", paddingTokens));
+
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.Passthrough,
+            CodexCatalogCacheDirectory: cacheDirectory,
+            ForceCodexCatalogSourceFailure: forceSourceFailure));
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: prompt,
+            Model: ClientBehaviorSupport.LatestGpt,
+            Timeout: TimeSpan.FromMinutes(12),
+            CodexHome: codexHome,
+            WorkingDirectory: work.Path,
+            ExpectedCodexVersion: "0.147.0-alpha.1.2"));
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "codex",
+                Route: "/codex",
+                Model: ClientBehaviorSupport.LatestGpt,
+                Scenario: ServeScenario.Passthrough,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: result.DispatchLogPath,
+                DispatchSinceUnix: result.StartedUnixSeconds,
+                DispatchUntilUnix: result.EndedUnixSeconds,
+                Prompt: $"[long prompt omitted: {paddingTokens} x 'a '] " +
+                    $"forced_source_failure={forceSourceFailure}, canary={canary}",
+                DispatchThreadId: result.ThreadId),
+            result.Stdout,
+            result.Stderr,
+            ClientBehaviorSupport.Stamp(),
+            out _,
+            out _);
+
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine($"app-server user-agent={result.UserAgent}");
+        _output.WriteLine($"dispatch thread={result.ThreadId}, turn status={result.TurnStatus}");
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
+    private static void AgeDiskRecordBeyondSourceTtl(string path)
+    {
+        var record = File.ReadAllBytes(path);
+        Assert.True(record.AsSpan(0, 8).SequenceEqual("CBCAT001"u8));
+        var metadataLength = BinaryPrimitives.ReadInt32LittleEndian(record.AsSpan(8, 4));
+        var sourceLength = BinaryPrimitives.ReadInt32LittleEndian(record.AsSpan(12, 4));
+        var metadata = JsonNode.Parse(record.AsSpan(16, metadataLength))!.AsObject();
+        var stale = DateTimeOffset.UtcNow.AddDays(-30).ToString("O");
+        metadata["fetched_at_utc"] = stale;
+        metadata["validated_at_utc"] = stale;
+        var metadataBytes = System.Text.Encoding.UTF8.GetBytes(metadata.ToJsonString());
+        var rewritten = new byte[16 + metadataBytes.Length + sourceLength];
+        "CBCAT001"u8.CopyTo(rewritten);
+        BinaryPrimitives.WriteInt32LittleEndian(rewritten.AsSpan(8, 4), metadataBytes.Length);
+        BinaryPrimitives.WriteInt32LittleEndian(rewritten.AsSpan(12, 4), sourceLength);
+        metadataBytes.CopyTo(rewritten.AsSpan(16));
+        record.AsSpan(16 + metadataLength, sourceLength)
+            .CopyTo(rewritten.AsSpan(16 + metadataBytes.Length));
+        File.WriteAllBytes(path, rewritten);
     }
 
 }

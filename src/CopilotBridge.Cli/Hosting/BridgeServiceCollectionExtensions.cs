@@ -22,6 +22,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Serilog.Extensions.Logging;
@@ -78,7 +79,10 @@ internal static class BridgeServiceCollectionExtensions
             services.PostConfigure<BridgeServerOptions>(opts => opts.Port = port);
         }
         services.Configure<TracingOptions>(config.GetSection("Tracing"));
-        services.Configure<CodexModelCatalogOptions>(config.GetSection("Codex:ModelCatalog"));
+        services.AddOptions<CodexModelCatalogOptions>()
+            .Bind(config.GetSection("Codex:ModelCatalog"))
+            .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<CodexModelCatalogOptions>, CodexModelCatalogOptionsValidator>();
         services.Configure<RoutesConfig>(config.GetSection("Routing"));
         services.Configure<OutboundBetaPolicyOptions>(config.GetSection("Pipeline:OutboundBeta"));
         services.Configure<ResponseModelRewriteOptions>(config.GetSection("Pipeline:Detectors:ModelRewrite"));
@@ -136,6 +140,14 @@ internal static class BridgeServiceCollectionExtensions
             http.Timeout = TimeSpan.FromSeconds(30);
             http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
         }).RemoveAllLoggers();
+        services.AddHttpClient(UpstreamHttpClientNames.CodexCatalogSource, http =>
+        {
+            // The resolver applies its configurable per-request timeout. Keeping
+            // HttpClient unbounded avoids two competing cancellation clocks.
+            http.Timeout = Timeout.InfiniteTimeSpan;
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
+        }).ConfigurePrimaryHttpMessageHandler(CodexCatalogSourceHttpHandler.Create)
+            .RemoveAllLoggers();
         // Metadata (/models, count_tokens) likewise keeps a finite timeout. These
         // are NOT turn forwards, so they never pass through the first-byte /
         // stream-idle budgets — without a client-level cap they would have no bound
@@ -162,7 +174,24 @@ internal static class BridgeServiceCollectionExtensions
         services.AddSingleton<IAuthService>(sp => sp.GetRequiredService<AuthService>());
         services.AddSingleton<CopilotHeaderFactory>();
         services.AddSingleton<ICopilotClient, CopilotClient>();
-        services.AddSingleton<CodexCatalogBaselineStore>();
+        // AddHybridCache uses TryAdd for its reflection-based JSON fallback.
+        // Pre-register an explicit-only factory so runtime resolution never
+        // selects that fallback; every value type used below must supply its
+        // own serializer.
+        services.AddSingleton<IHybridCacheSerializerFactory>(
+            new ExplicitOnlyHybridCacheSerializerFactory());
+        services.AddHybridCache(options =>
+        {
+            options.MaximumKeyLength = 128;
+            options.MaximumPayloadBytes = 16 * 1024 * 1024;
+            options.DefaultEntryOptions = new HybridCacheEntryOptions
+            {
+                Flags = HybridCacheEntryFlags.DisableDistributedCache,
+            };
+        }).AddSerializer(new CodexCatalogResolutionHybridCacheSerializer());
+        services.AddSingleton<ICodexCatalogSourceClient, CodexCatalogSourceClient>();
+        services.AddSingleton<ICodexCatalogDiskStore, CodexCatalogDiskStore>();
+        services.AddSingleton<ICodexCatalogSourceCache, CodexCatalogSourceCache>();
         services.AddSingleton<CodexCatalogOverlayService>();
         services.AddSingleton<CodexCatalogProjector>();
 

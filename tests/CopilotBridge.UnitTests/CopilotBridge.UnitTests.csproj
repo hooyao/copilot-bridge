@@ -36,6 +36,7 @@
   <ItemGroup>
     <Content Include="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Fixtures\**\*.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\Fixtures\Codex\**\*" Link="Fixtures\Codex\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

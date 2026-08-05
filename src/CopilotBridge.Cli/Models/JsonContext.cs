@@ -36,7 +36,7 @@ namespace CopilotBridge.Cli.Models;
 [JsonSerializable(typeof(CopilotTokenEndpoints))]
 [JsonSerializable(typeof(CopilotModelsResponse))]
 [JsonSerializable(typeof(CodexModelsResponse))]
-[JsonSerializable(typeof(CodexCatalogProvenance))]
+[JsonSerializable(typeof(CodexCatalogCacheMetadata))]
 [JsonSerializable(typeof(CodexCatalogErrorResponse))]
 // Anthropic surface — registered top-levels are reachable from each request /
 // response shape; polymorphic derived types (ContentBlockParam variants,

@@ -18,10 +18,9 @@ public sealed class CodexCommandAuthCaptureTests
     [Fact]
     public async Task Real_Codex_sends_only_public_sentinel_to_models_and_responses()
     {
-        var baseline = new CodexCatalogBaselineStore();
-        Assert.True(baseline.TryGet("0.144.1", out var catalog, out var error), error);
+        var catalog = CodexCatalogTestFixtures.Load();
         var catalogJson = JsonSerializer.Serialize(
-            new CopilotBridge.Cli.Models.Codex.CodexModelsResponse { Models = catalog!.Models },
+            new CopilotBridge.Cli.Models.Codex.CodexModelsResponse { Models = catalog.Models },
             JsonContext.Default.CodexModelsResponse);
         await using var server = new CodexCommandAuthCaptureServer(catalogJson);
         using var home = ClientBehaviorSupport.NewWorkDir("codex-command-auth-capture");
@@ -47,7 +46,7 @@ public sealed class CodexCommandAuthCaptureTests
 
         var start = new ProcessStartInfo
         {
-            FileName = CodexProcess.ResolveCodexExe("0.144.1"),
+            FileName = CodexProcess.ResolveCodexExe("0.147.0-alpha.1.2"),
             WorkingDirectory = work.Path,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -75,6 +74,13 @@ public sealed class CodexCommandAuthCaptureTests
         var requests = server.Requests.ToArray();
         Assert.Contains(requests, request => request.Path == "/models");
         Assert.Contains(requests, request => request.Path == "/responses");
+        var modelsRequests = requests.Where(request => request.Path == "/models").ToArray();
+        Assert.NotEmpty(modelsRequests);
+        Assert.All(modelsRequests, request =>
+        {
+            Assert.Contains("client_version=0.147.0", request.RawUrl, StringComparison.Ordinal);
+            Assert.Contains("/0.147.0-alpha.1.2 ", request.UserAgent, StringComparison.Ordinal);
+        });
         Assert.All(requests.Where(request => request.Path is "/models" or "/responses"),
             request => Assert.Equal($"Bearer {AuthCommand.ProviderSentinel}", request.Authorization));
     }

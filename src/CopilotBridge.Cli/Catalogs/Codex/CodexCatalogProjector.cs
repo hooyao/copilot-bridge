@@ -80,8 +80,8 @@ internal sealed class CodexCatalogProjector
         using (var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartObject();
-            writer.WriteString("source_tag", baseline.Provenance.SourceTag);
-            writer.WriteString("source_commit", baseline.Provenance.SourceCommit);
+            writer.WriteString("source_version", baseline.SourceVersion);
+            writer.WriteString("source_digest", baseline.SourceDigest);
             writer.WritePropertyName("models");
             writer.WriteStartArray();
             foreach (var model in output) model.WriteTo(writer);

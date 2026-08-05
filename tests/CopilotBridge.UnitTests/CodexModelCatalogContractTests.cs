@@ -27,43 +27,19 @@ public sealed class CodexModelCatalogContractTests
         "auto_review_model_override",
     };
 
-    [Theory]
-    [InlineData("0.144.0")]
-    [InlineData("0.144.1")]
-    [InlineData("0.144.99+local")]
-    public void Reviewed0144FamilySelectsThePinnedCompleteBaseline(string version)
+    [Fact]
+    public void CapturedOfficialFixtureIsACompleteExactVersionBaseline()
     {
-        var store = new CodexCatalogBaselineStore();
+        var baseline = LoadBaseline();
 
-        Assert.True(store.TryGet(version, out var baseline, out var error), error);
-        Assert.NotNull(baseline);
-        Assert.Equal("rust-v0.144.1", baseline.Provenance.SourceTag);
-        Assert.Equal("44918ea10c0f99151c6710411b4322c2f5c96bea", baseline.Provenance.SourceCommit);
+        Assert.Equal("0.144.1", baseline.SourceVersion);
+        Assert.Matches("^[0-9a-f]{64}$", baseline.SourceDigest);
         Assert.Equal(8, baseline.Models.Count);
         Assert.All(baseline.Models, model =>
         {
             Assert.False(string.IsNullOrWhiteSpace(model.GetProperty("slug").GetString()));
             Assert.False(string.IsNullOrWhiteSpace(model.GetProperty("base_instructions").GetString()));
         });
-    }
-
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("0.143.99")]
-    [InlineData("0.145.0")]
-    [InlineData("1.144.0")]
-    [InlineData("v0.144.1")]
-    [InlineData("0.144")]
-    [InlineData("0.144.1.2")]
-    [InlineData("0.144.0-alpha.4")]
-    public void UnknownOrMalformedClientVersionDoesNotGuessABaseline(string? version)
-    {
-        var store = new CodexCatalogBaselineStore();
-
-        Assert.False(store.TryGet(version, out var baseline, out var error));
-        Assert.Null(baseline);
-        Assert.False(string.IsNullOrWhiteSpace(error));
     }
 
     [Fact]
@@ -172,22 +148,21 @@ public sealed class CodexModelCatalogContractTests
     }
 
     [Fact]
-    public void BaselineValidatorRejectsIncompleteOrMismatchedProvenance()
+    public void BaselineValidatorRejectsIncompleteOrMismatchedSourceMetadata()
     {
         var baseline = LoadBaseline();
-        var valid = baseline.Provenance;
+        var valid = baseline.CacheMetadata!;
         var corrupt = new[]
         {
-            valid with { SourceRepository = "https://example.invalid/codex" },
-            valid with { SourcePath = "wrong/models.json" },
-            valid with { SourceLicense = "unknown" },
-            valid with { SourceTag = "rust-v0.145.0" },
-            valid with { SupportedClientVersion = new CodexSupportedClientVersion
-                { MinimumInclusive = "0.145.0", MaximumExclusive = "0.145.0" } },
+            valid with { ClientVersion = "0.145.0" },
+            valid with { SourceUrl = "https://example.invalid/models.json" },
+            valid with { Sha256 = "not-a-digest" },
+            valid with { FetchedAtUtc = default },
+            valid with { ValidatedAtUtc = default },
         };
 
-        Assert.All(corrupt, provenance => Assert.Throws<InvalidDataException>(
-            () => CodexCatalogBaselineValidator.Validate(baseline with { Provenance = provenance })));
+        Assert.All(corrupt, metadata => Assert.Throws<InvalidDataException>(
+            () => CodexCatalogBaselineValidator.Validate(baseline with { CacheMetadata = metadata })));
     }
 
     [Fact]
@@ -262,12 +237,7 @@ public sealed class CodexModelCatalogContractTests
         Assert.Equal("hide", model.GetProperty("visibility").GetString());
     }
 
-    private static CodexCatalogBaseline LoadBaseline()
-    {
-        var store = new CodexCatalogBaselineStore();
-        Assert.True(store.TryGet("0.144.1", out var baseline, out var error), error);
-        return baseline!;
-    }
+    private static CodexCatalogBaseline LoadBaseline() => CodexCatalogTestFixtures.LoadCapturedBaseline();
 
     private static CodexCatalogProjection Project(CodexCatalogBaseline baseline, IReadOnlyList<CopilotModel> live) =>
         new CodexCatalogProjector(
@@ -277,21 +247,14 @@ public sealed class CodexModelCatalogContractTests
             .Project(baseline, live, liveOverlayValidated: true);
 
     private static CodexCatalogBaseline SyntheticBaseline(string json) =>
-        CodexCatalogBaseline.Parse(json, new CodexCatalogProvenance
+        CodexCatalogBaseline.Parse(System.Text.Encoding.UTF8.GetBytes(json), new CodexCatalogCacheMetadata
         {
-            SourceRepository = "test",
-            SourceTag = "test-v1",
-            SourceCommit = new string('a', 40),
-            SourcePath = "models.json",
-            SourceLicense = "Apache-2.0",
-            LicenseAsset = "LICENSE",
-            SupportedClientVersion = new CodexSupportedClientVersion
-            {
-                MinimumInclusive = "0.144.0",
-                MaximumExclusive = "0.145.0",
-            },
-            ModelsSha256 = new string('b', 64),
-            LicenseSha256 = new string('c', 64),
+            SchemaVersion = 1,
+            ClientVersion = "0.144.1",
+            SourceUrl = "https://raw.githubusercontent.com/openai/codex/rust-v0.144.1/codex-rs/models-manager/models.json",
+            Sha256 = new string('b', 64),
+            FetchedAtUtc = DateTimeOffset.Parse("2026-08-01T00:00:00Z"),
+            ValidatedAtUtc = DateTimeOffset.Parse("2026-08-01T00:00:00Z"),
         });
 
     private static JsonElement Find(IReadOnlyList<JsonElement> models, string slug) =>

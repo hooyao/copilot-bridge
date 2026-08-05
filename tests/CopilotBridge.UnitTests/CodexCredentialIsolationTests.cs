@@ -17,9 +17,8 @@ public sealed class CodexCredentialIsolationTests
         var connection = new BridgeConnection(8765, false, 0, 0);
         var (config, _) = CodexConfigurator.BuildContent(null, connection, invocation);
 
-        var store = new CodexCatalogBaselineStore();
-        Assert.True(store.TryGet("0.144.1", out var baseline, out var error), error);
-        var catalog = string.Join("\n", baseline!.Models.Select(model => model.GetRawText()));
+        var baseline = CodexCatalogTestFixtures.LoadCapturedBaseline();
+        var catalog = string.Join("\n", baseline.Models.Select(model => model.GetRawText()));
 
         var traceDir = Path.Combine(Path.GetTempPath(), "cb-trace-auth-" + Guid.NewGuid().ToString("N"));
         try

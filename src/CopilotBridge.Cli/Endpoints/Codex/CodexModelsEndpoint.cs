@@ -25,7 +25,7 @@ internal static class CodexModelsEndpoint
 
     public static async Task HandleAsync(
         HttpContext httpCtx,
-        CodexCatalogBaselineStore baselines,
+        ICodexCatalogSourceCache sourceCache,
         CodexCatalogOverlayService overlays,
         CodexCatalogProjector projector)
     {
@@ -36,14 +36,22 @@ internal static class CodexModelsEndpoint
                 "client_version must appear exactly once.");
             return;
         }
-        if (!baselines.TryGet(values[0], out var baseline, out var error))
+        if (!CodexCatalogRequestIdentity.TryResolve(
+                values[0], httpCtx.Request.Headers.UserAgent.ToString(), out var exactVersion, out var identityError))
         {
-            await WriteErrorAsync(httpCtx, StatusCodes.Status400BadRequest, error);
+            await WriteErrorAsync(httpCtx, StatusCodes.Status400BadRequest, identityError!);
+            return;
+        }
+        var resolution = await sourceCache.ResolveAsync(exactVersion.ToString(), httpCtx.RequestAborted);
+        if (!resolution.Success)
+        {
+            await WriteErrorAsync(httpCtx, StatusCodes.Status400BadRequest,
+                resolution.Error ?? "Exact Codex catalog source is unavailable.");
             return;
         }
 
         var overlay = await overlays.GetAsync(httpCtx.RequestAborted);
-        var projection = projector.Project(baseline!, overlay.Models, overlay.IsValidated);
+        var projection = projector.Project(resolution.Baseline!, overlay.Models, overlay.IsValidated);
         var response = new CodexModelsResponse { Models = projection.Models };
         var bytes = JsonSerializer.SerializeToUtf8Bytes(response, JsonContext.Default.CodexModelsResponse);
 

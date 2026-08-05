@@ -198,6 +198,7 @@ public class DetectorCompositionTests
             // regression that maps it back onto a model client pass unnoticed.
             UpstreamHttpClientNames.Metadata,
             UpstreamHttpClientNames.GitHubAuth,
+            UpstreamHttpClientNames.CodexCatalogSource,
         };
 
         var handlerField = typeof(HttpMessageInvoker).GetField(
@@ -237,6 +238,9 @@ public class DetectorCompositionTests
         Assert.Equal(
             Timeout.InfiniteTimeSpan,
             factory.CreateClient(UpstreamHttpClientNames.Responses).Timeout);
+        Assert.Equal(
+            Timeout.InfiniteTimeSpan,
+            factory.CreateClient(UpstreamHttpClientNames.CodexCatalogSource).Timeout);
 
         var authTimeout = factory.CreateClient(UpstreamHttpClientNames.GitHubAuth).Timeout;
         Assert.NotEqual(Timeout.InfiniteTimeSpan, authTimeout);
@@ -259,6 +263,7 @@ public class DetectorCompositionTests
     [InlineData(UpstreamHttpClientNames.Responses)]
     [InlineData(UpstreamHttpClientNames.Metadata)]
     [InlineData(UpstreamHttpClientNames.GitHubAuth)]
+    [InlineData(UpstreamHttpClientNames.CodexCatalogSource)]
     public async Task ForwardingARequest_EmitsNoPerSendHttpClientLogging(string clientName)
     {
         // Contract: a forwarded upstream call must produce NO log records of its own

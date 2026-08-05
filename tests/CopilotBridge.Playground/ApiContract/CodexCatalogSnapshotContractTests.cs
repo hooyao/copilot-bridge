@@ -99,13 +99,12 @@ public sealed class CodexCatalogSnapshotContractTests
 
     private static CodexCatalogProjection Project(IReadOnlyList<CopilotModel> live)
     {
-        var store = new CodexCatalogBaselineStore();
-        Assert.True(store.TryGet("0.144.1", out var baseline, out var error), error);
+        var baseline = CodexCatalogTestFixtures.Load();
         return new CodexCatalogProjector(
             new CodexModelProfileCatalog(),
             new CopilotModelRegistry(),
             NullLogger<CodexCatalogProjector>.Instance)
-            .Project(baseline!, live, liveOverlayValidated: true);
+            .Project(baseline, live, liveOverlayValidated: true);
     }
 
     private static JsonElement Find(IReadOnlyList<JsonElement> models, string slug) =>

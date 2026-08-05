@@ -625,8 +625,9 @@ consumers lease per call — one named client per upstream surface, see
 `AuthService`/`IAuthService` (owns the token-refresh timer and in-memory token
 cache), the immutable catalog/registry lookup tables (`ModelProfileCatalog`,
 `CodexModelProfileCatalog`, `IModelRegistry`), the Codex metadata services
-(`CodexCatalogBaselineStore`, `CodexCatalogOverlayService`, and
-`CodexCatalogProjector`), `CopilotHeaderFactory`,
+(`CodexCatalogSourceCache`, `CodexCatalogDiskStore`,
+`CodexCatalogOverlayService`, and `CodexCatalogProjector`),
+`CopilotHeaderFactory`,
 `BridgeIoSink`, `RequestSummaryLogger`, all options, and the hosted services.
 
 **Guardrail.** The host container is built with
@@ -650,10 +651,14 @@ so upgraded installations without the new key remain enabled. Setting it to
 fall back to its bundled catalog:
 
 ```
-Codex 0.144.x
-  GET /codex/models?client_version=0.144.1
-      ├─ CodexCatalogBaselineStore  → complete reviewed Codex client facts
-      ├─ CodexCatalogOverlayService → bounded live Copilot /models facts
+Codex (three-part query + corroborating complete User-Agent when prerelease)
+  GET /codex/models?client_version=0.147.0
+  User-Agent: codex_cli_rs/0.147.0-alpha.1.2 (...)
+      ├─ CodexCatalogSourceCache
+      │    ├─ fresh validated process memory
+      │    ├─ fresh/stale validated per-user disk record
+      │    └─ exact official openai/codex tag (anonymous HTTPS, TTL + ETag)
+      ├─ CodexCatalogOverlayService → independent bounded live Copilot /models facts
       └─ CodexCatalogProjector      → exact-slug allow-list overlay + stable ETag
 ```
 
@@ -662,13 +667,21 @@ Ownership is strict:
 - **Codex owns client behavior.** Complete entries, including
   `base_instructions`, tool/shell mode, reasoning descriptions, picker fields,
   compatibility hashes, and `auto_review_model_override`, originate from the
-  embedded catalog for the requesting client's reviewed version interval.
+  exact requesting version's official
+  `openai/codex/rust-v{client_version}/codex-rs/models-manager/models.json`.
+  Stable and prerelease identities are never shortened or substituted.
+- **The request proves the source identity.** Codex's model manager intentionally
+  truncates prerelease `client_version` to `major.minor.patch`, while its
+  `User-Agent` retains the complete `Codex Desktop/{version}`,
+  `codex_cli_rs/{version}`, or headless `codex_exec/{version}` value. The bridge uses that complete identity only when
+  its core matches the query (and requires exact agreement for complete queries).
+  It never enumerates tags to guess a prerelease.
 - **Copilot owns backend capacity.** Only exact bridge Responses profiles that
   are also advertised live with `/responses` remain API-supported. Valid live
   `max_context_window_tokens` raises `context_window` and
   `max_context_window`; `auto_compact_token_limit` is the lower of 90% total
   and 97.5% maximum prompt, rounded down to 1,000. Invalid or missing limits do
-  not raise the reviewed baseline.
+  not raise the validated exact-version baseline.
 - **The bridge owns the safe join.** Live-only models are never synthesized,
   retired/baseline-only models are hidden, and review overrides are retained
   only when their target remains routable.
@@ -676,9 +689,39 @@ Ownership is strict:
 `CodexCatalogOverlayService` is a singleton, single-flight, five-minute
 process-local cache. A refresh failure serves its last known good overlay; a
 cold failure returns the compatible baseline without uplift, so metadata
-degradation never prevents otherwise healthy inference. Unknown, malformed,
-missing, or repeated `client_version` values receive a non-2xx metadata error,
-allowing Codex to keep its own bundled catalog.
+degradation never prevents otherwise healthy inference. Its policy is independent
+from the official-source cache: the latter defaults to a 24-hour source-check TTL,
+uses ETag revalidation, and persists a self-validating record in the OS per-user
+cache. TTL controls when GitHub is checked, not when validated bytes expire. A
+timeout, transport failure, 429/5xx, exact-tag 404, or invalid replacement serves
+the exact-version stale memory/disk LKG. With no exact-version LKG, only the metadata request fails and
+Codex retains its bundled catalog; `POST /codex/responses` remains independent.
+
+The process-memory level and same-version stampede protection are provided by
+Microsoft `HybridCache`; no `IDistributedCache` participates. Its factory owns the
+straight-line persistent-disk → GitHub path. A stale L1 entry repeats the canonical
+key lookup with local reads disabled, so the framework coordinates one refresh and
+does not require a private memory or in-flight dictionary. Different versions may
+download and validate concurrently. Because HybridCache serializes factory results
+before L1 publication even with L2 disabled, the catalog registers a trim-safe
+local-only serializer; its deserialize path fails closed if the no-distributed-cache
+contract is ever violated. One process-wide asynchronous writer lock serializes
+every temporary-file write, atomic record promotion, freshness update, and cleanup
+deletion. The destination/protection state is rechecked after acquiring that lock.
+Unknown, malformed, missing, or repeated `client_version` values receive a non-2xx
+metadata error before source or cache I/O.
+
+HybridCache 10.8.0 still contains an upstream-known reflection-JSON fallback
+(`dotnet/extensions#5624`). The bridge makes that path unreachable by registering
+an explicit-only serializer factory before `AddHybridCache`, and tests the resolved
+DI graph plus the absence of `IDistributedCache`. A detailed Native AOT audit reports
+three `IL2026`, three `IL3050`, and three `IL2070` diagnostics, all from that fallback.
+NativeAOT 10.0 cannot consume ILLink's external member-level suppression attributes,
+so the AOT input substitutes fail-closed throwing bodies only for the four diagnostic-
+producing fallback members. Warning IDs remain enabled globally; a negative mutation
+probe confirmed unrelated `IL2026`/`IL3050` diagnostics still fail a Werror publish.
+The package version and exact assembly SHA-256 are pinned, so an upgrade or byte
+change fails before substitution and requires a new audit.
 
 The command-auth token is only the stable public sentinel emitted by
 `auth provider-token`. Inbound provider authorization is never promoted to an
@@ -1493,17 +1536,17 @@ the request with a clear 400) and then as a profile after probes confirm
 the wire shape. This is by design — silent breakage is worse than an
 explicit "I don't know this model yet."
 
-**Codex remote catalog baseline (`Catalogs/Codex/<minor>/`):**
+**Codex exact-source catalog contract:**
 
-1. Choose an exact upstream `openai/codex` release tag. For a new minor,
-   create a new reviewed directory and provenance manifest first; never widen
-   the old version interval by inference.
-2. Run `scripts/update-codex-catalog.ps1 -Tag rust-vX.Y.Z` to check the current
-   vendored bytes, hashes, required models, complete instruction sources, and
-   schema keys. Add `-Update` only after reviewing the upstream diff.
-3. If the script reports key/schema drift, update the source-generated envelope,
-   baseline validator, projector allow-list, and the pinned real-Codex consumer
-   test before accepting the snapshot.
+1. Runtime support does not require a fixture or bridge release for a new
+   version. The requesting complete version selects only its exact official tag.
+2. To refresh a contract-test capture, run
+   `scripts/update-codex-catalog.ps1 -ClientVersion X.Y.Z[-prerelease]`. It writes
+   only beneath `tests/Fixtures/Codex/rust-vX.Y.Z...`; fixtures are never compiled
+   into the bridge.
+3. If the script or live resolver reports schema drift, update the validator,
+   projector allow-list, and pinned real-Codex consumer test before accepting the
+   new shape. Unknown additive fields remain opaque and are preserved.
 4. Re-run the live Copilot model snapshot and >272k real-Codex-shaped probes.
    Update `docs/copilot-codex-model-capabilities-snapshot.json` and protocol
    research only from captured evidence.
@@ -1511,9 +1554,9 @@ explicit "I don't know this model yet."
    `Kind=ClientBehavior` long-context task. The final verdict must include the
    real Codex dispatch log, not merely an HTTP 200.
 
-At runtime the baseline never downloads from GitHub. The endpoint selects only
-a declared client-version interval, overlays exact-slug live facts, and degrades
-to the reviewed baseline if Copilot discovery fails.
+At runtime the endpoint resolves exact official source bytes through memory,
+persistent disk, then anonymous GitHub; overlays exact-slug live Copilot facts;
+and degrades independently in each layer as described in §4.9.
 
 ## 8. Per-client URL prefixes
 

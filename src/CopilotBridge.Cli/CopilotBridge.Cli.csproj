@@ -16,6 +16,10 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <UseSystemResourceKeys>true</UseSystemResourceKeys>
     <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
+    <!-- Keep concrete trim/AOT diagnostics enabled for every assembly. The
+         HybridCache exception below substitutes only its audited unreachable
+         reflection fallback methods; warning IDs stay enabled globally. -->
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
     <!-- Source-generated IConfiguration → POCO binding. Implicitly on under
          PublishAot=true since .NET 9, declared explicitly so the JIT build
          takes the same path and so the intent is visible in the csproj. -->
@@ -56,6 +60,7 @@
     <PackageReference Include="System.CommandLine" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" />
     <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" />
     <PackageReference Include="Tomlyn" />
     <PackageReference Include="Serilog" />
     <PackageReference Include="Serilog.Extensions.Logging" />
@@ -68,18 +73,38 @@
     <InternalsVisibleTo Include="copilot-unittests" />
   </ItemGroup>
 
-  <!-- Complete, reviewed Codex model catalogs. These are embedded so the
-       single-file Native AOT executable never depends on a mutable sidecar or
-       on GitHub availability at runtime. Each version directory includes its
-       provenance manifest and the upstream license alongside models.json. -->
-  <ItemGroup>
-    <EmbeddedResource Include="Catalogs\Codex\0.144\models.json"
-                      LogicalName="CopilotBridge.Cli.Catalogs.Codex.0.144.models.json" />
-    <EmbeddedResource Include="Catalogs\Codex\0.144\provenance.json"
-                      LogicalName="CopilotBridge.Cli.Catalogs.Codex.0.144.provenance.json" />
-    <EmbeddedResource Include="Catalogs\Codex\0.144\LICENSE.openai-codex"
-                      LogicalName="CopilotBridge.Cli.Catalogs.Codex.0.144.LICENSE.openai-codex" />
+  <!-- HybridCache 10.8.0's built-in DefaultJsonSerializerFactory calls
+       reflection-based STJ APIs. AddHybridCache registers it with TryAdd, and
+       the bridge registers ExplicitOnlyHybridCacheSerializerFactory first, so
+       the package fallback is unreachable at runtime. NativeAOT does not accept
+       ILLink's external link-attributes files, so substitute throwing bodies
+       only for the four warning-producing fallback members in the AOT input.
+       Warning IDs remain enabled for the bridge and every other dependency.
+       Re-audit the members and assembly bytes on every package upgrade. -->
+  <ItemGroup Condition="'$(PublishAot)' == 'true'">
+    <IlcArg Include="--substitution:$(MSBuildProjectDirectory)\ILLink\HybridCache.Substitutions.xml" />
   </ItemGroup>
+
+  <Target Name="ValidateHybridCacheAotSubstitution"
+          AfterTargets="PrepareForILLink"
+          BeforeTargets="WriteIlcRspFileForCompilation"
+          Condition="'$(PublishAot)' == 'true'">
+    <ItemGroup>
+      <_AuditedHybridCachePackage Include="@(PackageVersion)"
+                                  Condition="'%(Identity)' == 'Microsoft.Extensions.Caching.Hybrid'" />
+      <_HybridCacheAssembly Include="@(ManagedAssemblyToLink)"
+                            Condition="'%(Filename)' == 'Microsoft.Extensions.Caching.Hybrid'" />
+    </ItemGroup>
+    <Error Condition="'@(_AuditedHybridCachePackage->'%(Version)')' != '10.8.0'"
+           Text="HybridCache AOT substitutions were audited only for package 10.8.0. Re-audit the package before changing its version." />
+    <Error Condition="'@(_HybridCacheAssembly->Count())' != '1'"
+           Text="Expected exactly one Microsoft.Extensions.Caching.Hybrid assembly before applying its audited AOT substitutions." />
+    <GetFileHash Files="@(_HybridCacheAssembly)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_HashedHybridCacheAssembly" />
+    </GetFileHash>
+    <Error Condition="'@(_HashedHybridCacheAssembly->'%(FileHash)')' != 'D7D46A1B22DD5309057F4A33F1C85F34CF742E9D8DE92A949486C4028CB23BB1'"
+           Text="HybridCache AOT substitutions do not match the resolved assembly bytes. Re-audit its DefaultJsonSerializerFactory before updating the expected SHA-256." />
+  </Target>
 
   <!-- Ship appsettings.json next to the exe. PreserveNewest means user edits
        in publish/ aren't clobbered on rebuild unless the source file in the

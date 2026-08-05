@@ -9,9 +9,9 @@ namespace CopilotBridge.Playground.Headless;
 /// or tool execution (encoding that judgment in xUnit is exactly what let three
 /// green-but-broken gpt-5.6 releases ship). Instead each test drives a real client on
 /// a path-exercising task and records, in one predictable JSON file, WHERE the
-/// evidence is: the bridge's four-file trace dir, the client's own dispatch log
-/// (codex <c>logs_2.sqlite</c> in the real <c>~/.codex</c> — NOT under
-/// <c>CODEX_HOME</c>; claude stdout transcript), the client exit code, and which
+/// evidence is: the bridge's four-file trace dir, the client's own dispatch log when
+/// that surface exposes one (codex app-server's per-run <c>logs_2.sqlite</c>, isolated
+/// through <c>CODEX_SQLITE_HOME</c>; claude stdout transcript), the client exit code, and which
 /// case/route this was. The <c>real-client-verify</c> skill reads these manifests,
 /// opens each client's OWN log, and renders PASS/FAIL — because a bridge 200 says
 /// nothing about whether the client could parse and execute what the bridge sent back.
@@ -31,10 +31,11 @@ internal sealed record BehaviorManifest(
     int ClientExitCode,
     double DurationSeconds,
     string TraceDir,      // bridge four-file audit (BridgeLogReader reads this)
-    string? DispatchLogPath, // codex: real ~/.codex/logs_2.sqlite (codex logs there, NOT CODEX_HOME); null for claude
-    long DispatchSinceUnix,  // codex: lower bound to window logs_2.sqlite to this run (0 for claude)
+    string? DispatchLogPath, // codex app-server: per-run logs_2.sqlite; null for codex exec/claude
+    long DispatchSinceUnix,  // codex: lower bound within the per-run log (0 for claude)
     long DispatchUntilUnix,  // codex: upper bound (0 for claude → treated as no upper bound)
-    string Prompt);
+    string Prompt,
+    string? DispatchThreadId = null); // app-server: exact thread id for log filtering
     // NOTE: the saved-stdout/stderr file paths are NOT fields here — they are DERIVED by
     // BehaviorRun.Write from CaseId + utcStamp (the code that owns the write), and
     // returned to the caller via its out params. Putting them on the record invited a
@@ -80,6 +81,7 @@ internal static class BehaviorRun
             ["dispatchLogPath"] = manifest.DispatchLogPath,
             ["dispatchSinceUnix"] = manifest.DispatchSinceUnix == 0 ? null : manifest.DispatchSinceUnix,
             ["dispatchUntilUnix"] = manifest.DispatchUntilUnix == 0 ? null : manifest.DispatchUntilUnix,
+            ["dispatchThreadId"] = manifest.DispatchThreadId,
             ["stdoutPath"] = stdoutPath,
             ["stderrPath"] = stderrPath,
             ["prompt"] = manifest.Prompt,

@@ -61,4 +61,7 @@ internal static class UpstreamHttpClientNames
     /// token that cannot refresh in time stalls the whole bridge.
     /// </summary>
     public const string GitHubAuth = "github-auth";
+
+    /// <summary>Anonymous exact-version Codex catalog source on raw.githubusercontent.com.</summary>
+    public const string CodexCatalogSource = "codex-catalog-source";
 }

@@ -12,7 +12,7 @@ internal sealed class CodexCommandAuthCaptureServer : IAsyncDisposable
     private readonly string _catalogJson;
 
     public string BaseUrl { get; }
-    public ConcurrentQueue<(string Path, string? Authorization)> Requests { get; } = new();
+    public ConcurrentQueue<(string Path, string? Authorization, string? UserAgent, string? RawUrl)> Requests { get; } = new();
 
     public CodexCommandAuthCaptureServer(string catalogJson)
     {
@@ -35,7 +35,11 @@ internal sealed class CodexCommandAuthCaptureServer : IAsyncDisposable
             try
             {
                 var path = context.Request.Url?.AbsolutePath ?? "";
-                Requests.Enqueue((path, context.Request.Headers["Authorization"]));
+                Requests.Enqueue((
+                    path,
+                    context.Request.Headers["Authorization"],
+                    context.Request.Headers["User-Agent"],
+                    context.Request.RawUrl));
                 if (path == "/models")
                 {
                     await WriteAsync(context.Response, "application/json", _catalogJson);
