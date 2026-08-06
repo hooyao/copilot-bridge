@@ -1,4 +1,4 @@
-using CopilotBridge.Cli.Models.Anthropic.Request;
+﻿using CopilotBridge.Cli.Models.Anthropic.Request;
 using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
@@ -50,7 +50,8 @@ internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesR
     /// assistant turns came from an Anthropic backend — is returned unchanged, so
     /// the common path allocates nothing.
     /// </summary>
-    private static MessagesRequest UnfoldReasoningCarriers(MessagesRequest body, out int unfolded)
+    private static MessagesRequest UnfoldReasoningCarriers(
+        MessagesRequest body, out int unfolded)
     {
         unfolded = 0;
         List<MessageParam>? rewrittenMessages = null;
@@ -66,7 +67,7 @@ internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesR
                     continue;
 
                 var result = ClaudeReasoningEnvelope.TryUnfold(
-                    redacted.Data, out var encryptedContent, out var bag);
+                    redacted.Data, out var encryptedContent, out var bag, out var origin);
                 if (result == ClaudeReasoningUnfold.Absent) continue;
                 // The discriminator matched but the payload did not: this edge minted
                 // it, so it is this edge's job to reject it rather than forward
@@ -75,10 +76,16 @@ internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesR
                     throw new InvalidClaudeReasoningEnvelopeException();
 
                 rewrittenBlocks ??= [.. message.Content];
+                // Decode only. Whether this state is VALID for the turn's destination
+                // is a question about the resolved target, which is not known here —
+                // the adapter runs before routing, and reaching for the destination
+                // from a client edge is exactly the layering this codec avoids. The
+                // origin rides the bag; ClaudeReasoningOriginStage judges it after
+                // the router has run.
                 rewrittenBlocks[j] = redacted with
                 {
                     Data = encryptedContent,
-                    ProviderExtensions = bag,
+                    ProviderExtensions = ClaudeReasoningEnvelope.WithOrigin(bag, origin),
                 };
                 unfolded++;
             }

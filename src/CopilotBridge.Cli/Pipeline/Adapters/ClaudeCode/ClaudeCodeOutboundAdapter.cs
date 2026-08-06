@@ -1,4 +1,4 @@
-using System.Net.ServerSentEvents;
+﻿using System.Net.ServerSentEvents;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Models.Anthropic.Request;
@@ -49,6 +49,10 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
     // the Anthropic wire has exactly one string for such state, so the item is folded
     // into the block's own `data` and the marker removed. See ClaudeReasoningEnvelope.
     private const string ReasoningMarker = ClaudeReasoningEnvelope.Marker;
+    // Names the model that produced the reasoning item. Folded INTO the carrier (so a
+    // later replay can refuse to feed one model's state to another) and then dropped,
+    // like every other bridge-internal marker.
+    private const string ReasoningOriginMarker = ClaudeReasoningEnvelope.OriginMarker;
 
     private readonly ILogger<ClaudeCodeOutboundAdapter> _log;
 
@@ -111,6 +115,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                         || block.TryGetProperty(NamespaceMarker, out _)
                         || block.TryGetProperty(CustomToolCallIdMarker, out _)
                         || block.TryGetProperty(ReasoningMarker, out _)
+                        || block.TryGetProperty(ReasoningOriginMarker, out _)
                         || block.TryGetProperty(WebSearchMarker, out _)
                         || block.TryGetProperty(WebSearchResultMarker, out _)))
                 {
@@ -144,11 +149,13 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                         var blockFoldedData = "";
                         if (block.TryGetProperty(ReasoningMarker, out var reasoningItem))
                         {
+                            var blockOrigin = block.TryGetProperty(ReasoningOriginMarker, out var bo)
+                                && bo.ValueKind == JsonValueKind.String ? bo.GetString() : null;
                             // Same rule as the streaming path: a reasoning item that
                             // cannot be folded is not replayable, and leaving its bare
                             // blob behind would have the client echo state that 400s
                             // every later turn. Omit the block instead of degrading it.
-                            if (!ClaudeReasoningEnvelope.TryFold(reasoningItem, out var folded))
+                            if (!ClaudeReasoningEnvelope.TryFold(reasoningItem, blockOrigin, out var folded))
                                 continue;
                             blockFoldedData = folded;
                         }
@@ -159,6 +166,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                                 || inner.NameEquals(NamespaceMarker)
                                 || inner.NameEquals(CustomToolCallIdMarker)
                                 || inner.NameEquals(ReasoningMarker)
+                                || inner.NameEquals(ReasoningOriginMarker)
                                 || inner.NameEquals(WebSearchMarker)
                                 || inner.NameEquals(WebSearchResultMarker))
                                 continue;
@@ -253,6 +261,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
             if (!cb.TryGetProperty(GrammarMarker, out _)
                 && !cb.TryGetProperty(NamespaceMarker, out _)
                 && !cb.TryGetProperty(ReasoningMarker, out _)
+                && !cb.TryGetProperty(ReasoningOriginMarker, out _)
                 && !cb.TryGetProperty(WebSearchMarker, out _))
                 return evt;
 
@@ -266,7 +275,9 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
             var foldedData = "";
             if (cb.TryGetProperty(ReasoningMarker, out var reasoningItem))
             {
-                if (!ClaudeReasoningEnvelope.TryFold(reasoningItem, out var folded))
+                var origin = cb.TryGetProperty(ReasoningOriginMarker, out var o)
+                    && o.ValueKind == JsonValueKind.String ? o.GetString() : null;
+                if (!ClaudeReasoningEnvelope.TryFold(reasoningItem, origin, out var folded))
                 {
                     _log.LogWarning(
                         "adapter {Name}: dropped a reasoning block whose carrier exceeded the "
@@ -292,6 +303,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                             if (inner.NameEquals(GrammarMarker)
                                 || inner.NameEquals(NamespaceMarker)
                                 || inner.NameEquals(ReasoningMarker)
+                                || inner.NameEquals(ReasoningOriginMarker)
                                 || inner.NameEquals(WebSearchMarker))
                                 continue; // drop the bridge-internal marker
                             if (foldedData.Length > 0 && inner.NameEquals("data"))

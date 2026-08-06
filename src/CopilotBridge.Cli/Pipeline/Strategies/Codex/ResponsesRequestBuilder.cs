@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
@@ -35,7 +35,7 @@ internal static class ResponsesRequestBuilder
         MessagesRequest ir,
         CodexModelProfileCatalog profiles,
         bool filterRecursiveAgentTool = false) =>
-        Build(ir, profiles, filterRecursiveAgentTool, out _);
+        Build(ir, profiles, filterRecursiveAgentTool, out _, out _);
 
     /// <summary>
     /// Build overload that reports whether the recursive-delegation guard actually
@@ -46,9 +46,26 @@ internal static class ResponsesRequestBuilder
         MessagesRequest ir,
         CodexModelProfileCatalog profiles,
         bool filterRecursiveAgentTool,
-        out bool removedAgentTool)
+        out bool removedAgentTool) =>
+        Build(ir, profiles, filterRecursiveAgentTool, out removedAgentTool, out _);
+
+    /// <summary>
+    /// Build overload that also reports an image downgraded because the exact model's
+    /// multimodal capability is UNKNOWN (not in the catalog) rather than probed-false.
+    /// Those two cases look identical on the wire — both fall back to the string path —
+    /// but only the first is a signal: it is what a Copilot-side model rename looks
+    /// like, and without it the image simply never reaches the model while the request
+    /// still returns 200.
+    /// </summary>
+    public static (byte[] Body, bool Vision, string? CoercedEffort) Build(
+        MessagesRequest ir,
+        CodexModelProfileCatalog profiles,
+        bool filterRecursiveAgentTool,
+        out bool removedAgentTool,
+        out bool downgradedImageOnUnknownModel)
     {
         removedAgentTool = false;
+        downgradedImageOnUnknownModel = false;
         // Exact profile, or the nearest known one (best-effort fallback for a
         // Codex model newer than this build's catalog — the router already
         // WARN-logged the fuzzy match and let the request through; here we just
@@ -67,7 +84,18 @@ internal static class ResponsesRequestBuilder
         // multimodal function output?" and then pulls whatever the IR actually holds —
         // it does not ask who produced the IR. A source that means its tool output to
         // stay opaque marks it as such on the block (see IsOpaqueToolOutput).
-        var structuredMultimodalOutput = exactProfile?.SupportsMultimodalFunctionOutput == true;
+        // THREE-valued, not boolean. A boolean conflates "probed and cannot" with
+        // "never heard of this model", and only the second needs an operator signal:
+        // it is what a Copilot-side rename looks like from in here. Exact matching is
+        // unchanged — a positive wire capability is never borrowed from a neighbour.
+        var multimodalCapability = exactProfile is null
+            ? MultimodalOutputCapability.Unknown
+            : exactProfile.SupportsMultimodalFunctionOutput
+                ? MultimodalOutputCapability.Supported
+                : MultimodalOutputCapability.Unsupported;
+        var structuredMultimodalOutput =
+            multimodalCapability == MultimodalOutputCapability.Supported;
+        var sawUnknownModelImage = false;
 
         var vision = false;
         string? effort = null;   // coerced effort actually written to the wire; hoisted so the return below (outside the writer's using) can report it
@@ -104,7 +132,7 @@ internal static class ResponsesRequestBuilder
             ptIdx = WritePassthroughUpTo(w, passthrough, ptIdx, emittedMsgs);
             foreach (var msg in ir.Messages)
             {
-                WriteInputItem(w, msg, structuredMultimodalOutput, ref vision);
+                WriteInputItem(w, msg, structuredMultimodalOutput, ref vision, ref sawUnknownModelImage);
                 emittedMsgs++;
                 ptIdx = WritePassthroughUpTo(w, passthrough, ptIdx, emittedMsgs);
             }
@@ -192,6 +220,10 @@ internal static class ResponsesRequestBuilder
             w.WriteEndObject();
         }
 
+        // Only UNKNOWN is reportable: a probed-unsupported model taking the string
+        // path is the recorded expectation for that model, not news.
+        downgradedImageOnUnknownModel =
+            sawUnknownModelImage && multimodalCapability == MultimodalOutputCapability.Unknown;
         return (buffer.ToArray(), vision, effort);
     }
 
@@ -252,7 +284,8 @@ internal static class ResponsesRequestBuilder
         Utf8JsonWriter w,
         MessageParam msg,
         bool structuredMultimodalOutput,
-        ref bool vision)
+        ref bool vision,
+        ref bool sawImageOnCompatibilityPath)
     {
         // An IR message maps back to one or more Responses input items. Tool-use
         // and tool-result blocks become their own function_call/function_call_output
@@ -303,11 +336,18 @@ internal static class ResponsesRequestBuilder
                     // text/image array may become input_text/input_image when THIS
                     // target is live-proven to accept it. Unknown blocks fall back as a
                     // whole so nothing is partially lost.
+                    var sourceWantsOpaque = IsOpaqueToolOutput(tr.ProviderExtensions);
                     WriteToolResultOutput(
                         w,
                         tr.Content,
-                        structuredMultimodalOutput && !IsOpaqueToolOutput(tr.ProviderExtensions),
-                        ref vision);
+                        structuredMultimodalOutput && !sourceWantsOpaque,
+                        // Only a CAPABILITY downgrade is reportable. When the source
+                        // marked its output opaque, the string path is what it asked
+                        // for and would happen on a supported model too — reporting it
+                        // would blame the model for the source's own choice.
+                        reportImageDowngrade: !sourceWantsOpaque,
+                        ref vision,
+                        ref sawImageOnCompatibilityPath);
                     w.WriteEndObject();
                     break;
                 case RedactedThinkingBlockParam rt:
@@ -583,7 +623,9 @@ internal static class ResponsesRequestBuilder
         Utf8JsonWriter w,
         JsonElement? content,
         bool structuredMultimodalOutput,
-        ref bool vision)
+        bool reportImageDowngrade,
+        ref bool vision,
+        ref bool sawImageOnCompatibilityPath)
     {
         if (content is not { } c)
         {
@@ -598,6 +640,12 @@ internal static class ResponsesRequestBuilder
                 vision = true;
                 return;
             }
+
+            // Record that an image took the string path. The caller decides whether
+            // that is expected (probed-unsupported) or worth reporting (unknown model).
+            if (reportImageDowngrade && !structuredMultimodalOutput
+                && IsSupportedMultimodalToolResult(c))
+                sawImageOnCompatibilityPath = true;
 
             WriteFlattenedToolResult(w, c);
             return;

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
@@ -212,6 +212,10 @@ internal static class ClaudeCodeMessagesEndpoint
             // falling back to the IR body's effort on the Anthropic passthrough path.
             summary.OutboundEffort = bridgeCtx.Response.OutboundEffortCoerced
                 ?? bridgeCtx.Request.Body.OutputConfig?.Effort;
+            summary.ImageDowngradedOnUnknownModel =
+                bridgeCtx.Response.ImageDowngradedOnUnknownModel;
+            summary.ForeignReasoningCarriersDropped =
+                bridgeCtx.Response.ForeignReasoningCarriersDropped;
             // Re-lookup the profile for the summary. Use GetNearest so a
             // fuzzy-matched (un-profiled but forwarded) model reports the borrowed
             // profile id here rather than blank — matches what the router actually

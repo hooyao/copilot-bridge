@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Text.Json;
 using CopilotBridge.Cli.Models.Common;
 
@@ -21,10 +21,31 @@ internal static class ClaudeReasoningEnvelope
     /// <summary>The IR marker T3 stamps on a redacted-thinking block.</summary>
     internal const string Marker = "bridge_reasoning_item";
 
-    // Long bridge-specific discriminator. Decoded only here, at the Claude edge, and
-    // only after this exact prefix/version matches — a provider-native encrypted blob
-    // never carries it and stays opaque.
-    internal const string Prefix = "cbridge_rr_7f3a9d2c_v1:";
+    /// <summary>
+    /// The IR marker T3 stamps alongside <see cref="Marker"/> naming the model that
+    /// produced the reasoning item. Encrypted reasoning state is model-private, so a
+    /// replay is only meaningful back to its own origin.
+    /// </summary>
+    internal const string OriginMarker = "bridge_reasoning_origin";
+
+    // Version-free family discriminator, READ-ONLY and reserved. Recognising it now
+    // means a future build could introduce it without the rollback hazard described
+    // below — today's build already decodes it.
+    //
+    // It is deliberately NOT what this build emits, and the emitted prefix should
+    // stay `_v1:` indefinitely. Measured against the real v0.4.29-beta decoder:
+    //   • `_v1:` payload with an unknown `v`, or an unknown top-level field  → Invalid
+    //     (bounded 400 — the safe failure; its HasOnlyKnownFields accepts only v/item)
+    //   • a NEW-prefix carrier                                              → Absent
+    //     (falls through as provider-native data and is FORWARDED UPSTREAM)
+    // So the fail-open hazard is created by changing the prefix, not by evolving the
+    // payload. Version the payload's `v` instead: every shipped reader already fails
+    // closed on it, and no staged reader/writer rollout is needed.
+    internal const string FamilyPrefix = "cbridge_rr_7f3a9d2c:";
+
+    // What this build EMITS, and what every shipped build can read.
+    internal const string LegacyV1Prefix = "cbridge_rr_7f3a9d2c_v1:";
+
     private const int Version = 1;
     private const int MaxPayloadBytes = 1_048_576;
     private const int MaxEncodedLength = 1_398_104;
@@ -42,7 +63,14 @@ internal static class ClaudeReasoningEnvelope
     /// therefore separate from storage; it checks that the required fields are present
     /// without narrowing what is carried.
     /// </remarks>
-    internal static bool TryFold(JsonElement item, out string data)
+    internal static bool TryFold(JsonElement item, out string data) =>
+        TryFold(item, origin: null, out data);
+
+    /// <summary>
+    /// Fold a reasoning item, recording the model that produced it so a later replay
+    /// can refuse to hand one model's encrypted state to another.
+    /// </summary>
+    internal static bool TryFold(JsonElement item, string? origin, out string data)
     {
         data = "";
         if (!TryReadFields(item, out _, out _, out _, out _))
@@ -53,33 +81,71 @@ internal static class ClaudeReasoningEnvelope
         {
             writer.WriteStartObject();
             writer.WriteNumber("v", Version);
+            if (!string.IsNullOrEmpty(origin)) writer.WriteString("origin", origin);
             writer.WritePropertyName("item");
             item.WriteTo(writer);
             writer.WriteEndObject();
         }
 
         if (buffer.WrittenCount > MaxPayloadBytes) return false;
-        data = Prefix + ToBase64Url(buffer.WrittenSpan);
+        // Always the `_v1:` prefix — see FamilyPrefix. Every shipped reader fails
+        // CLOSED on this prefix when the payload is one it cannot handle, so payload
+        // evolution is downgrade-safe; switching the prefix is the one move that
+        // would make an older reader fail OPEN.
+        data = LegacyV1Prefix + ToBase64Url(buffer.WrittenSpan);
         return true;
     }
 
     /// <summary>
     /// Unfold a value Claude Code echoed back. <see cref="ClaudeReasoningUnfold.Absent"/>
     /// means "not our carrier" — an ordinary provider blob, left untouched.
-    /// <see cref="ClaudeReasoningUnfold.Invalid"/> means the prefix matched but the
-    /// payload did not: fail closed rather than forward arbitrary JSON upstream.
+    /// <see cref="ClaudeReasoningUnfold.Invalid"/> means the family discriminator
+    /// matched but the payload did not: fail closed rather than forward arbitrary
+    /// JSON upstream. An unsupported (newer) VERSION lands here too — it is
+    /// recognisably ours and unreadable, which is precisely a fail-closed case.
     /// </summary>
     internal static ClaudeReasoningUnfold TryUnfold(
         string data,
         out string encryptedContent,
-        out ProviderExtensions? bag)
+        out ProviderExtensions? bag) =>
+        TryUnfold(data, out encryptedContent, out bag, out _);
+
+    internal static ClaudeReasoningUnfold TryUnfold(
+        string data,
+        out string encryptedContent,
+        out ProviderExtensions? bag,
+        out string? origin)
     {
         encryptedContent = "";
         bag = null;
-        if (!data.StartsWith(Prefix, StringComparison.Ordinal))
-            return ClaudeReasoningUnfold.Absent;
+        origin = null;
 
-        var encoded = data.AsSpan(Prefix.Length);
+        // Family FIRST, version second. Any carrier this project ever minted is
+        // identified here, including one from a build newer than this one.
+        ReadOnlySpan<char> encoded;
+        if (data.StartsWith(FamilyPrefix, StringComparison.Ordinal))
+        {
+            var rest = data.AsSpan(FamilyPrefix.Length);
+            var sep = rest.IndexOf(':');
+            if (sep <= 0) return ClaudeReasoningUnfold.Invalid;
+            if (!int.TryParse(rest[..sep], out var prefixVersion))
+                return ClaudeReasoningUnfold.Invalid;
+            // A version this build does not implement is bridge-owned state it
+            // cannot interpret. Failing closed is the whole point: forwarding it
+            // would put another build's private JSON where the backend expects its
+            // own encrypted blob.
+            if (prefixVersion != Version) return ClaudeReasoningUnfold.Invalid;
+            encoded = rest[(sep + 1)..];
+        }
+        else if (data.StartsWith(LegacyV1Prefix, StringComparison.Ordinal))
+        {
+            encoded = data.AsSpan(LegacyV1Prefix.Length);
+        }
+        else
+        {
+            return ClaudeReasoningUnfold.Absent;
+        }
+
         if (encoded.Length == 0 || encoded.Length > MaxEncodedLength)
             return ClaudeReasoningUnfold.Invalid;
 
@@ -110,6 +176,13 @@ internal static class ClaudeReasoningEnvelope
                 || !TryReadFields(item, out var encrypted, out _, out _, out _))
                 return ClaudeReasoningUnfold.Invalid;
 
+            if (root.TryGetProperty("origin", out var originElement))
+            {
+                if (originElement.ValueKind != JsonValueKind.String)
+                    return ClaudeReasoningUnfold.Invalid;
+                origin = originElement.GetString();
+            }
+
             encryptedContent = encrypted;
             bag = BuildReasoningBag(item);
             return ClaudeReasoningUnfold.Valid;
@@ -127,6 +200,70 @@ internal static class ClaudeReasoningEnvelope
     /// <c>reasoning_extra</c> so the replay can restore the item as received rather
     /// than as this build happens to model it.
     /// </summary>
+    /// <summary>The bag key carrying the model that minted a decoded carrier.</summary>
+    internal const string OriginBagKey = "reasoning_origin_model";
+
+    /// <summary>
+    /// Marks a block as HAVING BEEN DECODED from a bridge carrier, independent of
+    /// whether the carrier recorded an origin. A legacy `_v1:` carrier (written
+    /// before origin binding existed) decodes fine but names no model, and that is
+    /// exactly the state most likely to be replayed right after an upgrade. Without
+    /// this the origin stage cannot tell it apart from a provider-native blob it
+    /// must never touch.
+    /// </summary>
+    internal const string DecodedBagKey = "reasoning_decoded_by_bridge";
+
+    /// <summary>
+    /// Stamp the decoded carrier's origin onto the part bag so a later stage — one
+    /// that knows the RESOLVED target, which the client edge deliberately does not —
+    /// can decide whether the state is replayable. Kept in the bridge-private bag,
+    /// never emitted on the wire (T2 writes only the reasoning_* fields it models).
+    /// </summary>
+    internal static ProviderExtensions? WithOrigin(ProviderExtensions? bag, string? origin)
+    {
+        if (bag is null) return bag;
+        if (!bag.ByProvider.TryGetValue(
+                Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey, out var existing)
+            || existing.ValueKind != JsonValueKind.Object)
+            return bag;
+
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            foreach (var p in existing.EnumerateObject()) p.WriteTo(writer);
+            writer.WriteBoolean(DecodedBagKey, true);
+            if (!string.IsNullOrEmpty(origin)) writer.WriteString(OriginBagKey, origin);
+            writer.WriteEndObject();
+        }
+        using var doc = JsonDocument.Parse(buffer.WrittenMemory);
+        return new ProviderExtensions
+        {
+            ByProvider = new Dictionary<string, JsonElement>
+            {
+                [Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey] = doc.RootElement.Clone(),
+            },
+        };
+    }
+
+    /// <summary>True when this block was decoded from a bridge carrier.</summary>
+    internal static bool WasDecodedByBridge(ProviderExtensions? bag) =>
+        bag?.ByProvider.TryGetValue(
+            Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey, out var b) == true
+        && b.ValueKind == JsonValueKind.Object
+        && b.TryGetProperty(DecodedBagKey, out var d)
+        && d.ValueKind == JsonValueKind.True;
+
+    /// <summary>Read back the origin stamped by <see cref="WithOrigin"/>.</summary>
+    internal static string? ReadOrigin(ProviderExtensions? bag) =>
+        bag?.ByProvider.TryGetValue(
+            Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey, out var b) == true
+        && b.ValueKind == JsonValueKind.Object
+        && b.TryGetProperty(OriginBagKey, out var o)
+        && o.ValueKind == JsonValueKind.String
+            ? o.GetString()
+            : null;
+
     private static ProviderExtensions BuildReasoningBag(JsonElement item)
     {
         var buffer = new ArrayBufferWriter<byte>();
@@ -218,7 +355,7 @@ internal static class ClaudeReasoningEnvelope
     private static bool HasOnlyKnownFields(JsonElement root)
     {
         foreach (var property in root.EnumerateObject())
-            if (property.Name is not ("v" or "item"))
+            if (property.Name is not ("v" or "item" or "origin"))
                 return false;
         return true;
     }

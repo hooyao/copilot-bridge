@@ -1,4 +1,4 @@
-using CopilotBridge.Cli.Models;
+﻿using CopilotBridge.Cli.Models;
 
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 
@@ -100,6 +100,22 @@ internal sealed class RequestSummary
     /// Null on success.
     /// </summary>
     public string? Error { get; set; }
+
+    /// <summary>
+    /// True when an image-bearing tool result was sent as text because the exact
+    /// model had no catalog entry. Recorded on the request's audit line because the
+    /// wire shows nothing: the turn is a normal 200 that simply never carried the
+    /// image. Distinct from a probed-unsupported model, where the same fallback is
+    /// the expected outcome and is not reported.
+    /// </summary>
+    public bool ImageDowngradedOnUnknownModel { get; set; }
+
+    /// <summary>
+    /// Replayed reasoning carriers dropped because another model minted them.
+    /// Audited because the wire shows nothing — the turn is a normal 200 that
+    /// simply carries no reasoning state.
+    /// </summary>
+    public int ForeignReasoningCarriersDropped { get; set; }
 
     /// <summary>
     /// "max" (in==out), "max→xhigh" (in!=out), or "(none)" when no effort

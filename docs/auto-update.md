@@ -1,4 +1,4 @@
-# Startup auto-update
+﻿# Startup auto-update
 
 Copilot Bridge can update itself at startup. The check is **serve-only**,
 **synchronous**, and **fail-open**: it runs once before the proxy binds its
@@ -159,6 +159,32 @@ depend on the stock `appsettings.json` to obtain a critical setting, since an
 upgraded installation overlays the old file and would not carry a key the old
 file lacked.
 
+## Client-persisted state: keep the discriminator stable
+
+Self-update makes DOWNGRADE a normal event — a user can roll back, or pin a version,
+and a transcript written by a newer bridge is then replayed into an older one.
+Anything the bridge folds into client-visible state is therefore a wire protocol
+between bridge versions, and the older peer cannot be changed after the fact.
+
+The rule that falls out of that: **evolve the PAYLOAD, never the discriminator.**
+An older reader recognises its own discriminator and fails closed on a payload it
+cannot handle — a bounded 400. Change the discriminator and the same reader sees
+"not mine", falls through, and forwards the value upstream as if it were provider
+data: a 200 with the wrong bytes and no error anywhere.
+
+Measured against the real v0.4.29-beta reasoning-carrier decoder
+(`Pipeline/Adapters/ClaudeCode/ClaudeReasoningEnvelope.cs`), by compiling that exact
+shipped source and running both cases:
+
+| carrier replayed into v0.4.29-beta | verdict | outcome |
+| --- | --- | --- |
+| same prefix, unknown payload version or unknown field | `Invalid` | 400, safe |
+| new prefix | `Absent` | **forwarded upstream** |
+
+So a staged reader-then-writer rollout is NOT needed for payload changes, and a
+discriminator change is not made safe by staging it — it is simply the thing to
+avoid. If one ever becomes unavoidable, ship read support first and let it reach
+users before anything emits it.
 ## When it can't update
 
 - **Install directory not writable** (e.g. a macOS `.pkg` install under

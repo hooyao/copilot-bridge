@@ -1,4 +1,4 @@
-using System.Net.ServerSentEvents;
+﻿using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -63,7 +63,22 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         var filterRecursiveAgentTool =
             _ccOptions.PreventRecursiveAgentDelegation && ctx.IsClaudeCodeSubagent;
         var (body, vision, coercedEffort) = ResponsesRequestBuilder.Build(
-            ctx.Request.Body, _profiles, filterRecursiveAgentTool, out var removedAgentTool);
+            ctx.Request.Body, _profiles, filterRecursiveAgentTool, out var removedAgentTool,
+            out var downgradedImageOnUnknownModel);
+        ctx.Response.ImageDowngradedOnUnknownModel = downgradedImageOnUnknownModel;
+        if (downgradedImageOnUnknownModel)
+        {
+            // Loud on purpose. Without this the request still returns 200 and the
+            // model simply never sees the image — indistinguishable from a model that
+            // ignored it. The usual cause is Copilot renaming a model out from under
+            // the probe-grounded catalog.
+            _log.LogWarning(
+                "strategy {Name}: model {Model} has no catalog entry, so an image tool result was "
+                + "sent as text and vision was not requested. If this model supports structured "
+                + "multimodal function output, re-run the ModelProfileProbe and add it to "
+                + "CodexModelProfileCatalog — until then images are not reaching this model",
+                Name, ctx.Request.Body.Model);
+        }
         if (removedAgentTool)
         {
             _log.LogWarning(

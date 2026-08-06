@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.ServerSentEvents;
 using System.Text;
 using CopilotBridge.Cli.Copilot;
@@ -382,11 +382,16 @@ public class StreamKeepAliveContractTests
     [Fact]
     public async Task Strategy_SilentUpstream_YieldsPingsThenTheLateEvent()
     {
-        var upstream = new SilentGapStream(Delta("before"), TimeSpan.FromMilliseconds(2500), Delta("after"));
+        // The gap is 5x the ping interval, not 2.5x. The contract pinned here is
+        // "a silent upstream still produces repeated pings"; the margin must be wide
+        // enough that a loaded CI runner losing a scheduling slice cannot turn it into
+        // a failure. At 2.5x this went red on a shared runner while passing locally,
+        // which tests timer luck rather than the behaviour.
+        var upstream = new SilentGapStream(Delta("before"), TimeSpan.FromMilliseconds(5000), Delta("after"));
         var items = await ForwardAndDrainAsync(upstream, Timeouts(streamIdleSeconds: 30, keepAliveSeconds: 1));
 
         var pings = items.Where(IsPing).ToList();
-        Assert.True(pings.Count >= 2, $"expected pings during a ~2.5s silence at a 1s interval, got {pings.Count}");
+        Assert.True(pings.Count >= 2, $"expected repeated pings during a ~5s silence at a 1s interval, got {pings.Count}");
         Assert.All(pings, p => Assert.Equal("{\"type\":\"ping\"}", p.Data));
         // Nothing upstream was lost or reordered: both deltas, in order, around the pings.
         var deltas = items.Where(i => !IsPing(i)).Select(i => i.Data).ToList();
