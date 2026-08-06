@@ -93,6 +93,106 @@ public class CodexImageTests
     }
 
     [Fact]
+    public void ClaudeToolResult_TextImageText_PreservesStructuredOutputAndSetsVision()
+    {
+        const string callId = "toolu_image_contract";
+        const string pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nWQAAAAASUVORK5CYII=";
+        var ir = new MessagesRequest
+        {
+            Model = "gpt-5.6-sol",
+            Messages =
+            [
+                new MessageParam
+                {
+                    Role = Role.Assistant,
+                    Content =
+                    [
+                        new ToolUseBlockParam
+                        {
+                            Id = callId,
+                            Name = "Read",
+                            Input = Element("""{"file_path":"solid-red.png"}"""),
+                        },
+                    ],
+                },
+                new MessageParam
+                {
+                    Role = Role.User,
+                    Content =
+                    [
+                        new ToolResultBlockParam
+                        {
+                            ToolUseId = callId,
+                            Content = Element(
+                                "[{\"type\":\"text\",\"text\":\"The image follows.\"},"
+                                + "{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\""
+                                + pngBase64
+                                + "\"}},{\"type\":\"text\",\"text\":\"End of result.\"}]"),
+                        },
+                    ],
+                },
+            ],
+            Stream = true,
+        };
+
+        var (bytes, vision, _) = ResponsesRequestBuilder.Build(ir, Profiles);
+        var emitted = JsonNode.Parse(bytes)!.AsObject();
+        var outputItem = emitted["input"]!.AsArray()
+            .Single(item => item!["type"]!.GetValue<string>() == "function_call_output");
+        var output = Assert.IsType<JsonArray>(outputItem!["output"]);
+
+        Assert.Equal(callId, outputItem["call_id"]!.GetValue<string>());
+        Assert.Equal(["input_text", "input_image", "input_text"],
+            output.Select(part => part!["type"]!.GetValue<string>()).ToArray());
+        Assert.Equal("The image follows.", output[0]!["text"]!.GetValue<string>());
+        Assert.Equal(
+            $"data:image/png;base64,{pngBase64}",
+            output[1]!["image_url"]!.GetValue<string>());
+        Assert.Equal("End of result.", output[2]!["text"]!.GetValue<string>());
+        Assert.True(vision, "a structured tool-result input_image must enable Copilot-Vision-Request");
+    }
+
+    [Theory]
+    [InlineData("gpt-5.6-luna")]
+    [InlineData("gpt-5.6-sol-next")]
+    public void ClaudeToolResultImage_UnprobedExactModel_UsesStringFallback(string model)
+    {
+        var ir = ToolResultImageRequest(model,
+            "[{\"type\":\"image\",\"source\":{\"type\":\"url\",\"url\":\"https://example.com/red.png\"}}]");
+
+        var (bytes, vision, _) = ResponsesRequestBuilder.Build(ir, Profiles);
+        var emitted = JsonNode.Parse(bytes)!.AsObject();
+        var output = emitted["input"]!.AsArray()
+            .Single(item => item!["type"]!.GetValue<string>() == "function_call_output")!["output"];
+
+        Assert.Equal(
+            "{\"type\":\"image\",\"source\":{\"type\":\"url\",\"url\":\"https://example.com/red.png\"}}",
+            output!.GetValue<string>());
+        Assert.False(vision);
+    }
+
+    [Fact]
+    public void ClaudeToolResultImage_UnsupportedSibling_UsesWholeArrayFallback()
+    {
+        const string content = "[{\"type\":\"text\",\"text\":\"before\"},"
+            + "{\"type\":\"image\",\"source\":{\"type\":\"url\",\"url\":\"https://example.com/red.png\"}},"
+            + "{\"type\":\"document\",\"source\":{\"type\":\"text\",\"data\":\"do not drop\"}}]";
+        var ir = ToolResultImageRequest("gpt-5.6-sol", content);
+
+        var (bytes, vision, _) = ResponsesRequestBuilder.Build(ir, Profiles);
+        var emitted = JsonNode.Parse(bytes)!.AsObject();
+        var output = emitted["input"]!.AsArray()
+            .Single(item => item!["type"]!.GetValue<string>() == "function_call_output")!["output"]!
+            .GetValue<string>();
+
+        Assert.Equal(
+            "before\n{\"type\":\"image\",\"source\":{\"type\":\"url\",\"url\":\"https://example.com/red.png\"}}"
+            + "\n{\"type\":\"document\",\"source\":{\"type\":\"text\",\"data\":\"do not drop\"}}",
+            output);
+        Assert.False(vision);
+    }
+
+    [Fact]
     public void NoImage_VisionFlagFalse()
     {
         const string textOnly = "{\"model\":\"gpt-5.3-codex\",\"instructions\":\"x\","
@@ -101,5 +201,70 @@ public class CodexImageTests
         var ir = CodexRoundTrip.ToIr(CodexRoundTrip.ParseRequest(textOnly));
         var (_, vision, _) = ResponsesRequestBuilder.Build(ir, Profiles);
         Assert.False(vision);
+    }
+
+    /// <summary>
+    /// The SAME tool-result JSON must be treated differently based on what the IR
+    /// itself says, never on who the caller thinks the client is: a Codex source marks
+    /// its output opaque at T1, so T2 re-emits it verbatim; a Claude tool_result carries
+    /// no such mark, so T2 is free to read its blocks. This is the layering guard — if
+    /// someone reintroduces a source-client parameter on the builder, the two halves of
+    /// this test can no longer both hold.
+    /// </summary>
+    [Fact]
+    public void IdenticalJson_OpaqueWhenSourceMarkedIt_InterpretedOtherwise()
+    {
+        const string anthropicShapedArray =
+            "[{\"type\":\"text\",\"text\":\"see image\"},"
+            + "{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"AAAA\"}}]";
+
+        // Codex source: T1 stamps the opaque marker, so the array survives verbatim.
+        var codexIr = CodexRoundTrip.ToIr(CodexRoundTrip.ParseRequest(
+            "{\"model\":\"gpt-5.6-sol\",\"input\":["
+            + "{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"t\",\"arguments\":\"{}\"},"
+            + "{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":" + anthropicShapedArray + "}"
+            + "],\"stream\":true}"));
+        var (codexBytes, codexVision, _) = ResponsesRequestBuilder.Build(codexIr, Profiles);
+        var codexOutput = JsonNode.Parse(codexBytes)!.AsObject()["input"]!.AsArray()
+            .Single(i => i!["type"]!.GetValue<string>() == "function_call_output")!["output"];
+        Assert.IsNotType<JsonArray>(codexOutput);
+        Assert.False(codexVision);
+
+        // Claude source: no marker, so the same JSON is read as Anthropic blocks.
+        var claudeIr = ToolResultImageRequest("gpt-5.6-sol", anthropicShapedArray);
+        var (claudeBytes, claudeVision, _) = ResponsesRequestBuilder.Build(claudeIr, Profiles);
+        var claudeOutput = JsonNode.Parse(claudeBytes)!.AsObject()["input"]!.AsArray()
+            .Single(i => i!["type"]!.GetValue<string>() == "function_call_output")!["output"];
+        Assert.Equal(["input_text", "input_image"],
+            Assert.IsType<JsonArray>(claudeOutput).Select(p => p!["type"]!.GetValue<string>()).ToArray());
+        Assert.True(claudeVision);
+    }
+
+    private static MessagesRequest ToolResultImageRequest(string model, string content) =>
+        new()
+        {
+            Model = model,
+            Messages =
+            [
+                new MessageParam
+                {
+                    Role = Role.User,
+                    Content =
+                    [
+                        new ToolResultBlockParam
+                        {
+                            ToolUseId = "toolu_image_fallback",
+                            Content = Element(content),
+                        },
+                    ],
+                },
+            ],
+            Stream = true,
+        };
+
+    private static JsonElement Element(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement.Clone();
     }
 }

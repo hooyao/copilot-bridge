@@ -63,6 +63,67 @@ public class ClaudeCodeBehaviorTests
     }
 
     /// <summary>
+    /// CC→gpt multimodal tool-result fidelity. The task creates a real generated PNG
+    /// in a disposable work directory before launching Claude Code, then requires the
+    /// real client to call <c>Read</c>. Claude Code's Read result is an Anthropic
+    /// <c>tool_result</c> image block — the exact path this change fixes. The semantic
+    /// verdict requires the transcript's Read use/result, the model's correct color,
+    /// and the exact trace's structured <c>input_image</c> + vision header; a 200 is
+    /// inconclusive by itself.
+    /// </summary>
+    [Fact]
+    public async Task ClaudeCode_RoutedToGpt_ImageToolResult_IsUnderstood()
+    {
+        const string caseId = "cc-to-gpt-image-tool-result";
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(ServeScenario.CcToGpt));
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        var imagePath = Path.Combine(work.Path, "solid-red.png");
+        await File.WriteAllBytesAsync(imagePath, PngGen.SolidRgbPng(100, 100, 255, 0, 0));
+
+        var prompt =
+            "Actually use the Read tool exactly once on solid-red.png. Inspect the returned image, "
+            + "then answer with exactly one lowercase English color word and STOP. Do not infer the "
+            + "color from the filename; base the answer on the image returned by Read.";
+        var result = await ClaudeProcess.RunAsync(new ClaudeInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: prompt,
+            Model: ClientBehaviorSupport.LatestClaude,
+            OutputFormat: "stream-json",
+            Verbose: true,
+            AllowedTools: "Read",
+            Timeout: TimeSpan.FromMinutes(8),
+            WorkingDirectory: work.Path));
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "claude",
+                Route: "/cc->gpt/image-tool-result",
+                Model: ClientBehaviorSupport.LatestClaude,
+                Scenario: ServeScenario.CcToGpt,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: null,
+                DispatchSinceUnix: 0,
+                DispatchUntilUnix: 0,
+                Prompt: prompt),
+            result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
+            out _, out _);
+
+        _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
+        _output.WriteLine($"claude.exe exit={result.ExitCode} duration={result.Duration}");
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine(
+            "[verdict] real-client-verify: require actual Read tool_use→image tool_result, "
+            + "final answer red, second-turn function_call_output.output with input_image, "
+            + "copilot-vision-request=true, every upstream 2xx, and no bridge marker leak.");
+
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(
+            result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
+    /// <summary>
     /// <b>opus-5 cross-field constraint (thinking-disabled × effort).</b> Copilot rejects
     /// <c>output_config.effort</c> of <c>xhigh</c>/<c>max</c> on opus-5 <i>when
     /// <c>thinking</c> is disabled</i> — 400 <c>"…not supported when thinking is disabled
@@ -365,6 +426,66 @@ public class ClaudeCodeBehaviorTests
             result.ExitCode, bridge.TraceDir, manifestPath);
         Assert.True(File.Exists(transcriptPath),
             $"Claude session transcript missing under isolated config dir {configDir}");
+    }
+
+    /// <summary>
+    /// Protocol research probe for a future CC→Responses reasoning-carriage change.
+    /// A deterministic native-Anthropic upstream sends an opaque redacted-thinking
+    /// block followed by a real Bash tool call. PASS requires the real Claude Code
+    /// client to execute Bash, then include the exact opaque data in the next inbound
+    /// assistant trajectory without exposing it as visible result text.
+    /// </summary>
+    [Fact]
+    public async Task ClaudeCode_RedactedThinking_IsEchoedAcrossToolResult()
+    {
+        const string caseId = "cc-redacted-thinking-echo";
+        const string canary = "redacted-thinking-echo-complete";
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        await using var upstream = RedactedThinkingEchoUpstreamServer.Start(canary);
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.PassthroughTestUpstream,
+            TestUpstreamBaseUrl: upstream.BaseUrl));
+
+        const string prompt =
+            "Execute the tool call you receive, then continue until the upstream gives the final result.";
+        var result = await ClaudeProcess.RunAsync(new ClaudeInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: prompt,
+            Model: ClientBehaviorSupport.LatestClaude,
+            OutputFormat: "stream-json",
+            Verbose: true,
+            AllowedTools: "Bash",
+            Timeout: TimeSpan.FromMinutes(4),
+            WorkingDirectory: work.Path));
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "claude",
+                Route: "/cc/redacted-thinking-echo",
+                Model: ClientBehaviorSupport.LatestClaude,
+                Scenario: ServeScenario.PassthroughTestUpstream,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: null,
+                DispatchSinceUnix: 0,
+                DispatchUntilUnix: 0,
+                Prompt: prompt),
+            result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
+            out _, out _);
+
+        _output.WriteLine($"redacted upstream={upstream.BaseUrl} requests={upstream.RequestCount}");
+        _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
+        _output.WriteLine($"claude.exe exit={result.ExitCode} duration={result.Duration}");
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine(
+            "[verdict] require real Bash tool_use→tool_result, final canary, and exact "
+            + "redacted_thinking.data in the next inbound request; opaque data must not "
+            + "appear in visible final text.");
+
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(
+            result.ExitCode, bridge.TraceDir, manifestPath);
     }
 
     /// <summary>

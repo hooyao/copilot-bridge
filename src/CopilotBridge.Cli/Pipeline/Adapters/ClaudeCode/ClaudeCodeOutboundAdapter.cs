@@ -44,6 +44,11 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
     // the web_search_call output item, and must never reach a Claude Code client.
     private const string WebSearchMarker = "bridge_web_search_call";
     private const string WebSearchResultMarker = "bridge_web_search_call_result";
+    // Carries a whole Responses reasoning item (id/summary/content have no Anthropic
+    // block equivalent). Unlike the markers above, this edge does not merely DROP it:
+    // the Anthropic wire has exactly one string for such state, so the item is folded
+    // into the block's own `data` and the marker removed. See ClaudeReasoningEnvelope.
+    private const string ReasoningMarker = ClaudeReasoningEnvelope.Marker;
 
     private readonly ILogger<ClaudeCodeOutboundAdapter> _log;
 
@@ -82,6 +87,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
         if (body.AsSpan().IndexOf(GrammarMarkerBytes) < 0
             && body.AsSpan().IndexOf(NamespaceMarkerBytes) < 0
             && body.AsSpan().IndexOf(CustomToolCallIdMarkerBytes) < 0
+            && body.AsSpan().IndexOf(ReasoningMarkerBytes) < 0
             && body.AsSpan().IndexOf(WebSearchMarkerBytes) < 0)
             return body;
 
@@ -101,6 +107,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                     && (block.TryGetProperty(GrammarMarker, out _)
                         || block.TryGetProperty(NamespaceMarker, out _)
                         || block.TryGetProperty(CustomToolCallIdMarker, out _)
+                        || block.TryGetProperty(ReasoningMarker, out _)
                         || block.TryGetProperty(WebSearchMarker, out _)
                         || block.TryGetProperty(WebSearchResultMarker, out _)))
                 {
@@ -132,14 +139,25 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                             continue;
                         }
                         writer.WriteStartObject();
+                        var blockFoldedData = "";
+                        if (block.TryGetProperty(ReasoningMarker, out var reasoningItem)
+                            && ClaudeReasoningEnvelope.TryFold(reasoningItem, out var folded))
+                            blockFoldedData = folded;
                         foreach (var inner in block.EnumerateObject())
                         {
-                            if (!inner.NameEquals(GrammarMarker)
-                                && !inner.NameEquals(NamespaceMarker)
-                                && !inner.NameEquals(CustomToolCallIdMarker)
-                                && !inner.NameEquals(WebSearchMarker)
-                                && !inner.NameEquals(WebSearchResultMarker))
-                                inner.WriteTo(writer);
+                            if (inner.NameEquals(GrammarMarker)
+                                || inner.NameEquals(NamespaceMarker)
+                                || inner.NameEquals(CustomToolCallIdMarker)
+                                || inner.NameEquals(ReasoningMarker)
+                                || inner.NameEquals(WebSearchMarker)
+                                || inner.NameEquals(WebSearchResultMarker))
+                                continue;
+                            if (blockFoldedData.Length > 0 && inner.NameEquals("data"))
+                            {
+                                writer.WriteString("data", blockFoldedData);
+                                continue;
+                            }
+                            inner.WriteTo(writer);
                         }
                         writer.WriteEndObject();
                     }
@@ -158,6 +176,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
     private static ReadOnlySpan<byte> GrammarMarkerBytes => "bridge_input_is_grammar_text"u8;
     private static ReadOnlySpan<byte> NamespaceMarkerBytes => "bridge_tool_namespace"u8;
     private static ReadOnlySpan<byte> CustomToolCallIdMarkerBytes => "bridge_custom_tool_call_id"u8;
+    private static ReadOnlySpan<byte> ReasoningMarkerBytes => "bridge_reasoning_item"u8;
     // "bridge_web_search_call" is a prefix of "bridge_web_search_call_result", so this
     // one span is a sufficient fast-filter for BOTH web-search markers.
     private static ReadOnlySpan<byte> WebSearchMarkerBytes => "bridge_web_search_call"u8;
@@ -186,6 +205,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
         if (data.IndexOf(GrammarMarker, StringComparison.Ordinal) < 0
             && data.IndexOf(NamespaceMarker, StringComparison.Ordinal) < 0
             && data.IndexOf(CustomToolCallIdMarker, StringComparison.Ordinal) < 0
+            && data.IndexOf(ReasoningMarker, StringComparison.Ordinal) < 0
             && data.IndexOf(WebSearchMarker, StringComparison.Ordinal) < 0)
             return evt;
 
@@ -222,8 +242,18 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
             // original event so the byte-identical pass-through contract holds.
             if (!cb.TryGetProperty(GrammarMarker, out _)
                 && !cb.TryGetProperty(NamespaceMarker, out _)
+                && !cb.TryGetProperty(ReasoningMarker, out _)
                 && !cb.TryGetProperty(WebSearchMarker, out _))
                 return evt;
+
+            // A reasoning carrier is FOLDED, not just dropped: the Claude wire has one
+            // string for this state, so the whole item moves into `data`. If the item
+            // is not replayable (no encrypted_content/summary), leave the plain blob —
+            // a carrier that would 400 the next turn is worse than stateless.
+            var foldedData = "";
+            if (cb.TryGetProperty(ReasoningMarker, out var reasoningItem)
+                && ClaudeReasoningEnvelope.TryFold(reasoningItem, out var folded))
+                foldedData = folded;
 
             using var buffer = new MemoryStream();
             using (var w = new Utf8JsonWriter(buffer))
@@ -239,8 +269,14 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                         {
                             if (inner.NameEquals(GrammarMarker)
                                 || inner.NameEquals(NamespaceMarker)
+                                || inner.NameEquals(ReasoningMarker)
                                 || inner.NameEquals(WebSearchMarker))
                                 continue; // drop the bridge-internal marker
+                            if (foldedData.Length > 0 && inner.NameEquals("data"))
+                            {
+                                w.WriteString("data", foldedData);
+                                continue;
+                            }
                             inner.WriteTo(w);
                         }
                         w.WriteEndObject();

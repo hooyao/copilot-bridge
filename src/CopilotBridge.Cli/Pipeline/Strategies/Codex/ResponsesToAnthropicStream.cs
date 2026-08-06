@@ -345,11 +345,34 @@ internal sealed class ResponsesToAnthropicStream
         if (!root.TryGetProperty("item", out var item)) yield break;
         var itemType = item.TryGetProperty("type", out var it) ? it.GetString() : null;
 
-        // A reasoning item has no Anthropic content-block equivalent in the
-        // bridge's stream (its encrypted_content is carried on the request side,
-        // not re-emitted as a visible delta) — skip it, don't open an empty text
-        // block that would then need a matching stop.
-        if (itemType == "reasoning") yield break;
+        if (itemType == "reasoning")
+        {
+            // A Responses reasoning item has no Anthropic content-block equivalent
+            // that can hold its id/summary/content, so it rides the IR the same way
+            // web_search_call does: a hidden redacted_thinking block carrying the
+            // opaque blob, plus a bridge-internal marker holding the whole item.
+            // Each client edge decides what to do with the marker — the native Codex
+            // edge restores the original event from its ledger and drops the marker;
+            // the Claude edge folds the marker into the block's own `data` (the only
+            // field that client protocol can carry) and scrubs it. T3 itself does
+            // NOT know which client is downstream.
+            if (!item.TryGetProperty("encrypted_content", out var encrypted)
+                || encrypted.ValueKind != JsonValueKind.String
+                || encrypted.GetString() is not { Length: > 0 } blob)
+                yield break;
+
+            if (_blockOpen)
+            {
+                yield return Sse("content_block_stop", BlockStopJson(_blockIndex));
+                _blockOpen = false;
+            }
+            _blockIndex++;
+            var itemJson = item.GetRawText();
+            yield return Sse("content_block_start",
+                $"{{\"type\":\"content_block_start\",\"index\":{_blockIndex},\"content_block\":{{\"type\":\"redacted_thinking\",\"data\":{JsonEncode(blob)},\"bridge_reasoning_item\":{itemJson}}}}}");
+            yield return Sse("content_block_stop", BlockStopJson(_blockIndex));
+            yield break;
+        }
 
         // Close a previous still-open block defensively.
         if (_blockOpen)

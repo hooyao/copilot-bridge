@@ -95,6 +95,15 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         // "captured wire bytes; non-null iff tracing on". (Contract A)
         if (_audit.Enabled) ctx.Response.UpstreamWireBody = body;
 
+        // Expose only the generated protocol signal to the request audit. The client
+        // below still owns the official header set; this mirrors the Anthropic
+        // strategy's ctx.Request.Headers contract and lets traces prove a nested
+        // function-output image actually activated Copilot-Vision-Request.
+        if (vision)
+            ctx.Request.Headers["copilot-vision-request"] = "true";
+        else
+            ctx.Request.Headers.Remove("copilot-vision-request");
+
         _log.LogDebug("strategy {Name}: T2 built Responses body bytes={Bytes} vision={Vision} model={Model}",
             Name, body.Length, vision, ctx.Request.Body.Model);
 

@@ -148,23 +148,74 @@ internal static class ClaudeProcess
         return new ClaudeResult(proc.ExitCode, stdout, stderr, sw.Elapsed);
     }
 
+    /// <summary>
+    /// Locate a claude launcher that receives this harness's arguments VERBATIM.
+    /// <para>Only a native <c>.exe</c> qualifies. An npm install also drops shims next
+    /// to it — <c>claude.cmd</c> (parsed by cmd.exe) and extensionless <c>claude</c> (a
+    /// <c>#!/bin/sh</c> script) — and those re-parse the argument list: a prompt
+    /// containing a shell metacharacter such as <c>&gt;</c> is TRUNCATED at that point,
+    /// silently dropping both the rest of the prompt and every later flag (including
+    /// <c>--output-format stream-json</c>). That failure looks like a client/bridge bug
+    /// — the client answers "your steps never came through", emits plain text instead of
+    /// stream-json, and never reaches the test bridge — so this resolver refuses to use
+    /// a shim rather than let an environment problem masquerade as client behavior.</para>
+    /// <para>PATH often exposes only the shims (npm's global bin), while the real
+    /// executable lives under the package's own <c>bin/</c>. So after PATH, search the
+    /// npm package layout relative to each PATH entry.</para>
+    /// </summary>
     private static string ResolveClaudeExe()
     {
         var fromEnv = Environment.GetEnvironmentVariable(ClaudeExeEnv);
         if (!string.IsNullOrEmpty(fromEnv) && File.Exists(fromEnv)) return fromEnv;
 
-        // Fallback: walk PATH. `where claude` showed it under .local\bin\ for the
-        // user; this should resolve via the OS lookup.
-        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+        var pathDirs = (Environment.GetEnvironmentVariable("PATH") ?? "")
+            .Split(Path.PathSeparator)
+            .Where(d => !string.IsNullOrWhiteSpace(d))
+            .ToList();
+
+        // 1. A real executable directly on PATH.
+        foreach (var dir in pathDirs)
         {
-            if (string.IsNullOrWhiteSpace(dir)) continue;
-            foreach (var name in new[] { "claude.exe", "claude.cmd", "claude" })
+            var candidate = Path.Combine(dir, ClaudeExeName);
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        // 2. The npm package layout hanging off a PATH entry that holds only shims.
+        foreach (var dir in pathDirs)
+        {
+            foreach (var relative in NpmExeLocations)
             {
-                var candidate = Path.Combine(dir, name);
-                if (File.Exists(candidate)) return candidate;
+                var candidate = Path.Combine(dir, relative);
+                if (File.Exists(candidate)) return Path.GetFullPath(candidate);
             }
         }
+
+        // 3. A shim is present but no executable: name it, because running the shim is
+        //    exactly the silent-corruption case above.
+        var shim = pathDirs
+            .SelectMany(dir => ShimNames.Select(name => Path.Combine(dir, name)))
+            .FirstOrDefault(File.Exists);
         throw new FileNotFoundException(
-            "Could not locate claude.exe. Set the CLAUDE_EXE environment variable or ensure claude is on PATH.");
+            shim is null
+                ? $"Could not locate {ClaudeExeName}. Set the {ClaudeExeEnv} environment variable "
+                  + "or ensure claude is on PATH."
+                : $"Found only a launcher shim ({shim}) and no {ClaudeExeName}. A shim re-parses "
+                  + "arguments through a shell, which truncates any prompt containing a "
+                  + "metacharacter such as '>' and drops later flags — the run would produce "
+                  + $"misleading client behavior. Set {ClaudeExeEnv} to the real executable "
+                  + "(npm installs it under node_modules/@anthropic-ai/claude-code/bin/).");
     }
+
+    private const string ClaudeExeName = "claude.exe";
+
+    /// <summary>Shims an npm install puts on PATH next to no executable.</summary>
+    private static readonly string[] ShimNames = ["claude.cmd", "claude.ps1", "claude"];
+
+    /// <summary>Where npm keeps the real executable, relative to its global bin dir.</summary>
+    private static readonly string[] NpmExeLocations =
+    [
+        Path.Combine("node_modules", "@anthropic-ai", "claude-code", "bin", ClaudeExeName),
+        Path.Combine("node_modules", "@anthropic-ai", "claude-code", "node_modules",
+            "@anthropic-ai", "claude-code-win32-x64", ClaudeExeName),
+    ];
 }

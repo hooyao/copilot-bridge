@@ -1,0 +1,47 @@
+{
+  "model": "claude-opus-5",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the returned image and answer with its color."
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_captured_image_20260806",
+          "name": "Read",
+          "input": {
+            "file_path": "solid-red.png"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_captured_image_20260806",
+          "content": [
+            {
+              "type": "text",
+              "text": "The image returned by the Read tool follows."
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "__PNG_BASE64__"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "stream": true
+}

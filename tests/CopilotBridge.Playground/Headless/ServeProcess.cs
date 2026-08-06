@@ -76,8 +76,8 @@ internal enum ServeScenario
     CcToGptContextRecovery,
 
     /// <summary>Native /cc passthrough (no routing rewrites) against a deterministic
-    /// test upstream supplied by the caller. Used by the keepalive behavior case,
-    /// which needs an Anthropic-shaped upstream that goes silent on demand.</summary>
+    /// test upstream supplied by the caller. Used by keepalive and client protocol
+    /// probes that need an Anthropic-shaped upstream.</summary>
     PassthroughTestUpstream,
 }
 

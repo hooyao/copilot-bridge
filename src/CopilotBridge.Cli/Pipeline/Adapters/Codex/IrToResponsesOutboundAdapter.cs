@@ -299,6 +299,11 @@ internal sealed class AnthropicToResponsesStream
     // .searching/.completed + output_item.done) so codex sees the search it ran,
     // instead of an empty text message. Reset per block.
     private bool _blockIsWebSearch;
+    // True while the current block is a reasoning carrier — a redacted_thinking block
+    // T3 pushed into the IR for whichever client edge needs it. The native Codex edge
+    // restores reasoning from the event ledger instead, so such a block produces no
+    // Codex-facing output item at all. Reset per block.
+    private bool _blockIsReasoning;
     // The full web_search_call item JSON T3 carried on the block-start marker
     // (bridge_web_search_call, status:in_progress at open) and later the completed
     // item on the block-stop marker (bridge_web_search_call_result, with `action`).
@@ -518,6 +523,7 @@ internal sealed class AnthropicToResponsesStream
         _toolIsCustom = false;
         _customToolCallId = "";
         _blockIsWebSearch = false;
+        _blockIsReasoning = false;
         _webSearchItemAdded = "";
     }
 
@@ -706,7 +712,20 @@ internal sealed class AnthropicToResponsesStream
         _argsBuffer = "";
         _textBuffer = "";
         _blockIsWebSearch = false;
+        _blockIsReasoning = false;
         _webSearchItemAdded = "";
+
+        // A reasoning carrier: T3 pushed the Responses reasoning item into the IR as a
+        // hidden redacted_thinking block so any client edge can pull what it needs. THIS
+        // edge does not need it — a native Codex response restores the original reasoning
+        // events from the event ledger — so skip the block rather than render it as an
+        // (empty) assistant message.
+        if (blockType == "redacted_thinking")
+        {
+            _blockIsReasoning = true;
+            _outputIndex--;
+            yield break;
+        }
 
         // A web_search_call carrier: T3 opened a text block stamped with
         // bridge_web_search_call (the in-progress item). Re-emit Copilot's server-tool
@@ -813,6 +832,13 @@ internal sealed class AnthropicToResponsesStream
     private IEnumerable<SseItem<string>> OnBlockStop(JsonElement root = default)
     {
         if (_currentBlockType is null) yield break;
+        if (_blockIsReasoning)
+        {
+            // The carrier produced no Codex-facing output item on start, so there is
+            // nothing to close here either — the native events come from the ledger.
+            ResetOpenBlock();
+            yield break;
+        }
         if (_blockIsWebSearch)
         {
             // Close the web_search_call lifecycle. The completed item (carrying its

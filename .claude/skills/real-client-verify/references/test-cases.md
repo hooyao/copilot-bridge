@@ -79,6 +79,7 @@ to `gpt-5.6-sol` on the `/responses` wire.
 | --- | --- | --- |
 | C1 multi-tool chain over the route | same A1 task, but through the CC→gpt route | transcript: turn completed, tools executed; trace: upstream is `gpt-5.6-sol` on `/responses`, 2xx, tool round-trip intact |
 | C2 marker no-leak | any tool task through the route | **bridge trace**: the client-facing `content_block_start` events must NOT carry `bridge_tool_namespace` or `bridge_input_is_grammar_text`. Those are T3-internal markers `ClaudeCodeOutboundAdapter` scrubs on this route; if they reach the Claude client the scrub regressed. (This is the 0.4.13 leg — verify it here.) |
+| C3 multimodal tool result | generate a solid-red PNG, require real Claude Code to `Read` it, then answer with exactly the observed color (`ClaudeCode_RoutedToGpt_ImageToolResult_IsUnderstood`) | transcript: actual `Read` tool_use → image tool_result → completed final answer `red`. Trace: later `function_call_output.output` contains ordered `input_image`, exact source data URL, `copilot-vision-request=true`, every upstream 2xx, and no bridge marker leak. A 200 without the transcript loop/correct color is INCONCLUSIVE. |
 
 ---
 

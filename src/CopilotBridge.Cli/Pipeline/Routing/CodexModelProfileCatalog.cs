@@ -144,7 +144,17 @@ internal sealed class CodexModelProfileCatalog
         // uniform drop, not a per-model flag) → RejectsCustomTools stays false.
         string[] xlarge = ["none", "low", "medium", "high", "xhigh", "max"];
         yield return new CodexModelProfile { CanonicalId = "gpt-5.6-luna",  AcceptedEfforts = xlarge, DefaultEffort = "xhigh" };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-sol",   AcceptedEfforts = xlarge, DefaultEffort = "xhigh" };
+        // A direct two-turn function-output probe (2026-08-06) sent a generated red
+        // PNG as output:[{type:input_text},{type:input_image}] and sol answered
+        // exactly "red" (200). This proves a capability that ordinary top-level
+        // vision probes do not. Sibling rows remain false until individually probed.
+        yield return new CodexModelProfile
+        {
+            CanonicalId = "gpt-5.6-sol",
+            AcceptedEfforts = xlarge,
+            DefaultEffort = "xhigh",
+            SupportsMultimodalFunctionOutput = true,
+        };
         yield return new CodexModelProfile { CanonicalId = "gpt-5.6-terra", AcceptedEfforts = xlarge, DefaultEffort = "xhigh" };
 
         // ── "small" effort profile: accept minimal/low/medium/high, reject none+xhigh ──

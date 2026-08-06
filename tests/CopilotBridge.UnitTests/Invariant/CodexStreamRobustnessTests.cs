@@ -422,6 +422,28 @@ public class CodexStreamRobustnessTests
             emitted["input"]!.AsArray()[0]!["output"]!.GetValue<string>());
     }
 
+    [Fact]
+    public void NativeCodexAnthropicShapedImageOutput_RemainsOpaque()
+    {
+        const string requestJson = """
+          {
+            "model":"gpt-5.6-sol",
+            "input":[
+              {"type":"function_call_output","call_id":"c1","output":[
+                {"type":"text","text":"first"},
+                {"type":"image","source":{"type":"url","url":"https://example.com/red.png"}}
+              ]}
+            ],
+            "stream":true
+          }
+          """;
+
+        var emitted = CodexRoundTrip.RoundTrip(requestJson).AsObject();
+        Assert.Equal(
+            "first\n{\"type\":\"image\",\"source\":{\"type\":\"url\",\"url\":\"https://example.com/red.png\"}}",
+            emitted["input"]!.AsArray()[0]!["output"]!.GetValue<string>());
+    }
+
     [Theory]
     [InlineData("", "second", "\nsecond")]
     [InlineData("first", "", "first\n")]
