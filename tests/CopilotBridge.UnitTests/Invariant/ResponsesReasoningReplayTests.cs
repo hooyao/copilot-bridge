@@ -1,4 +1,4 @@
-using System.Net.ServerSentEvents;
+﻿using System.Net.ServerSentEvents;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -66,7 +66,7 @@ public class ResponsesReasoningReplayTests
 
         Assert.False(block.TryGetProperty(ClaudeReasoningEnvelope.Marker, out _));
         var data = block.GetProperty("data").GetString()!;
-        Assert.StartsWith(ClaudeReasoningEnvelope.Prefix, data, StringComparison.Ordinal);
+        Assert.StartsWith(ClaudeReasoningEnvelope.LegacyV1Prefix, data, StringComparison.Ordinal);
         // The item's provider fields are folded into the opaque string, not exposed.
         Assert.DoesNotContain("rs_contract", start.Data, StringComparison.Ordinal);
         // No bridge-internal marker PROPERTY survives to the client on any event.
@@ -186,7 +186,7 @@ public class ResponsesReasoningReplayTests
         // is a client-side fault, not provider state to forward blindly.
         await Assert.ThrowsAsync<InvalidClaudeReasoningEnvelopeException>(async () =>
             await UnfoldAsync(RequestWithRedactedThinking(
-                ClaudeReasoningEnvelope.Prefix + "not-valid-base64url!")));
+                ClaudeReasoningEnvelope.LegacyV1Prefix + "not-valid-base64url!")));
     }
 
     [Fact]
@@ -378,6 +378,173 @@ public class ResponsesReasoningReplayTests
             yield return item;
             await Task.Yield();
         }
+    }
+
+    [Fact]
+    public async Task UnknownCarrierVersion_FailsClosed_AndNeverReachesTheUpstream()
+    {
+        // The carrier is DURABLE CLIENT DATA: Claude Code persists transcripts and
+        // replays them across --resume, compaction, and a bridge downgrade. So a
+        // build WILL meet a carrier written by a newer build. That is bridge-owned
+        // state this build cannot interpret — it must fail closed, exactly as a
+        // corrupt carrier does. Forwarding it upstream as if it were provider-native
+        // encrypted content is the one outcome that is silently wrong: the backend
+        // sees another build's private JSON in place of its own reasoning blob.
+        var future = ClaudeReasoningEnvelope.FamilyPrefix + "999:" + FutureVersionPayload();
+
+        await Assert.ThrowsAsync<InvalidClaudeReasoningEnvelopeException>(async () =>
+            await UnfoldAsync(RequestWithRedactedThinking(future)));
+    }
+
+    [Fact]
+    public async Task UnknownCarrierVersion_ContentNeverAppearsInTheOutboundRequest()
+    {
+        // Assert on the outbound BYTES, not on a status code. The failure mode this
+        // guards produced a perfectly healthy 200 while the upstream received the
+        // wrong bytes — a status assertion would have stayed green through it.
+        var future = ClaudeReasoningEnvelope.FamilyPrefix + "999:" + FutureVersionPayload();
+        MessagesRequest? adapted = null;
+        try
+        {
+            adapted = await UnfoldAsync(RequestWithRedactedThinking(future));
+        }
+        catch (InvalidClaudeReasoningEnvelopeException)
+        {
+            return; // Failed closed before any upstream body could be built.
+        }
+
+        var wire = ResponsesRequestBuilder.Build(adapted!, Catalog).Body;
+        Assert.DoesNotContain(future, System.Text.Encoding.UTF8.GetString(wire), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task LegacyV1Carrier_StillDecodes()
+    {
+        // A carrier in the exact shape v0.4.29-beta emitted. Frozen as a literal
+        // rather than regenerated, because a carrier produced by the CURRENT encoder
+        // would prove nothing about reading the ones already sitting in users'
+        // transcripts — and those outlive any single build.
+        const string legacy =
+            "cbridge_rr_7f3a9d2c_v1:eyJ2IjoxLCJpdGVtIjp7InR5cGUiOiJyZWFzb25pbmciLCJpZCI6InJzX2"
+            + "xlZ2FjeSIsImVuY3J5cHRlZF9jb250ZW50IjoiTEVHQUNZLUJMT0IiLCJzdW1tYXJ5IjpbeyJ0eXBlIjo"
+            + "ic3VtbWFyeV90ZXh0IiwidGV4dCI6ImxlZ2FjeSJ9XX19";
+
+        var adapted = await UnfoldAsync(RequestWithRedactedThinking(legacy));
+
+        var wire = JsonNode.Parse(
+            ResponsesRequestBuilder.Build(adapted, Catalog).Body)!.AsObject();
+        var reasoning = wire["input"]!.AsArray()
+            .Select(i => i!.AsObject())
+            .Single(i => i["type"]?.GetValue<string>() == "reasoning");
+        Assert.Equal("LEGACY-BLOB", reasoning["encrypted_content"]!.GetValue<string>());
+        Assert.Equal("rs_legacy", reasoning["id"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task CarrierFromAnotherModel_IsDropped_AndTheTurnStillRuns()
+    {
+        // Encrypted reasoning state is private to the model that produced it. After a
+        // mid-session model change the transcript still carries the old model's
+        // carrier — replaying it hands model B a blob only model A can read. Drop it:
+        // a turn missing hidden state recovers, a turn carrying foreign state does
+        // not. Version validation cannot catch this; the version is correct.
+        var carrier = CarrierData(await ClaudeStreamAsync(RunT3(ReasoningThenToolStream())));
+        var rerouted = RequestWithRedactedThinking(carrier) with { Model = "gpt-5.6-luna" };
+
+        var adapted = await UnfoldAsync(rerouted);
+
+        var wire = JsonNode.Parse(
+            ResponsesRequestBuilder.Build(adapted, Catalog).Body)!.AsObject();
+        var input = wire["input"]!.AsArray();
+        Assert.DoesNotContain(input, i =>
+            i!.AsObject()["type"]?.GetValue<string>() == "reasoning");
+        // The foreign blob must not survive in any form.
+        Assert.DoesNotContain("opaque+/=bytes", wire.ToJsonString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CarrierFromTheSameModel_StillReplays()
+    {
+        // The control: origin binding must not cost the normal case anything.
+        var carrier = CarrierData(await ClaudeStreamAsync(RunT3(ReasoningThenToolStream())));
+
+        var adapted = await UnfoldAsync(RequestWithRedactedThinking(carrier));
+
+        var wire = JsonNode.Parse(
+            ResponsesRequestBuilder.Build(adapted, Catalog).Body)!.AsObject();
+        var reasoning = wire["input"]!.AsArray()
+            .Select(i => i!.AsObject())
+            .Single(i => i["type"]?.GetValue<string>() == "reasoning");
+        Assert.Equal("opaque+/=bytes", reasoning["encrypted_content"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task OriginMarker_NeverReachesTheClient()
+    {
+        var claudeFacing = await ClaudeStreamAsync(RunT3(ReasoningThenToolStream()));
+
+        foreach (var evt in claudeFacing)
+            Assert.DoesNotContain(
+                "\"" + ClaudeReasoningEnvelope.OriginMarker + "\"",
+                evt.Data, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EmittedPrefixStaysV1_SoAnOlderReaderFailsClosed()
+    {
+        // Measured against the real v0.4.29-beta decoder, both directions:
+        //   `_v1:` + unknown payload  → Invalid (bounded 400, safe)
+        //   a NEW prefix              → Absent  (forwarded upstream, silent corruption)
+        // Its HasOnlyKnownFields accepts only "v"/"item", so even the `origin` field
+        // this build adds makes an older reader fail CLOSED. The hazard therefore
+        // comes from changing the PREFIX, never from evolving the payload — so the
+        // emitted prefix must not drift, and payload versioning carries evolution.
+        using var doc = JsonDocument.Parse(
+            "{\"type\":\"reasoning\",\"encrypted_content\":\"BLOB\",\"summary\":[]}");
+        Assert.True(ClaudeReasoningEnvelope.TryFold(doc.RootElement, "gpt-5.6-sol", out var emitted));
+
+        Assert.StartsWith(ClaudeReasoningEnvelope.LegacyV1Prefix, emitted, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            ClaudeReasoningEnvelope.FamilyPrefix + "1:", emitted, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReservedFamilyPrefixIsReadable_SoAFutureSwitchIsSafe()
+    {
+        // Reading it today is what would let a LATER build adopt it without the
+        // rollback hazard. Read support costs nothing; emitting it is the risk.
+        using var doc = JsonDocument.Parse(
+            "{\"type\":\"reasoning\",\"encrypted_content\":\"BLOB\",\"summary\":[]}");
+        Assert.True(ClaudeReasoningEnvelope.TryFold(doc.RootElement, out var v1));
+        var payload = v1[ClaudeReasoningEnvelope.LegacyV1Prefix.Length..];
+
+        var verdict = ClaudeReasoningEnvelope.TryUnfold(
+            ClaudeReasoningEnvelope.FamilyPrefix + "1:" + payload, out var enc, out _, out _);
+
+        Assert.Equal(ClaudeReasoningUnfold.Valid, verdict);
+        Assert.Equal("BLOB", enc);
+    }
+
+    [Fact]
+    public void FrozenLegacyFixture_MatchesWhatThisBuildEmits()
+    {
+        // Guards the fixture above against being quietly wrong: if the encoder's
+        // payload shape ever drifts, a hand-frozen literal could stop representing
+        // any real carrier and the compatibility test would pass vacuously.
+        using var doc = JsonDocument.Parse(
+            "{\"type\":\"reasoning\",\"id\":\"rs_legacy\",\"encrypted_content\":\"LEGACY-BLOB\","
+            + "\"summary\":[{\"type\":\"summary_text\",\"text\":\"legacy\"}]}");
+        Assert.True(ClaudeReasoningEnvelope.TryFold(doc.RootElement, out var emitted));
+        Assert.StartsWith(ClaudeReasoningEnvelope.LegacyV1Prefix, emitted, StringComparison.Ordinal);
+    }
+
+    /// <summary>A well-formed envelope body bearing a version this build cannot know.</summary>
+    private static string FutureVersionPayload()
+    {
+        var json = "{\"v\":999,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"FUTURE\","
+            + "\"summary\":[],\"field_from_a_later_build\":true}}";
+        return Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(json))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
     private static string CarrierData(List<SseItem<string>> claudeFacing)

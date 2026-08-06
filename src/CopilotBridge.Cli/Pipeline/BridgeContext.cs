@@ -1,4 +1,4 @@
-using System.Net.ServerSentEvents;
+﻿using System.Net.ServerSentEvents;
 
 namespace CopilotBridge.Cli.Pipeline;
 
@@ -265,6 +265,17 @@ internal sealed class BridgeResponse
     /// falls back to the IR body there). Not audit-gated: always set by the strategy.
     /// </summary>
     public string? OutboundEffortCoerced { get; set; }
+
+    /// <summary>
+    /// True when an image-bearing tool result took the string compatibility path
+    /// because the exact model has NO catalog entry (capability Unknown), as opposed
+    /// to being probed-unsupported. Both look identical on the wire — the request
+    /// still returns 200 and the model simply never sees the image — so this is the
+    /// only durable record that it happened. The usual cause is Copilot renaming a
+    /// model out from under the probe-grounded catalog. Not set for a
+    /// probed-unsupported model, where the downgrade is the recorded expectation.
+    /// </summary>
+    public bool ImageDowngradedOnUnknownModel { get; set; }
 
     /// <summary>
     /// RAW upstream response bytes for the BUFFERED path, captured by the

@@ -271,6 +271,73 @@ public class CodexImageTests
         Assert.False(vision, "an unusable image source must not set Copilot-Vision-Request");
     }
 
+    [Fact]
+    public void UnknownModelDowngradingAnImage_IsReported()
+    {
+        // A model absent from the catalog takes the same string path as a
+        // probed-unsupported one, so the WIRE cannot tell them apart — that is exactly
+        // why the builder must say so out of band. This is what a Copilot-side model
+        // rename looks like from inside the bridge: 200, no vision, no image, and
+        // otherwise no evidence at all.
+        var ir = ToolResultImageRequest(
+            "gpt-5.7-not-yet-catalogued",
+            "[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"aGVsbG8=\"}}]");
+
+        var (bytes, vision, _) = ResponsesRequestBuilder.Build(
+            ir, Profiles, filterRecursiveAgentTool: false, out _, out var downgraded);
+
+        Assert.True(downgraded, "an image downgraded for an uncatalogued model must be reported");
+        Assert.False(vision);
+        var output = JsonNode.Parse(bytes)!.AsObject()["input"]!.AsArray()
+            .Single(item => item!["type"]!.GetValue<string>() == "function_call_output")!["output"];
+        Assert.IsNotType<JsonArray>(output);
+    }
+
+    [Fact]
+    public void ProbedUnsupportedModelDowngrading_IsNotReported()
+    {
+        // The recorded expectation for that model, not news. Reporting it would train
+        // the operator to ignore the warning that actually matters.
+        var ir = ToolResultImageRequest(
+            "gpt-5.6-terra",
+            "[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"aGVsbG8=\"}}]");
+
+        var (_, vision, _) = ResponsesRequestBuilder.Build(
+            ir, Profiles, filterRecursiveAgentTool: false, out _, out var downgraded);
+
+        Assert.False(downgraded);
+        Assert.False(vision);
+    }
+
+    [Fact]
+    public void SupportedModel_IsNotReportedAsADowngrade()
+    {
+        var ir = ToolResultImageRequest(
+            "gpt-5.6-sol",
+            "[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"aGVsbG8=\"}}]");
+
+        var (_, vision, _) = ResponsesRequestBuilder.Build(
+            ir, Profiles, filterRecursiveAgentTool: false, out _, out var downgraded);
+
+        Assert.False(downgraded);
+        Assert.True(vision, "the live-proven model must still use structured output");
+    }
+
+    [Fact]
+    public void UnknownModelWithoutAnImage_IsNotReported()
+    {
+        // The report must key on an actual image, not merely on an unknown model —
+        // otherwise every uncatalogued text turn cries wolf.
+        var ir = ToolResultImageRequest(
+            "gpt-5.7-not-yet-catalogued",
+            "[{\"type\":\"text\",\"text\":\"no image here\"}]");
+
+        var (_, _, _) = ResponsesRequestBuilder.Build(
+            ir, Profiles, filterRecursiveAgentTool: false, out _, out var downgraded);
+
+        Assert.False(downgraded);
+    }
+
     private static MessagesRequest ToolResultImageRequest(string model, string content) =>
         new()
         {

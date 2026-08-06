@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
 
 namespace CopilotBridge.Cli.Pipeline.Strategies.Codex;
@@ -25,6 +25,8 @@ internal static class BufferedResponsesToAnthropic
     // Carries the whole Responses reasoning item across the IR (its id/summary/content
     // have no Anthropic block equivalent). Consumed by whichever client edge needs it.
     private const string ReasoningMarker = "bridge_reasoning_item";
+    // Names the model that produced the reasoning item (see ClaudeReasoningEnvelope).
+    private const string OriginMarker = "bridge_reasoning_origin";
 
     public static byte[]? TryTranslate(byte[] body)
     {
@@ -85,7 +87,7 @@ internal static class BufferedResponsesToAnthropic
                             break;
 
                         case "reasoning":
-                            WriteReasoning(writer, item);
+                            WriteReasoning(writer, item, ReadString(root, "model"));
                             break;
 
                         case "function_call":
@@ -125,7 +127,7 @@ internal static class BufferedResponsesToAnthropic
     /// a bridge-internal marker. Each client edge pulls what it needs; this translator
     /// does not know which one is downstream.
     /// </summary>
-    private static void WriteReasoning(Utf8JsonWriter writer, JsonElement item)
+    private static void WriteReasoning(Utf8JsonWriter writer, JsonElement item, string? originModel)
     {
         if (ReadString(item, "encrypted_content") is not { Length: > 0 } blob) return;
         // Only push state the Responses protocol will accept BACK: live probes pin that
@@ -140,6 +142,11 @@ internal static class BufferedResponsesToAnthropic
         writer.WriteString("data", blob);
         writer.WritePropertyName(ReasoningMarker);
         item.WriteTo(writer);
+        // Encrypted reasoning state is model-private, so the producing model rides
+        // along; a client edge that persists this state can then refuse to replay it
+        // into a different model after a re-route.
+        if (!string.IsNullOrEmpty(originModel))
+            writer.WriteString(OriginMarker, originModel);
         writer.WriteEndObject();
     }
 

@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 
 namespace CopilotBridge.Cli.Endpoints.ClaudeCode;
 
@@ -45,7 +45,8 @@ internal sealed class RequestSummaryLogger
             + "count_reserve={CountCalibrationReserve} count_returned={ReturnedCountInputTokens} "
             + "status={StatusCode} streaming={Streaming} response_leak={ResponseLeakDetected} runaway={RunawayDetected} tool_input_invalid={ToolInputInvalidDetected} "
             + "upstream_timeout={UpstreamTimeout} "
-            + "poisoned_tool_results={PoisonedToolResults} duration_ms={DurationMs} error={ErrorDisplay}",
+            + "poisoned_tool_results={PoisonedToolResults} image_downgraded_unknown_model={ImageDowngradedOnUnknownModel} "
+            + "duration_ms={DurationMs} error={ErrorDisplay}",
             s.Kind,
             s.RequestedModel ?? "?",
             s.ResolvedModel ?? "?",
@@ -68,6 +69,7 @@ internal sealed class RequestSummaryLogger
             s.ToolInputInvalidDetected,
             s.UpstreamTimeout ?? "(none)",
             s.PoisonedToolResults,
+            s.ImageDowngradedOnUnknownModel,
             s.DurationMs,
             s.Error ?? "(none)");
     }

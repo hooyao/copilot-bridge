@@ -1,4 +1,4 @@
-namespace CopilotBridge.Cli.Pipeline.Routing;
+﻿namespace CopilotBridge.Cli.Pipeline.Routing;
 
 /// <summary>
 /// Wire-level truth for one Copilot <c>/responses</c> (Codex) model: which
@@ -57,4 +57,18 @@ internal sealed record CodexModelProfile
     /// profile: a false positive breaks the tool-result turn with an upstream 400.
     /// </summary>
     public bool SupportsMultimodalFunctionOutput { get; init; }
+}
+
+/// <summary>
+/// Whether a model accepts structured multimodal <c>function_call_output</c> content.
+/// Three-valued on purpose: <see cref="Unsupported"/> (a live probe said no) and
+/// <see cref="Unknown"/> (no catalog entry) produce the same wire fallback but mean
+/// different things operationally — Unknown is what a Copilot-side model rename looks
+/// like, and it is the one worth reporting.
+/// </summary>
+internal enum MultimodalOutputCapability
+{
+    Unknown,
+    Unsupported,
+    Supported,
 }

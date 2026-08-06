@@ -68,3 +68,22 @@ Acceptance SHALL include a real Claude Code 2.1.220 tool trajectory and current 
 - **THEN** it executes the tool and completes the next turn
 - **AND** exact traces show JSON-value-faithful reasoning replay with no visible marker leak or missing-summary 400.
 
+### Requirement: Replayed reasoning state is bound to its originating model
+
+The envelope SHALL record the model id of the turn that produced the reasoning item. On replay, the bridge SHALL compare that recorded origin against the model the current request names, and SHALL treat a mismatch as a foreign carrier. The comparison is EXACT, not family-level: whether sibling models accept each other's encrypted reasoning state is a backend fact no live probe has established, and this project does not infer such facts from family names.
+
+When the origin does not match the current target, the bridge SHALL drop the carrier and continue the turn without replayed reasoning state, and SHALL record the drop as an observable downgrade. It MUST NOT replay one model's encrypted reasoning state into a different model, and MUST NOT fail the request — a mid-session routing or model change is a legitimate user action, and a turn without reasoning state is recoverable while a turn carrying another model's state is not.
+
+#### Scenario: Re-routed session drops stale reasoning state
+- **WHEN** a conversation whose earlier turns were served by one Responses model is re-routed to a different model, and the client echoes a carrier minted by the first
+- **THEN** the outbound request contains no restored reasoning item, and the foreign encrypted blob appears nowhere in it
+- **AND** the turn completes normally, with the drop recorded as a downgrade.
+
+#### Scenario: Reasoning state replays when the origin still matches
+- **WHEN** a client echoes a carrier whose recorded origin matches the resolved target
+- **THEN** the reasoning item is restored exactly as before, unchanged from the same-origin behavior.
+
+#### Scenario: Carrier rerouted to an Anthropic model is not sent as provider data
+- **WHEN** a conversation carrying a bridge reasoning envelope is re-routed to a model other than the one that minted it, including an Anthropic-served model
+- **THEN** the envelope is not forwarded to that backend as if it were provider-native encrypted content.
+

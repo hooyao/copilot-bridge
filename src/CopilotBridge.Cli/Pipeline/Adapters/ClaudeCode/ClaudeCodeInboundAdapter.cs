@@ -37,7 +37,17 @@ internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesR
         IReadOnlyDictionary<string, string> headers,
         CancellationToken ct)
     {
-        var body = UnfoldReasoningCarriers(clientBody, out var unfolded);
+        var body = UnfoldReasoningCarriers(clientBody, out var unfolded, out var droppedForeign);
+        if (droppedForeign > 0)
+        {
+            // Visible on purpose: a silent drop looks identical to a model that just
+            // stopped reasoning, and the cause (a routing/model change earlier in the
+            // session) is nowhere near the turn where it shows up.
+            _log.LogInformation(
+                "adapter {Name}: dropped {Count} reasoning carrier(s) minted by a different model "
+                + "— replaying another model's encrypted state is not valid; this turn runs without it",
+                Name, droppedForeign);
+        }
         _log.LogDebug(
             "adapter {Name}: model={Model}  messages={Messages}  stream={Stream}  reasoning_carriers={Carriers}",
             Name, body.Model, body.Messages.Count, body.Stream == true, unfolded);
@@ -50,9 +60,11 @@ internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesR
     /// assistant turns came from an Anthropic backend — is returned unchanged, so
     /// the common path allocates nothing.
     /// </summary>
-    private static MessagesRequest UnfoldReasoningCarriers(MessagesRequest body, out int unfolded)
+    private static MessagesRequest UnfoldReasoningCarriers(
+        MessagesRequest body, out int unfolded, out int droppedForeign)
     {
         unfolded = 0;
+        droppedForeign = 0;
         List<MessageParam>? rewrittenMessages = null;
 
         for (var i = 0; i < body.Messages.Count; i++)
@@ -66,7 +78,7 @@ internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesR
                     continue;
 
                 var result = ClaudeReasoningEnvelope.TryUnfold(
-                    redacted.Data, out var encryptedContent, out var bag);
+                    redacted.Data, out var encryptedContent, out var bag, out var origin);
                 if (result == ClaudeReasoningUnfold.Absent) continue;
                 // The discriminator matched but the payload did not: this edge minted
                 // it, so it is this edge's job to reject it rather than forward
@@ -75,6 +87,21 @@ internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesR
                     throw new InvalidClaudeReasoningEnvelopeException();
 
                 rewrittenBlocks ??= [.. message.Content];
+
+                // Encrypted reasoning state is private to the model that produced it.
+                // After a mid-session model change the transcript still carries the
+                // old model's carrier; replaying it would hand model B an opaque blob
+                // only model A can read. Drop it and let the turn run stateless —
+                // a missing reasoning item costs one turn's hidden state, a foreign
+                // one is either a 400 or silently accepted nonsense. Not an error:
+                // switching models is a legitimate thing for a user to do.
+                if (origin is { Length: > 0 } && !string.Equals(origin, body.Model, StringComparison.OrdinalIgnoreCase))
+                {
+                    rewrittenBlocks[j] = redacted with { Data = "", ProviderExtensions = null };
+                    droppedForeign++;
+                    continue;
+                }
+
                 rewrittenBlocks[j] = redacted with
                 {
                     Data = encryptedContent,
@@ -85,7 +112,13 @@ internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesR
 
             if (rewrittenBlocks is null) continue;
             rewrittenMessages ??= [.. body.Messages];
-            rewrittenMessages[i] = message with { Content = rewrittenBlocks };
+            rewrittenMessages[i] = message with
+            {
+                // A dropped carrier leaves no empty husk behind: remove the block
+                // entirely so the outbound turn looks like one that never had it.
+                Content = [.. rewrittenBlocks.Where(b =>
+                    b is not RedactedThinkingBlockParam { Data.Length: 0 })],
+            };
         }
 
         return rewrittenMessages is null ? body : body with { Messages = rewrittenMessages };

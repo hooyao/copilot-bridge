@@ -289,7 +289,7 @@ internal sealed class ResponsesToAnthropicStream
                             && finalSummary.ValueKind == JsonValueKind.Array)
                         {
                             yield return Sse("content_block_start",
-                                $"{{\"type\":\"content_block_start\",\"index\":{reservedIndex},\"content_block\":{{\"type\":\"redacted_thinking\",\"data\":{JsonEncode(blobValue)},\"bridge_reasoning_item\":{finalItem.GetRawText()}}}}}");
+                                $"{{\"type\":\"content_block_start\",\"index\":{reservedIndex},\"content_block\":{{\"type\":\"redacted_thinking\",\"data\":{JsonEncode(blobValue)},\"bridge_reasoning_item\":{finalItem.GetRawText()},\"bridge_reasoning_origin\":{JsonEncode(_model)}}}}}");
                             yield return Sse("content_block_stop", BlockStopJson(reservedIndex));
                         }
                         else if (_blockIndex == reservedIndex)
