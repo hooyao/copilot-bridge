@@ -166,7 +166,18 @@ internal static class ClaudeProcess
     private static string ResolveClaudeExe()
     {
         var fromEnv = Environment.GetEnvironmentVariable(ClaudeExeEnv);
-        if (!string.IsNullOrEmpty(fromEnv) && File.Exists(fromEnv)) return fromEnv;
+        if (!string.IsNullOrEmpty(fromEnv))
+        {
+            if (!File.Exists(fromEnv))
+                throw new FileNotFoundException(
+                    $"{ClaudeExeEnv} points at '{fromEnv}', which does not exist.");
+            // The override gets the SAME shim rejection as PATH discovery: pointing it
+            // at claude.cmd/.ps1/claude would reintroduce the exact argument-truncation
+            // failure this resolver exists to prevent.
+            if (!IsNativeExecutable(fromEnv))
+                throw new FileNotFoundException(ShimDiagnostic(fromEnv));
+            return fromEnv;
+        }
 
         var pathDirs = (Environment.GetEnvironmentVariable("PATH") ?? "")
             .Split(Path.PathSeparator)
@@ -199,12 +210,18 @@ internal static class ClaudeProcess
             shim is null
                 ? $"Could not locate {ClaudeExeName}. Set the {ClaudeExeEnv} environment variable "
                   + "or ensure claude is on PATH."
-                : $"Found only a launcher shim ({shim}) and no {ClaudeExeName}. A shim re-parses "
-                  + "arguments through a shell, which truncates any prompt containing a "
-                  + "metacharacter such as '>' and drops later flags — the run would produce "
-                  + $"misleading client behavior. Set {ClaudeExeEnv} to the real executable "
-                  + "(npm installs it under node_modules/@anthropic-ai/claude-code/bin/).");
+                : ShimDiagnostic(shim));
     }
+
+    private static bool IsNativeExecutable(string path) =>
+        Path.GetExtension(path).Equals(".exe", StringComparison.OrdinalIgnoreCase);
+
+    private static string ShimDiagnostic(string shim) =>
+        $"'{shim}' is a launcher shim, not {ClaudeExeName}. A shim re-parses arguments "
+        + "through a shell, which truncates any prompt containing a metacharacter such "
+        + "as '>' and silently drops later flags (e.g. --output-format) — the run would "
+        + $"produce misleading client behavior. Point {ClaudeExeEnv} at the real "
+        + "executable (npm installs it under node_modules/@anthropic-ai/claude-code/bin/).";
 
     private const string ClaudeExeName = "claude.exe";
 

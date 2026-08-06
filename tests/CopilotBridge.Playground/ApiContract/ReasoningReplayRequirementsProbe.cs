@@ -52,12 +52,24 @@ public class ReasoningReplayRequirementsProbe
         Assert.False(string.IsNullOrEmpty(
             originalReasoning["encrypted_content"]?.GetValue<string>()));
 
+        // Every variant's recorded outcome is asserted, not just the control: the
+        // carrier only needs `summary` because the backend REJECTS its absence, so a
+        // backend that started accepting blob-only — or started rejecting a
+        // summary-bearing replay — must redden this probe rather than leave the
+        // contract silently stale.
+        var expected = new Dictionary<string, System.Net.HttpStatusCode>
+        {
+            ["full"] = System.Net.HttpStatusCode.OK,
+            ["blob-only"] = System.Net.HttpStatusCode.BadRequest,
+            ["id+blob"] = System.Net.HttpStatusCode.BadRequest,
+            ["blob+summary"] = System.Net.HttpStatusCode.OK,
+            ["id+blob+summary"] = System.Net.HttpStatusCode.OK,
+            ["id+blob+content"] = System.Net.HttpStatusCode.BadRequest,
+            ["blob+summary+content"] = System.Net.HttpStatusCode.OK,
+        };
+
         var results = new Dictionary<string, System.Net.HttpStatusCode>();
-        foreach (var variant in new[]
-                 {
-                     "full", "blob-only", "id+blob", "blob+summary",
-                     "id+blob+summary", "id+blob+content", "blob+summary+content",
-                 })
+        foreach (var variant in expected.Keys)
         {
             var replayOutput = new JsonArray();
             foreach (var item in originalOutput)
@@ -90,7 +102,18 @@ public class ReasoningReplayRequirementsProbe
                 + (body.Length <= 300 ? body : body[..300]));
         }
 
-        Assert.Equal(System.Net.HttpStatusCode.OK, results["full"]);
+        var drift = expected
+            .Where(kv => results[kv.Key] != kv.Value)
+            .Select(kv => $"{kv.Key}: expected {(int)kv.Value}, got {(int)results[kv.Key]}")
+            .ToList();
+        Assert.True(drift.Count == 0,
+            "gpt-5.6-sol reasoning-replay contract drifted — the bridge's carrier fields "
+            + "are derived from these outcomes:\n  " + string.Join("\n  ", drift));
+
+        // The specific fact the carrier design rests on, stated once more so a future
+        // reader sees WHY summary is preserved.
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, results["blob-only"]);
+        Assert.Equal(System.Net.HttpStatusCode.OK, results["blob+summary"]);
     }
 
     private static JsonObject ReasoningVariant(JsonObject original, string variant)

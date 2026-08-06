@@ -77,13 +77,22 @@ public class CcReasoningReplayHeadlessTests
             ["stream"] = true,
         }, cts.Token);
 
-        // Select the request by CONTENT, not position: a turn can produce several
-        // upstream records (title/preflight), so "the last one" is not reliably the
-        // echo request under test.
-        var echoRequest = reader.ReadNew().LastOrDefault(e =>
-            e.UpstreamBody?["model"]?.GetValue<string>() == "gpt-5.6-sol"
-            && e.UpstreamBody?["input"] is JsonArray input
-            && input.Any(i => i?["type"]?.GetValue<string>() == "reasoning"));
+        // The audit sink writes the four trace files asynchronously, so the record for
+        // a just-finished request can still be incomplete the instant the HTTP response
+        // returns. Wait for the entry we need — selected by CONTENT, not position,
+        // since a turn also produces title/preflight records.
+        BridgeLogEntry? echoRequest = null;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        while (DateTime.UtcNow < deadline)
+        {
+            echoRequest = reader.ReadNew().LastOrDefault(e =>
+                e.UpstreamBody?["model"]?.GetValue<string>() == "gpt-5.6-sol"
+                && e.UpstreamBody?["input"] is JsonArray input
+                && input.Any(i => i?["type"]?.GetValue<string>() == "reasoning"));
+            if (echoRequest?.UpstreamStatus is >= 200 and < 600) break;
+            await Task.Delay(250, cts.Token);
+        }
+
         Assert.True(echoRequest is not null,
             "no upstream request carried a restored reasoning item");
         var reasoning = echoRequest!.UpstreamBody!["input"]!.AsArray()

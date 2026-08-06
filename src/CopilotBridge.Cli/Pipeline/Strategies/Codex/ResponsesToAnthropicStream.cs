@@ -99,6 +99,10 @@ internal sealed class ResponsesToAnthropicStream
     // *_details, NOT Anthropic's separate-bucket cache semantics.
     private long _cacheReadInputTokens;
     private long _reasoningOutputTokens;
+    // Reasoning output_index → the Anthropic block index reserved for it on `.added`.
+    // The block is emitted from the `.done` snapshot (the added one is stale), so this
+    // holds the position long enough to keep output order intact.
+    private readonly Dictionary<int, int> _reservedReasoningBlocks = [];
 
     public ResponsesToAnthropicStream(
         string model,
@@ -257,6 +261,27 @@ internal sealed class ResponsesToAnthropicStream
                     break;
 
                 case "response.output_item.done":
+                    // A reasoning item's `.added` snapshot can be STALE: the live
+                    // fidelity capture shows encrypted_content and summary both
+                    // changing between added and done. So the block was reserved (not
+                    // emitted) on added; emit it here from the final snapshot.
+                    if (root.TryGetProperty("output_index", out var doneIdx)
+                        && doneIdx.TryGetInt32(out var doneOutput)
+                        && _reservedReasoningBlocks.TryGetValue(doneOutput, out var reservedIndex))
+                    {
+                        _reservedReasoningBlocks.Remove(doneOutput);
+                        if (root.TryGetProperty("item", out var finalItem)
+                            && finalItem.ValueKind == JsonValueKind.Object
+                            && finalItem.TryGetProperty("encrypted_content", out var finalBlob)
+                            && finalBlob.ValueKind == JsonValueKind.String
+                            && finalBlob.GetString() is { Length: > 0 } blobValue)
+                        {
+                            yield return Sse("content_block_start",
+                                $"{{\"type\":\"content_block_start\",\"index\":{reservedIndex},\"content_block\":{{\"type\":\"redacted_thinking\",\"data\":{JsonEncode(blobValue)},\"bridge_reasoning_item\":{finalItem.GetRawText()}}}}}");
+                            yield return Sse("content_block_stop", BlockStopJson(reservedIndex));
+                        }
+                        break;
+                    }
                     if (_blockOpen)
                     {
                         // For a web-search carrier block, capture the FINAL item (it now
@@ -356,21 +381,23 @@ internal sealed class ResponsesToAnthropicStream
             // the Claude edge folds the marker into the block's own `data` (the only
             // field that client protocol can carry) and scrubs it. T3 itself does
             // NOT know which client is downstream.
-            if (!item.TryGetProperty("encrypted_content", out var encrypted)
-                || encrypted.ValueKind != JsonValueKind.String
-                || encrypted.GetString() is not { Length: > 0 } blob)
-                yield break;
-
-            if (_blockOpen)
+            //
+            // RESERVE the block position here but emit nothing: the `.added`
+            // snapshot is not authoritative (encrypted_content and summary both
+            // change by `.done` in the live capture). output_item.done emits the
+            // final snapshot at this reserved index, so output ORDER is preserved
+            // without shipping stale state the client would replay next turn.
+            if (root.TryGetProperty("output_index", out var reasoningOutput)
+                && reasoningOutput.TryGetInt32(out var reasoningIndex))
             {
-                yield return Sse("content_block_stop", BlockStopJson(_blockIndex));
-                _blockOpen = false;
+                if (_blockOpen)
+                {
+                    yield return Sse("content_block_stop", BlockStopJson(_blockIndex));
+                    _blockOpen = false;
+                }
+                _blockIndex++;
+                _reservedReasoningBlocks[reasoningIndex] = _blockIndex;
             }
-            _blockIndex++;
-            var itemJson = item.GetRawText();
-            yield return Sse("content_block_start",
-                $"{{\"type\":\"content_block_start\",\"index\":{_blockIndex},\"content_block\":{{\"type\":\"redacted_thinking\",\"data\":{JsonEncode(blob)},\"bridge_reasoning_item\":{itemJson}}}}}");
-            yield return Sse("content_block_stop", BlockStopJson(_blockIndex));
             yield break;
         }
 

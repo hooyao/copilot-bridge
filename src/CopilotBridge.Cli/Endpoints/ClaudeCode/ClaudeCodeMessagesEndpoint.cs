@@ -418,6 +418,31 @@ internal static class ClaudeCodeMessagesEndpoint
                 }
             }
         }
+        catch (InvalidClaudeReasoningEnvelopeException ex)
+        {
+            // The client echoed a bridge reasoning carrier this build cannot read
+            // (corrupt, oversized, or a newer version). That is a client-side request
+            // fault, not an upstream failure — surface the bounded 400 the contract
+            // promises rather than letting the generic handler report 502.
+            endpointError = ex.Message;
+            summary.Error = $"{ex.GetType().Name}: {ex.Message}";
+            endpointLog.LogWarning("endpoint invalid reasoning carrier: {Message}", ex.Message);
+            if (!httpCtx.Response.HasStarted)
+            {
+                responseStatus = StatusCodes.Status400BadRequest;
+                httpCtx.Response.StatusCode = responseStatus;
+                httpCtx.Response.ContentType = "application/json";
+                var error = new ErrorResponse
+                {
+                    Error = new ErrorBody { Type = "invalid_request_error", Message = ex.Message },
+                };
+                var bytes = JsonSerializer.SerializeToUtf8Bytes(error, JsonContext.Default.ErrorResponse);
+                responseBody = bytes;
+                responseBodyLen = bytes.Length;
+                httpCtx.Response.ContentLength = bytes.Length;
+                await httpCtx.Response.Body.WriteAsync(bytes, CancellationToken.None);
+            }
+        }
         catch (UnknownModelException ex)
         {
             // The bridge refused the model because it has no profile for it

@@ -44,9 +44,20 @@ public class CcToolResultImageHeadlessTests
         using var response = await http.SendAsync(
             request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
         var responseBody = await response.Content.ReadAsStringAsync(cts.Token);
-        var entry = Assert.Single(reader.ReadNew(), e =>
-            e.InboundPath.EndsWith("/v1/messages", StringComparison.Ordinal)
-            && e.UpstreamBody?["model"]?.GetValue<string>() == "gpt-5.6-sol");
+        // The audit sink writes its four trace files asynchronously, so the record can
+        // still be incomplete the instant the HTTP response returns — poll until the
+        // upstream status has landed rather than sampling once.
+        BridgeLogEntry? entry = null;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        while (DateTime.UtcNow < deadline)
+        {
+            entry = reader.ReadNew().LastOrDefault(e =>
+                e.InboundPath.EndsWith("/v1/messages", StringComparison.Ordinal)
+                && e.UpstreamBody?["model"]?.GetValue<string>() == "gpt-5.6-sol");
+            if (entry?.UpstreamStatus is >= 200 and < 600) break;
+            await Task.Delay(250, cts.Token);
+        }
+        Assert.True(entry is not null, "no upstream request reached gpt-5.6-sol");
 
         _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
         _output.WriteLine($"status={(int)response.StatusCode}/{entry.UpstreamStatus}");

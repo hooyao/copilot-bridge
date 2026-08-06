@@ -74,7 +74,7 @@ public class ContentConservationTests
                 {"role":"assistant","content":[{"type":"tool_use","id":"toolu_image_inventory","name":"Read","input":{"file_path":"red.png"}}]},
                 {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_image_inventory","content":[
                   {"type":"text","text":"image follows"},
-                  {"type":"image","source":{"type":"base64","media_type":"image/png","data":"exact-base64"}}
+                  {"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}
                 ]}]}
               ],
               "stream":true

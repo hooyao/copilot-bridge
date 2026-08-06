@@ -240,6 +240,37 @@ public class CodexImageTests
         Assert.True(claudeVision);
     }
 
+    /// <summary>
+    /// A source with a valid-looking shape but unusable content must NOT be shipped as
+    /// an image (and must not claim vision): `data:;base64,not-base64` is exactly the
+    /// value the whole-array fallback exists for.
+    /// </summary>
+    [Theory]
+    // empty media type
+    [InlineData("{\"type\":\"base64\",\"media_type\":\"\",\"data\":\"AAAA\"}")]
+    // not an image media type
+    [InlineData("{\"type\":\"base64\",\"media_type\":\"text/plain\",\"data\":\"AAAA\"}")]
+    // payload is not base64
+    [InlineData("{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"not-base64\"}")]
+    // base64 alphabet ok but wrong length
+    [InlineData("{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"AAA\"}")]
+    // relative / opaque URL the backend cannot fetch
+    [InlineData("{\"type\":\"url\",\"url\":\"not-a-url\"}")]
+    [InlineData("{\"type\":\"url\",\"url\":\"/local/path.png\"}")]
+    public void MalformedImageSource_FallsBackForWholeArray_AndDoesNotClaimVision(string source)
+    {
+        var ir = ToolResultImageRequest(
+            "gpt-5.6-sol",
+            "[{\"type\":\"text\",\"text\":\"before\"},{\"type\":\"image\",\"source\":" + source + "}]");
+
+        var (bytes, vision, _) = ResponsesRequestBuilder.Build(ir, Profiles);
+        var output = JsonNode.Parse(bytes)!.AsObject()["input"]!.AsArray()
+            .Single(item => item!["type"]!.GetValue<string>() == "function_call_output")!["output"];
+
+        Assert.IsNotType<JsonArray>(output);
+        Assert.False(vision, "an unusable image source must not set Copilot-Vision-Request");
+    }
+
     private static MessagesRequest ToolResultImageRequest(string model, string content) =>
         new()
         {

@@ -674,16 +674,73 @@ internal static class ResponsesRequestBuilder
                                && mediaType.ValueKind == JsonValueKind.String
                                && source.TryGetProperty("data", out var data)
                                && data.ValueKind == JsonValueKind.String:
-                imageUrl = $"data:{mediaType.GetString()};base64,{data.GetString()}";
+                // A data URL is only usable if BOTH halves are well formed. An empty or
+                // malformed media type, or a payload that is not base64, would produce
+                // something like `data:;base64,not-base64` — which the contract says
+                // must fall back for the whole array, not be shipped (and must not
+                // claim vision).
+                if (mediaType.GetString() is not { Length: > 0 } mediaTypeValue
+                    || !IsImageMediaType(mediaTypeValue)
+                    || data.GetString() is not { Length: > 0 } dataValue
+                    || !IsBase64(dataValue))
+                    return false;
+                imageUrl = $"data:{mediaTypeValue};base64,{dataValue}";
                 return true;
             case "url" when source.TryGetProperty("url", out var url)
                             && url.ValueKind == JsonValueKind.String:
-                imageUrl = url.GetString() ?? "";
-                return imageUrl.Length > 0;
+                // Require an absolute http(s) or data URL: a relative or opaque string
+                // is not something the backend can fetch, so it belongs in the fallback.
+                return url.GetString() is { Length: > 0 } urlValue
+                    && IsUsableImageUrl(urlValue)
+                    && (imageUrl = urlValue).Length > 0;
             default:
                 return false;
         }
     }
+
+    /// <summary>A <c>type/subtype</c> image media type, e.g. <c>image/png</c>.</summary>
+    private static bool IsImageMediaType(string value)
+    {
+        const string prefix = "image/";
+        if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            || value.Length <= prefix.Length)
+            return false;
+        foreach (var c in value.AsSpan(prefix.Length))
+        {
+            // Subtype charset per RFC 6838 restricted-name (no parameters — a
+            // tool-result image block carries a bare media type).
+            if (!char.IsAsciiLetterOrDigit(c) && c is not ('.' or '+' or '-'))
+                return false;
+        }
+        return true;
+    }
+
+    private static bool IsBase64(string value)
+    {
+        // Length and alphabet only — cheap, allocation-free, and enough to reject the
+        // "not-base64" class the contract cares about.
+        if (value.Length % 4 != 0) return false;
+        var padding = 0;
+        for (var i = 0; i < value.Length; i++)
+        {
+            var c = value[i];
+            if (c == '=')
+            {
+                // Padding is legal only in the final one or two positions.
+                if (i < value.Length - 2) return false;
+                padding++;
+                continue;
+            }
+            if (padding > 0) return false;
+            if (!char.IsAsciiLetterOrDigit(c) && c is not ('+' or '/')) return false;
+        }
+        return padding <= 2;
+    }
+
+    private static bool IsUsableImageUrl(string value) =>
+        value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase);
 
     private static void WriteFlattenedToolResult(Utf8JsonWriter w, JsonElement content)
     {

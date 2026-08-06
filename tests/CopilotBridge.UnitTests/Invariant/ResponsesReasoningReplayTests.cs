@@ -2,8 +2,10 @@ using System.Net.ServerSentEvents;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CopilotBridge.Cli.Models.Anthropic.Request;
+using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 using CopilotBridge.Cli.Pipeline.Routing;
+using CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -23,9 +25,6 @@ public class ResponsesReasoningReplayTests
 {
     private static readonly ClaudeCodeOutboundAdapter ClaudeEdge =
         new(NullLogger<ClaudeCodeOutboundAdapter>.Instance);
-
-    private static readonly ClaudeCodeInboundAdapter ClaudeInbound =
-        new(NullLogger<ClaudeCodeInboundAdapter>.Instance);
 
     [Fact]
     public void T3_PushesWholeReasoningItemIntoIr_WithoutKnowingTheClient()
@@ -76,49 +75,21 @@ public class ResponsesReasoningReplayTests
     }
 
     [Fact]
-    public async Task ClaudeEcho_RestoresCompleteReasoningItemUpstream()
-    {
-        var claudeFacing = await ClaudeStreamAsync(RunT3(ReasoningThenToolStream()));
-        var carrier = CarrierData(claudeFacing);
-
-        // What the client echoes next turn, verbatim (proven byte-faithful live).
-        var echoed = await ClaudeInbound.AdaptAsync(
-            RequestWithRedactedThinking(carrier), EmptyHeaders, default);
-        var wire = JsonNode.Parse(
-            ResponsesRequestBuilder.Build(echoed, Catalog).Body)!.AsObject();
-        var reasoning = wire["input"]!.AsArray()[0]!.AsObject();
-
-        Assert.Equal("reasoning", reasoning["type"]!.GetValue<string>());
-        Assert.Equal("rs_contract", reasoning["id"]!.GetValue<string>());
-        Assert.Equal("opaque+/=bytes", reasoning["encrypted_content"]!.GetValue<string>());
-        // summary is REQUIRED by gpt-5.6-sol on replay (live-probed 400 without it).
-        Assert.Equal("[]", reasoning["summary"]!.ToJsonString());
-        Assert.Equal(
-            "[{\"type\":\"reasoning_text\",\"text\":\"opaque\"}]",
-            reasoning["content"]!.ToJsonString());
-    }
-
-    [Fact]
-    public async Task MalformedCarrier_FailsClosedAtTheClaudeEdge()
-    {
-        var malformed = ClaudeReasoningEnvelope.Prefix + "not-valid-base64url!";
-
-        await Assert.ThrowsAsync<InvalidClaudeReasoningEnvelopeException>(async () =>
-            await ClaudeInbound.AdaptAsync(
-                RequestWithRedactedThinking(malformed), EmptyHeaders, default));
-    }
-
-    [Fact]
     public async Task ProviderNativeBlob_IsNotMistakenForACarrier()
     {
         const string nativeBlob = "provider-native-encrypted+/=";
-        var request = RequestWithRedactedThinking(nativeBlob);
+        var ctx = ContextFor(
+            RequestWithRedactedThinking(nativeBlob), BackendVendor.CopilotResponses);
+        var original = ctx.Request.Body;
 
-        var adapted = await ClaudeInbound.AdaptAsync(request, EmptyHeaders, default);
-        Assert.Same(request, adapted);
+        await new ClaudeReasoningUnfoldStage(
+            ctx, NullLogger<ClaudeReasoningUnfoldStage>.Instance).ApplyAsync();
+
+        // Untouched instance: a non-prefixed value is ordinary provider data.
+        Assert.Same(original, ctx.Request.Body);
 
         var wire = JsonNode.Parse(
-            ResponsesRequestBuilder.Build(adapted, Catalog).Body)!.AsObject();
+            ResponsesRequestBuilder.Build(ctx.Request.Body, Catalog).Body)!.AsObject();
         var reasoning = wire["input"]!.AsArray()[0]!.AsObject();
         Assert.Equal(nativeBlob, reasoning["encrypted_content"]!.GetValue<string>());
         Assert.Null(reasoning["summary"]);
@@ -134,6 +105,8 @@ public class ResponsesReasoningReplayTests
                 "{\"type\":\"response.created\",\"response\":{\"id\":\"r\",\"status\":\"in_progress\"}}"),
             Event("response.output_item.added",
                 "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"blob-without-summary\"}}"),
+            Event("response.output_item.done",
+                "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"blob-without-summary\"}}"),
             Event("response.completed",
                 "{\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}"),
         ]);
@@ -175,10 +148,142 @@ public class ResponsesReasoningReplayTests
             emitted["summary"]!.ToJsonString());
     }
 
-    private static readonly CodexModelProfileCatalog Catalog = new();
+    [Fact]
+    public async Task NativeAnthropicPassthrough_NeverUnfoldsAPrefixedValue()
+    {
+        // A /cc request served by the ANTHROPIC backend must keep provider-native
+        // opaque data untouched even if it happens to carry the bridge prefix — the
+        // unfold stage is gated on the resolved target, not on the client.
+        var carrier = CarrierData(await ClaudeStreamAsync(RunT3(ReasoningThenToolStream())));
+        var ctx = ContextFor(RequestWithRedactedThinking(carrier), BackendVendor.CopilotAnthropic);
 
-    private static readonly IReadOnlyDictionary<string, string> EmptyHeaders =
-        new Dictionary<string, string>();
+        await new ClaudeReasoningUnfoldStage(
+            ctx, NullLogger<ClaudeReasoningUnfoldStage>.Instance).ApplyAsync();
+
+        var block = Assert.IsType<RedactedThinkingBlockParam>(ctx.Request.Body.Messages[0].Content[0]);
+        Assert.Equal(carrier, block.Data);
+        Assert.Null(block.ProviderExtensions);
+    }
+
+    [Fact]
+    public async Task ResponsesTarget_UnfoldsIntoTheBagT2Reads()
+    {
+        var carrier = CarrierData(await ClaudeStreamAsync(RunT3(ReasoningThenToolStream())));
+        var ctx = ContextFor(RequestWithRedactedThinking(carrier), BackendVendor.CopilotResponses);
+
+        await new ClaudeReasoningUnfoldStage(
+            ctx, NullLogger<ClaudeReasoningUnfoldStage>.Instance).ApplyAsync();
+
+        var wire = JsonNode.Parse(
+            ResponsesRequestBuilder.Build(ctx.Request.Body, Catalog).Body)!.AsObject();
+        var reasoning = wire["input"]!.AsArray()[0]!.AsObject();
+        Assert.Equal("rs_contract", reasoning["id"]!.GetValue<string>());
+        Assert.Equal("opaque+/=bytes", reasoning["encrypted_content"]!.GetValue<string>());
+        Assert.Equal("[]", reasoning["summary"]!.ToJsonString());
+    }
+
+    [Fact]
+    public async Task MalformedCarrier_FailsClosedOnTheResponsesPath()
+    {
+        var ctx = ContextFor(
+            RequestWithRedactedThinking(ClaudeReasoningEnvelope.Prefix + "not-valid-base64url!"),
+            BackendVendor.CopilotResponses);
+
+        await Assert.ThrowsAsync<InvalidClaudeReasoningEnvelopeException>(async () =>
+            await new ClaudeReasoningUnfoldStage(
+                ctx, NullLogger<ClaudeReasoningUnfoldStage>.Instance).ApplyAsync());
+    }
+
+    [Fact]
+    public void StaleAddedSnapshot_IsNotShipped_FinalSnapshotIs()
+    {
+        // Live capture shows encrypted_content and summary BOTH changing between the
+        // reasoning item's `.added` and `.done` snapshots. Shipping the added one would
+        // make the client replay stale state next turn.
+        var ir = RunT3(
+        [
+            Event("response.created",
+                "{\"type\":\"response.created\",\"response\":{\"id\":\"r\",\"status\":\"in_progress\"}}"),
+            Event("response.output_item.added",
+                "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs\",\"encrypted_content\":\"STALE\",\"summary\":[]}}"),
+            Event("response.output_item.done",
+                "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs\",\"encrypted_content\":\"FINAL\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"done\"}]}}"),
+            Event("response.completed",
+                "{\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}"),
+        ]);
+
+        var start = ir.Single(e =>
+            EventType(e) == "content_block_start"
+            && e.Data.Contains("redacted_thinking", StringComparison.Ordinal));
+        using var doc = JsonDocument.Parse(start.Data);
+        var block = doc.RootElement.GetProperty("content_block");
+
+        Assert.Equal("FINAL", block.GetProperty("data").GetString());
+        Assert.DoesNotContain("STALE", start.Data, StringComparison.Ordinal);
+        var carried = block.GetProperty(ClaudeReasoningEnvelope.Marker);
+        Assert.Equal(
+            "[{\"type\":\"summary_text\",\"text\":\"done\"}]",
+            carried.GetProperty("summary").GetRawText());
+    }
+
+    [Fact]
+    public void ReasoningBeforeText_KeepsOutputOrder()
+    {
+        // The block position is reserved on `.added` and filled on `.done`, so a text
+        // item that opens in between must not steal the reasoning block's index.
+        var ir = RunT3(
+        [
+            Event("response.created",
+                "{\"type\":\"response.created\",\"response\":{\"id\":\"r\",\"status\":\"in_progress\"}}"),
+            Event("response.output_item.added",
+                "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs\",\"encrypted_content\":\"BLOB\",\"summary\":[]}}"),
+            Event("response.output_item.done",
+                "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs\",\"encrypted_content\":\"BLOB\",\"summary\":[]}}"),
+            Event("response.output_item.added",
+                "{\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"m\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[]}}"),
+            Event("response.output_text.delta",
+                "{\"type\":\"response.output_text.delta\",\"item_id\":\"m\",\"output_index\":1,\"delta\":\"hi\"}"),
+            Event("response.output_item.done",
+                "{\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"m\",\"status\":\"completed\"}}"),
+            Event("response.completed",
+                "{\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}"),
+        ]);
+
+        var indexes = ir
+            .Where(e => EventType(e) == "content_block_start")
+            .Select(e =>
+            {
+                using var d = JsonDocument.Parse(e.Data);
+                return (
+                    Type: d.RootElement.GetProperty("content_block").GetProperty("type").GetString(),
+                    Index: d.RootElement.GetProperty("index").GetInt32());
+            })
+            .ToList();
+
+        Assert.Equal(("redacted_thinking", 0), indexes[0]);
+        Assert.Equal(("text", 1), indexes[1]);
+        Assert.Equal(2, ir.Count(e => EventType(e) == "content_block_stop"));
+    }
+
+    private static BridgeContext<MessagesRequest> ContextFor(
+        MessagesRequest body, BackendVendor vendor) =>
+        new()
+        {
+            Request = new BridgeRequest<MessagesRequest>
+            {
+                Method = "POST",
+                Path = "/cc/v1/messages",
+                Body = body,
+                Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            },
+            Response = new BridgeResponse(),
+            Target = new RouteTarget(
+                vendor,
+                vendor == BackendVendor.CopilotResponses ? "/responses" : "/v1/messages",
+                body.Model),
+        };
+
+    private static readonly CodexModelProfileCatalog Catalog = new();
 
     private static List<SseItem<string>> RunT3(IReadOnlyList<SseItem<string>> upstream)
     {
@@ -235,6 +340,8 @@ public class ResponsesReasoningReplayTests
             "{\"type\":\"response.created\",\"response\":{\"id\":\"resp_reasoning_contract\",\"status\":\"in_progress\"}}"),
         Event("response.output_item.added",
             "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_contract\",\"encrypted_content\":\"opaque+/=bytes\",\"summary\":[],\"content\":[{\"type\":\"reasoning_text\",\"text\":\"opaque\"}]}}"),
+        Event("response.output_item.done",
+            "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_contract\",\"encrypted_content\":\"opaque+/=bytes\",\"summary\":[],\"content\":[{\"type\":\"reasoning_text\",\"text\":\"opaque\"}]}}"),
         Event("response.output_item.added",
             "{\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_contract\",\"call_id\":\"call_reasoning_tool\",\"name\":\"Bash\",\"arguments\":\"\",\"status\":\"in_progress\"}}"),
         Event("response.function_call_arguments.done",
