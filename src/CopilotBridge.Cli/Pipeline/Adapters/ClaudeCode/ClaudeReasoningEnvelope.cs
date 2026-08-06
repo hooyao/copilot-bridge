@@ -204,6 +204,16 @@ internal static class ClaudeReasoningEnvelope
     internal const string OriginBagKey = "reasoning_origin_model";
 
     /// <summary>
+    /// Marks a block as HAVING BEEN DECODED from a bridge carrier, independent of
+    /// whether the carrier recorded an origin. A legacy `_v1:` carrier (written
+    /// before origin binding existed) decodes fine but names no model, and that is
+    /// exactly the state most likely to be replayed right after an upgrade. Without
+    /// this the origin stage cannot tell it apart from a provider-native blob it
+    /// must never touch.
+    /// </summary>
+    internal const string DecodedBagKey = "reasoning_decoded_by_bridge";
+
+    /// <summary>
     /// Stamp the decoded carrier's origin onto the part bag so a later stage — one
     /// that knows the RESOLVED target, which the client edge deliberately does not —
     /// can decide whether the state is replayable. Kept in the bridge-private bag,
@@ -211,7 +221,7 @@ internal static class ClaudeReasoningEnvelope
     /// </summary>
     internal static ProviderExtensions? WithOrigin(ProviderExtensions? bag, string? origin)
     {
-        if (bag is null || string.IsNullOrEmpty(origin)) return bag;
+        if (bag is null) return bag;
         if (!bag.ByProvider.TryGetValue(
                 Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey, out var existing)
             || existing.ValueKind != JsonValueKind.Object)
@@ -222,7 +232,8 @@ internal static class ClaudeReasoningEnvelope
         {
             writer.WriteStartObject();
             foreach (var p in existing.EnumerateObject()) p.WriteTo(writer);
-            writer.WriteString(OriginBagKey, origin);
+            writer.WriteBoolean(DecodedBagKey, true);
+            if (!string.IsNullOrEmpty(origin)) writer.WriteString(OriginBagKey, origin);
             writer.WriteEndObject();
         }
         using var doc = JsonDocument.Parse(buffer.WrittenMemory);
@@ -234,6 +245,14 @@ internal static class ClaudeReasoningEnvelope
             },
         };
     }
+
+    /// <summary>True when this block was decoded from a bridge carrier.</summary>
+    internal static bool WasDecodedByBridge(ProviderExtensions? bag) =>
+        bag?.ByProvider.TryGetValue(
+            Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey, out var b) == true
+        && b.ValueKind == JsonValueKind.Object
+        && b.TryGetProperty(DecodedBagKey, out var d)
+        && d.ValueKind == JsonValueKind.True;
 
     /// <summary>Read back the origin stamped by <see cref="WithOrigin"/>.</summary>
     internal static string? ReadOrigin(ProviderExtensions? bag) =>

@@ -352,10 +352,11 @@ public class ResponsesReasoningReplayTests
     /// them is exactly what a client-edge-only comparison got wrong.
     /// </summary>
     private static async Task<MessagesRequest> UnfoldThenJudgeOriginAsync(
-        MessagesRequest body, string resolvedModel)
+        MessagesRequest body, string resolvedModel,
+        BackendVendor vendor = BackendVendor.CopilotResponses)
     {
         var decoded = await UnfoldAsync(body);
-        var ctx = ContextFor(decoded with { Model = resolvedModel }, BackendVendor.CopilotResponses);
+        var ctx = ContextFor(decoded with { Model = resolvedModel }, vendor);
         // Reproduce what the router leaves behind: the body now names the RESOLVED
         // model while OriginalRequestedModel still holds what the client asked for.
         // Without this, a stage reading the wrong one of the two would look correct.
@@ -608,6 +609,46 @@ public class ResponsesReasoningReplayTests
 
         Assert.Equal(ClaudeReasoningUnfold.Valid, verdict);
         Assert.Equal("BLOB", enc);
+    }
+
+    [Fact]
+    public async Task LegacyCarrierWithoutOrigin_ReplaysOnAResponsesTarget()
+    {
+        // Written before origin binding existed, so its producer is unknown. A
+        // Responses target is where such state could have come from, so it is still
+        // replayable there — silently discarding every pre-upgrade transcript's
+        // reasoning would be a regression for the population most likely to have one.
+        var adapted = await UnfoldThenJudgeOriginAsync(
+            RequestWithRedactedThinking(LegacyV1Carrier),
+            resolvedModel: "gpt-5.6-sol",
+            vendor: BackendVendor.CopilotResponses);
+
+        var wire = JsonNode.Parse(
+            ResponsesRequestBuilder.Build(adapted, Catalog).Body)!.AsObject();
+        var reasoning = wire["input"]!.AsArray()
+            .Select(i => i!.AsObject())
+            .Single(i => i["type"]?.GetValue<string>() == "reasoning");
+        Assert.Equal("LEGACY-BLOB", reasoning["encrypted_content"]!.GetValue<string>());
+        // No bridge-private bookkeeping may ride out onto the wire.
+        var json = wire.ToJsonString();
+        Assert.DoesNotContain(ClaudeReasoningEnvelope.OriginBagKey, json, StringComparison.Ordinal);
+        Assert.DoesNotContain(ClaudeReasoningEnvelope.DecodedBagKey, json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task LegacyCarrierWithoutOrigin_IsDroppedOnANonResponsesTarget()
+    {
+        // Unknown producer + a backend that never emits such state. Forwarding it
+        // would hand an Anthropic backend encrypted content it did not produce, plus
+        // the decoded provider bag. Version binding cannot catch this — the carrier
+        // is perfectly valid, it just cannot say where it came from.
+        var adapted = await UnfoldThenJudgeOriginAsync(
+            RequestWithRedactedThinking(LegacyV1Carrier),
+            resolvedModel: "claude-opus-5",
+            vendor: BackendVendor.CopilotAnthropic);
+
+        Assert.DoesNotContain(adapted.Messages.SelectMany(m => m.Content),
+            b => b is RedactedThinkingBlockParam);
     }
 
     [Fact]

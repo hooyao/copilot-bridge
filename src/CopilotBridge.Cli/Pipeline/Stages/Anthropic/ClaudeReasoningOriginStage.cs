@@ -1,6 +1,7 @@
-using CopilotBridge.Cli.Models.Anthropic.Request;
+﻿using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Models.Common;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
+using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
 
@@ -57,17 +58,44 @@ internal sealed class ClaudeReasoningOriginStage : IRequestStage<MessagesRequest
             for (var j = 0; j < message.Content.Count; j++)
             {
                 if (message.Content[j] is not RedactedThinkingBlockParam redacted) continue;
-                var origin = ClaudeReasoningEnvelope.ReadOrigin(redacted.ProviderExtensions);
-                if (origin is not { Length: > 0 }) continue;
+                // Only blocks this bridge DECODED are ours to judge. A provider-native
+                // blob carries no such mark and is left strictly alone.
+                if (!ClaudeReasoningEnvelope.WasDecodedByBridge(redacted.ProviderExtensions))
+                    continue;
 
+                var origin = ClaudeReasoningEnvelope.ReadOrigin(redacted.ProviderExtensions);
                 rewrittenBlocks ??= [.. message.Content];
+
+                if (origin is not { Length: > 0 })
+                {
+                    // A legacy carrier, written before origin binding existed. Its
+                    // producer is unknown, so it can only be trusted where such state
+                    // could have come from at all: a Responses target. Anywhere else —
+                    // an Anthropic backend above all — it would be serialized upstream
+                    // as encrypted content that backend never produced, along with the
+                    // decoded provider bag. These transcripts are the ones most likely
+                    // to be replayed right after an upgrade, so leaving them unchecked
+                    // would exempt exactly the population this protection is for.
+                    if (ctx.Target?.Vendor == BackendVendor.CopilotResponses)
+                    {
+                        rewrittenBlocks[j] = redacted with
+                        {
+                            ProviderExtensions = StripBridgeKeys(redacted.ProviderExtensions),
+                        };
+                        continue;
+                    }
+                    rewrittenBlocks[j] = null!;
+                    dropped++;
+                    continue;
+                }
+
                 if (string.Equals(origin, target, StringComparison.OrdinalIgnoreCase))
                 {
                     // Same model: keep the state, but strip the bridge-private origin
                     // key so it cannot ride out onto the wire.
                     rewrittenBlocks[j] = redacted with
                     {
-                        ProviderExtensions = StripOrigin(redacted.ProviderExtensions),
+                        ProviderExtensions = StripBridgeKeys(redacted.ProviderExtensions),
                     };
                     continue;
                 }
@@ -101,13 +129,14 @@ internal sealed class ClaudeReasoningOriginStage : IRequestStage<MessagesRequest
         return Task.CompletedTask;
     }
 
-    private static ProviderExtensions? StripOrigin(ProviderExtensions? bag)
+    private static ProviderExtensions? StripBridgeKeys(ProviderExtensions? bag)
     {
         if (bag is null
             || !bag.ByProvider.TryGetValue(
                 Adapters.Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey, out var inner)
             || inner.ValueKind != JsonValueKind.Object
-            || !inner.TryGetProperty(ClaudeReasoningEnvelope.OriginBagKey, out _))
+            || (!inner.TryGetProperty(ClaudeReasoningEnvelope.OriginBagKey, out _)
+                && !inner.TryGetProperty(ClaudeReasoningEnvelope.DecodedBagKey, out _)))
             return bag;
 
         var buffer = new System.Buffers.ArrayBufferWriter<byte>();
@@ -116,7 +145,8 @@ internal sealed class ClaudeReasoningOriginStage : IRequestStage<MessagesRequest
             writer.WriteStartObject();
             foreach (var p in inner.EnumerateObject())
             {
-                if (p.NameEquals(ClaudeReasoningEnvelope.OriginBagKey)) continue;
+                if (p.NameEquals(ClaudeReasoningEnvelope.OriginBagKey)
+                    || p.NameEquals(ClaudeReasoningEnvelope.DecodedBagKey)) continue;
                 p.WriteTo(writer);
             }
             writer.WriteEndObject();
