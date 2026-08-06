@@ -215,4 +215,47 @@ public class ClaudeCodeBufferedResponsesAdapterTests
         var output = await Adapter.AdaptBufferedAsync(ir, default);
         Assert.DoesNotContain("bridge_custom_tool_call_id", Encoding.UTF8.GetString(output));
     }
+
+    [Fact]
+    public void BufferedUnreplayableReasoning_NeverEntersTheIr()
+    {
+        // Live probes pin blob-only replay → 400, so an item with no summary cannot be
+        // replayed. The buffered translator must not push it into the IR at all: a
+        // client that receives such state echoes it on EVERY later turn, so the 400
+        // becomes permanent and surfaces far from its cause.
+        var ir = Adapt("""
+        {"id":"resp_r","object":"response","status":"completed","model":"gpt-5.6-sol",
+         "output":[{"type":"reasoning","id":"rs_1","encrypted_content":"BLOB-NO-SUMMARY"},
+                   {"type":"message","id":"msg_1","role":"assistant","status":"completed",
+                    "content":[{"type":"output_text","text":"done","annotations":[]}]}]}
+        """);
+
+        var text = Encoding.UTF8.GetString(ir);
+        Assert.DoesNotContain("BLOB-NO-SUMMARY", text);
+        Assert.DoesNotContain("redacted_thinking", text);
+        // The rest of the turn is unaffected.
+        Assert.Contains("done", text);
+    }
+
+    [Fact]
+    public async Task BufferedUnfoldableReasoning_IsOmitted_NotLeftAsAPoisonBlob()
+    {
+        // Defence in depth for the same invariant at the Claude edge: whatever reaches
+        // this adapter carrying a reasoning marker it cannot fold must be dropped whole.
+        // Writing the block minus its marker would leave the bare blob behind — exactly
+        // the poison state the streaming path already refuses to emit.
+        var ir = Encoding.UTF8.GetBytes("""
+        {"type":"message","role":"assistant","content":[
+          {"type":"redacted_thinking","data":"POISON-BLOB",
+           "bridge_reasoning_item":{"type":"reasoning","encrypted_content":"POISON-BLOB"}},
+          {"type":"text","text":"kept"}]}
+        """);
+
+        var output = Encoding.UTF8.GetString(await Adapter.AdaptBufferedAsync(ir, default));
+
+        Assert.DoesNotContain("POISON-BLOB", output);
+        Assert.DoesNotContain("redacted_thinking", output);
+        Assert.DoesNotContain("bridge_reasoning_item", output);
+        Assert.Contains("kept", output);
+    }
 }

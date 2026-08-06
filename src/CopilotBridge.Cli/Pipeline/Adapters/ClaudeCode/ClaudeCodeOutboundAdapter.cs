@@ -141,11 +141,18 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                             block.WriteTo(writer);
                             continue;
                         }
-                        writer.WriteStartObject();
                         var blockFoldedData = "";
-                        if (block.TryGetProperty(ReasoningMarker, out var reasoningItem)
-                            && ClaudeReasoningEnvelope.TryFold(reasoningItem, out var folded))
+                        if (block.TryGetProperty(ReasoningMarker, out var reasoningItem))
+                        {
+                            // Same rule as the streaming path: a reasoning item that
+                            // cannot be folded is not replayable, and leaving its bare
+                            // blob behind would have the client echo state that 400s
+                            // every later turn. Omit the block instead of degrading it.
+                            if (!ClaudeReasoningEnvelope.TryFold(reasoningItem, out var folded))
+                                continue;
                             blockFoldedData = folded;
+                        }
+                        writer.WriteStartObject();
                         foreach (var inner in block.EnumerateObject())
                         {
                             if (inner.NameEquals(GrammarMarker)

@@ -128,6 +128,13 @@ internal static class BufferedResponsesToAnthropic
     private static void WriteReasoning(Utf8JsonWriter writer, JsonElement item)
     {
         if (ReadString(item, "encrypted_content") is not { Length: > 0 } blob) return;
+        // Only push state the Responses protocol will accept BACK: live probes pin that
+        // a replayed reasoning item needs `summary` alongside `encrypted_content`
+        // (blob-only → 400). Mirrors the streaming translator; a client that receives an
+        // unreplayable item echoes it forever, so it must not enter the IR at all.
+        if (!item.TryGetProperty("summary", out var summary)
+            || summary.ValueKind != JsonValueKind.Array)
+            return;
         writer.WriteStartObject();
         writer.WriteString("type", "redacted_thinking");
         writer.WriteString("data", blob);
