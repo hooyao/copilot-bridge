@@ -99,6 +99,10 @@ internal sealed class ResponsesToAnthropicStream
     // *_details, NOT Anthropic's separate-bucket cache semantics.
     private long _cacheReadInputTokens;
     private long _reasoningOutputTokens;
+    // Reasoning output_index → the Anthropic block index reserved for it on `.added`.
+    // The block is emitted from the `.done` snapshot (the added one is stale), so this
+    // holds the position long enough to keep output order intact.
+    private readonly Dictionary<int, int> _reservedReasoningBlocks = [];
 
     public ResponsesToAnthropicStream(
         string model,
@@ -257,6 +261,50 @@ internal sealed class ResponsesToAnthropicStream
                     break;
 
                 case "response.output_item.done":
+                    // A reasoning item's `.added` snapshot can be STALE: the live
+                    // fidelity capture shows encrypted_content and summary both
+                    // changing between added and done. So the block was reserved (not
+                    // emitted) on added; emit it here from the final snapshot.
+                    if (root.TryGetProperty("output_index", out var doneIdx)
+                        && doneIdx.TryGetInt32(out var doneOutput)
+                        && _reservedReasoningBlocks.TryGetValue(doneOutput, out var reservedIndex))
+                    {
+                        _reservedReasoningBlocks.Remove(doneOutput);
+                        // Push the item onto the IR only if the Responses protocol can
+                        // take it BACK: live probes pin that a replayed reasoning item
+                        // needs `summary` alongside `encrypted_content` (blob-only →
+                        // 400). This is a fact about THIS protocol, which is why the
+                        // Responses translator judges it — not about any client.
+                        //
+                        // An unreplayable item must vanish, not degrade to a bare blob:
+                        // the client would faithfully echo that blob every subsequent
+                        // turn, so it 400s the conversation permanently, far from the
+                        // cause. Stateless is recoverable; poison is not.
+                        if (root.TryGetProperty("item", out var finalItem)
+                            && finalItem.ValueKind == JsonValueKind.Object
+                            && finalItem.TryGetProperty("encrypted_content", out var finalBlob)
+                            && finalBlob.ValueKind == JsonValueKind.String
+                            && finalBlob.GetString() is { Length: > 0 } blobValue
+                            && finalItem.TryGetProperty("summary", out var finalSummary)
+                            && finalSummary.ValueKind == JsonValueKind.Array)
+                        {
+                            yield return Sse("content_block_start",
+                                $"{{\"type\":\"content_block_start\",\"index\":{reservedIndex},\"content_block\":{{\"type\":\"redacted_thinking\",\"data\":{JsonEncode(blobValue)},\"bridge_reasoning_item\":{finalItem.GetRawText()}}}}}");
+                            yield return Sse("content_block_stop", BlockStopJson(reservedIndex));
+                        }
+                        else if (_blockIndex == reservedIndex)
+                        {
+                            // Give the index back so the client sees a contiguous run.
+                            // Safe because a reasoning item's `.done` precedes the next
+                            // item's `.added`, so nothing has claimed a later index yet.
+                            _blockIndex--;
+                            _log?.LogDebug(
+                                "T3: dropped an unreplayable reasoning item (output_index={Index}) "
+                                + "— no summary, so replaying it would 400 the next turn",
+                                doneOutput);
+                        }
+                        break;
+                    }
                     if (_blockOpen)
                     {
                         // For a web-search carrier block, capture the FINAL item (it now
@@ -345,11 +393,36 @@ internal sealed class ResponsesToAnthropicStream
         if (!root.TryGetProperty("item", out var item)) yield break;
         var itemType = item.TryGetProperty("type", out var it) ? it.GetString() : null;
 
-        // A reasoning item has no Anthropic content-block equivalent in the
-        // bridge's stream (its encrypted_content is carried on the request side,
-        // not re-emitted as a visible delta) — skip it, don't open an empty text
-        // block that would then need a matching stop.
-        if (itemType == "reasoning") yield break;
+        if (itemType == "reasoning")
+        {
+            // A Responses reasoning item has no Anthropic content-block equivalent
+            // that can hold its id/summary/content, so it rides the IR the same way
+            // web_search_call does: a hidden redacted_thinking block carrying the
+            // opaque blob, plus a bridge-internal marker holding the whole item.
+            // Each client edge decides what to do with the marker — the native Codex
+            // edge restores the original event from its ledger and drops the marker;
+            // the Claude edge folds the marker into the block's own `data` (the only
+            // field that client protocol can carry) and scrubs it. T3 itself does
+            // NOT know which client is downstream.
+            //
+            // RESERVE the block position here but emit nothing: the `.added`
+            // snapshot is not authoritative (encrypted_content and summary both
+            // change by `.done` in the live capture). output_item.done emits the
+            // final snapshot at this reserved index, so output ORDER is preserved
+            // without shipping stale state the client would replay next turn.
+            if (root.TryGetProperty("output_index", out var reasoningOutput)
+                && reasoningOutput.TryGetInt32(out var reasoningIndex))
+            {
+                if (_blockOpen)
+                {
+                    yield return Sse("content_block_stop", BlockStopJson(_blockIndex));
+                    _blockOpen = false;
+                }
+                _blockIndex++;
+                _reservedReasoningBlocks[reasoningIndex] = _blockIndex;
+            }
+            yield break;
+        }
 
         // Close a previous still-open block defensively.
         if (_blockOpen)

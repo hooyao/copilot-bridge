@@ -22,8 +22,8 @@ namespace CopilotBridge.UnitTests;
 ///         the IR — no fabricated or duplicated content.</item>
 ///   <item><b>不映射错 (nothing mis-mapped):</b> text is byte-identical; tool_use
 ///         <c>input</c> → <c>arguments</c> is byte-identical (canonicalized);
-///         tool_result content → <c>output</c> matches the flatten contract; order
-///         is preserved.</item>
+///         tool_result content → <c>output</c> preserves the target's contracted
+///         text/image modalities and values; order is preserved.</item>
 ///   <item><b>不少 (nothing lost):</b> the ONLY content that may leave the wire is a
 ///         plain <c>thinking</c> block — which gpt-5.5 hard-rejects (live-probed
 ///         400) and which is model-internal scratch; every other input block has a
@@ -61,6 +61,34 @@ public class ContentConservationTests
             with { Model = TargetModel };
         var wire = JsonNode.Parse(ResponsesRequestBuilder.Build(ir, Catalog).Body)!.AsObject();
 
+        AssertConserved(name, ir, wire);
+    }
+
+    [Fact]
+    public void Translation_ConservesToolResultImageModality()
+    {
+        const string bodyJson = """
+            {
+              "model":"claude-opus-5","max_tokens":1024,
+              "messages":[
+                {"role":"assistant","content":[{"type":"tool_use","id":"toolu_image_inventory","name":"Read","input":{"file_path":"red.png"}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_image_inventory","content":[
+                  {"type":"text","text":"image follows"},
+                  {"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}
+                ]}]}
+              ],
+              "stream":true
+            }
+            """;
+        var ir = JsonSerializer.Deserialize(bodyJson, JsonContext.Default.MessagesRequest)!
+            with { Model = "gpt-5.6-sol" };
+        var wire = JsonNode.Parse(ResponsesRequestBuilder.Build(ir, Catalog).Body)!.AsObject();
+
+        AssertConserved("synthetic-tool-result-image", ir, wire);
+    }
+
+    private void AssertConserved(string name, MessagesRequest ir, JsonObject wire)
+    {
         var findings = Reconcile(ir, wire);
         if (findings.Count > 0)
             _output.WriteLine($"[{name}]\n  " + string.Join("\n  ", findings));
@@ -110,7 +138,10 @@ public class ContentConservationTests
                         break;
                     case ToolResultBlockParam tr:
                         Flush();
-                        expected1.Add(new Tok("function_call_output", tr.ToolUseId, ExpectedOutput(tr.Content)));
+                        expected1.Add(new Tok(
+                            "function_call_output",
+                            tr.ToolUseId,
+                            ExpectedOutput(tr.Content, ir.Model)));
                         break;
                     case TextBlockParam t:
                         pending.Add(new Tok("text", msg.Role, t.Text));
@@ -156,8 +187,10 @@ public class ContentConservationTests
                         (o["name"]?.GetValue<string>() ?? "") + "" + Canon(o["arguments"]?.GetValue<string>() ?? "")));
                     break;
                 case "function_call_output":
-                    actual.Add(new Tok("function_call_output", o["call_id"]?.GetValue<string>() ?? "",
-                        o["output"] is JsonValue v && v.TryGetValue<string>(out var s) ? s : o["output"]?.ToJsonString() ?? ""));
+                    actual.Add(new Tok(
+                        "function_call_output",
+                        o["call_id"]?.GetValue<string>() ?? "",
+                        ActualOutput(o["output"]!)));
                     break;
                 case "reasoning":
                     actual.Add(new Tok("reasoning", o["id"]?.GetValue<string>() ?? "", o["encrypted_content"]?.GetValue<string>() ?? ""));
@@ -187,23 +220,122 @@ public class ContentConservationTests
         return findings;
     }
 
-    private static string ExpectedOutput(JsonElement? content)
+    private static string ExpectedOutput(JsonElement? content, string model)
     {
         if (content is not { } c) return "";
         if (c.ValueKind == JsonValueKind.Array)
         {
+            if (model == "gpt-5.6-sol" && TryExpectedMultimodalOutput(c, out var structured))
+                return structured;
+
             var sb = new StringBuilder();
+            var wroteBlock = false;
             foreach (var b in c.EnumerateArray())
             {
-                if (sb.Length > 0) sb.Append('\n');
+                if (wroteBlock) sb.Append('\n');
+                wroteBlock = true;
                 if (b.ValueKind == JsonValueKind.Object && b.TryGetProperty("type", out var bt)
-                    && bt.GetString() == "text" && b.TryGetProperty("text", out var tx))
+                    && bt.GetString() is "text" or "input_text" or "output_text"
+                    && b.TryGetProperty("text", out var tx))
                     sb.Append(tx.GetString());
                 else sb.Append(b.GetRawText());
             }
-            return sb.ToString();
+            return "scalar:" + sb;
         }
-        return c.ValueKind == JsonValueKind.String ? c.GetString() ?? "" : c.GetRawText();
+        return "scalar:" + (c.ValueKind == JsonValueKind.String ? c.GetString() ?? "" : c.GetRawText());
+    }
+
+    private static bool TryExpectedMultimodalOutput(JsonElement content, out string inventory)
+    {
+        var items = new List<string>();
+        var sawImage = false;
+        foreach (var block in content.EnumerateArray())
+        {
+            if (block.ValueKind != JsonValueKind.Object
+                || !block.TryGetProperty("type", out var type)
+                || type.ValueKind != JsonValueKind.String)
+            {
+                inventory = "";
+                return false;
+            }
+
+            if (type.GetString() == "text"
+                && block.TryGetProperty("text", out var text)
+                && text.ValueKind == JsonValueKind.String)
+            {
+                items.Add("text:" + text.GetString());
+                continue;
+            }
+
+            if (type.GetString() == "image"
+                && TryExpectedImageUrl(block, out var imageUrl))
+            {
+                items.Add("image:" + imageUrl);
+                sawImage = true;
+                continue;
+            }
+
+            inventory = "";
+            return false;
+        }
+
+        inventory = sawImage ? "items:" + string.Join('', items) : "";
+        return sawImage;
+    }
+
+    private static bool TryExpectedImageUrl(JsonElement block, out string imageUrl)
+    {
+        imageUrl = "";
+        if (!block.TryGetProperty("source", out var source)
+            || source.ValueKind != JsonValueKind.Object
+            || !source.TryGetProperty("type", out var type))
+            return false;
+
+        if (type.GetString() == "base64"
+            && source.TryGetProperty("media_type", out var mediaType)
+            && source.TryGetProperty("data", out var data)
+            && mediaType.ValueKind == JsonValueKind.String
+            && data.ValueKind == JsonValueKind.String)
+        {
+            imageUrl = $"data:{mediaType.GetString()};base64,{data.GetString()}";
+            return true;
+        }
+
+        if (type.GetString() == "url"
+            && source.TryGetProperty("url", out var url)
+            && url.ValueKind == JsonValueKind.String)
+        {
+            imageUrl = url.GetString() ?? "";
+            return imageUrl.Length > 0;
+        }
+
+        return false;
+    }
+
+    private static string ActualOutput(JsonNode output)
+    {
+        if (output is JsonValue value && value.TryGetValue<string>(out var scalar))
+            return "scalar:" + scalar;
+        if (output is not JsonArray array) return "scalar:" + output.ToJsonString();
+
+        var items = new List<string>();
+        foreach (var node in array)
+        {
+            var item = node!.AsObject();
+            switch (item["type"]?.GetValue<string>())
+            {
+                case "input_text":
+                    items.Add("text:" + item["text"]!.GetValue<string>());
+                    break;
+                case "input_image":
+                    items.Add("image:" + item["image_url"]!.GetValue<string>());
+                    break;
+                default:
+                    items.Add("unknown:" + item.ToJsonString());
+                    break;
+            }
+        }
+        return "items:" + string.Join('', items);
     }
 
     private static string Canon(string json)

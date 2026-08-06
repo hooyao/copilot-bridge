@@ -121,7 +121,13 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                     break;
 
                 case ResponsesFunctionCallOutputItem fco:
-                    // Tool result → a user message carrying a tool_result block.
+                    // Tool result → a user message carrying a tool_result block. The
+                    // `output` value is Codex's OWN Responses payload (string, object,
+                    // or Responses content items) — it is NOT an Anthropic content-block
+                    // array, even when its JSON happens to resemble one. Mark it opaque
+                    // on the part bag so T2 re-emits it verbatim instead of reading it
+                    // as Anthropic blocks. A Claude Code tool_result carries no such
+                    // marker, so T2 is free to interpret its blocks.
                     messages.Add(new MessageParam
                     {
                         Role = Role.User,
@@ -129,6 +135,7 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                         {
                             ToolUseId = fco.CallId,
                             Content = fco.Output,
+                            ProviderExtensions = BuildOpaqueToolOutputBag(),
                         }],
                     });
                     break;
@@ -475,6 +482,23 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
         }
 
         using var doc = JsonDocument.Parse(buffer.ToArray());
+        return new ProviderExtensions
+        {
+            ByProvider = new Dictionary<string, JsonElement> { [OpenAiProviderKey] = doc.RootElement.Clone() },
+        };
+    }
+
+    /// <summary>
+    /// Mark a tool-result block's content as an OPAQUE provider payload — Codex's own
+    /// Responses <c>function_call_output.output</c>, which must be re-emitted verbatim
+    /// rather than interpreted as Anthropic content blocks. This is a source-side
+    /// statement of fact pushed into the IR: T2 pulls it and knows not to reinterpret,
+    /// without needing to know which client produced the request. A Claude Code
+    /// tool_result never carries it, so its blocks stay interpretable.
+    /// </summary>
+    private static ProviderExtensions BuildOpaqueToolOutputBag()
+    {
+        using var doc = JsonDocument.Parse("{\"opaque_tool_output\":true}");
         return new ProviderExtensions
         {
             ByProvider = new Dictionary<string, JsonElement> { [OpenAiProviderKey] = doc.RootElement.Clone() },

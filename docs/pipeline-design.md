@@ -959,6 +959,47 @@ types remain visible as compact JSON. Treating `input_text`/`output_text` as
 non-text would inject their JSON wrappers into model context; the two-day corpus
 replay guards this independently by call id.
 
+The Claude Code→Responses request side has one content-driven exception. An
+exact target profile whose direct two-turn probe proves structured multimodal
+function output may receive an image-bearing Anthropic `tool_result` array as
+ordered Responses `input_text`/`input_image` output content items. The
+writer preserves the image data URL or source URL and sets
+`Copilot-Vision-Request: true`. It takes this branch only when every source
+block is a valid Anthropic text/image block; unknown or malformed siblings fall
+back as a complete array, never a partially translated one. T2 never asks who
+produced the request: a source that means its tool output to stay opaque says so
+ON THE IR (Codex T1 marks `opaque_tool_output` on the block), and T2 pulls that
+fact. Positive support is exact-profile only (currently live-proven for
+`gpt-5.6-sol`); fuzzy-nearest and unprobed sibling models keep the compatibility
+string path.
+
+Responses reasoning items follow the same push/pull split. T3 pushes the whole
+item into the IR unconditionally — a hidden `redacted_thinking` block carrying
+the opaque blob plus a `bridge_reasoning_item` marker holding the original item
+— exactly as it already does for `web_search_call`. Each client edge then pulls
+what its protocol needs: the native Codex edge restores the original events from
+the event ledger and emits no output item for the block, while the Claude edge
+folds the marker into the block's own `data` (the only field the Anthropic wire
+can carry) and scrubs it. On the next turn the Claude inbound edge unfolds that
+value back into the part-level provider bag, which T2 already reads — so the
+request builder needs no knowledge of the envelope. The fold is versioned,
+size-bounded, and fails closed on a corrupt or newer-version payload rather than
+forwarding arbitrary JSON upstream. Live probes pin the backend requirement this
+preserves: `gpt-5.6-sol` rejects a replayed reasoning item that carries
+`encrypted_content` without `summary`.
+
+Both halves of that codec live in the Claude client adapters, and the unfold
+takes no gate — not on the resolved target, not on the inbound route. It is not
+"restoring state for a Responses backend"; it is one edge decoding what the same
+edge encoded, so asking which backend will serve the request would mean baking
+routing into a client edge. Isolation from the native Codex edge is structural:
+that edge has its own adapter, never mints a carrier, and never references the
+codec (pinned by `NativeCodexEdge_CannotSeeTheCarrierCodec`). Provider-native
+blobs are separated by the private discriminator alone, which is also what keeps
+a native Anthropic passthrough's opaque data untouched. Genuinely
+destination-specific stages use the existing `CopilotAnthropicOnlyStage` wrapper
+instead — that is where vendor knowledge belongs.
+
 Modeled Responses reasoning input items also require an opaque extension lane.
 T1 maps `encrypted_content` to the IR redacted-thinking data slot and stores every
 present `id`, `summary`, and `content` value in that block's provider bag; T2 writes

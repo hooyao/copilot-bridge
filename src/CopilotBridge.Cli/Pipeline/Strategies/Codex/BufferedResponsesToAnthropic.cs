@@ -22,6 +22,9 @@ internal static class BufferedResponsesToAnthropic
     // bridge_web_search_call. (Codex always streams, so this buffered path is a
     // defensive parity backstop for a non-stream edge.)
     private const string WebSearchMarker = "bridge_web_search_call";
+    // Carries the whole Responses reasoning item across the IR (its id/summary/content
+    // have no Anthropic block equivalent). Consumed by whichever client edge needs it.
+    private const string ReasoningMarker = "bridge_reasoning_item";
 
     public static byte[]? TryTranslate(byte[] body)
     {
@@ -81,6 +84,10 @@ internal static class BufferedResponsesToAnthropic
                             WriteMessageBlocks(writer, item);
                             break;
 
+                        case "reasoning":
+                            WriteReasoning(writer, item);
+                            break;
+
                         case "function_call":
                             WriteFunctionCall(writer, item);
                             hasToolUse = true;
@@ -110,6 +117,30 @@ internal static class BufferedResponsesToAnthropic
 
             return buffer.ToArray();
         }
+    }
+
+    /// <summary>
+    /// Push a reasoning item into the IR the same way the streaming path does: a hidden
+    /// redacted-thinking block carrying the opaque blob, plus the whole original item on
+    /// a bridge-internal marker. Each client edge pulls what it needs; this translator
+    /// does not know which one is downstream.
+    /// </summary>
+    private static void WriteReasoning(Utf8JsonWriter writer, JsonElement item)
+    {
+        if (ReadString(item, "encrypted_content") is not { Length: > 0 } blob) return;
+        // Only push state the Responses protocol will accept BACK: live probes pin that
+        // a replayed reasoning item needs `summary` alongside `encrypted_content`
+        // (blob-only → 400). Mirrors the streaming translator; a client that receives an
+        // unreplayable item echoes it forever, so it must not enter the IR at all.
+        if (!item.TryGetProperty("summary", out var summary)
+            || summary.ValueKind != JsonValueKind.Array)
+            return;
+        writer.WriteStartObject();
+        writer.WriteString("type", "redacted_thinking");
+        writer.WriteString("data", blob);
+        writer.WritePropertyName(ReasoningMarker);
+        item.WriteTo(writer);
+        writer.WriteEndObject();
     }
 
     private static void WriteMessageBlocks(Utf8JsonWriter writer, JsonElement item)

@@ -54,13 +54,20 @@ internal static class ResponsesRequestBuilder
         // WARN-logged the fuzzy match and let the request through; here we just
         // borrow the closest model's effort-clamp + custom-tool-drop rules). Only
         // a below-floor id yields null → the existing unclamped passthrough.
-        var profile = profiles.Get(ir.Model) ?? profiles.GetNearest(ir.Model, out _, out _);
-
+        var exactProfile = profiles.Get(ir.Model);
+        var profile = exactProfile ?? profiles.GetNearest(ir.Model, out _, out _);
         // Pull the openai bag (un-modeled knobs T1 stashed). Absent → empty.
         JsonElement? bag = null;
         if (ir.ProviderExtensions?.ByProvider.TryGetValue(
                 ResponsesToIrInboundAdapter.OpenAiProviderKey, out var b) == true)
             bag = b;
+
+        // A positive wire-shape capability is not a defensive coercion: never borrow
+        // it from a nearest profile. T2 asks only "does THIS target accept structured
+        // multimodal function output?" and then pulls whatever the IR actually holds —
+        // it does not ask who produced the IR. A source that means its tool output to
+        // stay opaque marks it as such on the block (see IsOpaqueToolOutput).
+        var structuredMultimodalOutput = exactProfile?.SupportsMultimodalFunctionOutput == true;
 
         var vision = false;
         string? effort = null;   // coerced effort actually written to the wire; hoisted so the return below (outside the writer's using) can report it
@@ -97,7 +104,7 @@ internal static class ResponsesRequestBuilder
             ptIdx = WritePassthroughUpTo(w, passthrough, ptIdx, emittedMsgs);
             foreach (var msg in ir.Messages)
             {
-                WriteInputItem(w, msg, ref vision);
+                WriteInputItem(w, msg, structuredMultimodalOutput, ref vision);
                 emittedMsgs++;
                 ptIdx = WritePassthroughUpTo(w, passthrough, ptIdx, emittedMsgs);
             }
@@ -241,7 +248,11 @@ internal static class ResponsesRequestBuilder
         return ptIdx;
     }
 
-    private static void WriteInputItem(Utf8JsonWriter w, MessageParam msg, ref bool vision)
+    private static void WriteInputItem(
+        Utf8JsonWriter w,
+        MessageParam msg,
+        bool structuredMultimodalOutput,
+        ref bool vision)
     {
         // An IR message maps back to one or more Responses input items. Tool-use
         // and tool-result blocks become their own function_call/function_call_output
@@ -286,14 +297,17 @@ internal static class ResponsesRequestBuilder
                     w.WriteString("type", "function_call_output");
                     w.WriteString("call_id", tr.ToolUseId);
                     w.WritePropertyName("output");
-                    // Responses' function_call_output.output is a STRING. A Codex
-                    // round-trip already carries a string here (T1 stored the
-                    // opaque Output element), so a string passes through verbatim.
-                    // But a Claude Code tool_result.content can be an ARRAY of
-                    // content blocks ([{type:text,text:...}, ...]) — gpt-5.5 400s
-                    // on a non-string output — so flatten an array to its
-                    // concatenated text. Null → empty string.
-                    WriteToolResultOutput(w, tr.Content);
+                    // Responses function output is string | content-items[]. T2 pulls
+                    // what the IR holds: a block the source marked opaque keeps the
+                    // established string/verbatim contract; otherwise an all-supported
+                    // text/image array may become input_text/input_image when THIS
+                    // target is live-proven to accept it. Unknown blocks fall back as a
+                    // whole so nothing is partially lost.
+                    WriteToolResultOutput(
+                        w,
+                        tr.Content,
+                        structuredMultimodalOutput && !IsOpaqueToolOutput(tr.ProviderExtensions),
+                        ref vision);
                     w.WriteEndObject();
                     break;
                 case RedactedThinkingBlockParam rt:
@@ -301,9 +315,10 @@ internal static class ResponsesRequestBuilder
                     textImageParts.Clear();
                     w.WriteStartObject();
                     w.WriteString("type", "reasoning");
-                    // Recover the reasoning item's id from the part-level openai bag
-                    // T1 stashed it in, so multi-turn reasoning identity survives the
-                    // round trip. Absent → omit (Codex tolerates a blob-only item).
+                    // PULL the reasoning item's identity/summary/content from the
+                    // part-level openai bag whatever source filled it — native Codex
+                    // T1, or the Claude inbound edge unfolding what its client could
+                    // only carry inside `data`. T2 does not know or ask which.
                     if (TryGetReasoningId(rt.ProviderExtensions, out var reasoningId))
                         w.WriteString("id", reasoningId);
                     w.WriteString("encrypted_content", rt.Data);
@@ -549,26 +564,26 @@ internal static class ResponsesRequestBuilder
     }
 
     /// <summary>
-    /// Write a Responses <c>function_call_output.output</c> from an Anthropic
-    /// <c>tool_result.content</c> (<see cref="ToolResultBlockParam.Content"/>),
-    /// which is <c>string | Array&lt;block&gt; | null</c>, OR a Codex round-trip's
-    /// raw <c>JsonElement</c> output (string / object / scalar):
+    /// Write a Responses <c>function_call_output.output</c> from Anthropic
+    /// <c>tool_result.content</c> (<see cref="ToolResultBlockParam.Content"/>), or a
+    /// native Codex round-trip's opaque output:
     /// <list type="bullet">
-    ///   <item><b>Array</b> (Claude Code <c>text</c> blocks or Codex
-    ///         <c>input_text</c>/<c>output_text</c> blocks) → the <c>text</c>
-    ///         fields concatenated with newlines; a non-text block is kept as
-    ///         compact JSON so nothing is lost. gpt-5.5 can't read the Anthropic block shape as a Responses
-    ///         output-content array, so it MUST be flattened to a string.</item>
-    ///   <item><b>Anything else</b> (string, object, scalar) → written verbatim.
-    ///         This preserves two contracts at once: the common string case is
-    ///         byte-identical to the old <c>content.WriteTo</c>, and a Codex
-    ///         structured output object (<c>{"rows":[1,2],"ok":true}</c>) survives
-    ///         as an object rather than being stringified
-    ///         (<c>StructuredToolOutput_RoundTripsThroughT1T2</c>).</item>
-    ///   <item><b>null</b> → empty string.</item>
+    ///   <item>An exact live-proven target may receive an image-bearing array made
+    ///         entirely of valid Anthropic <c>text</c>/<c>image</c> blocks as ordered
+    ///         Responses <c>input_text</c>/<c>input_image</c> content items.</item>
+    ///   <item>Every other array retains the established newline flattening: text-like
+    ///         blocks contribute text and non-text blocks contribute compact JSON.
+    ///         This preserves native Codex behavior and safely carries unsupported
+    ///         Claude blocks without partial loss.</item>
+    ///   <item>String/object/scalar values are written verbatim; null becomes an empty
+    ///         string.</item>
     /// </list>
     /// </summary>
-    private static void WriteToolResultOutput(Utf8JsonWriter w, JsonElement? content)
+    private static void WriteToolResultOutput(
+        Utf8JsonWriter w,
+        JsonElement? content,
+        bool structuredMultimodalOutput,
+        ref bool vision)
     {
         if (content is not { } c)
         {
@@ -577,35 +592,179 @@ internal static class ResponsesRequestBuilder
         }
         if (c.ValueKind == JsonValueKind.Array)
         {
-            var sb = new System.Text.StringBuilder();
-            var wroteBlock = false;
-            foreach (var block in c.EnumerateArray())
+            if (structuredMultimodalOutput && IsSupportedMultimodalToolResult(c))
             {
-                if (wroteBlock) sb.Append('\n');
-                wroteBlock = true;
-                if (block.ValueKind == JsonValueKind.Object
-                    && block.TryGetProperty("type", out var bt)
-                    && bt.ValueKind == JsonValueKind.String
-                    && bt.GetString() is "text" or "input_text" or "output_text"
-                    && block.TryGetProperty("text", out var txt)
-                    && txt.ValueKind == JsonValueKind.String)
-                {
-                    sb.Append(txt.GetString());
-                }
-                else
-                {
-                    // Non-text block (image, etc.): preserve it as compact JSON
-                    // rather than dropping it — the model at least sees the shape.
-                    sb.Append(block.GetRawText());
-                }
+                WriteMultimodalToolResult(w, c);
+                vision = true;
+                return;
             }
-            w.WriteStringValue(sb.ToString());
+
+            WriteFlattenedToolResult(w, c);
             return;
         }
         // String / object / scalar: verbatim. Byte-identical to the previous
         // content.WriteTo for the common string case, and keeps a Codex structured
         // output object intact.
         c.WriteTo(w);
+    }
+
+    private static bool IsSupportedMultimodalToolResult(JsonElement content)
+    {
+        var sawImage = false;
+        foreach (var block in content.EnumerateArray())
+        {
+            if (block.ValueKind != JsonValueKind.Object
+                || !block.TryGetProperty("type", out var type)
+                || type.ValueKind != JsonValueKind.String)
+                return false;
+
+            switch (type.GetString())
+            {
+                case "text":
+                    if (!block.TryGetProperty("text", out var text)
+                        || text.ValueKind != JsonValueKind.String)
+                        return false;
+                    break;
+                case "image":
+                    if (!TryGetImageUrl(block, out _)) return false;
+                    sawImage = true;
+                    break;
+                default:
+                    return false;
+            }
+        }
+        return sawImage;
+    }
+
+    private static void WriteMultimodalToolResult(Utf8JsonWriter w, JsonElement content)
+    {
+        w.WriteStartArray();
+        foreach (var block in content.EnumerateArray())
+        {
+            var type = block.GetProperty("type").GetString();
+            w.WriteStartObject();
+            if (type == "text")
+            {
+                w.WriteString("type", "input_text");
+                w.WriteString("text", block.GetProperty("text").GetString());
+            }
+            else
+            {
+                _ = TryGetImageUrl(block, out var imageUrl);
+                w.WriteString("type", "input_image");
+                w.WriteString("image_url", imageUrl);
+            }
+            w.WriteEndObject();
+        }
+        w.WriteEndArray();
+    }
+
+    private static bool TryGetImageUrl(JsonElement block, out string imageUrl)
+    {
+        imageUrl = "";
+        if (!block.TryGetProperty("source", out var source)
+            || source.ValueKind != JsonValueKind.Object
+            || !source.TryGetProperty("type", out var sourceType)
+            || sourceType.ValueKind != JsonValueKind.String)
+            return false;
+
+        switch (sourceType.GetString())
+        {
+            case "base64" when source.TryGetProperty("media_type", out var mediaType)
+                               && mediaType.ValueKind == JsonValueKind.String
+                               && source.TryGetProperty("data", out var data)
+                               && data.ValueKind == JsonValueKind.String:
+                // A data URL is only usable if BOTH halves are well formed. An empty or
+                // malformed media type, or a payload that is not base64, would produce
+                // something like `data:;base64,not-base64` — which the contract says
+                // must fall back for the whole array, not be shipped (and must not
+                // claim vision).
+                if (mediaType.GetString() is not { Length: > 0 } mediaTypeValue
+                    || !IsImageMediaType(mediaTypeValue)
+                    || data.GetString() is not { Length: > 0 } dataValue
+                    || !IsBase64(dataValue))
+                    return false;
+                imageUrl = $"data:{mediaTypeValue};base64,{dataValue}";
+                return true;
+            case "url" when source.TryGetProperty("url", out var url)
+                            && url.ValueKind == JsonValueKind.String:
+                // Require an absolute http(s) or data URL: a relative or opaque string
+                // is not something the backend can fetch, so it belongs in the fallback.
+                return url.GetString() is { Length: > 0 } urlValue
+                    && IsUsableImageUrl(urlValue)
+                    && (imageUrl = urlValue).Length > 0;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>A <c>type/subtype</c> image media type, e.g. <c>image/png</c>.</summary>
+    private static bool IsImageMediaType(string value)
+    {
+        const string prefix = "image/";
+        if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            || value.Length <= prefix.Length)
+            return false;
+        foreach (var c in value.AsSpan(prefix.Length))
+        {
+            // Subtype charset per RFC 6838 restricted-name (no parameters — a
+            // tool-result image block carries a bare media type).
+            if (!char.IsAsciiLetterOrDigit(c) && c is not ('.' or '+' or '-'))
+                return false;
+        }
+        return true;
+    }
+
+    private static bool IsBase64(string value)
+    {
+        // Length and alphabet only — cheap, allocation-free, and enough to reject the
+        // "not-base64" class the contract cares about.
+        if (value.Length % 4 != 0) return false;
+        var padding = 0;
+        for (var i = 0; i < value.Length; i++)
+        {
+            var c = value[i];
+            if (c == '=')
+            {
+                // Padding is legal only in the final one or two positions.
+                if (i < value.Length - 2) return false;
+                padding++;
+                continue;
+            }
+            if (padding > 0) return false;
+            if (!char.IsAsciiLetterOrDigit(c) && c is not ('+' or '/')) return false;
+        }
+        return padding <= 2;
+    }
+
+    private static bool IsUsableImageUrl(string value) =>
+        value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase);
+
+    private static void WriteFlattenedToolResult(Utf8JsonWriter w, JsonElement content)
+    {
+        var sb = new System.Text.StringBuilder();
+        var wroteBlock = false;
+        foreach (var block in content.EnumerateArray())
+        {
+            if (wroteBlock) sb.Append('\n');
+            wroteBlock = true;
+            if (block.ValueKind == JsonValueKind.Object
+                && block.TryGetProperty("type", out var bt)
+                && bt.ValueKind == JsonValueKind.String
+                && bt.GetString() is "text" or "input_text" or "output_text"
+                && block.TryGetProperty("text", out var txt)
+                && txt.ValueKind == JsonValueKind.String)
+            {
+                sb.Append(txt.GetString());
+            }
+            else
+            {
+                sb.Append(block.GetRawText());
+            }
+        }
+        w.WriteStringValue(sb.ToString());
     }
 
     /// <summary>
@@ -642,6 +801,19 @@ internal static class ResponsesRequestBuilder
     }
 
     /// <summary>
+    /// True when the SOURCE marked this tool-result content as an opaque provider
+    /// payload (Codex T1's own <c>function_call_output.output</c>). T2 then re-emits it
+    /// verbatim instead of reading it as Anthropic content blocks. Absent on every
+    /// Claude Code block, so those stay interpretable — no client identity is consulted.
+    /// </summary>
+    private static bool IsOpaqueToolOutput(Models.Common.ProviderExtensions? ext) =>
+        ext?.ByProvider.TryGetValue(
+            ResponsesToIrInboundAdapter.OpenAiProviderKey, out var bag) == true
+        && bag.ValueKind == JsonValueKind.Object
+        && bag.TryGetProperty("opaque_tool_output", out var opaque)
+        && opaque.ValueKind == JsonValueKind.True;
+
+    /// <summary>
     /// Re-emit opaque Responses reasoning fields T1 stored on the redacted-thinking
     /// block. These have no Anthropic IR equivalent but can be required by Copilot
     /// on the tool-result echo turn (live: detailed summary without an item id).
@@ -664,6 +836,16 @@ internal static class ResponsesRequestBuilder
         {
             writer.WritePropertyName("content");
             content.WriteTo(writer);
+        }
+        // Fields the backend sent that this build does not model. The reasoning item
+        // is an open shape; replaying only what we understand would silently narrow
+        // the state the backend gets back, and the loss would surface as an upstream
+        // failure a turn later rather than here.
+        if (bag.TryGetProperty("reasoning_extra", out var extra)
+            && extra.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in extra.EnumerateObject())
+                property.WriteTo(writer);
         }
     }
 

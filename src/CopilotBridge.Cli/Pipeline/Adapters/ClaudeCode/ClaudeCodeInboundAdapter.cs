@@ -4,12 +4,23 @@ using Microsoft.Extensions.Logging;
 namespace CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 
 /// <summary>
-/// Identity adapter — Claude Code speaks the Anthropic Messages API, which is
-/// also the bridge's IR shape, so the inbound side is a pure passthrough. This
-/// class exists to establish the integration pattern (so adding Codex / Gemini
-/// later doesn't require pipeline plumbing changes) and as the natural place
-/// to drop client-specific inbound logic if it ever surfaces.
+/// Claude Code speaks the Anthropic Messages API, which is also the bridge's IR
+/// shape, so this adapter is a passthrough apart from one thing: it undoes the
+/// encoding its own outbound half applied.
 /// </summary>
+/// <remarks>
+/// <para><see cref="ClaudeCodeOutboundAdapter"/> folds a reasoning item into the
+/// single opaque string the Anthropic wire can carry, because that wire has no
+/// other field for it. This adapter unfolds it back into the part-level provider
+/// bag the IR carries. Both halves are the same edge codec — the fold has no
+/// meaning outside this pair, so the unfold belongs here and nowhere else.</para>
+/// <para>It needs no gate. It is not "restoring state for a Responses backend"
+/// (that would be a destination concern, and knowing the destination here would
+/// mean baking routing into a client edge); it is this edge decoding a value this
+/// edge encoded. Only bytes carrying the private discriminator are touched, so a
+/// provider-native blob stays opaque, and the Codex edge — which uses its own
+/// adapter and never mints a carrier — cannot reach this code at all.</para>
+/// </remarks>
 internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesRequest, MessagesRequest>
 {
     private readonly ILogger<ClaudeCodeInboundAdapter> _log;
@@ -26,10 +37,58 @@ internal sealed class ClaudeCodeInboundAdapter : IClientInboundAdapter<MessagesR
         IReadOnlyDictionary<string, string> headers,
         CancellationToken ct)
     {
+        var body = UnfoldReasoningCarriers(clientBody, out var unfolded);
         _log.LogDebug(
-            "adapter {Name}: identity  model={Model}  messages={Messages}  stream={Stream}",
-            Name, clientBody.Model, clientBody.Messages.Count, clientBody.Stream == true);
-        return ValueTask.FromResult(clientBody);
+            "adapter {Name}: model={Model}  messages={Messages}  stream={Stream}  reasoning_carriers={Carriers}",
+            Name, body.Model, body.Messages.Count, body.Stream == true, unfolded);
+        return ValueTask.FromResult(body);
+    }
+
+    /// <summary>
+    /// Decode every carrier this edge previously minted back into the IR's provider
+    /// bag. A body with none — every first turn, and every conversation whose
+    /// assistant turns came from an Anthropic backend — is returned unchanged, so
+    /// the common path allocates nothing.
+    /// </summary>
+    private static MessagesRequest UnfoldReasoningCarriers(MessagesRequest body, out int unfolded)
+    {
+        unfolded = 0;
+        List<MessageParam>? rewrittenMessages = null;
+
+        for (var i = 0; i < body.Messages.Count; i++)
+        {
+            var message = body.Messages[i];
+            List<ContentBlockParam>? rewrittenBlocks = null;
+
+            for (var j = 0; j < message.Content.Count; j++)
+            {
+                if (message.Content[j] is not RedactedThinkingBlockParam redacted)
+                    continue;
+
+                var result = ClaudeReasoningEnvelope.TryUnfold(
+                    redacted.Data, out var encryptedContent, out var bag);
+                if (result == ClaudeReasoningUnfold.Absent) continue;
+                // The discriminator matched but the payload did not: this edge minted
+                // it, so it is this edge's job to reject it rather than forward
+                // arbitrary decoded JSON as if it were provider state.
+                if (result == ClaudeReasoningUnfold.Invalid)
+                    throw new InvalidClaudeReasoningEnvelopeException();
+
+                rewrittenBlocks ??= [.. message.Content];
+                rewrittenBlocks[j] = redacted with
+                {
+                    Data = encryptedContent,
+                    ProviderExtensions = bag,
+                };
+                unfolded++;
+            }
+
+            if (rewrittenBlocks is null) continue;
+            rewrittenMessages ??= [.. body.Messages];
+            rewrittenMessages[i] = message with { Content = rewrittenBlocks };
+        }
+
+        return rewrittenMessages is null ? body : body with { Messages = rewrittenMessages };
     }
 
     /// <summary>

@@ -48,4 +48,13 @@ internal sealed record CodexModelProfile
     /// bridge bug; T2 may drop custom tools for this model rather than 500.
     /// </summary>
     public bool RejectsCustomTools { get; init; }
+
+    /// <summary>
+    /// True only when a direct live two-turn probe proved this exact model accepts
+    /// and semantically consumes Responses <c>function_call_output.output</c> content
+    /// items containing <c>input_image</c>. This is distinct from ordinary top-level
+    /// vision support and MUST NOT be inferred from a family name or fuzzy nearest
+    /// profile: a false positive breaks the tool-result turn with an upstream 400.
+    /// </summary>
+    public bool SupportsMultimodalFunctionOutput { get; init; }
 }
