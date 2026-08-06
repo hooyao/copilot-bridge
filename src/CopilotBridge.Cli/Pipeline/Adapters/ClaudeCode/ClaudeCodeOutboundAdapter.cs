@@ -68,7 +68,10 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
         {
             if (NativeResponsesEventCarrier.IsPrivate(evt))
                 continue;
-            yield return ScrubMarkers(evt);
+            // null = this event carried state the client must not be given (see
+            // ScrubMarkers): drop it rather than emit a degraded form.
+            if (ScrubMarkers(evt) is { } scrubbed)
+                yield return scrubbed;
         }
     }
 
@@ -189,7 +192,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
     /// carried as a top-level key on <c>content_block_stop</c>. Byte-identical (same
     /// instance) for every marker-free event.
     /// </summary>
-    private SseItem<string> ScrubMarkers(SseItem<string> evt)
+    private SseItem<string>? ScrubMarkers(SseItem<string> evt)
     {
         var data = evt.Data;
         // A bridge-private failure stop is never a legal Claude-facing terminal.
@@ -247,13 +250,25 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                 return evt;
 
             // A reasoning carrier is FOLDED, not just dropped: the Claude wire has one
-            // string for this state, so the whole item moves into `data`. If the item
-            // is not replayable (no encrypted_content/summary), leave the plain blob —
-            // a carrier that would 400 the next turn is worse than stateless.
+            // string for this state, so the whole item moves into `data`. T3 only pushes
+            // items the Responses protocol will accept back, so a fold failure here means
+            // the payload exceeded the envelope bound. Drop the block outright in that
+            // case — leaving the plain blob would hand the client state it echoes every
+            // later turn, which then 400s upstream for want of a summary. Stateless is
+            // recoverable; a poison blob is not.
             var foldedData = "";
-            if (cb.TryGetProperty(ReasoningMarker, out var reasoningItem)
-                && ClaudeReasoningEnvelope.TryFold(reasoningItem, out var folded))
+            if (cb.TryGetProperty(ReasoningMarker, out var reasoningItem))
+            {
+                if (!ClaudeReasoningEnvelope.TryFold(reasoningItem, out var folded))
+                {
+                    _log.LogWarning(
+                        "adapter {Name}: dropped a reasoning block whose carrier exceeded the "
+                        + "envelope bound — the turn proceeds without replayable reasoning state",
+                        Name);
+                    return null;
+                }
                 foldedData = folded;
+            }
 
             using var buffer = new MemoryStream();
             using (var w = new Utf8JsonWriter(buffer))

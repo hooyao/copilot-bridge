@@ -837,6 +837,16 @@ internal static class ResponsesRequestBuilder
             writer.WritePropertyName("content");
             content.WriteTo(writer);
         }
+        // Fields the backend sent that this build does not model. The reasoning item
+        // is an open shape; replaying only what we understand would silently narrow
+        // the state the backend gets back, and the loss would surface as an upstream
+        // failure a turn later rather than here.
+        if (bag.TryGetProperty("reasoning_extra", out var extra)
+            && extra.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in extra.EnumerateObject())
+                property.WriteTo(writer);
+        }
     }
 
     /// <summary>

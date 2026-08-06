@@ -270,15 +270,38 @@ internal sealed class ResponsesToAnthropicStream
                         && _reservedReasoningBlocks.TryGetValue(doneOutput, out var reservedIndex))
                     {
                         _reservedReasoningBlocks.Remove(doneOutput);
+                        // Push the item onto the IR only if the Responses protocol can
+                        // take it BACK: live probes pin that a replayed reasoning item
+                        // needs `summary` alongside `encrypted_content` (blob-only →
+                        // 400). This is a fact about THIS protocol, which is why the
+                        // Responses translator judges it — not about any client.
+                        //
+                        // An unreplayable item must vanish, not degrade to a bare blob:
+                        // the client would faithfully echo that blob every subsequent
+                        // turn, so it 400s the conversation permanently, far from the
+                        // cause. Stateless is recoverable; poison is not.
                         if (root.TryGetProperty("item", out var finalItem)
                             && finalItem.ValueKind == JsonValueKind.Object
                             && finalItem.TryGetProperty("encrypted_content", out var finalBlob)
                             && finalBlob.ValueKind == JsonValueKind.String
-                            && finalBlob.GetString() is { Length: > 0 } blobValue)
+                            && finalBlob.GetString() is { Length: > 0 } blobValue
+                            && finalItem.TryGetProperty("summary", out var finalSummary)
+                            && finalSummary.ValueKind == JsonValueKind.Array)
                         {
                             yield return Sse("content_block_start",
                                 $"{{\"type\":\"content_block_start\",\"index\":{reservedIndex},\"content_block\":{{\"type\":\"redacted_thinking\",\"data\":{JsonEncode(blobValue)},\"bridge_reasoning_item\":{finalItem.GetRawText()}}}}}");
                             yield return Sse("content_block_stop", BlockStopJson(reservedIndex));
+                        }
+                        else if (_blockIndex == reservedIndex)
+                        {
+                            // Give the index back so the client sees a contiguous run.
+                            // Safe because a reasoning item's `.done` precedes the next
+                            // item's `.added`, so nothing has claimed a later index yet.
+                            _blockIndex--;
+                            _log?.LogDebug(
+                                "T3: dropped an unreplayable reasoning item (output_index={Index}) "
+                                + "— no summary, so replaying it would 400 the next turn",
+                                doneOutput);
                         }
                         break;
                     }

@@ -31,13 +31,21 @@ internal static class ClaudeReasoningEnvelope
 
     /// <summary>
     /// Fold a reasoning item into the single opaque string the Claude wire can carry.
-    /// Returns false when the item lacks what a replay needs, so the edge can fall back
-    /// to the plain blob rather than emit a carrier that would fail the next turn.
+    /// Returns false when the item lacks what a replay needs, so the caller can drop
+    /// the block rather than hand the client state that cannot be replayed.
     /// </summary>
+    /// <remarks>
+    /// The item is stored WHOLE, not projected onto the fields this bridge happens to
+    /// read today. A Responses reasoning item is an open shape — gpt-5.6 keeps adding
+    /// fields — and the bridge does not interpret them, so it must not discard them:
+    /// the replay has to give the backend back what the backend sent. Validation is
+    /// therefore separate from storage; it checks that the required fields are present
+    /// without narrowing what is carried.
+    /// </remarks>
     internal static bool TryFold(JsonElement item, out string data)
     {
         data = "";
-        if (!TryReadFields(item, out var encrypted, out var summary, out var id, out var content))
+        if (!TryReadFields(item, out _, out _, out _, out _))
             return false;
 
         var buffer = new ArrayBufferWriter<byte>();
@@ -45,15 +53,8 @@ internal static class ClaudeReasoningEnvelope
         {
             writer.WriteStartObject();
             writer.WriteNumber("v", Version);
-            if (id is not null) writer.WriteString("id", id);
-            writer.WriteString("encrypted_content", encrypted);
-            writer.WritePropertyName("summary");
-            summary.WriteTo(writer);
-            if (content is { } contentValue)
-            {
-                writer.WritePropertyName("content");
-                contentValue.WriteTo(writer);
-            }
+            writer.WritePropertyName("item");
+            item.WriteTo(writer);
             writer.WriteEndObject();
         }
 
@@ -104,11 +105,13 @@ internal static class ClaudeReasoningEnvelope
                 || !version.TryGetInt32(out var versionValue)
                 || versionValue != Version)
                 return ClaudeReasoningUnfold.Invalid;
-            if (!TryReadFields(root, out var encrypted, out var summary, out var id, out var content))
+            if (!root.TryGetProperty("item", out var item)
+                || item.ValueKind != JsonValueKind.Object
+                || !TryReadFields(item, out var encrypted, out _, out _, out _))
                 return ClaudeReasoningUnfold.Invalid;
 
             encryptedContent = encrypted;
-            bag = BuildReasoningBag(id, summary, content);
+            bag = BuildReasoningBag(item);
             return ClaudeReasoningUnfold.Valid;
         }
         catch (JsonException)
@@ -118,26 +121,49 @@ internal static class ClaudeReasoningEnvelope
     }
 
     /// <summary>
-    /// Rebuild the part-level <c>openai</c> bag in exactly the shape T2 already pulls
-    /// from (<c>reasoning_id</c> / <c>reasoning_summary</c> / <c>reasoning_content</c>),
-    /// so the request builder needs no knowledge of this envelope at all.
+    /// Rebuild the part-level <c>openai</c> bag T2 pulls from. The known fields keep
+    /// the names T2 already reads (<c>reasoning_id</c> / <c>reasoning_summary</c> /
+    /// <c>reasoning_content</c>); everything else the backend sent rides along under
+    /// <c>reasoning_extra</c> so the replay can restore the item as received rather
+    /// than as this build happens to model it.
     /// </summary>
-    private static ProviderExtensions BuildReasoningBag(
-        string? id,
-        JsonElement summary,
-        JsonElement? content)
+    private static ProviderExtensions BuildReasoningBag(JsonElement item)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartObject();
-            if (id is not null) writer.WriteString("reasoning_id", id);
-            writer.WritePropertyName("reasoning_summary");
-            summary.WriteTo(writer);
-            if (content is { } contentValue)
+            var extras = new List<JsonProperty>();
+            foreach (var property in item.EnumerateObject())
             {
-                writer.WritePropertyName("reasoning_content");
-                contentValue.WriteTo(writer);
+                switch (property.Name)
+                {
+                    case "id":
+                        writer.WriteString("reasoning_id", property.Value.GetString());
+                        break;
+                    case "summary":
+                        writer.WritePropertyName("reasoning_summary");
+                        property.Value.WriteTo(writer);
+                        break;
+                    case "content":
+                        writer.WritePropertyName("reasoning_content");
+                        property.Value.WriteTo(writer);
+                        break;
+                    // encrypted_content rides the block's own Data; `type` is implied
+                    // by the item this rebuilds. Everything else is unmodeled state.
+                    case "encrypted_content" or "type":
+                        break;
+                    default:
+                        extras.Add(property);
+                        break;
+                }
+            }
+            if (extras.Count > 0)
+            {
+                writer.WritePropertyName("reasoning_extra");
+                writer.WriteStartObject();
+                foreach (var extra in extras) extra.WriteTo(writer);
+                writer.WriteEndObject();
             }
             writer.WriteEndObject();
         }
@@ -192,7 +218,7 @@ internal static class ClaudeReasoningEnvelope
     private static bool HasOnlyKnownFields(JsonElement root)
     {
         foreach (var property in root.EnumerateObject())
-            if (property.Name is not ("v" or "id" or "encrypted_content" or "summary" or "content"))
+            if (property.Name is not ("v" or "item"))
                 return false;
         return true;
     }

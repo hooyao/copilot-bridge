@@ -241,7 +241,6 @@ internal static class BridgeServiceCollectionExtensions
 
         services.AddScoped<ModelRouterStage>();
         services.AddScoped<PoisonedContextScanStage>();
-        services.AddScoped<ClaudeReasoningUnfoldStage>();
         services.AddScoped<AssistantThinkingFilterStage>();
         services.AddScoped<SystemSanitizeStage>();
         services.AddScoped<MessagesSanitizeStage>();
@@ -387,13 +386,6 @@ internal static class BridgeServiceCollectionExtensions
                 //    body actually being sent; the messages it inspects are not
                 //    changed by routing.
                 sp.GetRequiredService<PoisonedContextScanStage>(),
-
-                // 1c. Unfold a bridge reasoning carrier the Claude client echoed back
-                //    into the part-level provider bag T2 reads. Placed AFTER routing
-                //    because only then is the target vendor known: the stage no-ops
-                //    for anything but CopilotResponses, so a native Anthropic
-                //    passthrough never has its opaque provider data reinterpreted.
-                sp.GetRequiredService<ClaudeReasoningUnfoldStage>(),
 
                 // 2-6. Anthropic-backend-only stages. The shared pipeline also
                 //    carries the Codex/Responses IR (gpt-* → CopilotResponses);

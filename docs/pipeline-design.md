@@ -988,6 +988,18 @@ forwarding arbitrary JSON upstream. Live probes pin the backend requirement this
 preserves: `gpt-5.6-sol` rejects a replayed reasoning item that carries
 `encrypted_content` without `summary`.
 
+Both halves of that codec live in the Claude client adapters, and the unfold
+takes no gate — not on the resolved target, not on the inbound route. It is not
+"restoring state for a Responses backend"; it is one edge decoding what the same
+edge encoded, so asking which backend will serve the request would mean baking
+routing into a client edge. Isolation from the native Codex edge is structural:
+that edge has its own adapter, never mints a carrier, and never references the
+codec (pinned by `NativeCodexEdge_CannotSeeTheCarrierCodec`). Provider-native
+blobs are separated by the private discriminator alone, which is also what keeps
+a native Anthropic passthrough's opaque data untouched. Genuinely
+destination-specific stages use the existing `CopilotAnthropicOnlyStage` wrapper
+instead — that is where vendor knowledge belongs.
+
 Modeled Responses reasoning input items also require an opaque extension lane.
 T1 maps `encrypted_content` to the IR redacted-thinking data slot and stores every
 present `id`, `summary`, and `content` value in that block's provider bag; T2 writes

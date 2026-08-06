@@ -1,11 +1,12 @@
 using System.Net.ServerSentEvents;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
+using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Routing;
-using CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -78,27 +79,30 @@ public class ResponsesReasoningReplayTests
     public async Task ProviderNativeBlob_IsNotMistakenForACarrier()
     {
         const string nativeBlob = "provider-native-encrypted+/=";
-        var ctx = ContextFor(
-            RequestWithRedactedThinking(nativeBlob), BackendVendor.CopilotResponses);
-        var original = ctx.Request.Body;
+        var original = RequestWithRedactedThinking(nativeBlob);
 
-        await new ClaudeReasoningUnfoldStage(
-            ctx, NullLogger<ClaudeReasoningUnfoldStage>.Instance).ApplyAsync();
+        var adapted = await UnfoldAsync(original);
 
         // Untouched instance: a non-prefixed value is ordinary provider data.
-        Assert.Same(original, ctx.Request.Body);
+        Assert.Same(original, adapted);
 
         var wire = JsonNode.Parse(
-            ResponsesRequestBuilder.Build(ctx.Request.Body, Catalog).Body)!.AsObject();
+            ResponsesRequestBuilder.Build(adapted, Catalog).Body)!.AsObject();
         var reasoning = wire["input"]!.AsArray()[0]!.AsObject();
         Assert.Equal(nativeBlob, reasoning["encrypted_content"]!.GetValue<string>());
         Assert.Null(reasoning["summary"]);
     }
 
     [Fact]
-    public async Task IncompleteReasoningItem_LeavesThePlainBlobRatherThanABadCarrier()
+    public async Task UnfoldableReasoningItem_IsOmitted_NotLeftAsAPoisonBlob()
     {
-        // No summary ⇒ not replayable. Emitting a carrier anyway would 400 next turn.
+        // An item with no summary cannot be replayed: live probes pin blob-only →
+        // 400. The choice is therefore between STATELESS (no block at all) and
+        // POISON (a bare blob the client faithfully echoes, which then reaches the
+        // upstream as encrypted_content-without-summary and 400s the NEXT turn,
+        // permanently — the client keeps replaying it). Stateless is the only
+        // option that degrades; emitting the blob does not "stay safe", it breaks
+        // the conversation later and further from the cause.
         var ir = RunT3(
         [
             Event("response.created",
@@ -112,15 +116,24 @@ public class ResponsesReasoningReplayTests
         ]);
 
         var claudeFacing = await ClaudeStreamAsync(ir);
-        var start = claudeFacing.Single(e =>
+
+        // Nothing unreplayable reaches the client at all.
+        Assert.DoesNotContain(claudeFacing, e =>
             EventType(e) == "content_block_start"
             && e.Data.Contains("redacted_thinking", StringComparison.Ordinal));
-        using var doc = JsonDocument.Parse(start.Data);
+        Assert.DoesNotContain(claudeFacing, e =>
+            e.Data.Contains("blob-without-summary", StringComparison.Ordinal));
+        foreach (var evt in claudeFacing)
+            Assert.DoesNotContain(
+                "\"" + ClaudeReasoningEnvelope.Marker + "\"", evt.Data, StringComparison.Ordinal);
 
-        Assert.Equal("blob-without-summary",
-            doc.RootElement.GetProperty("content_block").GetProperty("data").GetString());
-        Assert.DoesNotContain(
-            "\"" + ClaudeReasoningEnvelope.Marker + "\"", start.Data, StringComparison.Ordinal);
+        // And the block indices stay contiguous, so the omission cannot desync the
+        // client's block bookkeeping.
+        var starts = claudeFacing
+            .Where(e => EventType(e) == "content_block_start")
+            .Select(e => JsonDocument.Parse(e.Data).RootElement.GetProperty("index").GetInt32())
+            .ToList();
+        Assert.Equal(Enumerable.Range(0, starts.Count), starts);
     }
 
     [Fact]
@@ -149,33 +162,17 @@ public class ResponsesReasoningReplayTests
     }
 
     [Fact]
-    public async Task NativeAnthropicPassthrough_NeverUnfoldsAPrefixedValue()
+    public async Task UnfoldRestoresTheBagT2Reads()
     {
-        // A /cc request served by the ANTHROPIC backend must keep provider-native
-        // opaque data untouched even if it happens to carry the bridge prefix — the
-        // unfold stage is gated on the resolved target, not on the client.
+        // The edge decodes what the edge encoded, and hands the IR the same part bag
+        // the native Codex path fills — so the request builder needs no knowledge of
+        // the envelope, and pulls identically for either origin.
         var carrier = CarrierData(await ClaudeStreamAsync(RunT3(ReasoningThenToolStream())));
-        var ctx = ContextFor(RequestWithRedactedThinking(carrier), BackendVendor.CopilotAnthropic);
 
-        await new ClaudeReasoningUnfoldStage(
-            ctx, NullLogger<ClaudeReasoningUnfoldStage>.Instance).ApplyAsync();
-
-        var block = Assert.IsType<RedactedThinkingBlockParam>(ctx.Request.Body.Messages[0].Content[0]);
-        Assert.Equal(carrier, block.Data);
-        Assert.Null(block.ProviderExtensions);
-    }
-
-    [Fact]
-    public async Task ResponsesTarget_UnfoldsIntoTheBagT2Reads()
-    {
-        var carrier = CarrierData(await ClaudeStreamAsync(RunT3(ReasoningThenToolStream())));
-        var ctx = ContextFor(RequestWithRedactedThinking(carrier), BackendVendor.CopilotResponses);
-
-        await new ClaudeReasoningUnfoldStage(
-            ctx, NullLogger<ClaudeReasoningUnfoldStage>.Instance).ApplyAsync();
+        var adapted = await UnfoldAsync(RequestWithRedactedThinking(carrier));
 
         var wire = JsonNode.Parse(
-            ResponsesRequestBuilder.Build(ctx.Request.Body, Catalog).Body)!.AsObject();
+            ResponsesRequestBuilder.Build(adapted, Catalog).Body)!.AsObject();
         var reasoning = wire["input"]!.AsArray()[0]!.AsObject();
         Assert.Equal("rs_contract", reasoning["id"]!.GetValue<string>());
         Assert.Equal("opaque+/=bytes", reasoning["encrypted_content"]!.GetValue<string>());
@@ -183,15 +180,13 @@ public class ResponsesReasoningReplayTests
     }
 
     [Fact]
-    public async Task MalformedCarrier_FailsClosedOnTheResponsesPath()
+    public async Task MalformedCarrier_FailsClosed()
     {
-        var ctx = ContextFor(
-            RequestWithRedactedThinking(ClaudeReasoningEnvelope.Prefix + "not-valid-base64url!"),
-            BackendVendor.CopilotResponses);
-
+        // The discriminator is this edge's own; a value bearing it that will not decode
+        // is a client-side fault, not provider state to forward blindly.
         await Assert.ThrowsAsync<InvalidClaudeReasoningEnvelopeException>(async () =>
-            await new ClaudeReasoningUnfoldStage(
-                ctx, NullLogger<ClaudeReasoningUnfoldStage>.Instance).ApplyAsync());
+            await UnfoldAsync(RequestWithRedactedThinking(
+                ClaudeReasoningEnvelope.Prefix + "not-valid-base64url!")));
     }
 
     [Fact]
@@ -265,23 +260,97 @@ public class ResponsesReasoningReplayTests
         Assert.Equal(2, ir.Count(e => EventType(e) == "content_block_stop"));
     }
 
-    private static BridgeContext<MessagesRequest> ContextFor(
-        MessagesRequest body, BackendVendor vendor) =>
-        new()
+    [Fact]
+    public async Task UnknownReasoningFields_SurviveTheClaudeRoundTrip()
+    {
+        // Responses reasoning items are an OPEN shape — gpt-5.6 keeps adding fields.
+        // The bridge does not interpret them, so it must not DISCARD them either:
+        // whatever the backend sent has to come back on the replay. Projecting the
+        // item into a fixed known-field schema silently drops the rest, and the loss
+        // only surfaces as an upstream failure a turn later, far from the cause.
+        const string futureField = "\"future_reasoning\":\"keep-reasoning\"";
+        var ir = RunT3(
+        [
+            Event("response.created",
+                "{\"type\":\"response.created\",\"response\":{\"id\":\"r\",\"status\":\"in_progress\"}}"),
+            Event("response.output_item.added",
+                "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_open\",\"encrypted_content\":\"BLOB\",\"summary\":[]}}"),
+            Event("response.output_item.done",
+                "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_open\",\"encrypted_content\":\"BLOB\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"s\"}],"
+                + futureField + "}}"),
+            Event("response.completed",
+                "{\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}"),
+        ]);
+
+        var carrier = CarrierData(await ClaudeStreamAsync(ir));
+        Assert.NotEqual("", carrier);
+
+        // Replay it exactly as Claude Code would, and read the wire T2 produces.
+        var adapted = await UnfoldAsync(RequestWithRedactedThinking(carrier));
+        var wire = JsonNode.Parse(
+            ResponsesRequestBuilder.Build(adapted, Catalog).Body)!.AsObject();
+        var reasoning = wire["input"]!.AsArray()
+            .Select(i => i!.AsObject())
+            .Single(i => i["type"]?.GetValue<string>() == "reasoning");
+
+        Assert.Equal("keep-reasoning", reasoning["future_reasoning"]?.GetValue<string>());
+    }
+
+
+    [Fact]
+    public void NativeCodexEdge_CannotSeeTheCarrierCodec()
+    {
+        // The isolation between the two client edges is STRUCTURAL, not a runtime
+        // check: the Codex edge never mints a carrier, so it must never decode one.
+        // Asserting that no Codex-side type references the codec is what keeps the
+        // guarantee from silently becoming "whichever gate we remembered to write."
+        var codexEdge = typeof(ResponsesToIrInboundAdapter).Assembly
+            .GetTypes()
+            .Where(t => t.FullName?.Contains(".Adapters.Codex.", StringComparison.Ordinal) == true
+                || t.FullName?.Contains(".Strategies.Codex.", StringComparison.Ordinal) == true)
+            .ToList();
+        Assert.NotEmpty(codexEdge);
+
+        var codecReferences = codexEdge
+            .SelectMany(t => t.GetMethods(
+                BindingFlags.Public | BindingFlags.NonPublic
+                | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
+            .Where(m => m.GetMethodBody() is not null)
+            .Where(m => ReferencesEnvelopeCodec(m))
+            .Select(m => $"{m.DeclaringType!.Name}.{m.Name}")
+            .ToList();
+
+        Assert.Empty(codecReferences);
+    }
+
+    private static bool ReferencesEnvelopeCodec(MethodInfo method)
+    {
+        // A call to TryUnfold/TryFold compiles to a token operand naming the codec's
+        // declaring type; scanning for that catches a future edit that wires the codec
+        // into the Codex edge, which is exactly the leak this guards.
+        var il = method.GetMethodBody()?.GetILAsByteArray();
+        if (il is null) return false;
+        var module = method.Module;
+        for (var i = 0; i + 4 < il.Length; i++)
         {
-            Request = new BridgeRequest<MessagesRequest>
-            {
-                Method = "POST",
-                Path = "/cc/v1/messages",
-                Body = body,
-                Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
-            },
-            Response = new BridgeResponse(),
-            Target = new RouteTarget(
-                vendor,
-                vendor == BackendVendor.CopilotResponses ? "/responses" : "/v1/messages",
-                body.Model),
-        };
+            // call (0x28) / callvirt (0x6F) — the only ways to reach the codec.
+            if (il[i] is not (0x28 or 0x6F)) continue;
+            var token = BitConverter.ToInt32(il, i + 1);
+            MethodBase? target;
+            try { target = module.ResolveMethod(token); }
+            catch (ArgumentException) { continue; }
+            if (target?.DeclaringType == typeof(ClaudeReasoningEnvelope)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Run the real Claude inbound edge — the unfold has no other entry point.</summary>
+    private static async Task<MessagesRequest> UnfoldAsync(MessagesRequest body) =>
+        await new ClaudeCodeInboundAdapter(NullLogger<ClaudeCodeInboundAdapter>.Instance)
+            .AdaptAsync(body, EmptyHeaders, default);
+
+    private static readonly Dictionary<string, string> EmptyHeaders =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly CodexModelProfileCatalog Catalog = new();
 
