@@ -1,4 +1,4 @@
-using System.Net.ServerSentEvents;
+﻿using System.Net.ServerSentEvents;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -103,6 +103,11 @@ internal sealed class ResponsesToAnthropicStream
     // The block is emitted from the `.done` snapshot (the added one is stale), so this
     // holds the position long enough to keep output order intact.
     private readonly Dictionary<int, int> _reservedReasoningBlocks = [];
+    // The model reported by the upstream `response.created`, which may differ from
+    // the requested `_model` when Copilot resolves an alias or falls back. Used to
+    // stamp a reasoning carrier's origin so a replay is judged against its real
+    // producer. Empty until observed; falls back to `_model`.
+    private string _upstreamModel = "";
 
     public ResponsesToAnthropicStream(
         string model,
@@ -182,6 +187,20 @@ internal sealed class ResponsesToAnthropicStream
             switch (type)
             {
                 case "response.created":
+                    // The model that ACTUALLY produced this turn, which is what a
+                    // reasoning carrier must be stamped with. `_model` is only what
+                    // was requested; if Copilot resolves an alias or falls back, the
+                    // two differ and the carrier would be mislabeled — replayed to
+                    // the wrong model, or dropped when routed back to the real
+                    // producer. The buffered translator already reads it from here.
+                    if (root.TryGetProperty("response", out var createdResponse)
+                        && createdResponse.ValueKind == JsonValueKind.Object
+                        && createdResponse.TryGetProperty("model", out var createdModel)
+                        && createdModel.ValueKind == JsonValueKind.String
+                        && createdModel.GetString() is { Length: > 0 } upstreamModel)
+                    {
+                        _upstreamModel = upstreamModel;
+                    }
                     if (!_messageStarted)
                     {
                         _messageId = MessageIdFromResponse(root);
@@ -289,7 +308,7 @@ internal sealed class ResponsesToAnthropicStream
                             && finalSummary.ValueKind == JsonValueKind.Array)
                         {
                             yield return Sse("content_block_start",
-                                $"{{\"type\":\"content_block_start\",\"index\":{reservedIndex},\"content_block\":{{\"type\":\"redacted_thinking\",\"data\":{JsonEncode(blobValue)},\"bridge_reasoning_item\":{finalItem.GetRawText()},\"bridge_reasoning_origin\":{JsonEncode(_model)}}}}}");
+                                $"{{\"type\":\"content_block_start\",\"index\":{reservedIndex},\"content_block\":{{\"type\":\"redacted_thinking\",\"data\":{JsonEncode(blobValue)},\"bridge_reasoning_item\":{finalItem.GetRawText()},\"bridge_reasoning_origin\":{JsonEncode(_upstreamModel.Length > 0 ? _upstreamModel : _model)}}}}}");
                             yield return Sse("content_block_stop", BlockStopJson(reservedIndex));
                         }
                         else if (_blockIndex == reservedIndex)

@@ -537,6 +537,33 @@ public class ResponsesReasoningReplayTests
     }
 
     [Fact]
+    public async Task CarrierOriginIsTheUpstreamProducer_NotTheRequestedModel()
+    {
+        // Copilot may resolve an alias or fall back, so the model that PRODUCED the
+        // reasoning is not necessarily the one requested. The carrier must record the
+        // producer: stamping the requested id would either replay the state to a model
+        // that cannot read it, or drop it when routed back to the real producer.
+        var ir = RunT3(
+        [
+            Event("response.created",
+                "{\"type\":\"response.created\",\"response\":{\"id\":\"r\",\"status\":\"in_progress\",\"model\":\"gpt-5.6-actual\"}}"),
+            Event("response.output_item.added",
+                "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs\",\"encrypted_content\":\"BLOB\",\"summary\":[]}}"),
+            Event("response.output_item.done",
+                "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs\",\"encrypted_content\":\"BLOB\",\"summary\":[]}}"),
+            Event("response.completed",
+                "{\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}"),
+        ]);
+
+        var start = ir.Single(e =>
+            EventType(e) == "content_block_start"
+            && e.Data.Contains("redacted_thinking", StringComparison.Ordinal));
+        using var doc = JsonDocument.Parse(start.Data);
+        Assert.Equal("gpt-5.6-actual", doc.RootElement.GetProperty("content_block")
+            .GetProperty(ClaudeReasoningEnvelope.OriginMarker).GetString());
+    }
+
+    [Fact]
     public async Task OriginMarker_NeverReachesTheClient()
     {
         var claudeFacing = await ClaudeStreamAsync(RunT3(ReasoningThenToolStream()));
