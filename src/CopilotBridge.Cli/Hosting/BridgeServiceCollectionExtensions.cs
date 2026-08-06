@@ -1,4 +1,4 @@
-using CopilotBridge.Cli.Auth;
+﻿using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Catalogs.Codex;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
@@ -241,6 +241,7 @@ internal static class BridgeServiceCollectionExtensions
 
         services.AddScoped<ModelRouterStage>();
         services.AddScoped<PoisonedContextScanStage>();
+        services.AddScoped<ClaudeReasoningOriginStage>();
         services.AddScoped<AssistantThinkingFilterStage>();
         services.AddScoped<SystemSanitizeStage>();
         services.AddScoped<MessagesSanitizeStage>();
@@ -386,6 +387,14 @@ internal static class BridgeServiceCollectionExtensions
                 //    body actually being sent; the messages it inspects are not
                 //    changed by routing.
                 sp.GetRequiredService<PoisonedContextScanStage>(),
+
+                // 1c. Drop a replayed reasoning carrier minted by a DIFFERENT model.
+                //    Must be after routing: the client edge decodes the carrier and
+                //    states its origin on the IR, but only here is the resolved
+                //    target known — on CC→gpt the client says claude-opus-5 while
+                //    routing resolves gpt-5.6-sol, so judging at the edge would drop
+                //    every valid carrier.
+                sp.GetRequiredService<ClaudeReasoningOriginStage>(),
 
                 // 2-6. Anthropic-backend-only stages. The shared pipeline also
                 //    carries the Codex/Responses IR (gpt-* → CopilotResponses);

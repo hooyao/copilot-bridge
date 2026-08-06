@@ -46,6 +46,7 @@ internal sealed class RequestSummaryLogger
             + "status={StatusCode} streaming={Streaming} response_leak={ResponseLeakDetected} runaway={RunawayDetected} tool_input_invalid={ToolInputInvalidDetected} "
             + "upstream_timeout={UpstreamTimeout} "
             + "poisoned_tool_results={PoisonedToolResults} image_downgraded_unknown_model={ImageDowngradedOnUnknownModel} "
+            + "foreign_reasoning_dropped={ForeignReasoningCarriersDropped} "
             + "duration_ms={DurationMs} error={ErrorDisplay}",
             s.Kind,
             s.RequestedModel ?? "?",
@@ -70,6 +71,7 @@ internal sealed class RequestSummaryLogger
             s.UpstreamTimeout ?? "(none)",
             s.PoisonedToolResults,
             s.ImageDowngradedOnUnknownModel,
+            s.ForeignReasoningCarriersDropped,
             s.DurationMs,
             s.Error ?? "(none)");
     }

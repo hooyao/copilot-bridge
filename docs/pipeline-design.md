@@ -1001,12 +1001,17 @@ prefix stays `cbridge_rr_7f3a9d2c_v1:`. The version-free `cbridge_rr_7f3a9d2c:`
 form is recognised on READ only, reserved so a future build could adopt it without
 stranding today's readers; emitting it is what would be unsafe, not reading it.
 Encrypted reasoning state is also model-private, so T3 stamps the producing model
-(`bridge_reasoning_origin`) and the Claude edge folds it into the carrier. On replay
-a mismatch — the session changed model or route since the carrier was minted — drops
-the carrier and runs the turn stateless rather than handing model B a blob only
-model A can read. Dropping is right for the same reason established for an
-unreplayable item: a turn missing hidden state recovers, a turn carrying foreign
-state does not.
+(`bridge_reasoning_origin`) and the Claude edge folds it into the carrier. Judging
+that origin is a separate step, and deliberately NOT part of the edge: the inbound
+adapter runs before the model router, where the body still names the model the
+CLIENT asked for. On CC→gpt those differ by design — the client says
+`claude-opus-5` while routing resolves `gpt-5.6-sol` — so comparing at the edge
+would drop every valid carrier and still miss a rewrite performed later. The edge
+decodes and states the origin as a fact on the IR; `ClaudeReasoningOriginStage`,
+which runs after routing and legitimately knows the destination, pulls that fact
+and drops a carrier minted by a different model. The turn then runs stateless,
+which is right for the same reason established for an unreplayable item: a turn
+missing hidden state recovers, a turn carrying foreign state does not.
 Both halves of that codec live in the Claude client adapters, and the unfold
 takes no gate — not on the resolved target, not on the inbound route. It is not
 "restoring state for a Responses backend"; it is one edge decoding what the same

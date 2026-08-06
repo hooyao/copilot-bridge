@@ -214,6 +214,8 @@ internal static class ClaudeCodeMessagesEndpoint
                 ?? bridgeCtx.Request.Body.OutputConfig?.Effort;
             summary.ImageDowngradedOnUnknownModel =
                 bridgeCtx.Response.ImageDowngradedOnUnknownModel;
+            summary.ForeignReasoningCarriersDropped =
+                bridgeCtx.Response.ForeignReasoningCarriersDropped;
             // Re-lookup the profile for the summary. Use GetNearest so a
             // fuzzy-matched (un-profiled but forwarded) model reports the borrowed
             // profile id here rather than blank — matches what the router actually

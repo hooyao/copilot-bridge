@@ -336,10 +336,16 @@ internal static class ResponsesRequestBuilder
                     // text/image array may become input_text/input_image when THIS
                     // target is live-proven to accept it. Unknown blocks fall back as a
                     // whole so nothing is partially lost.
+                    var sourceWantsOpaque = IsOpaqueToolOutput(tr.ProviderExtensions);
                     WriteToolResultOutput(
                         w,
                         tr.Content,
-                        structuredMultimodalOutput && !IsOpaqueToolOutput(tr.ProviderExtensions),
+                        structuredMultimodalOutput && !sourceWantsOpaque,
+                        // Only a CAPABILITY downgrade is reportable. When the source
+                        // marked its output opaque, the string path is what it asked
+                        // for and would happen on a supported model too — reporting it
+                        // would blame the model for the source's own choice.
+                        reportImageDowngrade: !sourceWantsOpaque,
                         ref vision,
                         ref sawImageOnCompatibilityPath);
                     w.WriteEndObject();
@@ -617,6 +623,7 @@ internal static class ResponsesRequestBuilder
         Utf8JsonWriter w,
         JsonElement? content,
         bool structuredMultimodalOutput,
+        bool reportImageDowngrade,
         ref bool vision,
         ref bool sawImageOnCompatibilityPath)
     {
@@ -636,7 +643,8 @@ internal static class ResponsesRequestBuilder
 
             // Record that an image took the string path. The caller decides whether
             // that is expected (probed-unsupported) or worth reporting (unknown model).
-            if (!structuredMultimodalOutput && IsSupportedMultimodalToolResult(c))
+            if (reportImageDowngrade && !structuredMultimodalOutput
+                && IsSupportedMultimodalToolResult(c))
                 sawImageOnCompatibilityPath = true;
 
             WriteFlattenedToolResult(w, c);

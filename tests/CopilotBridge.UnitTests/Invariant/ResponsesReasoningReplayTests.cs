@@ -7,6 +7,7 @@ using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.ClaudeCode;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Routing;
+using CopilotBridge.Cli.Pipeline.Stages.Anthropic;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -344,6 +345,44 @@ public class ResponsesReasoningReplayTests
         return false;
     }
 
+    /// <summary>
+    /// The real production sequence for a replayed carrier: the client edge decodes
+    /// it (before routing), then the origin stage judges it against the RESOLVED
+    /// model (after routing). Testing them together is the point — the split between
+    /// them is exactly what a client-edge-only comparison got wrong.
+    /// </summary>
+    private static async Task<MessagesRequest> UnfoldThenJudgeOriginAsync(
+        MessagesRequest body, string resolvedModel)
+    {
+        var decoded = await UnfoldAsync(body);
+        var ctx = ContextFor(decoded with { Model = resolvedModel }, BackendVendor.CopilotResponses);
+        // Reproduce what the router leaves behind: the body now names the RESOLVED
+        // model while OriginalRequestedModel still holds what the client asked for.
+        // Without this, a stage reading the wrong one of the two would look correct.
+        ctx.OriginalRequestedModel = body.Model;
+        await new ClaudeReasoningOriginStage(
+            ctx, NullLogger<ClaudeReasoningOriginStage>.Instance).ApplyAsync();
+        return ctx.Request.Body;
+    }
+
+    private static BridgeContext<MessagesRequest> ContextFor(
+        MessagesRequest body, BackendVendor vendor) =>
+        new()
+        {
+            Request = new BridgeRequest<MessagesRequest>
+            {
+                Method = "POST",
+                Path = "/cc/v1/messages",
+                Body = body,
+                Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            },
+            Response = new BridgeResponse(),
+            Target = new RouteTarget(
+                vendor,
+                vendor == BackendVendor.CopilotResponses ? "/responses" : "/v1/messages",
+                body.Model),
+        };
+
     /// <summary>Run the real Claude inbound edge — the unfold has no other entry point.</summary>
     private static async Task<MessagesRequest> UnfoldAsync(MessagesRequest body) =>
         await new ClaudeCodeInboundAdapter(NullLogger<ClaudeCodeInboundAdapter>.Instance)
@@ -424,12 +463,7 @@ public class ResponsesReasoningReplayTests
         // rather than regenerated, because a carrier produced by the CURRENT encoder
         // would prove nothing about reading the ones already sitting in users'
         // transcripts — and those outlive any single build.
-        const string legacy =
-            "cbridge_rr_7f3a9d2c_v1:eyJ2IjoxLCJpdGVtIjp7InR5cGUiOiJyZWFzb25pbmciLCJpZCI6InJzX2"
-            + "xlZ2FjeSIsImVuY3J5cHRlZF9jb250ZW50IjoiTEVHQUNZLUJMT0IiLCJzdW1tYXJ5IjpbeyJ0eXBlIjo"
-            + "ic3VtbWFyeV90ZXh0IiwidGV4dCI6ImxlZ2FjeSJ9XX19";
-
-        var adapted = await UnfoldAsync(RequestWithRedactedThinking(legacy));
+        var adapted = await UnfoldAsync(RequestWithRedactedThinking(LegacyV1Carrier));
 
         var wire = JsonNode.Parse(
             ResponsesRequestBuilder.Build(adapted, Catalog).Body)!.AsObject();
@@ -449,9 +483,12 @@ public class ResponsesReasoningReplayTests
         // a turn missing hidden state recovers, a turn carrying foreign state does
         // not. Version validation cannot catch this; the version is correct.
         var carrier = CarrierData(await ClaudeStreamAsync(RunT3(ReasoningThenToolStream())));
-        var rerouted = RequestWithRedactedThinking(carrier) with { Model = "gpt-5.6-luna" };
-
-        var adapted = await UnfoldAsync(rerouted);
+        // Routing has already resolved the target by the time origin is judged, so
+        // the comparison runs against the RESOLVED model, not what the client asked
+        // for. On CC→gpt those differ by design (client: claude-opus-5, resolved:
+        // gpt-5.6-sol) — judging at the client edge would drop every valid carrier.
+        var adapted = await UnfoldThenJudgeOriginAsync(
+            RequestWithRedactedThinking(carrier), resolvedModel: "gpt-5.6-luna");
 
         var wire = JsonNode.Parse(
             ResponsesRequestBuilder.Build(adapted, Catalog).Body)!.AsObject();
@@ -468,7 +505,8 @@ public class ResponsesReasoningReplayTests
         // The control: origin binding must not cost the normal case anything.
         var carrier = CarrierData(await ClaudeStreamAsync(RunT3(ReasoningThenToolStream())));
 
-        var adapted = await UnfoldAsync(RequestWithRedactedThinking(carrier));
+        var adapted = await UnfoldThenJudgeOriginAsync(
+            RequestWithRedactedThinking(carrier), resolvedModel: "gpt-5.6-sol");
 
         var wire = JsonNode.Parse(
             ResponsesRequestBuilder.Build(adapted, Catalog).Body)!.AsObject();
@@ -476,6 +514,26 @@ public class ResponsesReasoningReplayTests
             .Select(i => i!.AsObject())
             .Single(i => i["type"]?.GetValue<string>() == "reasoning");
         Assert.Equal("opaque+/=bytes", reasoning["encrypted_content"]!.GetValue<string>());
+        // The bridge-private origin key must not ride out onto the wire.
+        Assert.DoesNotContain(
+            ClaudeReasoningEnvelope.OriginBagKey, wire.ToJsonString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ClientRequestedModelDiffersFromResolved_CarrierStillReplays()
+    {
+        // The CC→gpt shape that a client-edge comparison would have broken: the
+        // client names claude-opus-5, routing resolves gpt-5.6-sol, and the carrier
+        // was minted by gpt-5.6-sol. This must REPLAY, not drop.
+        var carrier = CarrierData(await ClaudeStreamAsync(RunT3(ReasoningThenToolStream())));
+        var asClientSentIt = RequestWithRedactedThinking(carrier) with { Model = "claude-opus-5" };
+
+        var adapted = await UnfoldThenJudgeOriginAsync(asClientSentIt, resolvedModel: "gpt-5.6-sol");
+
+        var wire = JsonNode.Parse(
+            ResponsesRequestBuilder.Build(adapted, Catalog).Body)!.AsObject();
+        Assert.Contains(wire["input"]!.AsArray(),
+            i => i!.AsObject()["type"]?.GetValue<string>() == "reasoning");
     }
 
     [Fact]
@@ -528,15 +586,32 @@ public class ResponsesReasoningReplayTests
     [Fact]
     public void FrozenLegacyFixture_MatchesWhatThisBuildEmits()
     {
-        // Guards the fixture above against being quietly wrong: if the encoder's
-        // payload shape ever drifts, a hand-frozen literal could stop representing
-        // any real carrier and the compatibility test would pass vacuously.
-        using var doc = JsonDocument.Parse(
-            "{\"type\":\"reasoning\",\"id\":\"rs_legacy\",\"encrypted_content\":\"LEGACY-BLOB\","
-            + "\"summary\":[{\"type\":\"summary_text\",\"text\":\"legacy\"}]}");
+        // Guards the frozen literal against going quietly stale. Asserting only the
+        // prefix would leave this green while a change to `item`, `v`, or field
+        // serialization made the fixture represent no real carrier at all — so the
+        // compatibility test above would pass vacuously. Compare the WHOLE carrier.
+        using var doc = JsonDocument.Parse(LegacyFixtureItemJson);
+
         Assert.True(ClaudeReasoningEnvelope.TryFold(doc.RootElement, out var emitted));
-        Assert.StartsWith(ClaudeReasoningEnvelope.LegacyV1Prefix, emitted, StringComparison.Ordinal);
+
+        Assert.Equal(LegacyV1Carrier, emitted);
     }
+
+    /// <summary>The exact source item the frozen carrier below was minted from.</summary>
+    private const string LegacyFixtureItemJson =
+        "{\"type\":\"reasoning\",\"id\":\"rs_legacy\",\"encrypted_content\":\"LEGACY-BLOB\","
+        + "\"summary\":[{\"type\":\"summary_text\",\"text\":\"legacy\"}]}";
+
+    /// <summary>
+    /// A carrier in the exact shape v0.4.29-beta emitted. Frozen as a literal rather
+    /// than regenerated: a carrier produced by the CURRENT encoder proves nothing
+    /// about reading the ones already sitting in users' transcripts, and those
+    /// outlive any single build.
+    /// </summary>
+    private const string LegacyV1Carrier =
+        "cbridge_rr_7f3a9d2c_v1:eyJ2IjoxLCJpdGVtIjp7InR5cGUiOiJyZWFzb25pbmciLCJpZCI6InJzX2"
+        + "xlZ2FjeSIsImVuY3J5cHRlZF9jb250ZW50IjoiTEVHQUNZLUJMT0IiLCJzdW1tYXJ5IjpbeyJ0eXBlIjo"
+        + "ic3VtbWFyeV90ZXh0IiwidGV4dCI6ImxlZ2FjeSJ9XX19";
 
     /// <summary>A well-formed envelope body bearing a version this build cannot know.</summary>
     private static string FutureVersionPayload()

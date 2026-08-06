@@ -1,4 +1,4 @@
-# cc-responses-reasoning-replay Specification
+﻿# cc-responses-reasoning-replay Specification
 
 ## Purpose
 Keep a Responses backend's encrypted reasoning state alive across Claude Code turns instead of discarding it at the client edge. Defines the hidden, versioned carrier the Anthropic wire can hold, its strict fail-closed decoding, the fields a live-proven backend requires on replay, and the real-client evidence that decides acceptance.
@@ -70,7 +70,7 @@ Acceptance SHALL include a real Claude Code 2.1.220 tool trajectory and current 
 
 ### Requirement: Replayed reasoning state is bound to its originating model
 
-The envelope SHALL record the model id of the turn that produced the reasoning item. On replay, the bridge SHALL compare that recorded origin against the model the current request names, and SHALL treat a mismatch as a foreign carrier. The comparison is EXACT, not family-level: whether sibling models accept each other's encrypted reasoning state is a backend fact no live probe has established, and this project does not infer such facts from family names.
+The envelope SHALL record the model id of the turn that produced the reasoning item. On replay, the bridge SHALL compare that recorded origin against the model the request RESOLVED to, not the model the client named. Those routinely differ — on the Claude-to-Responses route the client names an Anthropic model while routing resolves a Responses one — so comparing against the client-named model would drop every valid carrier while still missing a later rewrite. The client edge therefore decodes the carrier and states its origin on the IR; the comparison happens after routing, where the resolved target is known. A mismatch SHALL be treated as a foreign carrier. The comparison is EXACT, not family-level: whether sibling models accept each other's encrypted reasoning state is a backend fact no live probe has established, and this project does not infer such facts from family names.
 
 When the origin does not match the current target, the bridge SHALL drop the carrier and continue the turn without replayed reasoning state, and SHALL record the drop as an observable downgrade. It MUST NOT replay one model's encrypted reasoning state into a different model, and MUST NOT fail the request — a mid-session routing or model change is a legitimate user action, and a turn without reasoning state is recoverable while a turn carrying another model's state is not.
 
@@ -81,7 +81,12 @@ When the origin does not match the current target, the bridge SHALL drop the car
 
 #### Scenario: Reasoning state replays when the origin still matches
 - **WHEN** a client echoes a carrier whose recorded origin matches the resolved target
-- **THEN** the reasoning item is restored exactly as before, unchanged from the same-origin behavior.
+- **THEN** the reasoning item is restored exactly as before, unchanged from the same-origin behavior
+- **AND** no bridge-private origin key appears in the outbound upstream request.
+
+#### Scenario: A client-named model differing from the resolved model is not a mismatch
+- **WHEN** a client names one model, routing resolves a different one, and the echoed carrier was minted by the RESOLVED model
+- **THEN** the reasoning item is replayed rather than dropped, because the comparison is against the resolved target.
 
 #### Scenario: Carrier rerouted to an Anthropic model is not sent as provider data
 - **WHEN** a conversation carrying a bridge reasoning envelope is re-routed to a model other than the one that minted it, including an Anthropic-served model

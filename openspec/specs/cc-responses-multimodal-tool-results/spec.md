@@ -1,4 +1,4 @@
-# cc-responses-multimodal-tool-results Specification
+﻿# cc-responses-multimodal-tool-results Specification
 
 ## Purpose
 Preserve the modality of Claude Code tool results across the Responses request edge: an image a client tool returned must reach a capable model as an image, not as JSON or base64 text. Defines capability-gated structured `function_call_output` content items, whole-array compatibility fallback, vision signalling, and the IR-driven rule that keeps a provider's own opaque output uninterpreted.
@@ -33,7 +33,7 @@ The bridge SHALL enable structured multimodal function outputs only for exact mo
 
 The capability SHALL be three-valued: **Supported** (probed and accepted), **Unsupported** (probed and rejected), and **Unknown** (the exact model is not in the catalog). Only Supported enables structured output; both other states retain the string/verbatim compatibility behavior. A boolean that collapses Unsupported and Unknown MUST NOT be used, because those two states differ in what an operator needs to do about them.
 
-When an image-bearing tool result is downgraded to the compatibility path because the exact model's capability is **Unknown**, the bridge SHALL record that downgrade as an observable event carried out of the request translator and surfaced in the request's audit record. A model rename on the Copilot side therefore appears as an explicit signal rather than as a turn that silently reaches the model without its image. A downgrade for a model probed as **Unsupported** is expected behavior and need not be reported per request.
+When an image-bearing tool result is downgraded to the compatibility path because the exact model's capability is **Unknown**, the bridge SHALL record that downgrade as an observable event carried out of the request translator and surfaced in the request's audit record. A model rename on the Copilot side therefore appears as an explicit signal rather than as a turn that silently reaches the model without its image. A downgrade for a model probed as **Unsupported** is expected behavior and need not be reported per request. Nor SHALL a downgrade be reported when the SOURCE required its tool output to stay uninterpreted: that string path is what the source asked for and would occur on a supported model too, so attributing it to model capability would be false.
 
 The decision SHALL be driven by the IR alone. A source that requires its tool output to remain uninterpreted SHALL state that on the IR block, and the request translator SHALL read that statement; the translator MUST NOT be parameterized by which client produced the request.
 

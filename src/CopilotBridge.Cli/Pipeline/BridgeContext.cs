@@ -278,6 +278,13 @@ internal sealed class BridgeResponse
     public bool ImageDowngradedOnUnknownModel { get; set; }
 
     /// <summary>
+    /// How many replayed reasoning carriers were dropped because they were minted by
+    /// a different model than this turn resolved to. Audited because the wire shows
+    /// nothing: the turn is a normal 200 that simply carries no reasoning state.
+    /// </summary>
+    public int ForeignReasoningCarriersDropped { get; set; }
+
+    /// <summary>
     /// RAW upstream response bytes for the BUFFERED path, captured by the
     /// strategy BEFORE any response stage rewrites <see cref="BufferedBody"/>.
     /// It is the same array reference the strategy first assigned to

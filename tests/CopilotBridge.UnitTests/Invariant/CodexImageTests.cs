@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline.Routing;
@@ -321,6 +321,29 @@ public class CodexImageTests
 
         Assert.False(downgraded);
         Assert.True(vision, "the live-proven model must still use structured output");
+    }
+
+    [Fact]
+    public void SourceMarkedOpaqueOutput_IsNotReportedAsACapabilityDowngrade()
+    {
+        // A Codex source states on the IR that its tool output must stay opaque, so
+        // the string path is what it ASKED for — it would happen on a supported model
+        // too. Reporting it as an unknown-capability downgrade would blame the model
+        // for the source's own choice and train the operator to ignore the warning
+        // that actually means something.
+        var opaqueIr = CodexRoundTrip.ToIr(CodexRoundTrip.ParseRequest("""
+          {"model":"gpt-5.7-not-yet-catalogued","input":[
+            {"type":"function_call","call_id":"c1","name":"t","arguments":"{}"},
+            {"type":"function_call_output","call_id":"c1","output":
+              [{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}]}
+          ],"stream":true}
+          """));
+
+        var (_, vision, _) = ResponsesRequestBuilder.Build(
+            opaqueIr, Profiles, filterRecursiveAgentTool: false, out _, out var downgraded);
+
+        Assert.False(downgraded, "opaque-marked output is not a model-capability downgrade");
+        Assert.False(vision);
     }
 
     [Fact]

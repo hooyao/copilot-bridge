@@ -111,6 +111,13 @@ internal sealed class RequestSummary
     public bool ImageDowngradedOnUnknownModel { get; set; }
 
     /// <summary>
+    /// Replayed reasoning carriers dropped because another model minted them.
+    /// Audited because the wire shows nothing — the turn is a normal 200 that
+    /// simply carries no reasoning state.
+    /// </summary>
+    public int ForeignReasoningCarriersDropped { get; set; }
+
+    /// <summary>
     /// "max" (in==out), "max→xhigh" (in!=out), or "(none)" when no effort
     /// was set on either side.
     /// </summary>

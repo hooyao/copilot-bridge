@@ -200,6 +200,51 @@ internal static class ClaudeReasoningEnvelope
     /// <c>reasoning_extra</c> so the replay can restore the item as received rather
     /// than as this build happens to model it.
     /// </summary>
+    /// <summary>The bag key carrying the model that minted a decoded carrier.</summary>
+    internal const string OriginBagKey = "reasoning_origin_model";
+
+    /// <summary>
+    /// Stamp the decoded carrier's origin onto the part bag so a later stage — one
+    /// that knows the RESOLVED target, which the client edge deliberately does not —
+    /// can decide whether the state is replayable. Kept in the bridge-private bag,
+    /// never emitted on the wire (T2 writes only the reasoning_* fields it models).
+    /// </summary>
+    internal static ProviderExtensions? WithOrigin(ProviderExtensions? bag, string? origin)
+    {
+        if (bag is null || string.IsNullOrEmpty(origin)) return bag;
+        if (!bag.ByProvider.TryGetValue(
+                Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey, out var existing)
+            || existing.ValueKind != JsonValueKind.Object)
+            return bag;
+
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            foreach (var p in existing.EnumerateObject()) p.WriteTo(writer);
+            writer.WriteString(OriginBagKey, origin);
+            writer.WriteEndObject();
+        }
+        using var doc = JsonDocument.Parse(buffer.WrittenMemory);
+        return new ProviderExtensions
+        {
+            ByProvider = new Dictionary<string, JsonElement>
+            {
+                [Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey] = doc.RootElement.Clone(),
+            },
+        };
+    }
+
+    /// <summary>Read back the origin stamped by <see cref="WithOrigin"/>.</summary>
+    internal static string? ReadOrigin(ProviderExtensions? bag) =>
+        bag?.ByProvider.TryGetValue(
+            Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey, out var b) == true
+        && b.ValueKind == JsonValueKind.Object
+        && b.TryGetProperty(OriginBagKey, out var o)
+        && o.ValueKind == JsonValueKind.String
+            ? o.GetString()
+            : null;
+
     private static ProviderExtensions BuildReasoningBag(JsonElement item)
     {
         var buffer = new ArrayBufferWriter<byte>();
