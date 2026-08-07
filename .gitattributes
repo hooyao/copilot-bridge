@@ -7,3 +7,11 @@ src/CopilotBridge.Cli/Catalogs/Codex/0.144/LICENSE.openai-codex text eol=lf
 # setting differs from a developer checkout.
 tests/Fixtures/Codex/**/models.json -text
 tests/Fixtures/Codex/**/capture.json text eol=lf
+
+# The bundled catalog snapshot is digest-verified against its recorded
+# provenance at process start, so its bytes must survive checkout untouched.
+# Without -text a Windows runner with autocrlf=true rewrites the payload and
+# the digest guard fails the build (observed on PR #66 CI, where every local
+# test passed and only the Windows job broke).
+src/CopilotBridge.Cli/Catalogs/Codex/Bundled/models.json -text
+src/CopilotBridge.Cli/Catalogs/Codex/Bundled/capture.json text eol=lf
