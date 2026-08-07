@@ -188,7 +188,7 @@ The bridge SHALL construct every successful response from a validated complete o
 - **WHEN** a validated cache entry exists for the exact complete `client_version`
 - **THEN** every returned model starts from that entry's complete official Codex model object for the same slug
 
-#### Scenario: Unavailable version is not guessed from other cached versions
+#### Scenario: Unknown version is not guessed
 
 - **WHEN** the exact requested version has neither a validated cache entry nor a valid canonical source catalog
 - **THEN** the endpoint serves either the gated bundled snapshot or a metadata error, and never projects another cached version's instructions or model fields into the client
