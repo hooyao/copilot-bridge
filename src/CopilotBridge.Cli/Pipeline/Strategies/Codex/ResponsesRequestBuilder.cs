@@ -1,10 +1,25 @@
 ﻿using System.Text.Json;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
+using CopilotBridge.Cli.Models.Common;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Routing;
 
 namespace CopilotBridge.Cli.Pipeline.Strategies.Codex;
+
+[Flags]
+internal enum ResponsesRequestMutation
+{
+    None = 0,
+    EffortCoerced = 1 << 0,
+    ServiceTierStripped = 1 << 1,
+    StoreTrueStripped = 1 << 2,
+    ImageGenerationToolDropped = 1 << 3,
+    CustomToolDropped = 1 << 4,
+    InvalidMessageIdDropped = 1 << 5,
+    RecursiveAgentToolDropped = 1 << 6,
+    ProviderConflictDropped = 1 << 7,
+}
 
 /// <summary>
 /// T2 — IR <see cref="MessagesRequest"/> → Copilot <c>/responses</c> wire bytes.
@@ -17,12 +32,27 @@ namespace CopilotBridge.Cli.Pipeline.Strategies.Codex;
 /// <remarks>
 /// The bag is what makes the hub-IR round-trip lossless: everything Codex sent
 /// that the Anthropic IR can't type (tools, store, include, prompt_cache_key,
-/// text, tool_choice, client_metadata, reasoning.summary) was stashed by T1 and
+/// text, tool_choice, client_metadata, reasoning extras, item metadata) was stashed by T1 and
 /// is re-emitted here. The IR body supplies what it CAN type (model, system →
 /// instructions, messages → input, effort → reasoning.effort).
 /// </remarks>
 internal static class ResponsesRequestBuilder
 {
+    internal static string FormatMutations(ResponsesRequestMutation mutations)
+    {
+        if (mutations == ResponsesRequestMutation.None) return "";
+        var codes = new List<string>(8);
+        if ((mutations & ResponsesRequestMutation.EffortCoerced) != 0) codes.Add("profile.effort");
+        if ((mutations & ResponsesRequestMutation.ServiceTierStripped) != 0) codes.Add("profile.service_tier");
+        if ((mutations & ResponsesRequestMutation.StoreTrueStripped) != 0) codes.Add("profile.store_true");
+        if ((mutations & ResponsesRequestMutation.ImageGenerationToolDropped) != 0) codes.Add("profile.tool.image_generation");
+        if ((mutations & ResponsesRequestMutation.CustomToolDropped) != 0) codes.Add("profile.tool.custom");
+        if ((mutations & ResponsesRequestMutation.InvalidMessageIdDropped) != 0) codes.Add("protocol.message_id");
+        if ((mutations & ResponsesRequestMutation.RecursiveAgentToolDropped) != 0) codes.Add("guard.recursive_agent");
+        if ((mutations & ResponsesRequestMutation.ProviderConflictDropped) != 0) codes.Add("protocol.provider_conflict");
+        return string.Join(',', codes);
+    }
+
     /// <summary>
     /// Build the Responses wire body from the IR. Returns the serialized bytes,
     /// whether the request carries an image (→ Copilot-Vision-Request), and the
@@ -35,7 +65,7 @@ internal static class ResponsesRequestBuilder
         MessagesRequest ir,
         CodexModelProfileCatalog profiles,
         bool filterRecursiveAgentTool = false) =>
-        Build(ir, profiles, filterRecursiveAgentTool, out _, out _);
+        Build(ir, profiles, filterRecursiveAgentTool, out _, out _, out _);
 
     /// <summary>
     /// Build overload that reports whether the recursive-delegation guard actually
@@ -47,7 +77,7 @@ internal static class ResponsesRequestBuilder
         CodexModelProfileCatalog profiles,
         bool filterRecursiveAgentTool,
         out bool removedAgentTool) =>
-        Build(ir, profiles, filterRecursiveAgentTool, out removedAgentTool, out _);
+        Build(ir, profiles, filterRecursiveAgentTool, out removedAgentTool, out _, out _);
 
     /// <summary>
     /// Build overload that also reports an image downgraded because the exact model's
@@ -62,10 +92,26 @@ internal static class ResponsesRequestBuilder
         CodexModelProfileCatalog profiles,
         bool filterRecursiveAgentTool,
         out bool removedAgentTool,
-        out bool downgradedImageOnUnknownModel)
+        out bool downgradedImageOnUnknownModel) =>
+        Build(
+            ir,
+            profiles,
+            filterRecursiveAgentTool,
+            out removedAgentTool,
+            out downgradedImageOnUnknownModel,
+            out _);
+
+    public static (byte[] Body, bool Vision, string? CoercedEffort) Build(
+        MessagesRequest ir,
+        CodexModelProfileCatalog profiles,
+        bool filterRecursiveAgentTool,
+        out bool removedAgentTool,
+        out bool downgradedImageOnUnknownModel,
+        out ResponsesRequestMutation mutations)
     {
         removedAgentTool = false;
         downgradedImageOnUnknownModel = false;
+        mutations = ResponsesRequestMutation.None;
         // Exact profile, or the nearest known one (best-effort fallback for a
         // Codex model newer than this build's catalog — the router already
         // WARN-logged the fuzzy match and let the request through; here we just
@@ -76,7 +122,7 @@ internal static class ResponsesRequestBuilder
         // Pull the openai bag (un-modeled knobs T1 stashed). Absent → empty.
         JsonElement? bag = null;
         if (ir.ProviderExtensions?.ByProvider.TryGetValue(
-                ResponsesToIrInboundAdapter.OpenAiProviderKey, out var b) == true)
+                ProviderExtensions.OpenAiNamespace, out var b) == true)
             bag = b;
 
         // A positive wire-shape capability is not a defensive coercion: never borrow
@@ -105,16 +151,22 @@ internal static class ResponsesRequestBuilder
             w.WriteStartObject();
             w.WriteString("model", ir.Model);
 
-            // system → instructions
+            // system → instructions. Blocks projected from Responses input-level
+            // developer/system items remain semantic for stages but are restored to
+            // input[] from provider records below, so they are excluded here.
             if (ir.System is { Count: > 0 })
             {
                 var sb = new System.Text.StringBuilder();
                 foreach (var s in ir.System)
                 {
+                    if (TryGetResponsesSystemGroup(s.ProviderExtensions, out _, out _))
+                        continue;
                     if (sb.Length > 0) sb.Append('\n');
                     sb.Append(s.Text);
                 }
-                w.WriteString("instructions", sb.ToString());
+                if (sb.Length > 0 || ir.System.Any(s =>
+                        !TryGetResponsesSystemGroup(s.ProviderExtensions, out _, out _)))
+                    w.WriteString("instructions", sb.ToString());
             }
 
             // messages → input[]
@@ -127,14 +179,23 @@ internal static class ResponsesRequestBuilder
             // additional_tools preamble at input[0]), then interleave the rest as messages
             // emit. One ordered mechanism for all opaque kinds preserves true input order.
             var passthrough = ReadPassthroughItems(bag);
+            var systemGroups = ReadResponsesSystemGroups(ir.System);
             var ptIdx = 0;
             var emittedMsgs = 0;
-            ptIdx = WritePassthroughUpTo(w, passthrough, ptIdx, emittedMsgs);
+            ptIdx = WritePassthroughUpTo(
+                w, passthrough, systemGroups, ptIdx, emittedMsgs, ref mutations);
             foreach (var msg in ir.Messages)
             {
-                WriteInputItem(w, msg, structuredMultimodalOutput, ref vision, ref sawUnknownModelImage);
+                WriteInputItem(
+                    w,
+                    msg,
+                    structuredMultimodalOutput,
+                    ref vision,
+                    ref sawUnknownModelImage,
+                    ref mutations);
                 emittedMsgs++;
-                ptIdx = WritePassthroughUpTo(w, passthrough, ptIdx, emittedMsgs);
+                ptIdx = WritePassthroughUpTo(
+                    w, passthrough, systemGroups, ptIdx, emittedMsgs, ref mutations);
             }
             // Any remaining passthrough items whose `after` exceeds the message count
             // (e.g. trailing agent_message) — emit them at the end. Raw-value, not
@@ -142,7 +203,7 @@ internal static class ResponsesRequestBuilder
             // re-escape, e.g. an encrypted_content blob; GetRawText keeps them verbatim).
             while (ptIdx < passthrough.Count)
             {
-                w.WriteRawValue(passthrough[ptIdx].Raw.GetRawText());
+                WritePassthroughItem(w, passthrough[ptIdx], systemGroups, ref mutations);
                 ptIdx++;
             }
             w.WriteEndArray();
@@ -154,8 +215,19 @@ internal static class ResponsesRequestBuilder
             // dropped effort but a summary exists, reasoning:{summary:…} still carries
             // it (WriteBagFields drops "reasoning_summary" at the top level).
             effort = CoerceEffort(ir.OutputConfig?.Effort, profile);
+            if (ir.OutputConfig?.Effort is { } inboundEffort
+                && effort is { } outboundEffort
+                && !string.Equals(inboundEffort, outboundEffort, StringComparison.OrdinalIgnoreCase))
+                mutations |= ResponsesRequestMutation.EffortCoerced;
             var reasoningSummary = TryGetBagString(bag, "reasoning_summary");
-            if (effort is not null || reasoningSummary is not null)
+            var reasoningContext = TryGetBagValue(bag, "reasoning_context");
+            var reasoningPresent = TryGetBagBoolean(bag, "reasoning_present");
+            var reasoningExtras = TryGetBagObject(bag, "reasoning_extra");
+            if (effort is not null
+                || reasoningSummary is not null
+                || reasoningContext is not null
+                || reasoningPresent
+                || reasoningExtras is not null)
             {
                 w.WritePropertyName("reasoning");
                 w.WriteStartObject();
@@ -163,6 +235,13 @@ internal static class ResponsesRequestBuilder
                     w.WriteString("effort", effort);
                 if (reasoningSummary is not null)
                     w.WriteString("summary", reasoningSummary);
+                if (reasoningContext is { } contextValue)
+                {
+                    w.WritePropertyName("context");
+                    contextValue.WriteTo(w);
+                }
+                WriteObjectProperties(
+                    w, reasoningExtras, ProviderExtraScope.Reasoning, ref mutations);
                 w.WriteEndObject();
             }
             // Anthropic's top-level thinking configuration is a control for the
@@ -190,7 +269,7 @@ internal static class ResponsesRequestBuilder
             {
                 bagHasTools = bagObj.TryGetProperty("tools", out _);
                 bagHasToolChoice = bagObj.TryGetProperty("tool_choice", out _);
-                WriteBagFields(w, bagObj, profile, ref vision);
+                WriteBagFields(w, bagObj, profile, ref vision, ref mutations);
             }
 
             // Claude Code path: the request carries typed Anthropic tools /
@@ -206,6 +285,8 @@ internal static class ResponsesRequestBuilder
             {
                 irToolSurvivors = WriteIrTools(
                     w, ir.Tools, filterRecursiveAgentTool, out removedAgentTool);
+                if (removedAgentTool)
+                    mutations |= ResponsesRequestMutation.RecursiveAgentToolDropped;
             }
             // Only emit tool_choice when tools are actually on the wire — a
             // tool_choice of "required" or {function,name} with no tools array is a
@@ -233,14 +314,19 @@ internal static class ResponsesRequestBuilder
     /// is the number of IR messages that preceded it. Returns an empty list when the
     /// bag has none (every Claude Code / plain Codex request).
     /// </summary>
-    private static IReadOnlyList<(int After, JsonElement Raw)> ReadPassthroughItems(JsonElement? bag)
+    private readonly record struct PassthroughItem(
+        int After,
+        JsonElement Raw,
+        int? SystemGroup);
+
+    private static IReadOnlyList<PassthroughItem> ReadPassthroughItems(JsonElement? bag)
     {
         if (bag is not { ValueKind: JsonValueKind.Object } obj
             || !obj.TryGetProperty("passthrough_items", out var items)
             || items.ValueKind != JsonValueKind.Array)
             return [];
 
-        var list = new List<(int, JsonElement)>();
+        var list = new List<PassthroughItem>();
         foreach (var item in items.EnumerateArray())
         {
             // T1 always writes {after:int, raw:object}. These guards are purely
@@ -256,7 +342,11 @@ internal static class ResponsesRequestBuilder
                 || !item.TryGetProperty("raw", out var raw))
                 continue;
             var after = item.TryGetProperty("after", out var a) && a.TryGetInt32(out var n) ? n : int.MaxValue;
-            list.Add((after, raw));
+            int? systemGroup = item.TryGetProperty("system_group", out var g)
+                && g.TryGetInt32(out var group)
+                    ? group
+                    : null;
+            list.Add(new PassthroughItem(after, raw, systemGroup));
         }
         return list;
     }
@@ -270,22 +360,155 @@ internal static class ResponsesRequestBuilder
     /// preserves ordering among passthrough items too.
     /// </summary>
     private static int WritePassthroughUpTo(
-        Utf8JsonWriter w, IReadOnlyList<(int After, JsonElement Raw)> passthrough, int ptIdx, int emittedMsgs)
+        Utf8JsonWriter w,
+        IReadOnlyList<PassthroughItem> passthrough,
+        IReadOnlyDictionary<int, IReadOnlyList<string>> systemGroups,
+        int ptIdx,
+        int emittedMsgs,
+        ref ResponsesRequestMutation mutations)
     {
         while (ptIdx < passthrough.Count && passthrough[ptIdx].After <= emittedMsgs)
         {
-            w.WriteRawValue(passthrough[ptIdx].Raw.GetRawText());
+            WritePassthroughItem(w, passthrough[ptIdx], systemGroups, ref mutations);
             ptIdx++;
         }
         return ptIdx;
     }
+
+    private static void WritePassthroughItem(
+        Utf8JsonWriter w,
+        PassthroughItem item,
+        IReadOnlyDictionary<int, IReadOnlyList<string>> systemGroups,
+        ref ResponsesRequestMutation mutations)
+    {
+        if (item.SystemGroup is not { } group
+            || !systemGroups.TryGetValue(group, out var texts))
+        {
+            WriteRawPassthroughItem(w, item.Raw, ref mutations);
+            return;
+        }
+        WriteSystemSourceItem(w, item.Raw, texts, ref mutations);
+    }
+
+    private static IReadOnlyDictionary<int, IReadOnlyList<string>> ReadResponsesSystemGroups(
+        IReadOnlyList<TextBlockParam>? system)
+    {
+        if (system is not { Count: > 0 })
+            return new Dictionary<int, IReadOnlyList<string>>();
+
+        var groups = new Dictionary<int, SortedDictionary<int, string>>();
+        foreach (var part in system)
+        {
+            if (!TryGetResponsesSystemGroup(part.ProviderExtensions, out var group, out var index))
+                continue;
+            if (!groups.TryGetValue(group, out var values))
+                groups[group] = values = new SortedDictionary<int, string>();
+            values[index] = part.Text;
+        }
+        return groups.ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyList<string>)pair.Value.Values.ToList());
+    }
+
+    private static void WriteSystemSourceItem(
+        Utf8JsonWriter w,
+        JsonElement raw,
+        IReadOnlyList<string> texts,
+        ref ResponsesRequestMutation mutations)
+    {
+        if (raw.ValueKind != JsonValueKind.Object)
+        {
+            raw.WriteTo(w);
+            return;
+        }
+
+        var messageItem = IsResponsesMessageItem(raw);
+        w.WriteStartObject();
+        foreach (var property in raw.EnumerateObject())
+        {
+            if (messageItem && ShouldDropMessageId(property))
+            {
+                mutations |= ResponsesRequestMutation.InvalidMessageIdDropped;
+                continue;
+            }
+            if (property.Name != "content" || property.Value.ValueKind != JsonValueKind.Array)
+            {
+                property.WriteTo(w);
+                continue;
+            }
+
+            w.WriteStartArray("content");
+            var textIndex = 0;
+            foreach (var content in property.Value.EnumerateArray())
+            {
+                if (content.ValueKind != JsonValueKind.Object
+                    || !content.TryGetProperty("type", out var type)
+                    || type.GetString() != "input_text"
+                    || textIndex >= texts.Count)
+                {
+                    content.WriteTo(w);
+                    continue;
+                }
+
+                w.WriteStartObject();
+                foreach (var contentProperty in content.EnumerateObject())
+                {
+                    if (contentProperty.Name == "text")
+                        w.WriteString("text", texts[textIndex]);
+                    else
+                        contentProperty.WriteTo(w);
+                }
+                w.WriteEndObject();
+                textIndex++;
+            }
+            w.WriteEndArray();
+        }
+        w.WriteEndObject();
+    }
+
+    private static void WriteRawPassthroughItem(
+        Utf8JsonWriter writer,
+        JsonElement raw,
+        ref ResponsesRequestMutation mutations)
+    {
+        if (!IsResponsesMessageItem(raw))
+        {
+            writer.WriteRawValue(raw.GetRawText());
+            return;
+        }
+
+        writer.WriteStartObject();
+        foreach (var property in raw.EnumerateObject())
+        {
+            if (ShouldDropMessageId(property))
+            {
+                mutations |= ResponsesRequestMutation.InvalidMessageIdDropped;
+                continue;
+            }
+            property.WriteTo(writer);
+        }
+        writer.WriteEndObject();
+    }
+
+    private static bool IsResponsesMessageItem(JsonElement raw) =>
+        raw.ValueKind == JsonValueKind.Object
+        && raw.TryGetProperty("type", out var type)
+        && type.ValueKind == JsonValueKind.String
+        && type.GetString() == "message";
+
+    private static bool ShouldDropMessageId(JsonProperty property) =>
+        property.Name == "id"
+        && property.Value.ValueKind == JsonValueKind.String
+        && property.Value.GetString() is { } id
+        && !id.StartsWith("msg", StringComparison.Ordinal);
 
     private static void WriteInputItem(
         Utf8JsonWriter w,
         MessageParam msg,
         bool structuredMultimodalOutput,
         ref bool vision,
-        ref bool sawImageOnCompatibilityPath)
+        ref bool sawImageOnCompatibilityPath,
+        ref ResponsesRequestMutation mutations)
     {
         // An IR message maps back to one or more Responses input items. Tool-use
         // and tool-result blocks become their own function_call/function_call_output
@@ -296,7 +519,7 @@ internal static class ResponsesRequestBuilder
             switch (block)
             {
                 case ToolUseBlockParam tu:
-                    FlushMessage(w, msg.Role, textImageParts, ref vision);
+                    FlushMessage(w, msg, textImageParts, ref vision, ref mutations);
                     textImageParts.Clear();
                     w.WriteStartObject();
                     w.WriteString("type", "function_call");
@@ -321,10 +544,12 @@ internal static class ResponsesRequestBuilder
                         IsGrammarTextArgs(tu.ProviderExtensions) && tu.Input.ValueKind == JsonValueKind.String
                             ? tu.Input.GetString()
                             : tu.Input.GetRawText());
+                    WriteProviderItemExtras(
+                        w, tu.ProviderExtensions, validateMessageId: false, ref mutations);
                     w.WriteEndObject();
                     break;
                 case ToolResultBlockParam tr:
-                    FlushMessage(w, msg.Role, textImageParts, ref vision);
+                    FlushMessage(w, msg, textImageParts, ref vision, ref mutations);
                     textImageParts.Clear();
                     w.WriteStartObject();
                     w.WriteString("type", "function_call_output");
@@ -337,21 +562,29 @@ internal static class ResponsesRequestBuilder
                     // target is live-proven to accept it. Unknown blocks fall back as a
                     // whole so nothing is partially lost.
                     var sourceWantsOpaque = IsOpaqueToolOutput(tr.ProviderExtensions);
-                    WriteToolResultOutput(
-                        w,
-                        tr.Content,
-                        structuredMultimodalOutput && !sourceWantsOpaque,
-                        // Only a CAPABILITY downgrade is reportable. When the source
-                        // marked its output opaque, the string path is what it asked
-                        // for and would happen on a supported model too — reporting it
-                        // would blame the model for the source's own choice.
-                        reportImageDowngrade: !sourceWantsOpaque,
-                        ref vision,
-                        ref sawImageOnCompatibilityPath);
+                    if (sourceWantsOpaque)
+                    {
+                        if (tr.Content is { } nativeOutput)
+                            nativeOutput.WriteTo(w);
+                        else
+                            w.WriteStringValue("");
+                    }
+                    else
+                    {
+                        WriteToolResultOutput(
+                            w,
+                            tr.Content,
+                            structuredMultimodalOutput,
+                            reportImageDowngrade: true,
+                            ref vision,
+                            ref sawImageOnCompatibilityPath);
+                    }
+                    WriteProviderItemExtras(
+                        w, tr.ProviderExtensions, validateMessageId: false, ref mutations);
                     w.WriteEndObject();
                     break;
                 case RedactedThinkingBlockParam rt:
-                    FlushMessage(w, msg.Role, textImageParts, ref vision);
+                    FlushMessage(w, msg, textImageParts, ref vision, ref mutations);
                     textImageParts.Clear();
                     w.WriteStartObject();
                     w.WriteString("type", "reasoning");
@@ -362,7 +595,7 @@ internal static class ResponsesRequestBuilder
                     if (TryGetReasoningId(rt.ProviderExtensions, out var reasoningId))
                         w.WriteString("id", reasoningId);
                     w.WriteString("encrypted_content", rt.Data);
-                    WriteReasoningOpaqueFields(w, rt.ProviderExtensions);
+                    WriteReasoningOpaqueFields(w, rt.ProviderExtensions, ref mutations);
                     w.WriteEndObject();
                     break;
                 case ThinkingBlockParam:
@@ -385,15 +618,22 @@ internal static class ResponsesRequestBuilder
                     break;
             }
         }
-        FlushMessage(w, msg.Role, textImageParts, ref vision);
+        FlushMessage(w, msg, textImageParts, ref vision, ref mutations);
     }
 
-    private static void FlushMessage(Utf8JsonWriter w, string role, List<ContentBlockParam> parts, ref bool vision)
+    private static void FlushMessage(
+        Utf8JsonWriter w,
+        MessageParam message,
+        List<ContentBlockParam> parts,
+        ref bool vision,
+        ref ResponsesRequestMutation mutations)
     {
         if (parts.Count == 0) return;
         w.WriteStartObject();
         w.WriteString("type", "message");
-        w.WriteString("role", role);
+        w.WriteString("role", message.Role);
+        WriteProviderItemExtras(
+            w, message.ProviderExtensions, validateMessageId: true, ref mutations);
         w.WritePropertyName("content");
         w.WriteStartArray();
         foreach (var p in parts)
@@ -403,8 +643,9 @@ internal static class ResponsesRequestBuilder
                 case TextBlockParam t:
                     w.WriteStartObject();
                     // user text → input_text; assistant text → output_text.
-                    w.WriteString("type", role == Role.Assistant ? "output_text" : "input_text");
+                    w.WriteString("type", message.Role == Role.Assistant ? "output_text" : "input_text");
                     w.WriteString("text", t.Text);
+                    WriteProviderContentExtras(w, t.ProviderExtensions, ref mutations);
                     w.WriteEndObject();
                     break;
                 case ImageBlockParam img:
@@ -412,6 +653,7 @@ internal static class ResponsesRequestBuilder
                     w.WriteStartObject();
                     w.WriteString("type", "input_image");
                     w.WriteString("image_url", ImageToDataUrl(img.Source));
+                    WriteProviderContentExtras(w, img.ProviderExtensions, ref mutations);
                     w.WriteEndObject();
                     break;
             }
@@ -611,10 +853,9 @@ internal static class ResponsesRequestBuilder
     ///   <item>An exact live-proven target may receive an image-bearing array made
     ///         entirely of valid Anthropic <c>text</c>/<c>image</c> blocks as ordered
     ///         Responses <c>input_text</c>/<c>input_image</c> content items.</item>
-    ///   <item>Every other array retains the established newline flattening: text-like
-    ///         blocks contribute text and non-text blocks contribute compact JSON.
-    ///         This preserves native Codex behavior and safely carries unsupported
-    ///         Claude blocks without partial loss.</item>
+    ///   <item>Every other semantic Anthropic array retains the established newline
+    ///         compatibility fallback. Native Codex arrays never reach this helper:
+    ///         their opaque marker makes the caller write the original JSON directly.</item>
     ///   <item>String/object/scalar values are written verbatim; null becomes an empty
     ///         string.</item>
     /// </list>
@@ -827,6 +1068,134 @@ internal static class ResponsesRequestBuilder
             ? v.GetString()
             : null;
 
+    private static bool TryGetBagBoolean(JsonElement? bag, string name) =>
+        bag is { ValueKind: JsonValueKind.Object } obj
+        && obj.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.True;
+
+    private static JsonElement? TryGetBagObject(JsonElement? bag, string name) =>
+        bag is { ValueKind: JsonValueKind.Object } obj
+        && obj.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.Object
+            ? value
+            : null;
+
+    private static JsonElement? TryGetBagValue(JsonElement? bag, string name) =>
+        bag is { ValueKind: JsonValueKind.Object } obj
+        && obj.TryGetProperty(name, out var value)
+            ? value
+            : null;
+
+    private enum ProviderExtraScope { Request, Reasoning }
+
+    private static void WriteObjectProperties(
+        Utf8JsonWriter writer,
+        JsonElement? value,
+        ProviderExtraScope scope,
+        ref ResponsesRequestMutation mutations)
+    {
+        if (value is not { ValueKind: JsonValueKind.Object } obj) return;
+        foreach (var property in obj.EnumerateObject())
+        {
+            if (IsReservedProviderExtra(scope, property.Name))
+            {
+                mutations |= ResponsesRequestMutation.ProviderConflictDropped;
+                continue;
+            }
+            property.WriteTo(writer);
+        }
+    }
+
+    private static bool IsReservedProviderExtra(ProviderExtraScope scope, string name) =>
+        scope switch
+        {
+            ProviderExtraScope.Request => name is
+                "model" or "instructions" or "input" or "tools" or "tool_choice"
+                or "parallel_tool_calls" or "reasoning" or "store" or "stream"
+                or "include" or "prompt_cache_key" or "service_tier" or "text"
+                or "client_metadata" or "max_output_tokens",
+            ProviderExtraScope.Reasoning => name is "effort" or "summary" or "context",
+            _ => false,
+        };
+
+    private static bool TryGetOpenAiBag(
+        Models.Common.ProviderExtensions? extensions,
+        out JsonElement bag)
+    {
+        if (extensions?.ByProvider.TryGetValue(
+                ProviderExtensions.OpenAiNamespace, out bag) == true
+            && bag.ValueKind == JsonValueKind.Object)
+            return true;
+        bag = default;
+        return false;
+    }
+
+    private static void WriteProviderItemExtras(
+        Utf8JsonWriter writer,
+        Models.Common.ProviderExtensions? extensions,
+        bool validateMessageId,
+        ref ResponsesRequestMutation mutations)
+    {
+        if (!TryGetOpenAiBag(extensions, out var bag)
+            || !bag.TryGetProperty("responses_item_extra", out var extras)
+            || extras.ValueKind != JsonValueKind.Object)
+            return;
+
+        foreach (var property in extras.EnumerateObject())
+        {
+            if (property.Name is "type" or "role" or "content" or "call_id"
+                or "name" or "namespace" or "arguments" or "output"
+                or "encrypted_content" or "summary")
+            {
+                mutations |= ResponsesRequestMutation.ProviderConflictDropped;
+                continue;
+            }
+            if (validateMessageId && property.Name == "id")
+            {
+                if (ShouldDropMessageId(property))
+                    mutations |= ResponsesRequestMutation.InvalidMessageIdDropped;
+                else
+                    property.WriteTo(writer);
+                continue;
+            }
+            property.WriteTo(writer);
+        }
+    }
+
+    private static void WriteProviderContentExtras(
+        Utf8JsonWriter writer,
+        Models.Common.ProviderExtensions? extensions,
+        ref ResponsesRequestMutation mutations)
+    {
+        if (!TryGetOpenAiBag(extensions, out var bag)
+            || !bag.TryGetProperty("responses_content_extra", out var extras)
+            || extras.ValueKind != JsonValueKind.Object)
+            return;
+        foreach (var property in extras.EnumerateObject())
+        {
+            if (property.Name is "type" or "text" or "image_url")
+            {
+                mutations |= ResponsesRequestMutation.ProviderConflictDropped;
+                continue;
+            }
+            property.WriteTo(writer);
+        }
+    }
+
+    private static bool TryGetResponsesSystemGroup(
+        Models.Common.ProviderExtensions? extensions,
+        out int group,
+        out int part)
+    {
+        group = 0;
+        part = 0;
+        return TryGetOpenAiBag(extensions, out var bag)
+            && bag.TryGetProperty("responses_system_group", out var groupNode)
+            && groupNode.TryGetInt32(out group)
+            && bag.TryGetProperty("responses_system_part", out var partNode)
+            && partNode.TryGetInt32(out part);
+    }
+
     /// <summary>
     /// Pull the reasoning item's <c>id</c> back out of a redacted-thinking block's
     /// part-level <c>openai</c> bag (where T1 stashed it as <c>reasoning_id</c>).
@@ -837,7 +1206,7 @@ internal static class ResponsesRequestBuilder
     {
         id = "";
         if (ext?.ByProvider.TryGetValue(
-                ResponsesToIrInboundAdapter.OpenAiProviderKey, out var bag) == true
+                ProviderExtensions.OpenAiNamespace, out var bag) == true
             && bag.ValueKind == JsonValueKind.Object
             && bag.TryGetProperty("reasoning_id", out var rid)
             && rid.ValueKind == JsonValueKind.String)
@@ -856,7 +1225,7 @@ internal static class ResponsesRequestBuilder
     /// </summary>
     private static bool IsOpaqueToolOutput(Models.Common.ProviderExtensions? ext) =>
         ext?.ByProvider.TryGetValue(
-            ResponsesToIrInboundAdapter.OpenAiProviderKey, out var bag) == true
+            ProviderExtensions.OpenAiNamespace, out var bag) == true
         && bag.ValueKind == JsonValueKind.Object
         && bag.TryGetProperty("opaque_tool_output", out var opaque)
         && opaque.ValueKind == JsonValueKind.True;
@@ -868,10 +1237,11 @@ internal static class ResponsesRequestBuilder
     /// </summary>
     private static void WriteReasoningOpaqueFields(
         Utf8JsonWriter writer,
-        Models.Common.ProviderExtensions? ext)
+        Models.Common.ProviderExtensions? ext,
+        ref ResponsesRequestMutation mutations)
     {
         if (ext?.ByProvider.TryGetValue(
-                ResponsesToIrInboundAdapter.OpenAiProviderKey, out var bag) != true
+                ProviderExtensions.OpenAiNamespace, out var bag) != true
             || bag.ValueKind != JsonValueKind.Object)
             return;
 
@@ -893,7 +1263,15 @@ internal static class ResponsesRequestBuilder
             && extra.ValueKind == JsonValueKind.Object)
         {
             foreach (var property in extra.EnumerateObject())
+            {
+                if (property.Name is "type" or "id" or "encrypted_content"
+                    or "summary" or "content")
+                {
+                    mutations |= ResponsesRequestMutation.ProviderConflictDropped;
+                    continue;
+                }
                 property.WriteTo(writer);
+            }
         }
     }
 
@@ -907,7 +1285,7 @@ internal static class ResponsesRequestBuilder
     /// </summary>
     private static bool IsGrammarTextArgs(Models.Common.ProviderExtensions? ext) =>
         ext?.ByProvider.TryGetValue(
-            ResponsesToIrInboundAdapter.OpenAiProviderKey, out var bag) == true
+            ProviderExtensions.OpenAiNamespace, out var bag) == true
         && bag.ValueKind == JsonValueKind.Object
         && bag.TryGetProperty("grammar_text_arguments", out var g)
         && g.ValueKind == JsonValueKind.True;
@@ -923,7 +1301,7 @@ internal static class ResponsesRequestBuilder
     {
         ns = "";
         if (ext?.ByProvider.TryGetValue(
-                ResponsesToIrInboundAdapter.OpenAiProviderKey, out var bag) == true
+                ProviderExtensions.OpenAiNamespace, out var bag) == true
             && bag.ValueKind == JsonValueKind.Object
             && bag.TryGetProperty("namespace", out var n)
             && n.ValueKind == JsonValueKind.String)
@@ -941,7 +1319,12 @@ internal static class ResponsesRequestBuilder
     /// stripped when <c>true</c> (Codex sends false; harmless). Everything else
     /// passes through verbatim.
     /// </summary>
-    private static void WriteBagFields(Utf8JsonWriter w, JsonElement bag, CodexModelProfile? profile, ref bool vision)
+    private static void WriteBagFields(
+        Utf8JsonWriter w,
+        JsonElement bag,
+        CodexModelProfile? profile,
+        ref bool vision,
+        ref ResponsesRequestMutation mutations)
     {
         foreach (var prop in bag.EnumerateObject())
         {
@@ -949,24 +1332,37 @@ internal static class ResponsesRequestBuilder
             {
                 case "service_tier":
                     // STRIP — uniform coercion (research §2.3).
+                    mutations |= ResponsesRequestMutation.ServiceTierStripped;
                     continue;
                 case "store":
                     // Strip only when true (Q3). Codex sends false → keep.
-                    if (prop.Value.ValueKind == JsonValueKind.True) continue;
+                    if (prop.Value.ValueKind == JsonValueKind.True)
+                    {
+                        mutations |= ResponsesRequestMutation.StoreTrueStripped;
+                        continue;
+                    }
                     prop.WriteTo(w);
                     break;
                 case "tools":
-                    WriteToolsWithDrops(w, prop.Value, profile);
+                    WriteToolsWithDrops(w, prop.Value, profile, ref mutations);
                     break;
+                case "reasoning_present":
                 case "reasoning_summary":
-                    // This was reasoning.summary — re-emitted INSIDE the reasoning
-                    // object (see Build), not at the top level. Skip here so it isn't
-                    // also written as a stray top-level key.
+                case "reasoning_context":
+                case "reasoning_extra":
+                    // Re-emitted inside the reasoning object, never as top-level keys.
                     continue;
                 case "passthrough_items":
                     // Opaque input[] items (additional_tools preamble, agent_message,
                     // unknown types) — re-emitted INTO input[] in order (see Build), not
                     // as a top-level field. Skip here.
+                    continue;
+                case "request_extra":
+                    // Unknown envelope fields retained by the Responses source. They
+                    // cannot collide with typed semantic keys because STJ puts only
+                    // unmapped properties in this object.
+                    WriteObjectProperties(
+                        w, prop.Value, ProviderExtraScope.Request, ref mutations);
                     continue;
                 default:
                     // tool_choice, parallel_tool_calls, include, prompt_cache_key,
@@ -982,7 +1378,11 @@ internal static class ResponsesRequestBuilder
     /// and — for <c>mai-code-1-flash-internal</c> — dropping <c>custom</c> tools
     /// (that model 500s on them, profile flag).
     /// </summary>
-    private static void WriteToolsWithDrops(Utf8JsonWriter w, JsonElement tools, CodexModelProfile? profile)
+    private static void WriteToolsWithDrops(
+        Utf8JsonWriter w,
+        JsonElement tools,
+        CodexModelProfile? profile,
+        ref ResponsesRequestMutation mutations)
     {
         if (tools.ValueKind != JsonValueKind.Array)
         {
@@ -995,8 +1395,16 @@ internal static class ResponsesRequestBuilder
         foreach (var tool in tools.EnumerateArray())
         {
             var type = tool.TryGetProperty("type", out var t) ? t.GetString() : null;
-            if (type == "image_generation") continue;                       // uniform drop
-            if (type == "custom" && profile?.RejectsCustomTools == true) continue; // flash drop
+            if (type == "image_generation")
+            {
+                mutations |= ResponsesRequestMutation.ImageGenerationToolDropped;
+                continue;
+            }
+            if (type == "custom" && profile?.RejectsCustomTools == true)
+            {
+                mutations |= ResponsesRequestMutation.CustomToolDropped;
+                continue;
+            }
             tool.WriteTo(w);
         }
         w.WriteEndArray();

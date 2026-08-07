@@ -72,7 +72,7 @@ internal sealed record ProviderExtensions
 | Level | Carries | Example |
 | --- | --- | --- |
 | **Request** (`MessagesRequest`) | request-wide provider knobs | `openai`: `{store, service_tier, include, prompt_cache_key, text.verbosity, reasoning.summary, additional_tools}` |
-| **Message** (`MessageParam`) | per-message provider data | rarely needed; reserved |
+| **Message** (`MessageParam`) | per-message provider data | Responses message id/phase/status and future siblings; null on Claude hot path |
 | **Content part** (`ContentBlockParam`) | per-part provider data | `openai`: a Responses item's `id`/`encrypted_content` when not expressible as a thinking block |
 | **Tool def** (`Tool`) | per-tool provider extras | future |
 
@@ -135,7 +135,7 @@ The bag is **additive and optional**. Claude Code's path:
 On approval, these are **frozen** as the IR:
 
 1. `MessagesRequest` + `MessageParam` + `ContentBlockParam` tagged-union (existing) = the IR body shape.
-2. `ProviderExtensions` bag (new) at request + content-part levels = the lossless tail.
+2. `ProviderExtensions` bag at request + message + content-part levels = the lossless tail.
 3. Reasoning = `ThinkingBlockParam{Thinking,Signature}` / `RedactedThinkingBlockParam{Data}` + `OutputConfig.Effort` (existing); opaque blobs (Responses `encrypted_content`) ride `Signature`/`Data` where shaped, else the bag.
 4. Tool input/result = `JsonElement` (byte-faithful, existing).
 5. Streaming IR = the existing Anthropic SSE event model (`message_start`→`content_block_*`→`message_delta`→`message_stop`); translators map provider SSE to/from it.
@@ -409,9 +409,11 @@ The IR is frozen. Open questions resolved as built:
   dictionary also binds a record primary-constructor parameter. The wrapper
   segment is harmless — this field never reaches a real upstream wire (null on
   `/cc`; consumed and discarded by Codex's T2).
-- **F2 resolved → shipped at both levels.** Request-level (`MessagesRequest`) and
-  part-level (`ContentBlockParam` base record). Part-level ships unused by Claude
-  Code; Codex/Gemini populate it later.
+- **F2 resolved → shipped at all three required levels.** Request-level
+  (`MessagesRequest`), message-level (`MessageParam`), and part-level
+  (`ContentBlockParam` base record). Message-level was activated by the 2026-08
+  native Codex request-fidelity audit for id/phase/status and future siblings;
+  all remain null on the Claude Code hot path.
 - **AOT** — publish is **0 warnings**; the `JsonElement` bag is source-gen-clean.
   Binary delta **+26 KB** (`docs/size-history.md`).
 - **Hot path** — H1 proves `/cc` upstream bytes are byte-identical (the bag is

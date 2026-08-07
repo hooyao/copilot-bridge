@@ -144,13 +144,13 @@ Responses-specific specifics the research nailed down):
 | Concept | IR (Anthropic) | Responses (Codex/Copilot) | Translation notes |
 | --- | --- | --- | --- |
 | System prompt | top-level `system` | top-level `instructions` | direct move |
-| Messages | `messages[].role/content[]` | `input[]` items | role map; `developer`→`system`/first-user |
+| Messages | `messages[].role/content[]` + provider provenance | `input[]` items | semantic role/content map; OpenAI provider records preserve valid id/phase/status, future siblings, and original developer/system positions. Source pushes provenance; destination pulls it. |
 | Text content | `{type:text}` | `{type:input_text\|output_text}` | direct |
 | Image | `{type:image,source:{base64\|url}}` | `{type:input_image,image_url:"data:…"}` | base64 → data URL |
 | Tool def | `tools:[{name,input_schema}]` | `tools:[{type:function,name,parameters}]` | unwrap/rewrap; `input_schema`→`parameters`. **Source depends on client:** a Codex request carries tools in the `openai` bag (re-emitted verbatim + drops); a **Claude Code** request carries them as typed `ir.Tools` (no bag) → T2 emits `{type:function,name,description,parameters,strict:false}` from each, skipping `web_search_*` server tools. Bag wins when present, so the Codex path is byte-identical. |
 | Tool call | content `{type:tool_use,id,name,input}` | `{type:function_call,call_id,name,arguments}` | id↔call_id; input(obj)↔arguments(json string) |
-| Tool result | user content `{type:tool_result,tool_use_id,content}` | `{type:function_call_output,call_id,output}` | source-protocol-aware move. Native Codex string/object output stays opaque and text arrays flatten with newline separators. On the Claude Code edge only, an image-bearing all-text/image array becomes ordered `input_text`/`input_image` content items when the exact target profile is live-proven to support them (`gpt-5.6-sol`); unsupported/malformed or unprobed cases retain whole-array string fallback. |
-| Reasoning | `thinking:{type,budget_tokens}` | `reasoning:{effort,summary}` + `include:[encrypted_content]` | budget↔effort table (§3.4); echo encrypted_content |
+| Tool result | user content `{type:tool_result,tool_use_id,content}` + provider extras | `{type:function_call_output,call_id,output}` | Native Codex output is opaque and preserves string/object/array kind plus id/status/future siblings. Claude semantic text/image blocks use the separate capability-driven translation. T2 reads only what the IR states and never asks who sourced it. |
+| Reasoning | `thinking:{type,budget_tokens}` + provider extras | `reasoning:{effort,summary,context,…}` + `include:[encrypted_content]` | effort stays semantic and profile-controlled; context/future siblings and complete reasoning input items ride provider extensions unchanged. |
 | Stop reason | `end_turn\|max_tokens\|tool_use…` | `response.completed.status` / `incomplete_details` | lookup table |
 | Streaming | `message_start`→`content_block_*`→`message_delta`→`message_stop` | `response.created`→`output_item/_text/_fn_args.*`→`response.completed` | **stateful** event-by-event state machine (both T3 and T4) |
 | Hosted web search | *(no Anthropic equivalent)* | `web_search_call` output item + `response.web_search_call.in_progress/.searching/.completed` | Copilot runs web search SERVER-SIDE (a non-responses-lite gpt model emits a `{type:web_search}` tool; gpt-5.6 family is `use_responses_lite=true` and suppresses it client-side). T3 has no Anthropic block for it, so it rides the IR as a **bridge-internal marker** on a text block (`bridge_web_search_call` on content_block_start; `bridge_web_search_call_result`, the completed item with its `action`, on content_block_stop). T4 rebuilds the `web_search_call` output item + lifecycle from the markers; the CC→gpt edge scrubs them. Without this, T3 mis-mapped the item to an empty text block and swallowed the lifecycle — codex saw the answer but NOT the search (invisible, uncited). Verified end-to-end by `CodexWebSearchHeadlessTests` (ApiContract — real codex gpt-5.5 through a live bridge, asserting the relay from the four-file audit) + `CodexWebSearchRoundTripTests` (offline fixture round-trip). `url_citation` annotations are NOT carried — no real codex run has been observed emitting them. |
@@ -337,14 +337,16 @@ verified during implementation (was Q5).
 
 ---
 
-## 8. DTOs (`Models/Responses/`) — full typing
+## 8. DTOs (`Models/Responses/`) — typed semantic core plus opaque tail
 
-Q2 **RESOLVED: full typing, no `JsonElement`.** Because T1/T2 actively
-read/rewrite the body (role mapping, tool unwrap, effort clamp, field strips) and
-AOT requires source-gen serialization, every field is a real typed property.
-Model the full Responses request/input/tool/content shape + the SSE event shapes
-from `references/openai-sdk-pkg/package/resources/responses/`, validated against
-the captures (research §3.2/§3.4). All new DTOs registered in `Models/JsonContext.cs`.
+Q2 **RESOLVED: fields T1/T2 interpret are fully typed; the open-ended provider
+tail is opaque `JsonElement`.** T1/T2 actively read model, role/content, call
+linkage and effort, so those remain source-generated typed properties. Responses
+objects are nevertheless open unions: future siblings on a known discriminator
+must not disappear merely because this build does not interpret them. Known DTOs
+therefore retain extension fields and T1 pushes them into the multi-level OpenAI
+provider bag. All dictionaries/records remain explicit in `Models/JsonContext.cs`;
+there is no reflection serialization.
 
 `ResponsesRequest` (13 fields, §3.2), `input[]` items (message/function_call/
 function_call_output/reasoning), content parts (`input_text`/`input_image`/
@@ -372,13 +374,11 @@ against ground truth before it's trusted.** Three layers:
   (event sequences from research §2.5/§3.3 as fixtures), stop-reason lookup,
   unknown-model error, DTO round-trips.
 - **Round-trip fidelity probe (the Q-A gate, Integration-tagged):** feed a real
-  captured Codex `ResponsesRequest` through `T1 → T2` and assert the emitted
-  Responses body still carries what Codex needs — `instructions`, every `input`
-  item, `function_call.call_id`s, `apply_patch` custom tool, `reasoning` +
-  `include:[encrypted_content]`, `prompt_cache_key`. This is where the
-  double-translation cost (§2) gets measured: anything the Anthropic IR can't
-  represent shows up here as a diff. A lossy field is either (a) proven
-  irrelevant to Copilot/Codex, or (b) fixed before ship — not hand-waved.
+  captured Codex `ResponsesRequest` through `T1 → T2` and compare the independent
+  inbound body to the emitted body at full JSON-value and array-order fidelity.
+  The only allowed differences are an explicit reviewed set of routing/profile/
+  protocol mutations backed by paired current Copilot probes. A captured
+  `upstream-req` is evidence of what an old build did, never the request oracle.
 - **Live end-to-end (`tests/CopilotBridge.Playground/Headless/`, Integration,
   ephemeral non-8765 port):** real `codex.exe` → `/codex` → Copilot `/responses`
   (the one cell this change ships), driven via `codex exec --json -c

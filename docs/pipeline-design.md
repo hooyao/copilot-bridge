@@ -162,6 +162,20 @@ full set:
 > drops any carrier defensively on `/cc→Responses`, so raw Responses data never
 > crosses the Anthropic client edge.
 
+> **2026-08 — native Codex request fidelity.** The request remains a real
+> `Responses → T1 → IR → T2 → Responses` traversal; it does not bypass the IR.
+> T1 pushes provider-native fields, source positions, and unmodeled siblings into
+> `ProviderExtensions["openai"]` at request, message, and content-part level while
+> also producing the semantic IR projection shared stages inspect. T1 never sees
+> the selected destination. T2 pulls only the OpenAI namespace and merges those
+> values into its current semantic Responses output; T2 never sees the originating
+> client. Semantic fields from the post-stage IR win conflicts, then target-owned
+> routing/profile/protocol coercions run last, so opaque carriage cannot resurrect
+> a rejected field or undo a stage decision. A clean same-model route preserves
+> every JSON value and `input[]` position; every departure is a narrow, live-proven
+> and observable destination mutation. This is the request-side realization of
+> the frozen source-push/destination-pull rule, not a raw-body side channel.
+
 > In ordinary streaming, T4 consumes each FIFO entry as soon as its carrier
 > arrives, so the ledger holds at most one source event. There are two deliberate
 > buffering exceptions. With `BufferScannableBlocks=true`, the stage withholds a
@@ -216,7 +230,7 @@ for the authoritative contract. In brief:
   `include`, `prompt_cache_key`, `text.verbosity`, …) rides a namespaced
   escape-hatch — `ProviderExtensions` (`Models/Common/ProviderExtensions.cs`), a
   `provider-name → opaque JsonElement` bag stolen from the Vercel AI SDK's
-  `providerOptions` pattern — attached at request and content-part level, opaque
+  `providerOptions` pattern — attached at request, message, and content-part level, opaque
   to the pipeline, copied verbatim. It is `null`/absent for Claude Code, so the
   hot path serializes byte-for-byte as before (proven by the H1 byte-equality
   test).
@@ -951,13 +965,23 @@ block and emits `response.failed` without fabricating tool-argument `.done`,
 already cancelled, writing stops and endpoint accounting records client
 cancellation instead.
 
-On the native Codex request side, `function_call_output.output` arrays are
-normalized only because Copilot `/responses` requires one output value. Textual
-content blocks in any client-observed spelling (`text`, `input_text`, or
-`output_text`) contribute their text values separated by newlines. Other block
-types remain visible as compact JSON. Treating `input_text`/`output_text` as
-non-text would inject their JSON wrappers into model context; the two-day corpus
-replay guards this independently by call id.
+On the native Codex request side, `function_call_output.output` is provider-native
+opaque JSON. T1 pushes its string/object/array value into the IR block unchanged;
+T2 pulls and writes that same JSON kind and value. A paired replay of real captured
+`input_text[]` output returned 200 from `gpt-5.6-sol`, so flattening it would be an
+unnecessary silent rewrite. Function-output `id`/`status` and future siblings ride
+the same part-level provider record.
+
+Responses message items and developer/system placement use the same rule. T1 keeps
+message text semantically visible to stages but records provider metadata and the
+original source position in the IR. T2 restores valid `msg*` ids, phase/status and
+unmodeled siblings, and emits developer/system items at their original positions.
+The one live-proven protocol correction is a non-Responses message id such as
+`item_0`: Copilot rejects it because message ids must begin with `msg`, so T2 omits
+only that id and records the mutation while preserving every unrelated item value.
+Top-level `reasoning.context` and future reasoning siblings ride the request bag;
+dropping `all_turns` is forbidden because Codex documents omission as the
+`current_turn` default.
 
 The Claude Code→Responses request side has one content-driven exception. An
 exact target profile whose direct two-turn probe proves structured multimodal

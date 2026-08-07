@@ -14,14 +14,12 @@ namespace CopilotBridge.Cli.Models.Responses;
 /// Codex sends).
 /// </summary>
 /// <remarks>
-/// <b>Fully typed, no <c>JsonElement</c> passthrough of the envelope</b>
-/// (decision Q2): T1 reads these to build the IR and T2 rewrites them from the
-/// IR, and AOT requires source-gen serialization — so every field Codex sends is
-/// a real property. The only <c>JsonElement</c> here is for genuinely opaque
-/// leaves (tool-call arguments, output schema, the Codex-internal
-/// <c>client_metadata</c> map) that the bridge carries verbatim.
+/// The semantic core is fully typed because T1 reads it and T2 rewrites it from the
+/// IR. The Responses envelope is open-ended, so future siblings ride an AOT-safe
+/// extension-data dictionary into provider-scoped IR extensions instead of being
+/// silently discarded. Opaque leaves remain <c>JsonElement</c> values.
 /// </remarks>
-internal sealed record ResponsesRequest
+internal sealed class ResponsesRequest
 {
     /// <summary>Model id (e.g. <c>gpt-5.3-codex</c>). Codex sends the dotted slug already.</summary>
     public required string Model { get; init; }
@@ -85,6 +83,10 @@ internal sealed record ResponsesRequest
     /// round-trips. Maps to IR <c>max_tokens</c>.
     /// </summary>
     public int? MaxOutputTokens { get; init; }
+
+    /// <summary>Future Responses request fields retained for provider-scoped IR carriage.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 }
 
 /// <summary>
@@ -92,13 +94,24 @@ internal sealed record ResponsesRequest
 /// bridge translates (IR <c>thinking</c>/<c>output_config.effort</c> ↔ this) and
 /// clamps per the Codex model profile; <c>summary</c> rides the bag.
 /// </summary>
-internal sealed record Reasoning
+internal sealed class Reasoning
 {
     /// <summary>One of <c>minimal | none | low | medium | high | xhigh</c> (Codex vocabulary, research §2.2).</summary>
     public string? Effort { get; init; }
 
     /// <summary><c>"auto"</c> etc. — carried verbatim through the bag, not interpreted.</summary>
     public string? Summary { get; init; }
+
+    /// <summary>
+    /// Responses Lite reasoning scope. Omitting <c>all_turns</c> changes the backend
+    /// default to <c>current_turn</c>, so it is provider-native state, not decoration.
+    /// </summary>
+    /// <summary>Undefined means absent; Null remains an explicitly present JSON null.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public JsonElement Context { get; init; }
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 }
 
 /// <summary>
@@ -106,9 +119,12 @@ internal sealed record Reasoning
 /// (Q1: the bridge does not touch it); <c>format</c> carries a JSON-schema for
 /// structured output, held opaque.
 /// </summary>
-internal sealed record TextControls
+internal sealed class TextControls
 {
     public string? Verbosity { get; init; }
 
     public JsonElement? Format { get; init; }
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 }

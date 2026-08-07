@@ -64,8 +64,9 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             _ccOptions.PreventRecursiveAgentDelegation && ctx.IsClaudeCodeSubagent;
         var (body, vision, coercedEffort) = ResponsesRequestBuilder.Build(
             ctx.Request.Body, _profiles, filterRecursiveAgentTool, out var removedAgentTool,
-            out var downgradedImageOnUnknownModel);
+            out var downgradedImageOnUnknownModel, out var requestMutations);
         ctx.Response.ImageDowngradedOnUnknownModel = downgradedImageOnUnknownModel;
+        ctx.Response.RequestMutationCodes = ResponsesRequestBuilder.FormatMutations(requestMutations);
         if (downgradedImageOnUnknownModel)
         {
             // Loud on purpose. Without this the request still returns 200 and the

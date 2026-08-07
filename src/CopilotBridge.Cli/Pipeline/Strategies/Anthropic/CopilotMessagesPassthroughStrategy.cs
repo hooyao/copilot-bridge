@@ -50,7 +50,8 @@ internal sealed class CopilotMessagesPassthroughStrategy : IUpstreamStrategy<Mes
     public async Task ForwardAsync()
     {
         var ctx = _ctx;
-        var body = JsonSerializer.SerializeToUtf8Bytes(ctx.Request.Body, JsonContext.Default.MessagesRequest);
+        var wireRequest = AnthropicRequestWire.Project(ctx.Request.Body);
+        var body = JsonSerializer.SerializeToUtf8Bytes(wireRequest, JsonContext.Default.MessagesRequest);
 
         // Stash the exact bytes we POST so the endpoint audits the real wire body
         // instead of re-serializing the IR a second time (P1). On passthrough the

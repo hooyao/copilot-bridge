@@ -64,7 +64,8 @@ namespace CopilotBridge.Cli.Models;
 // re-serializes it (T2); the streaming translators read/write the SSE event
 // shapes. Polymorphic derived types (input items, content parts, tool variants,
 // stream events) are auto-discovered via [JsonDerivedType]; only the top-level
-// bases need explicit registration. Fully typed (no JsonElement envelope) per Q2.
+// bases need explicit registration. The semantic core is typed; open-ended siblings
+// use source-generated JsonExtensionData dictionaries and provider-scoped IR carriage.
 [JsonSerializable(typeof(ResponsesRequest))]
 [JsonSerializable(typeof(ResponsesInputItem))]
 // ResponsesUnknownItem carries no [JsonDerivedType] discriminator (it's built by

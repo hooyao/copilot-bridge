@@ -227,7 +227,7 @@ public class CodexImageTests
         var (codexBytes, codexVision, _) = ResponsesRequestBuilder.Build(codexIr, Profiles);
         var codexOutput = JsonNode.Parse(codexBytes)!.AsObject()["input"]!.AsArray()
             .Single(i => i!["type"]!.GetValue<string>() == "function_call_output")!["output"];
-        Assert.IsNotType<JsonArray>(codexOutput);
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(anthropicShapedArray), codexOutput));
         Assert.False(codexVision);
 
         // Claude source: no marker, so the same JSON is read as Anthropic blocks.

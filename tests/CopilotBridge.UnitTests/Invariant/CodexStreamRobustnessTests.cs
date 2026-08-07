@@ -1,6 +1,7 @@
 using System.Net.ServerSentEvents;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
@@ -378,7 +379,7 @@ public class CodexStreamRobustnessTests
     [InlineData("text")]
     [InlineData("input_text")]
     [InlineData("output_text")]
-    public void ToolResultTextBlockVariants_FlattenToTextWithoutJsonWrapper(string partType)
+    public void ToolResultTextBlockVariants_PreserveNativeArrayValue(string partType)
     {
         var requestJson = $$"""
           {
@@ -393,15 +394,13 @@ public class CodexStreamRobustnessTests
           }
           """;
 
-        var emitted = CodexRoundTrip.RoundTrip(requestJson).AsObject();
-        var output = emitted["input"]!.AsArray()[0]!["output"]!.GetValue<string>();
-
-        Assert.Equal("first\nsecond", output);
-        Assert.DoesNotContain("\"type\"", output, StringComparison.Ordinal);
+        var original = JsonNode.Parse(requestJson)!["input"]![0]!["output"];
+        var output = CodexRoundTrip.RoundTrip(requestJson)["input"]![0]!["output"];
+        Assert.True(JsonNode.DeepEquals(original, output));
     }
 
     [Fact]
-    public void ToolResultMixedArray_PreservesNonTextBlockAsCompactJson()
+    public void ToolResultMixedArray_PreservesWholeNativeArray()
     {
         const string requestJson = """
           {
@@ -416,10 +415,9 @@ public class CodexStreamRobustnessTests
           }
           """;
 
-        var emitted = CodexRoundTrip.RoundTrip(requestJson).AsObject();
-        Assert.Equal(
-            "first\n{\"type\":\"image\",\"source\":\"opaque\"}",
-            emitted["input"]!.AsArray()[0]!["output"]!.GetValue<string>());
+        var original = JsonNode.Parse(requestJson)!["input"]![0]!["output"];
+        var output = CodexRoundTrip.RoundTrip(requestJson)["input"]![0]!["output"];
+        Assert.True(JsonNode.DeepEquals(original, output));
     }
 
     [Fact]
@@ -438,20 +436,18 @@ public class CodexStreamRobustnessTests
           }
           """;
 
-        var emitted = CodexRoundTrip.RoundTrip(requestJson).AsObject();
-        Assert.Equal(
-            "first\n{\"type\":\"image\",\"source\":{\"type\":\"url\",\"url\":\"https://example.com/red.png\"}}",
-            emitted["input"]!.AsArray()[0]!["output"]!.GetValue<string>());
+        var original = JsonNode.Parse(requestJson)!["input"]![0]!["output"];
+        var output = CodexRoundTrip.RoundTrip(requestJson)["input"]![0]!["output"];
+        Assert.True(JsonNode.DeepEquals(original, output));
     }
 
     [Theory]
-    [InlineData("", "second", "\nsecond")]
-    [InlineData("first", "", "first\n")]
-    [InlineData("", "", "\n")]
-    public void ToolResultTextBlocks_PreserveSeparatorsAroundEmptyParts(
+    [InlineData("", "second")]
+    [InlineData("first", "")]
+    [InlineData("", "")]
+    public void ToolResultTextBlocks_PreserveEmptyPartsInNativeArray(
         string first,
-        string second,
-        string expected)
+        string second)
     {
         var requestJson = $$"""
           {
@@ -466,7 +462,8 @@ public class CodexStreamRobustnessTests
           }
           """;
 
-        var emitted = CodexRoundTrip.RoundTrip(requestJson).AsObject();
-        Assert.Equal(expected, emitted["input"]!.AsArray()[0]!["output"]!.GetValue<string>());
+        var original = JsonNode.Parse(requestJson)!["input"]![0]!["output"];
+        var output = CodexRoundTrip.RoundTrip(requestJson)["input"]![0]!["output"];
+        Assert.True(JsonNode.DeepEquals(original, output));
     }
 }

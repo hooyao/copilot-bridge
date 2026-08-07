@@ -267,6 +267,12 @@ internal sealed class BridgeResponse
     public string? OutboundEffortCoerced { get; set; }
 
     /// <summary>
+    /// Stable comma-separated codes for explicit Responses destination mutations.
+    /// Empty on a value-faithful request. Codes contain no prompt/provider values.
+    /// </summary>
+    public string RequestMutationCodes { get; set; } = "";
+
+    /// <summary>
     /// True when an image-bearing tool result took the string compatibility path
     /// because the exact model has NO catalog entry (capability Unknown), as opposed
     /// to being probed-unsupported. Both look identical on the wire — the request

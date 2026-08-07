@@ -133,7 +133,7 @@ internal sealed class ClaudeReasoningOriginStage : IRequestStage<MessagesRequest
     {
         if (bag is null
             || !bag.ByProvider.TryGetValue(
-                Adapters.Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey, out var inner)
+                ProviderExtensions.OpenAiNamespace, out var inner)
             || inner.ValueKind != JsonValueKind.Object
             || (!inner.TryGetProperty(ClaudeReasoningEnvelope.OriginBagKey, out _)
                 && !inner.TryGetProperty(ClaudeReasoningEnvelope.DecodedBagKey, out _)))
@@ -156,7 +156,7 @@ internal sealed class ClaudeReasoningOriginStage : IRequestStage<MessagesRequest
         {
             ByProvider = new Dictionary<string, JsonElement>
             {
-                [Adapters.Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey] =
+                [ProviderExtensions.OpenAiNamespace] =
                     doc.RootElement.Clone(),
             },
         };

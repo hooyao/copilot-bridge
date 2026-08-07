@@ -19,7 +19,7 @@ namespace CopilotBridge.Cli.Pipeline.Adapters.Codex;
 /// <list type="bullet">
 ///   <item><c>instructions</c> → top-level <c>system</c>.</item>
 ///   <item><c>input[]</c> messages → <c>messages[]</c>; <c>developer</c> role →
-///         <c>system</c> content folded into the system prompt; <c>input_text</c>/
+///         semantic <c>system</c> content plus an ordered provider source record; <c>input_text</c>/
 ///         <c>output_text</c> → <c>TextBlockParam</c>; <c>input_image</c> →
 ///         <c>ImageBlockParam</c> (data URL → base64 source).</item>
 ///   <item><c>function_call</c>/<c>function_call_output</c> → <c>ToolUseBlockParam</c>/
@@ -30,7 +30,7 @@ namespace CopilotBridge.Cli.Pipeline.Adapters.Codex;
 ///   <item>Un-modeled knobs (<c>store</c>, <c>service_tier</c>, <c>include</c>,
 ///         <c>prompt_cache_key</c>, <c>text</c>, <c>parallel_tool_calls</c>,
 ///         <c>tools</c>, <c>tool_choice</c>, <c>client_metadata</c>,
-///         <c>reasoning.summary</c>) → request-level
+///         <c>reasoning.summary/context</c>, future envelope/item siblings) → request/message/part-level
 ///         <c>ProviderExtensions["openai"]</c> verbatim, for T2 to re-apply.</item>
 /// </list>
 /// <para>The bag is what makes the hub-IR round-trip lossless: anything the
@@ -40,9 +40,6 @@ namespace CopilotBridge.Cli.Pipeline.Adapters.Codex;
 /// </remarks>
 internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<ResponsesRequest, MessagesRequest>
 {
-    /// <summary>The provider key the Codex knobs ride under in the IR bag.</summary>
-    internal const string OpenAiProviderKey = "openai";
-
     private readonly ILogger<ResponsesToIrInboundAdapter> _log;
 
     public ResponsesToIrInboundAdapter(ILogger<ResponsesToIrInboundAdapter> log)
@@ -59,7 +56,7 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
     {
         // ── system: instructions + any developer-role messages ──
         var systemParts = new List<TextBlockParam>();
-        if (!string.IsNullOrEmpty(clientBody.Instructions))
+        if (clientBody.Instructions is not null)
             systemParts.Add(new TextBlockParam { Text = clientBody.Instructions });
 
         // ── messages: input[] items → MessageParam[] ──
@@ -70,7 +67,8 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
         // must keep their ORDER relative to the conversation messages (and each other),
         // so each records the count of IR messages emitted BEFORE it (afterMessageIndex);
         // T2 re-inserts each at that position via a single ordered mechanism. ──
-        var passthroughItems = new List<(int AfterMessageIndex, JsonElement Raw)>();
+        var passthroughItems = new List<(int AfterMessageIndex, JsonElement Raw, int? SystemGroup)>();
+        var nextSystemGroup = 0;
         foreach (var item in clientBody.Input)
         {
             switch (item)
@@ -79,18 +77,31 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                     if (string.Equals(msg.Role, "developer", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(msg.Role, "system", StringComparison.OrdinalIgnoreCase))
                     {
-                        // developer/system preamble folds into the IR system prompt
-                        // (Anthropic has no mid-array system; the IR top-level system
-                        // is where harness instructions belong).
+                        // Keep the content visible to semantic system stages while the
+                        // provider record retains the original Responses item/position.
+                        // T2 pulls the record and suppresses only these marked blocks
+                        // from top-level instructions. No destination is consulted here.
+                        var systemGroup = nextSystemGroup++;
+                        var systemPartIndex = 0;
                         foreach (var part in msg.Content)
                             if (part is ResponsesInputTextPart t)
-                                systemParts.Add(new TextBlockParam { Text = t.Text });
+                                systemParts.Add(new TextBlockParam
+                                {
+                                    Text = t.Text,
+                                    ProviderExtensions = BuildSystemSourceBag(
+                                        systemGroup, systemPartIndex++, t.ExtensionData),
+                                });
+                        passthroughItems.Add((
+                            messages.Count,
+                            SerializeKnownInputItem(msg),
+                            systemGroup));
                         break;
                     }
                     messages.Add(new MessageParam
                     {
                         Role = NormalizeRole(msg.Role),
                         Content = MapContentParts(msg.Content),
+                        ProviderExtensions = BuildMessageBag(msg),
                     });
                     break;
 
@@ -115,7 +126,7 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                             Id = fc.CallId,
                             Name = fc.Name,
                             Input = fcInput,
-                            ProviderExtensions = BuildFunctionCallPartBag(fcGrammarText, fc.Namespace),
+                            ProviderExtensions = BuildFunctionCallPartBag(fcGrammarText, fc),
                         }],
                     });
                     break;
@@ -135,7 +146,7 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                         {
                             ToolUseId = fco.CallId,
                             Content = fco.Output,
-                            ProviderExtensions = BuildOpaqueToolOutputBag(),
+                            ProviderExtensions = BuildOpaqueToolOutputBag(fco),
                         }],
                     });
                     break;
@@ -156,10 +167,18 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                             Content = [new RedactedThinkingBlockParam
                             {
                                 Data = reasoning.EncryptedContent,
-                                ProviderExtensions = BuildReasoningPartBag(
-                                    reasoning.Id, reasoning.Summary, reasoning.Content),
+                                ProviderExtensions = BuildReasoningPartBag(reasoning),
                             }],
                         });
+                    }
+                    else
+                    {
+                        // No semantic redacted-thinking representation exists, but the
+                        // provider item still belongs at its original position.
+                        passthroughItems.Add((
+                            messages.Count,
+                            SerializeKnownInputItem(reasoning),
+                            null));
                     }
                     break;
 
@@ -174,7 +193,7 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                     // the recorded IR-message count, so an item that precedes another opaque
                     // item (e.g. an unknown before the additional_tools preamble) keeps its
                     // place.
-                    passthroughItems.Add((messages.Count, unknown.Raw));
+                    passthroughItems.Add((messages.Count, unknown.Raw, null));
                     break;
             }
         }
@@ -217,10 +236,18 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
             switch (part)
             {
                 case ResponsesInputTextPart t:
-                    blocks.Add(new TextBlockParam { Text = t.Text });
+                    blocks.Add(new TextBlockParam
+                    {
+                        Text = t.Text,
+                        ProviderExtensions = BuildContentPartBag(t),
+                    });
                     break;
                 case ResponsesOutputTextPart ot:
-                    blocks.Add(new TextBlockParam { Text = ot.Text });
+                    blocks.Add(new TextBlockParam
+                    {
+                        Text = ot.Text,
+                        ProviderExtensions = BuildContentPartBag(ot),
+                    });
                     break;
                 case ResponsesInputImagePart img:
                     blocks.Add(MapImage(img));
@@ -246,11 +273,16 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                 return new ImageBlockParam
                 {
                     Source = new Base64ImageSource { Data = data, MediaType = mediaType },
+                    ProviderExtensions = BuildContentPartBag(img),
                 };
             }
         }
         // Not a data URL — carry as a URL source.
-        return new ImageBlockParam { Source = new UrlImageSource { Url = url } };
+        return new ImageBlockParam
+        {
+            Source = new UrlImageSource { Url = url },
+            ProviderExtensions = BuildContentPartBag(img),
+        };
     }
 
     private static string NormalizeRole(string role) =>
@@ -330,10 +362,15 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
     /// JSON function tool) so the block's bag stays null and H1 remains byte-identical.
     /// Same AOT-clean <see cref="Utf8JsonWriter"/> style as the reasoning-id bag.
     /// </summary>
-    private static ProviderExtensions? BuildFunctionCallPartBag(bool grammarText, string? ns)
+    private static ProviderExtensions? BuildFunctionCallPartBag(
+        bool grammarText,
+        ResponsesFunctionCallItem item)
     {
-        var hasNamespace = !string.IsNullOrEmpty(ns);
-        if (!grammarText && !hasNamespace) return null;
+        var hasNamespace = !string.IsNullOrEmpty(item.Namespace);
+        var hasExtras = item.Id is not null
+            || item.Status is not null
+            || item.ExtensionData is { Count: > 0 };
+        if (!grammarText && !hasNamespace && !hasExtras) return null;
 
         using var buffer = new MemoryStream();
         using (var w = new Utf8JsonWriter(buffer))
@@ -342,13 +379,14 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
             if (grammarText)
                 w.WriteBoolean("grammar_text_arguments", true);
             if (hasNamespace)
-                w.WriteString("namespace", ns);
+                w.WriteString("namespace", item.Namespace);
+            WriteItemExtras(w, item.Id, item.Status, phase: null, item.ExtensionData);
             w.WriteEndObject();
         }
         using var doc = JsonDocument.Parse(buffer.ToArray());
         return new ProviderExtensions
         {
-            ByProvider = new Dictionary<string, JsonElement> { [OpenAiProviderKey] = doc.RootElement.Clone() },
+            ByProvider = new Dictionary<string, JsonElement> { [ProviderExtensions.OpenAiNamespace] = doc.RootElement.Clone() },
         };
     }
 
@@ -361,19 +399,20 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
     /// </summary>
     private static ProviderExtensions? BuildOpenAiBag(
         ResponsesRequest req,
-        IReadOnlyList<(int AfterMessageIndex, JsonElement Raw)> passthroughItems)
+        IReadOnlyList<(int AfterMessageIndex, JsonElement Raw, int? SystemGroup)> passthroughItems)
     {
         var hasAny =
             req.Tools is not null
             || req.ToolChoice is not null
             || req.ParallelToolCalls is not null
             || req.Store is not null
-            || req.Include is { Count: > 0 }
-            || !string.IsNullOrEmpty(req.PromptCacheKey)
-            || !string.IsNullOrEmpty(req.ServiceTier)
+            || req.Include is not null
+            || req.PromptCacheKey is not null
+            || req.ServiceTier is not null
             || req.Text is not null
-            || req.Reasoning?.Summary is { Length: > 0 }
+            || req.Reasoning is not null
             || req.ClientMetadata is not null
+            || req.ExtensionData is { Count: > 0 }
             || passthroughItems.Count > 0;
         if (!hasAny) return null;
 
@@ -395,23 +434,33 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                 w.WriteBoolean("parallel_tool_calls", ptc);
             if (req.Store is { } store)
                 w.WriteBoolean("store", store);
-            if (req.Include is { Count: > 0 })
+            if (req.Include is not null)
             {
                 w.WriteStartArray("include");
                 foreach (var inc in req.Include) w.WriteStringValue(inc);
                 w.WriteEndArray();
             }
-            if (!string.IsNullOrEmpty(req.PromptCacheKey))
+            if (req.PromptCacheKey is not null)
                 w.WriteString("prompt_cache_key", req.PromptCacheKey);
-            if (!string.IsNullOrEmpty(req.ServiceTier))
+            if (req.ServiceTier is not null)
                 w.WriteString("service_tier", req.ServiceTier);
             if (req.Text is { } text)
             {
                 w.WritePropertyName("text");
                 JsonSerializer.Serialize(w, text, JsonContext.Default.TextControls);
             }
-            if (req.Reasoning?.Summary is { Length: > 0 } summary)
-                w.WriteString("reasoning_summary", summary);
+            if (req.Reasoning is { } reasoning)
+            {
+                w.WriteBoolean("reasoning_present", true);
+                if (reasoning.Summary is not null)
+                    w.WriteString("reasoning_summary", reasoning.Summary);
+                if (reasoning.Context.ValueKind != JsonValueKind.Undefined)
+                {
+                    w.WritePropertyName("reasoning_context");
+                    reasoning.Context.WriteTo(w);
+                }
+                WriteExtraObject(w, "reasoning_extra", reasoning.ExtensionData);
+            }
             if (req.ClientMetadata is { } cm)
             {
                 w.WritePropertyName("client_metadata");
@@ -427,23 +476,26 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
             if (passthroughItems.Count > 0)
             {
                 w.WriteStartArray("passthrough_items");
-                foreach (var (after, raw) in passthroughItems)
+                foreach (var (after, raw, systemGroup) in passthroughItems)
                 {
                     w.WriteStartObject();
                     w.WriteNumber("after", after);
+                    if (systemGroup is { } group)
+                        w.WriteNumber("system_group", group);
                     w.WritePropertyName("raw");
                     w.WriteRawValue(raw.GetRawText());
                     w.WriteEndObject();
                 }
                 w.WriteEndArray();
             }
+            WriteExtraObject(w, "request_extra", req.ExtensionData);
             w.WriteEndObject();
         }
 
         using var doc = JsonDocument.Parse(buffer.ToArray());
         return new ProviderExtensions
         {
-            ByProvider = new Dictionary<string, JsonElement> { [OpenAiProviderKey] = doc.RootElement.Clone() },
+            ByProvider = new Dictionary<string, JsonElement> { [ProviderExtensions.OpenAiNamespace] = doc.RootElement.Clone() },
         };
     }
 
@@ -455,36 +507,38 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
     /// all three are absent — keeping every Claude Code block inert (H1). Same AOT-clean
     /// <see cref="Utf8JsonWriter"/> style as <see cref="BuildOpenAiBag"/>.
     /// </summary>
-    private static ProviderExtensions? BuildReasoningPartBag(
-        string? id,
-        JsonElement? summary,
-        JsonElement? content)
+    private static ProviderExtensions? BuildReasoningPartBag(ResponsesReasoningItem item)
     {
-        if (string.IsNullOrEmpty(id) && summary is null && content is null) return null;
+        if (item.Id is null
+            && item.Summary.ValueKind == JsonValueKind.Undefined
+            && item.Content.ValueKind == JsonValueKind.Undefined
+            && item.ExtensionData is not { Count: > 0 })
+            return null;
 
         using var buffer = new MemoryStream();
         using (var w = new Utf8JsonWriter(buffer))
         {
             w.WriteStartObject();
-            if (!string.IsNullOrEmpty(id))
-                w.WriteString("reasoning_id", id);
-            if (summary is { } summaryValue)
+            if (item.Id is not null)
+                w.WriteString("reasoning_id", item.Id);
+            if (item.Summary.ValueKind != JsonValueKind.Undefined)
             {
                 w.WritePropertyName("reasoning_summary");
-                summaryValue.WriteTo(w);
+                item.Summary.WriteTo(w);
             }
-            if (content is { } contentValue)
+            if (item.Content.ValueKind != JsonValueKind.Undefined)
             {
                 w.WritePropertyName("reasoning_content");
-                contentValue.WriteTo(w);
+                item.Content.WriteTo(w);
             }
+            WriteExtraObject(w, "reasoning_extra", item.ExtensionData);
             w.WriteEndObject();
         }
 
         using var doc = JsonDocument.Parse(buffer.ToArray());
         return new ProviderExtensions
         {
-            ByProvider = new Dictionary<string, JsonElement> { [OpenAiProviderKey] = doc.RootElement.Clone() },
+            ByProvider = new Dictionary<string, JsonElement> { [ProviderExtensions.OpenAiNamespace] = doc.RootElement.Clone() },
         };
     }
 
@@ -496,12 +550,152 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
     /// without needing to know which client produced the request. A Claude Code
     /// tool_result never carries it, so its blocks stay interpretable.
     /// </summary>
-    private static ProviderExtensions BuildOpaqueToolOutputBag()
+    private static ProviderExtensions BuildOpaqueToolOutputBag(
+        ResponsesFunctionCallOutputItem item)
     {
-        using var doc = JsonDocument.Parse("{\"opaque_tool_output\":true}");
+        using var buffer = new MemoryStream();
+        using (var w = new Utf8JsonWriter(buffer))
+        {
+            w.WriteStartObject();
+            w.WriteBoolean("opaque_tool_output", true);
+            WriteItemExtras(w, item.Id, item.Status, phase: null, item.ExtensionData);
+            w.WriteEndObject();
+        }
+        using var doc = JsonDocument.Parse(buffer.ToArray());
         return new ProviderExtensions
         {
-            ByProvider = new Dictionary<string, JsonElement> { [OpenAiProviderKey] = doc.RootElement.Clone() },
+            ByProvider = new Dictionary<string, JsonElement> { [ProviderExtensions.OpenAiNamespace] = doc.RootElement.Clone() },
+        };
+    }
+
+    private static ProviderExtensions? BuildMessageBag(ResponsesMessageItem item)
+    {
+        if (item.Id is null
+            && item.Phase is null
+            && item.Status is null
+            && item.ExtensionData is not { Count: > 0 })
+            return null;
+
+        using var buffer = new MemoryStream();
+        using (var w = new Utf8JsonWriter(buffer))
+        {
+            w.WriteStartObject();
+            WriteItemExtras(w, item.Id, item.Status, item.Phase, item.ExtensionData);
+            w.WriteEndObject();
+        }
+        return WrapOpenAiBag(buffer);
+    }
+
+    private static ProviderExtensions BuildSystemSourceBag(
+        int group,
+        int part,
+        IReadOnlyDictionary<string, JsonElement>? contentExtras)
+    {
+        using var buffer = new MemoryStream();
+        using (var w = new Utf8JsonWriter(buffer))
+        {
+            w.WriteStartObject();
+            w.WriteNumber("responses_system_group", group);
+            w.WriteNumber("responses_system_part", part);
+            WriteExtraObject(w, "responses_content_extra", contentExtras);
+            w.WriteEndObject();
+        }
+        return WrapOpenAiBag(buffer)!;
+    }
+
+    private static ProviderExtensions? BuildContentPartBag(ResponsesContentPart part)
+    {
+        JsonElement? annotations = null;
+        string? detail = null;
+        IReadOnlyDictionary<string, JsonElement>? extras = null;
+        switch (part)
+        {
+            case ResponsesInputTextPart input:
+                extras = input.ExtensionData;
+                break;
+            case ResponsesOutputTextPart output:
+                annotations = output.Annotations;
+                extras = output.ExtensionData;
+                break;
+            case ResponsesInputImagePart image:
+                detail = image.Detail;
+                extras = image.ExtensionData;
+                break;
+        }
+        if (annotations is null && detail is null && extras is not { Count: > 0 })
+            return null;
+
+        using var buffer = new MemoryStream();
+        using (var w = new Utf8JsonWriter(buffer))
+        {
+            w.WriteStartObject();
+            w.WriteStartObject("responses_content_extra");
+            if (annotations is { } annotationValue)
+            {
+                w.WritePropertyName("annotations");
+                annotationValue.WriteTo(w);
+            }
+            if (detail is not null)
+                w.WriteString("detail", detail);
+            WriteExtensionFields(w, extras);
+            w.WriteEndObject();
+            w.WriteEndObject();
+        }
+        return WrapOpenAiBag(buffer);
+    }
+
+    private static JsonElement SerializeKnownInputItem(ResponsesInputItem item) =>
+        JsonSerializer.SerializeToElement(item, JsonContext.Default.ResponsesInputItem);
+
+    private static void WriteItemExtras(
+        Utf8JsonWriter w,
+        string? id,
+        string? status,
+        string? phase,
+        IReadOnlyDictionary<string, JsonElement>? extras)
+    {
+        if (id is null && status is null && phase is null && extras is not { Count: > 0 })
+            return;
+        w.WriteStartObject("responses_item_extra");
+        if (id is not null) w.WriteString("id", id);
+        if (phase is not null) w.WriteString("phase", phase);
+        if (status is not null) w.WriteString("status", status);
+        WriteExtensionFields(w, extras);
+        w.WriteEndObject();
+    }
+
+    private static void WriteExtraObject(
+        Utf8JsonWriter w,
+        string name,
+        IReadOnlyDictionary<string, JsonElement>? extras)
+    {
+        if (extras is not { Count: > 0 }) return;
+        w.WriteStartObject(name);
+        WriteExtensionFields(w, extras);
+        w.WriteEndObject();
+    }
+
+    private static void WriteExtensionFields(
+        Utf8JsonWriter w,
+        IReadOnlyDictionary<string, JsonElement>? extras)
+    {
+        if (extras is null) return;
+        foreach (var (name, value) in extras)
+        {
+            w.WritePropertyName(name);
+            value.WriteTo(w);
+        }
+    }
+
+    private static ProviderExtensions? WrapOpenAiBag(MemoryStream buffer)
+    {
+        using var doc = JsonDocument.Parse(buffer.ToArray());
+        return new ProviderExtensions
+        {
+            ByProvider = new Dictionary<string, JsonElement>
+            {
+                [ProviderExtensions.OpenAiNamespace] = doc.RootElement.Clone(),
+            },
         };
     }
 }
