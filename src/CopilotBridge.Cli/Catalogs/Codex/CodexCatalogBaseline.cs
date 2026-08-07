@@ -186,8 +186,7 @@ internal static class CodexCatalogBaselineValidator
                 throw InvalidEntry(index, "must have a non-empty slug");
             var slug = slugProperty.GetString()!;
             if (!slugs.Add(slug)) throw InvalidEntry(index, "duplicates an earlier slug");
-            if (!model.TryGetProperty("base_instructions", out var instructions) ||
-                instructions.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(instructions.GetString()))
+            if (!HasInstructionSource(model))
                 throw InvalidEntry(index, "has no instruction source");
             if (!TryReadPositiveInt(model, "context_window", out var contextWindow) ||
                 !TryReadPositiveInt(model, "max_context_window", out var maximumWindow) || maximumWindow < contextWindow)
@@ -217,6 +216,27 @@ internal static class CodexCatalogBaselineValidator
 
     private static InvalidDataException InvalidEntry(int index, string reason) =>
         new($"Codex catalog entry at index {index} {reason}.");
+
+    /// <summary>
+    /// Codex relocated a model's prompt in the 0.147.0 catalog: entries through
+    /// 0.146.0 / 0.147.0-alpha.* carry a top-level <c>base_instructions</c>
+    /// string, while 0.147.0 dropped it in favour of
+    /// <c>model_messages.instructions_template</c> (verified on the wire for all
+    /// eight models of both shapes, and in codex.exe's own embedded catalog).
+    /// Either form is a complete instruction source; requiring the old one
+    /// rejected every current catalog outright. The bridge only checks that a
+    /// prompt exists — the value itself stays opaque Codex-owned data.
+    /// </summary>
+    private static bool HasInstructionSource(JsonElement model) =>
+        IsNonEmptyString(model, "base_instructions") ||
+        model.TryGetProperty("model_messages", out var messages) &&
+            messages.ValueKind == JsonValueKind.Object &&
+            IsNonEmptyString(messages, "instructions_template");
+
+    private static bool IsNonEmptyString(JsonElement owner, string name) =>
+        owner.TryGetProperty(name, out var value) &&
+        value.ValueKind == JsonValueKind.String &&
+        !string.IsNullOrWhiteSpace(value.GetString());
 
     private static bool IsHex(string? value, int expectedLength) =>
         value is { } && value.Length == expectedLength &&

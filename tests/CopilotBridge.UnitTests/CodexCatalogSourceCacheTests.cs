@@ -236,8 +236,10 @@ public sealed class CodexCatalogSourceCacheTests
 
     [Theory]
     [InlineData("Timeout")]
-    [InlineData("NotFound")]
-    public async Task ColdFailureHasNoCrossVersionOrEmbeddedFallback(string statusName)
+    [InlineData("TransportFailure")]
+    [InlineData("Throttled")]
+    [InlineData("ServerError")]
+    public async Task ColdTransientFailureHasNoCrossVersionOrBundledFallback(string statusName)
     {
         var status = Enum.Parse<CodexCatalogSourceStatus>(statusName);
         var source = new FakeSource((_, _, _) => Task.FromResult(new CodexCatalogSourceResult
@@ -252,6 +254,36 @@ public sealed class CodexCatalogSourceCacheTests
         Assert.False(result.Success);
         Assert.Null(result.Baseline);
         Assert.Equal(status.ToString(), result.Outcome);
+    }
+
+    [Fact]
+    public async Task ColdConfirmedAbsenceFallsBackToTheBundledSnapshotWhenDisabledStaysClosed()
+    {
+        // A 404 is positive information (this tag does not exist), so it may
+        // serve the bundled snapshot; the operator can still opt out.
+        var source = new FakeSource((_, _, _) => Task.FromResult(new CodexCatalogSourceResult
+        {
+            Status = CodexCatalogSourceStatus.NotFound,
+        }));
+
+        var enabled = await Cache(source, new MemoryDisk(), new ManualTimeProvider(Epoch))
+            .ResolveAsync("0.147.0");
+
+        Assert.True(enabled.Success);
+        Assert.NotNull(enabled.Baseline);
+
+        var disabled = await Cache(
+                new FakeSource((_, _, _) => Task.FromResult(new CodexCatalogSourceResult
+                {
+                    Status = CodexCatalogSourceStatus.NotFound,
+                })),
+                new MemoryDisk(),
+                new ManualTimeProvider(Epoch),
+                builtinFallbackEnabled: false)
+            .ResolveAsync("0.147.0");
+
+        Assert.False(disabled.Success);
+        Assert.Null(disabled.Baseline);
     }
 
     [Fact]
@@ -415,6 +447,7 @@ public sealed class CodexCatalogSourceCacheTests
             CreateHybridCache(),
             source,
             new MemoryDisk(),
+            CodexBundledCatalog.Load(),
             Options.Create(new CodexModelCatalogOptions
             {
                 SourceTtlHours = 24,
@@ -461,16 +494,21 @@ public sealed class CodexCatalogSourceCacheTests
         ICodexCatalogSourceClient source,
         ICodexCatalogDiskStore disk,
         TimeProvider clock,
-        int maxRetainedVersions = 32) => new(
+        int maxRetainedVersions = 32,
+        bool builtinFallbackEnabled = true,
+        int absenceTtlHours = 6) => new(
             CreateHybridCache(),
             source,
             disk,
+            CodexBundledCatalog.Load(),
             Options.Create(new CodexModelCatalogOptions
             {
                 SourceTtlHours = 24,
                 MaxSourceBytes = 4 * 1024 * 1024,
                 RetentionDays = 90,
                 MaxRetainedVersions = maxRetainedVersions,
+                BuiltinFallbackEnabled = builtinFallbackEnabled,
+                AbsenceTtlHours = absenceTtlHours,
             }),
             NullLogger<CodexCatalogSourceCache>.Instance,
             clock);

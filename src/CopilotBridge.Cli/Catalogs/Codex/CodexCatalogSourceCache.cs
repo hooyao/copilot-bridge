@@ -67,16 +67,29 @@ internal interface ICodexCatalogSourceCache
 }
 
 internal sealed class CodexCatalogSourceCache(
-    HybridCache memory,
-    ICodexCatalogSourceClient source,
+    HybridCache memory,    ICodexCatalogSourceClient source,
     ICodexCatalogDiskStore disk,
+    CodexBundledCatalog bundled,
     IOptions<CodexModelCatalogOptions> options,
     ILogger<CodexCatalogSourceCache> log,
     TimeProvider? timeProvider = null) : ICodexCatalogSourceCache
 {
+    /// <summary>Distinct resolve outcome identifying a compile-time bundled response.</summary>
+    internal const string BuiltinFallbackOutcome = "builtin-fallback";
+
     private readonly CodexModelCatalogOptions _options = options.Value;
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private int _cleanupRunning;
+
+    // Confirmed upstream absence, keyed by exact canonical version. Deliberately
+    // process-local and never persisted: it suppresses re-fetching a tag that
+    // does not exist, but must not outlive the process or shadow a tag once it
+    // is published. Only this observation is cached — never the bundled bytes.
+    // Bounded because client_version is request-controlled: without a cap, a
+    // caller could mint unbounded distinct valid versions that all 404 and pin
+    // an entry each for the process lifetime.
+    private const int MaxConfirmedAbsentVersions = 64;
+    private readonly Dictionary<string, DateTimeOffset> _confirmedAbsent = new(StringComparer.Ordinal);
 
     public async ValueTask<CodexCatalogResolution> ResolveAsync(
         string? clientVersion,
@@ -84,6 +97,18 @@ internal sealed class CodexCatalogSourceCache(
     {
         if (!CodexClientVersion.TryParse(clientVersion, out var version))
             return Failure("invalid", "client_version must be one canonical semantic version, for example 0.147.0-alpha.1.2.");
+
+        // Checked before HybridCache because a bundled resolution is never a
+        // cache entry; going through the factory would either publish it or
+        // throw it away on every request. A validated entry still outranks the
+        // snapshot, so the disk store — which another bridge process may have
+        // populated during this window — is consulted before short-circuiting.
+        if (TryUseConfirmedAbsence(version))
+        {
+            if (await disk.TryLoadAsync(version, cancellationToken) is null)
+                return BundledFallback(version, "absent-cached", 0);
+            ForgetConfirmedAbsence(version);
+        }
 
         var key = CacheKey(version);
         var factoryRan = false;
@@ -218,8 +243,88 @@ internal sealed class CodexCatalogSourceCache(
 
         if (lastKnownGood is not null)
             return Stale(version, lastKnownGood, fetched.Status.ToString(), stopwatch.ElapsedMilliseconds);
+
+        // A 404 is positive information — this tag does not exist — unlike a
+        // timeout, which is merely absence of information. Only the former
+        // enables the bundled snapshot; every transient failure still fails
+        // closed so an outage is never silently downgraded.
+        if (fetched.Status == CodexCatalogSourceStatus.NotFound)
+        {
+            // Recorded only when the fallback can act on it: with the fallback
+            // disabled the observation is never read, so keeping it would just
+            // retain request-controlled keys for the process lifetime.
+            if (_options.BuiltinFallbackEnabled)
+            {
+                RecordConfirmedAbsence(version);
+                return BundledFallback(version, "absent-confirmed", stopwatch.ElapsedMilliseconds);
+            }
+        }
+
         LogFailure(version, fetched.Status.ToString(), "unavailable", stopwatch.ElapsedMilliseconds);
         return Failure(fetched.Status.ToString(), fetched.Error ?? "Exact Codex catalog source is unavailable.");
+    }
+
+    private bool TryUseConfirmedAbsence(CodexClientVersion version)
+    {
+        if (!_options.BuiltinFallbackEnabled) return false;
+        var key = version.ToString();
+        lock (_confirmedAbsent)
+        {
+            if (!_confirmedAbsent.TryGetValue(key, out var observedAt)) return false;
+            if (!IsExpiredAbsence(observedAt)) return true;
+            _confirmedAbsent.Remove(key);
+            return false;
+        }
+    }
+
+    private void ForgetConfirmedAbsence(CodexClientVersion version)
+    {
+        lock (_confirmedAbsent) _confirmedAbsent.Remove(version.ToString());
+    }
+
+    private void RecordConfirmedAbsence(CodexClientVersion version)
+    {
+        lock (_confirmedAbsent)
+        {
+            // Sweep on write so expired observations for versions nobody asks
+            // about again cannot accumulate, then cap what survives — the key
+            // space is request-controlled, and the cap only costs a re-fetch.
+            if (_confirmedAbsent.Count >= MaxConfirmedAbsentVersions)
+            {
+                foreach (var expired in _confirmedAbsent
+                             .Where(entry => IsExpiredAbsence(entry.Value))
+                             .Select(entry => entry.Key)
+                             .ToArray())
+                    _confirmedAbsent.Remove(expired);
+            }
+            if (_confirmedAbsent.Count >= MaxConfirmedAbsentVersions)
+            {
+                var oldest = _confirmedAbsent.OrderBy(entry => entry.Value).First().Key;
+                _confirmedAbsent.Remove(oldest);
+            }
+            _confirmedAbsent[version.ToString()] = _time.GetUtcNow();
+        }
+    }
+
+    private bool IsExpiredAbsence(DateTimeOffset observedAt) =>
+        _time.GetUtcNow() - observedAt >= TimeSpan.FromHours(_options.EffectiveAbsenceTtlHours);
+
+    // Returns the bundled snapshot WITHOUT an Entry, so it can never be
+    // promoted to disk or published as a validated cache entry for the
+    // requested version. Its Baseline carries the snapshot's own captured
+    // identity, so the projected ETag differs from any official response.
+    private CodexCatalogResolution BundledFallback(CodexClientVersion version, string sourceOutcome, long elapsed)
+    {
+        log.LogInformation(
+            "Codex catalog resolved version={ClientVersion} cache={CacheOutcome} fresh={Fresh} source={SourceOutcome} validation={ValidationOutcome} snapshot_version={SnapshotVersion} digest={Digest} elapsed_ms={ElapsedMs}",
+            version, BuiltinFallbackOutcome, false, sourceOutcome, "validated",
+            bundled.CapturedVersion, Abbreviate(bundled.Baseline.SourceDigest), elapsed);
+        return new CodexCatalogResolution
+        {
+            Success = true,
+            Baseline = bundled.Baseline,
+            Outcome = BuiltinFallbackOutcome,
+        };
     }
 
     private CodexCatalogCacheEntry RefreshMetadata(CodexCatalogCacheEntry entry, string? etag)
@@ -276,9 +381,11 @@ internal sealed class CodexCatalogSourceCache(
     // Throwing prevents HybridCache from publishing failures or stale fallback as a
     // fresh L1 entry. The exception itself is shared by HybridCache's stampede task,
     // so the owner and every coalesced waiter observe the same stale outcome without
-    // any waiter launching a second refresh.
+    // any waiter launching a second refresh. The bundled fallback is excluded for the
+    // same reason and one more: caching a compile-time snapshot under the requested
+    // version would make the bridge prefer it over the real tag once published.
     private static CodexCatalogResolution RequireCacheable(CodexCatalogResolution resolution) =>
-        resolution.Success && resolution.Outcome != "stale"
+        resolution.Success && resolution.Outcome != "stale" && resolution.Outcome != BuiltinFallbackOutcome
             ? resolution
             : throw new CatalogResolutionException(resolution);
 

@@ -73,6 +73,19 @@
     <InternalsVisibleTo Include="copilot-unittests" />
   </ItemGroup>
 
+  <!-- The compile-time Codex catalog snapshot served when a client's exact tag
+       is confirmed absent upstream (OpenAI ships clients before tagging the
+       release). Embedded rather than shipped as a loose file so the publish
+       output stays a single self-contained exe under Native AOT. The logical
+       names are pinned so a folder rename cannot silently break resolution;
+       CodexBundledCatalog fails at startup if either resource is missing. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Catalogs\Codex\Bundled\models.json"
+                      LogicalName="CopilotBridge.Cli.Catalogs.Codex.Bundled.models.json" />
+    <EmbeddedResource Include="Catalogs\Codex\Bundled\capture.json"
+                      LogicalName="CopilotBridge.Cli.Catalogs.Codex.Bundled.capture.json" />
+  </ItemGroup>
+
   <!-- HybridCache 10.8.0's built-in DefaultJsonSerializerFactory calls
        reflection-based STJ APIs. AddHybridCache registers it with TryAdd, and
        the bridge registers ExplicitOnlyHybridCacheSerializerFactory first, so

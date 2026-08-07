@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "client_version": "0.147.0-alpha.1.2",
+  "source_url": "https://raw.githubusercontent.com/openai/codex/rust-v0.147.0-alpha.1.2/codex-rs/models-manager/models.json",
+  "source_etag": "\"e8e15083578138b8116b151f991becf2ed9b2f5bf7999c6c54f548e700800528\"",
+  "sha256": "20c93c0e11b1fd1be7595e0f533e9928453cb5565716e2325bee438731f1befc",
+  "captured_at_utc": "2026-08-07T02:31:00.0000000+00:00"
+}

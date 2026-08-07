@@ -57,6 +57,16 @@ internal sealed class CodexCatalogSourceClient(
                 Status = CodexCatalogSourceStatus.TransportFailure,
                 Error = "test-forced Codex catalog source failure",
             };
+        // Distinct from the transport-failure seam above: this simulates a tag that
+        // does not exist upstream, which is the ONLY status permitted to reach the
+        // bundled fallback. Behavior tests need a client version whose tag is
+        // genuinely absent, and a real codex.exe always reports its own published
+        // version, so the absence has to be injected here.
+        if (string.Equals(
+                Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_ABSENT_CODEX_CATALOG_SOURCE"),
+                "1",
+                StringComparison.Ordinal))
+            return new() { Status = CodexCatalogSourceStatus.NotFound };
 #endif
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(_options.SourceTimeoutSeconds));
