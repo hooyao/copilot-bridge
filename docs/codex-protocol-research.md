@@ -365,10 +365,11 @@ body probes:
 
 - every request carries `reasoning.context:"all_turns"`; Codex source sets it
   only for Responses Lite and documents omission as the `current_turn` default;
-  restoring it on the real body returned 200;
+  restoring it on the real body returned 200, and an isolated explicit
+  `context:null` request also returned 200;
 - input messages carry `id` and assistant `phase`; valid `msg*` ids, phase, and
   `function_call_output.id` returned 200 when restored together;
-- an older assistant `id:"item_0"` is invalid on Copilot `/responses` and returns
+- an older assistant or developer `id:"item_0"` is invalid on Copilot `/responses` and returns
   400 (`Expected an ID that begins with 'msg'`), so only that field requires a
   narrow destination correction;
 - developer messages are accepted in-place; a complete current request containing
@@ -423,7 +424,7 @@ What Codex sends (Track B) × what Copilot `/responses` accepts (Track A) → br
 | `tools: image_generation` | (§3.5) | **400** all 6 (§2.4) | **drop** |
 | vision `input_image` | data-URL image part | 200 on 5 vision models (§2.6) | passthrough; set `Copilot-Vision-Request: true` |
 | `tool_choice` | `"auto"` (§3.2) | 200 | passthrough |
-| message `id` / `phase` | valid `msg*` ids plus commentary/final phase; older assistant history may use `item_0` | valid metadata 200; `item_0` id 400 (§3.4.1) | preserve valid metadata; omit only rejected id and report coercion |
+| message `id` / `phase` | valid `msg*` ids plus commentary/final phase; older message history may use `item_0` | valid metadata 200; assistant and developer `item_0` id 400 (§3.4.1) | preserve valid metadata; omit only rejected id on every message path and report coercion |
 | `function_call_output.output` array | ordered native content items (0.147 desktop) | real captured array 200 (§3.4.1) | passthrough unchanged; never use Claude flattening |
 | `stream` | always `true` (§3.2) | streams cleanly (§2.5) | passthrough |
 | SSE response | parser tolerant, needs terminal `response.completed`, no `[DONE]` handling (§3.3) | ends at `response.completed`, **no `[DONE]`** (§2.5) | **passthrough — no DONE-filter needed** |

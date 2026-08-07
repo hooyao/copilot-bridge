@@ -454,8 +454,11 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                 w.WriteBoolean("reasoning_present", true);
                 if (reasoning.Summary is not null)
                     w.WriteString("reasoning_summary", reasoning.Summary);
-                if (reasoning.Context is not null)
-                    w.WriteString("reasoning_context", reasoning.Context);
+                if (reasoning.Context.ValueKind != JsonValueKind.Undefined)
+                {
+                    w.WritePropertyName("reasoning_context");
+                    reasoning.Context.WriteTo(w);
+                }
                 WriteExtraObject(w, "reasoning_extra", reasoning.ExtensionData);
             }
             if (req.ClientMetadata is { } cm)

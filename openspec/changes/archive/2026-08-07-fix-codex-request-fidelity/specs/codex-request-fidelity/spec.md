@@ -16,6 +16,11 @@ Insignificant JSON serialization differences such as whitespace, escaping, and o
 - **THEN** the Copilot request contains the same field and value
 - **AND** the bridge does not silently fall back to the backend's `current_turn` default.
 
+#### Scenario: Explicit null reasoning context remains present
+- **WHEN** the client sends `reasoning.context: null`
+- **THEN** the Copilot request still contains the `context` property with JSON null
+- **AND** the bridge does not collapse explicit null into an absent property.
+
 #### Scenario: Developer messages remain in conversation position
 - **WHEN** the input contains developer or system messages before, between, or after conversation items
 - **THEN** those input items remain at the same positions with the same roles, content, and valid metadata

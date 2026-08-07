@@ -124,10 +124,11 @@ internal sealed class ResponsesReasoningItem : ResponsesInputItem
     public string? Id { get; init; }
     /// <summary>Opaque encrypted reasoning blob — byte-faithful, never mutated.</summary>
     public string? EncryptedContent { get; init; }
-    /// <summary>Summary parts, if present — held opaque.</summary>
-    /// <summary>Undefined means absent; Null remains an explicitly present JSON null.</summary>
+    /// <summary>Summary parts; Undefined means absent and Null remains explicit JSON null.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public JsonElement Summary { get; init; }
     /// <summary>Undefined means absent; Null remains an explicitly present JSON null.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public JsonElement Content { get; init; }
 
 }

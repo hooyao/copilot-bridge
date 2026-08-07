@@ -183,7 +183,7 @@ internal static class ResponsesRequestBuilder
             var ptIdx = 0;
             var emittedMsgs = 0;
             ptIdx = WritePassthroughUpTo(
-                w, passthrough, systemGroups, ptIdx, emittedMsgs);
+                w, passthrough, systemGroups, ptIdx, emittedMsgs, ref mutations);
             foreach (var msg in ir.Messages)
             {
                 WriteInputItem(
@@ -195,7 +195,7 @@ internal static class ResponsesRequestBuilder
                     ref mutations);
                 emittedMsgs++;
                 ptIdx = WritePassthroughUpTo(
-                    w, passthrough, systemGroups, ptIdx, emittedMsgs);
+                    w, passthrough, systemGroups, ptIdx, emittedMsgs, ref mutations);
             }
             // Any remaining passthrough items whose `after` exceeds the message count
             // (e.g. trailing agent_message) — emit them at the end. Raw-value, not
@@ -203,7 +203,7 @@ internal static class ResponsesRequestBuilder
             // re-escape, e.g. an encrypted_content blob; GetRawText keeps them verbatim).
             while (ptIdx < passthrough.Count)
             {
-                WritePassthroughItem(w, passthrough[ptIdx], systemGroups);
+                WritePassthroughItem(w, passthrough[ptIdx], systemGroups, ref mutations);
                 ptIdx++;
             }
             w.WriteEndArray();
@@ -220,7 +220,7 @@ internal static class ResponsesRequestBuilder
                 && !string.Equals(inboundEffort, outboundEffort, StringComparison.OrdinalIgnoreCase))
                 mutations |= ResponsesRequestMutation.EffortCoerced;
             var reasoningSummary = TryGetBagString(bag, "reasoning_summary");
-            var reasoningContext = TryGetBagString(bag, "reasoning_context");
+            var reasoningContext = TryGetBagValue(bag, "reasoning_context");
             var reasoningPresent = TryGetBagBoolean(bag, "reasoning_present");
             var reasoningExtras = TryGetBagObject(bag, "reasoning_extra");
             if (effort is not null
@@ -235,8 +235,11 @@ internal static class ResponsesRequestBuilder
                     w.WriteString("effort", effort);
                 if (reasoningSummary is not null)
                     w.WriteString("summary", reasoningSummary);
-                if (reasoningContext is not null)
-                    w.WriteString("context", reasoningContext);
+                if (reasoningContext is { } contextValue)
+                {
+                    w.WritePropertyName("context");
+                    contextValue.WriteTo(w);
+                }
                 WriteObjectProperties(
                     w, reasoningExtras, ProviderExtraScope.Reasoning, ref mutations);
                 w.WriteEndObject();
@@ -361,11 +364,12 @@ internal static class ResponsesRequestBuilder
         IReadOnlyList<PassthroughItem> passthrough,
         IReadOnlyDictionary<int, IReadOnlyList<string>> systemGroups,
         int ptIdx,
-        int emittedMsgs)
+        int emittedMsgs,
+        ref ResponsesRequestMutation mutations)
     {
         while (ptIdx < passthrough.Count && passthrough[ptIdx].After <= emittedMsgs)
         {
-            WritePassthroughItem(w, passthrough[ptIdx], systemGroups);
+            WritePassthroughItem(w, passthrough[ptIdx], systemGroups, ref mutations);
             ptIdx++;
         }
         return ptIdx;
@@ -374,15 +378,16 @@ internal static class ResponsesRequestBuilder
     private static void WritePassthroughItem(
         Utf8JsonWriter w,
         PassthroughItem item,
-        IReadOnlyDictionary<int, IReadOnlyList<string>> systemGroups)
+        IReadOnlyDictionary<int, IReadOnlyList<string>> systemGroups,
+        ref ResponsesRequestMutation mutations)
     {
         if (item.SystemGroup is not { } group
             || !systemGroups.TryGetValue(group, out var texts))
         {
-            w.WriteRawValue(item.Raw.GetRawText());
+            WriteRawPassthroughItem(w, item.Raw, ref mutations);
             return;
         }
-        WriteSystemSourceItem(w, item.Raw, texts);
+        WriteSystemSourceItem(w, item.Raw, texts, ref mutations);
     }
 
     private static IReadOnlyDictionary<int, IReadOnlyList<string>> ReadResponsesSystemGroups(
@@ -408,7 +413,8 @@ internal static class ResponsesRequestBuilder
     private static void WriteSystemSourceItem(
         Utf8JsonWriter w,
         JsonElement raw,
-        IReadOnlyList<string> texts)
+        IReadOnlyList<string> texts,
+        ref ResponsesRequestMutation mutations)
     {
         if (raw.ValueKind != JsonValueKind.Object)
         {
@@ -416,9 +422,15 @@ internal static class ResponsesRequestBuilder
             return;
         }
 
+        var messageItem = IsResponsesMessageItem(raw);
         w.WriteStartObject();
         foreach (var property in raw.EnumerateObject())
         {
+            if (messageItem && ShouldDropMessageId(property))
+            {
+                mutations |= ResponsesRequestMutation.InvalidMessageIdDropped;
+                continue;
+            }
             if (property.Name != "content" || property.Value.ValueKind != JsonValueKind.Array)
             {
                 property.WriteTo(w);
@@ -453,6 +465,42 @@ internal static class ResponsesRequestBuilder
         }
         w.WriteEndObject();
     }
+
+    private static void WriteRawPassthroughItem(
+        Utf8JsonWriter writer,
+        JsonElement raw,
+        ref ResponsesRequestMutation mutations)
+    {
+        if (!IsResponsesMessageItem(raw))
+        {
+            writer.WriteRawValue(raw.GetRawText());
+            return;
+        }
+
+        writer.WriteStartObject();
+        foreach (var property in raw.EnumerateObject())
+        {
+            if (ShouldDropMessageId(property))
+            {
+                mutations |= ResponsesRequestMutation.InvalidMessageIdDropped;
+                continue;
+            }
+            property.WriteTo(writer);
+        }
+        writer.WriteEndObject();
+    }
+
+    private static bool IsResponsesMessageItem(JsonElement raw) =>
+        raw.ValueKind == JsonValueKind.Object
+        && raw.TryGetProperty("type", out var type)
+        && type.ValueKind == JsonValueKind.String
+        && type.GetString() == "message";
+
+    private static bool ShouldDropMessageId(JsonProperty property) =>
+        property.Name == "id"
+        && property.Value.ValueKind == JsonValueKind.String
+        && property.Value.GetString() is { } id
+        && !id.StartsWith("msg", StringComparison.Ordinal);
 
     private static void WriteInputItem(
         Utf8JsonWriter w,
@@ -1032,6 +1080,12 @@ internal static class ResponsesRequestBuilder
             ? value
             : null;
 
+    private static JsonElement? TryGetBagValue(JsonElement? bag, string name) =>
+        bag is { ValueKind: JsonValueKind.Object } obj
+        && obj.TryGetProperty(name, out var value)
+            ? value
+            : null;
+
     private enum ProviderExtraScope { Request, Reasoning }
 
     private static void WriteObjectProperties(
@@ -1098,12 +1152,10 @@ internal static class ResponsesRequestBuilder
             }
             if (validateMessageId && property.Name == "id")
             {
-                if (property.Value.ValueKind == JsonValueKind.String
-                    && property.Value.GetString() is { } id
-                    && id.StartsWith("msg", StringComparison.Ordinal))
-                    property.WriteTo(writer);
-                else
+                if (ShouldDropMessageId(property))
                     mutations |= ResponsesRequestMutation.InvalidMessageIdDropped;
+                else
+                    property.WriteTo(writer);
                 continue;
             }
             property.WriteTo(writer);

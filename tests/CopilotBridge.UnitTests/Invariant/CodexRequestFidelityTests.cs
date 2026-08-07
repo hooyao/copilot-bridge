@@ -172,6 +172,53 @@ public sealed class CodexRequestFidelityTests
             FirstDifference(expected, actual));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DeveloperInvalidMessageId_IsRemovedOnNormalAndRawFallbackPaths(
+        bool removeSemanticSystemProjection)
+    {
+        const string request = """
+          {"model":"gpt-5.6-sol","input":[{
+            "type":"message","role":"developer","id":"item_0","phase":"commentary",
+            "content":[{"type":"input_text","text":"developer"}],"future":"keep"
+          }],"stream":true}
+          """;
+        var ir = CodexRoundTrip.ToIr(CodexRoundTrip.ParseRequest(request));
+        if (removeSemanticSystemProjection)
+            ir = ir with { System = null };
+
+        var (body, _, _) = ResponsesRequestBuilder.Build(
+            ir,
+            new CodexModelProfileCatalog(),
+            false,
+            out _,
+            out _,
+            out var mutations);
+        var developer = JsonNode.Parse(body)!["input"]![0]!;
+
+        Assert.Null(developer["id"]);
+        Assert.Equal("commentary", developer["phase"]!.GetValue<string>());
+        Assert.Equal("keep", developer["future"]!.GetValue<string>());
+        Assert.Equal(ResponsesRequestMutation.InvalidMessageIdDropped, mutations);
+    }
+
+    [Fact]
+    public void ExplicitNullReasoningContext_RemainsPresentNull()
+    {
+        const string request = """
+          {"model":"gpt-5.6-sol","input":[],
+           "reasoning":{"effort":"xhigh","context":null},"stream":true}
+          """;
+        var expected = JsonNode.Parse(request);
+        var actual = CodexRoundTrip.RoundTrip(request);
+
+        Assert.True(JsonNode.DeepEquals(expected, actual), FirstDifference(expected, actual));
+        var reasoning = actual!["reasoning"]!.AsObject();
+        Assert.True(reasoning.ContainsKey("context"));
+        Assert.Null(reasoning["context"]);
+    }
+
     [Fact]
     public void EmptyMessageProviderExtensions_AreInertOnAnthropicSerialization()
     {

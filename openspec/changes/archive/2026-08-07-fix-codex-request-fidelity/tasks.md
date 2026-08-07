@@ -50,3 +50,8 @@
 - [x] 7.4 Run the Claude Code→gpt ClientBehavior case to prove cross-protocol translation, marker isolation, and tool execution remain intact.
 - [x] 7.5 Publish Windows Native AOT with `build-aot.bat`, confirm zero trim/AOT warnings, inspect binary size, and update `docs/size-history.md` if the release binary changes materially.
 - [x] 7.6 Verify OpenSpec apply status, review the final diff for unrelated/user-owned files, and leave the focused branch ready for the repository's archive-before-PR ship workflow.
+
+## 8. PR Review Follow-ups
+
+- [x] 8.1 Apply destination message-id validation and mutation accounting to ordered developer/system passthrough items, including the raw fallback path.
+- [x] 8.2 Preserve explicit JSON null separately from absence for top-level `reasoning.context`, with focused and live contract coverage.

@@ -85,14 +85,37 @@ public sealed class CodexRequestFidelityContractTests
     }
 
     [Fact]
-    public async Task Gpt56_NonMessageIdentity_IsStillRejected()
+    public async Task Gpt56_ExplicitNullReasoningContext_IsStillAccepted()
     {
         const string payload = """
+          {"model":"gpt-5.6-sol",
+           "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Reply: ok"}]}],
+           "reasoning":{"effort":"xhigh","context":null},"store":false,"stream":false}
+          """;
+
+        using var client = new PlaygroundClient();
+        var (status, body) = await ProbeRetry.WithRetry(
+            () => client.TryPostResponsesAsync(payload),
+            "gpt-5.6 explicit null reasoning context");
+        var accepted = WireAcceptance.IsAccepted(status, body, "gpt-5.6 explicit null reasoning context");
+        _output.WriteLine($"context=null → {(int)status} accepted={accepted}");
+        Assert.True(accepted,
+            "Copilot stopped accepting explicit null reasoning context; add a narrow destination mutation if confirmed.");
+    }
+
+    [Theory]
+    [InlineData("assistant", "output_text")]
+    [InlineData("developer", "input_text")]
+    public async Task Gpt56_NonMessageIdentity_IsStillRejected(
+        string role,
+        string partType)
+    {
+        var payload = $$"""
           {
             "model":"gpt-5.6-sol",
             "input":[
-              {"type":"message","role":"assistant","id":"item_0","phase":"commentary",
-               "content":[{"type":"output_text","text":"Working."}]},
+              {"type":"message","role":"{{role}}","id":"item_0",
+               "content":[{"type":"{{partType}}","text":"Working."}]},
               {"type":"message","role":"user","content":[{"type":"input_text","text":"Reply: ok"}]}
             ],
             "reasoning":{"effort":"xhigh","context":"all_turns"},
@@ -106,7 +129,7 @@ public sealed class CodexRequestFidelityContractTests
             () => client.TryPostResponsesAsync(payload),
             "gpt-5.6 invalid message id");
         var accepted = WireAcceptance.IsAccepted(status, body, "gpt-5.6 invalid message id");
-        _output.WriteLine($"item_0 id → {(int)status} accepted={accepted}");
+        _output.WriteLine($"{role} item_0 id → {(int)status} accepted={accepted}");
         Assert.False(accepted,
             "Copilot now accepts item_0 as a message id; protocol.message_id coercion is stale and must be removed.");
         Assert.Contains("begins with 'msg'", body, StringComparison.OrdinalIgnoreCase);

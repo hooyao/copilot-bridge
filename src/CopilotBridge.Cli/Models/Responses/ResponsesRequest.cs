@@ -106,7 +106,9 @@ internal sealed class Reasoning
     /// Responses Lite reasoning scope. Omitting <c>all_turns</c> changes the backend
     /// default to <c>current_turn</c>, so it is provider-native state, not decoration.
     /// </summary>
-    public string? Context { get; init; }
+    /// <summary>Undefined means absent; Null remains an explicitly present JSON null.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public JsonElement Context { get; init; }
 
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? ExtensionData { get; set; }
