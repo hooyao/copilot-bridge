@@ -208,6 +208,12 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
   contract) is wrong — investigate before touching the test; never weaken an
   assertion just to get green. This outranks convenience: fewer contract-true
   tests beat many implementation-mirrors.
+- **Never kill the bridge by image name.** `taskkill /IM copilot-bridge.exe` /
+  `Stop-Process -Name copilot-bridge` also kills the user's long-running bridge
+  on 8765 — the one their Claude Code session is talking to. It dies silently (no
+  crash event, log just stops), so it reads as a bridge crash and costs a
+  debugging session. Kill by PID, after confirming the path is your own scratch
+  instance.
 - **Native AOT is non-negotiable.** `<PublishAot>true</PublishAot>`. No
   reflection-based serialization, no `Activator.CreateInstance`, no
   runtime-loaded assemblies, no `System.Reflection.Emit`.
