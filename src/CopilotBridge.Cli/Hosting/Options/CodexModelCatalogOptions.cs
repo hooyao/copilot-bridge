@@ -27,12 +27,23 @@ internal sealed record class CodexModelCatalogOptions
 
     /// <summary>
     /// How long a definitive upstream 404 for one exact version is trusted.
-    /// Deliberately separate from and shorter than <see cref="SourceTtlHours"/>:
-    /// that TTL asks whether validated content changed, where staleness is
-    /// harmless, while this one asks whether a tag exists yet, where staleness
-    /// means serving a compile-time snapshot after the real catalog went live.
+    /// Deliberately separate from <see cref="SourceTtlHours"/>: that TTL asks
+    /// whether validated content changed, where staleness is harmless, while
+    /// this one asks whether a tag exists yet, where staleness means serving a
+    /// compile-time snapshot after the real catalog went live. Use
+    /// <see cref="EffectiveAbsenceTtlHours"/> rather than this value directly —
+    /// an operator who lowered SourceTtlHours must not be forced to also set
+    /// this key just to keep the bridge starting.
     /// </summary>
     public int AbsenceTtlHours { get; set; } = 6;
+
+    /// <summary>
+    /// The absence TTL actually applied: never longer than the source TTL, so
+    /// a confirmed 404 is always re-checked at least as often as validated
+    /// content is revalidated, without rejecting a pre-existing configuration
+    /// that set a shorter source TTL and knows nothing about this key.
+    /// </summary>
+    public int EffectiveAbsenceTtlHours => Math.Max(1, Math.Min(AbsenceTtlHours, SourceTtlHours));
 
     public int SourceTtlHours { get; set; } = 24;
     public int SourceTimeoutSeconds { get; set; } = 10;
@@ -50,8 +61,12 @@ internal sealed class CodexModelCatalogOptionsValidator : Microsoft.Extensions.O
             errors.Add("Codex.ModelCatalog.CacheDirectory must be an absolute path.");
         if (options.SourceTtlHours is < 1 or > 168)
             errors.Add("Codex.ModelCatalog.SourceTtlHours must be between 1 and 168.");
-        if (options.AbsenceTtlHours < 1 || options.AbsenceTtlHours >= options.SourceTtlHours)
-            errors.Add("Codex.ModelCatalog.AbsenceTtlHours must be at least 1 and strictly less than SourceTtlHours, so a tag published after a confirmed 404 is rediscovered sooner than validated content is revalidated.");
+        // Only the value's own range is validated. Its relation to SourceTtlHours
+        // is enforced by clamping in EffectiveAbsenceTtlHours instead, because
+        // rejecting the pair here would break startup for an already-valid
+        // installation that lowered SourceTtlHours before this key existed.
+        if (options.AbsenceTtlHours is < 1 or > 168)
+            errors.Add("Codex.ModelCatalog.AbsenceTtlHours must be between 1 and 168.");
         if (options.SourceTimeoutSeconds is < 1 or > 60)
             errors.Add("Codex.ModelCatalog.SourceTimeoutSeconds must be between 1 and 60.");
         if (options.MaxSourceBytes is < 65_536 or > 16_777_216)

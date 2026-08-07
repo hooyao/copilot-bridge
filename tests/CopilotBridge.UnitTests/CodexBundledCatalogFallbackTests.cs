@@ -309,6 +309,86 @@ public sealed class CodexBundledCatalogFallbackTests
             ValidatedAtUtc = Epoch,
         });
 
+    [Fact]
+    public async Task ValidatedEntryPublishedDuringTheAbsenceWindowOutranksTheSnapshot()
+    {
+        // Contract: the persistent cache is shared, so another bridge process can
+        // publish a validated entry while this one is inside its absence window.
+        // "A validated entry always outranks the fallback" must keep holding —
+        // the short-circuit cannot be allowed to serve a snapshot over it.
+        var disk = new RecordingDisk();
+        var cache = Cache(NotFoundSource(), disk);
+
+        var first = await cache.ResolveAsync(UnpublishedVersion);
+        Assert.Equal(CodexBundledCatalog.Load().CapturedVersion, first.Baseline!.SourceVersion);
+
+        // Another process publishes the real catalog for this exact version.
+        disk.Publish(CodexCatalogDiskStoreTests.Entry(
+            UnpublishedVersion, CodexCatalogDiskStoreTests.Catalog("published-elsewhere"), Epoch));
+
+        var second = await cache.ResolveAsync(UnpublishedVersion);
+
+        Assert.Equal("published-elsewhere",
+            Assert.Single(second.Baseline!.Models).GetProperty("slug").GetString());
+    }
+
+    [Fact]
+    public async Task ConfirmedAbsenceTrackingStaysBoundedForRequestControlledVersions()
+    {
+        // Contract: client_version is request-controlled, so retained
+        // confirmed-absent state must be bounded. Observable consequence: after
+        // far more distinct absent versions than the cap, the earliest one is no
+        // longer suppressed and is re-fetched, rather than being remembered for
+        // the process lifetime.
+        var source = NotFoundSource();
+        var cache = Cache(source);
+
+        Assert.True((await cache.ResolveAsync("9.0.0")).Success);
+        var callsAfterFirst = source.Calls;
+
+        for (var i = 1; i < 300; i++)
+            Assert.True((await cache.ResolveAsync($"9.0.{i}")).Success);
+
+        Assert.True((await cache.ResolveAsync("9.0.0")).Success);
+
+        // 299 new versions each fetch once; the re-request of 9.0.0 fetches
+        // again only if its observation was evicted by the bound.
+        Assert.Equal(callsAfterFirst + 299 + 1, source.Calls);
+    }
+
+    [Fact]
+    public async Task DisabledFallbackRetainsNoAbsenceState()
+    {
+        // Contract: with the fallback off the observation can never be read, so
+        // recording it would retain request-controlled keys for nothing.
+        // Observable consequence: every request still reaches the source.
+        var source = NotFoundSource();
+        var cache = Cache(source, builtinFallbackEnabled: false);
+
+        for (var i = 0; i < 5; i++)
+            Assert.False((await cache.ResolveAsync("8.0.0")).Success);
+
+        Assert.Equal(5, source.Calls);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(6)]
+    [InlineData(24)]
+    public void ExistingLowSourceTtlConfigurationsStillStart(int sourceTtlHours)
+    {
+        // Contract: SourceTtlHours has always accepted 1..168. An installation
+        // that lowered it and knows nothing about the new key must not be made
+        // to fail ValidateOnStart by the arrival of AbsenceTtlHours.
+        var options = new CodexModelCatalogOptions { SourceTtlHours = sourceTtlHours };
+
+        var result = new CodexModelCatalogOptionsValidator().Validate(null, options);
+
+        Assert.True(result.Succeeded, result.FailureMessage);
+        Assert.InRange(options.EffectiveAbsenceTtlHours, 1, sourceTtlHours);
+    }
+
     private static CountingSource NotFoundSource() => new(CodexCatalogSourceStatus.NotFound);
 
     private static CopilotModel Live(string id, int? total, int? prompt, int? output) => new()
@@ -463,13 +543,19 @@ public sealed class CodexBundledCatalogFallbackTests
             throw new InvalidOperationException("L2 is forbidden.");
     }
 
-    private sealed class RecordingDisk(CodexCatalogCacheEntry? seeded = null) : ICodexCatalogDiskStore    {
+    private sealed class RecordingDisk(CodexCatalogCacheEntry? seeded = null) : ICodexCatalogDiskStore
+    {
+        private CodexCatalogCacheEntry? _entry = seeded;
+
         public int Promotions;
+
+        /// <summary>Simulates another bridge process publishing a validated entry.</summary>
+        public void Publish(CodexCatalogCacheEntry entry) => _entry = entry;
 
         public ValueTask<CodexCatalogCacheEntry?> TryLoadAsync(
             CodexClientVersion version, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(seeded is not null && seeded.Version.ToString() == version.ToString()
-                ? seeded
+            ValueTask.FromResult(_entry is not null && _entry.Version.ToString() == version.ToString()
+                ? _entry
                 : null);
 
         public ValueTask<CodexCatalogCacheEntry> PromoteAsync(

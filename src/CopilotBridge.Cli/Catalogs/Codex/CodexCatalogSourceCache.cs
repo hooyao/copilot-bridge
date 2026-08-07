@@ -85,6 +85,10 @@ internal sealed class CodexCatalogSourceCache(
     // process-local and never persisted: it suppresses re-fetching a tag that
     // does not exist, but must not outlive the process or shadow a tag once it
     // is published. Only this observation is cached — never the bundled bytes.
+    // Bounded because client_version is request-controlled: without a cap, a
+    // caller could mint unbounded distinct valid versions that all 404 and pin
+    // an entry each for the process lifetime.
+    private const int MaxConfirmedAbsentVersions = 64;
     private readonly Dictionary<string, DateTimeOffset> _confirmedAbsent = new(StringComparer.Ordinal);
 
     public async ValueTask<CodexCatalogResolution> ResolveAsync(
@@ -96,8 +100,15 @@ internal sealed class CodexCatalogSourceCache(
 
         // Checked before HybridCache because a bundled resolution is never a
         // cache entry; going through the factory would either publish it or
-        // throw it away on every request.
-        if (TryUseConfirmedAbsence(version)) return BundledFallback(version, "absent-cached", 0);
+        // throw it away on every request. A validated entry still outranks the
+        // snapshot, so the disk store — which another bridge process may have
+        // populated during this window — is consulted before short-circuiting.
+        if (TryUseConfirmedAbsence(version))
+        {
+            if (await disk.TryLoadAsync(version, cancellationToken) is null)
+                return BundledFallback(version, "absent-cached", 0);
+            ForgetConfirmedAbsence(version);
+        }
 
         var key = CacheKey(version);
         var factoryRan = false;
@@ -239,9 +250,14 @@ internal sealed class CodexCatalogSourceCache(
         // closed so an outage is never silently downgraded.
         if (fetched.Status == CodexCatalogSourceStatus.NotFound)
         {
-            RecordConfirmedAbsence(version);
+            // Recorded only when the fallback can act on it: with the fallback
+            // disabled the observation is never read, so keeping it would just
+            // retain request-controlled keys for the process lifetime.
             if (_options.BuiltinFallbackEnabled)
+            {
+                RecordConfirmedAbsence(version);
                 return BundledFallback(version, "absent-confirmed", stopwatch.ElapsedMilliseconds);
+            }
         }
 
         LogFailure(version, fetched.Status.ToString(), "unavailable", stopwatch.ElapsedMilliseconds);
@@ -255,16 +271,43 @@ internal sealed class CodexCatalogSourceCache(
         lock (_confirmedAbsent)
         {
             if (!_confirmedAbsent.TryGetValue(key, out var observedAt)) return false;
-            if (_time.GetUtcNow() - observedAt < TimeSpan.FromHours(_options.AbsenceTtlHours)) return true;
+            if (!IsExpiredAbsence(observedAt)) return true;
             _confirmedAbsent.Remove(key);
             return false;
         }
     }
 
+    private void ForgetConfirmedAbsence(CodexClientVersion version)
+    {
+        lock (_confirmedAbsent) _confirmedAbsent.Remove(version.ToString());
+    }
+
     private void RecordConfirmedAbsence(CodexClientVersion version)
     {
-        lock (_confirmedAbsent) _confirmedAbsent[version.ToString()] = _time.GetUtcNow();
+        lock (_confirmedAbsent)
+        {
+            // Sweep on write so expired observations for versions nobody asks
+            // about again cannot accumulate, then cap what survives — the key
+            // space is request-controlled, and the cap only costs a re-fetch.
+            if (_confirmedAbsent.Count >= MaxConfirmedAbsentVersions)
+            {
+                foreach (var expired in _confirmedAbsent
+                             .Where(entry => IsExpiredAbsence(entry.Value))
+                             .Select(entry => entry.Key)
+                             .ToArray())
+                    _confirmedAbsent.Remove(expired);
+            }
+            if (_confirmedAbsent.Count >= MaxConfirmedAbsentVersions)
+            {
+                var oldest = _confirmedAbsent.OrderBy(entry => entry.Value).First().Key;
+                _confirmedAbsent.Remove(oldest);
+            }
+            _confirmedAbsent[version.ToString()] = _time.GetUtcNow();
+        }
     }
+
+    private bool IsExpiredAbsence(DateTimeOffset observedAt) =>
+        _time.GetUtcNow() - observedAt >= TimeSpan.FromHours(_options.EffectiveAbsenceTtlHours);
 
     // Returns the bundled snapshot WITHOUT an Entry, so it can never be
     // promoted to disk or published as a validated cache entry for the
