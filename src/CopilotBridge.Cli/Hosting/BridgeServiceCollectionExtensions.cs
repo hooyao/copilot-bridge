@@ -191,6 +191,10 @@ internal static class BridgeServiceCollectionExtensions
         }).AddSerializer(new CodexCatalogResolutionHybridCacheSerializer());
         services.AddSingleton<ICodexCatalogSourceClient, CodexCatalogSourceClient>();
         services.AddSingleton<ICodexCatalogDiskStore, CodexCatalogDiskStore>();
+        // Eagerly constructed: an invalid embedded snapshot is a build defect,
+        // so it must fail at composition rather than at the first client whose
+        // exact tag turns out to be absent.
+        services.AddSingleton(CodexBundledCatalog.Load());
         services.AddSingleton<ICodexCatalogSourceCache, CodexCatalogSourceCache>();
         services.AddSingleton<CodexCatalogOverlayService>();
         services.AddSingleton<CodexCatalogProjector>();

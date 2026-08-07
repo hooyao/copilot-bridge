@@ -17,6 +17,23 @@ internal sealed record class CodexModelCatalogOptions
     /// <summary>Absolute persistent-cache override. Empty selects the per-user OS cache root.</summary>
     public string? CacheDirectory { get; set; }
 
+    /// <summary>
+    /// Whether a confirmed-absent exact tag falls back to the compile-time
+    /// bundled snapshot instead of a metadata error. Default-on in code so an
+    /// upgraded installation whose older appsettings lacks this key still
+    /// serves a catalog to a client whose release was not tagged yet.
+    /// </summary>
+    public bool BuiltinFallbackEnabled { get; set; } = true;
+
+    /// <summary>
+    /// How long a definitive upstream 404 for one exact version is trusted.
+    /// Deliberately separate from and shorter than <see cref="SourceTtlHours"/>:
+    /// that TTL asks whether validated content changed, where staleness is
+    /// harmless, while this one asks whether a tag exists yet, where staleness
+    /// means serving a compile-time snapshot after the real catalog went live.
+    /// </summary>
+    public int AbsenceTtlHours { get; set; } = 6;
+
     public int SourceTtlHours { get; set; } = 24;
     public int SourceTimeoutSeconds { get; set; } = 10;
     public int MaxSourceBytes { get; set; } = 4 * 1024 * 1024;
@@ -33,6 +50,8 @@ internal sealed class CodexModelCatalogOptionsValidator : Microsoft.Extensions.O
             errors.Add("Codex.ModelCatalog.CacheDirectory must be an absolute path.");
         if (options.SourceTtlHours is < 1 or > 168)
             errors.Add("Codex.ModelCatalog.SourceTtlHours must be between 1 and 168.");
+        if (options.AbsenceTtlHours < 1 || options.AbsenceTtlHours >= options.SourceTtlHours)
+            errors.Add("Codex.ModelCatalog.AbsenceTtlHours must be at least 1 and strictly less than SourceTtlHours, so a tag published after a confirmed 404 is rediscovered sooner than validated content is revalidated.");
         if (options.SourceTimeoutSeconds is < 1 or > 60)
             errors.Add("Codex.ModelCatalog.SourceTimeoutSeconds must be between 1 and 60.");
         if (options.MaxSourceBytes is < 65_536 or > 16_777_216)

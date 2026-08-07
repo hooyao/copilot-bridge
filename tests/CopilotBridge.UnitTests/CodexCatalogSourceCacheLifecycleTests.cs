@@ -74,6 +74,7 @@ public sealed class CodexCatalogSourceCacheLifecycleTests : IDisposable
             CreateHybridCache(),
             source,
             disk,
+            CodexBundledCatalog.Load(),
             Options.Create(OptionsValue()),
             NullLogger<CodexCatalogSourceCache>.Instance,
             time);
