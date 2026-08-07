@@ -110,6 +110,9 @@ internal sealed class RequestSummary
     /// </summary>
     public bool ImageDowngradedOnUnknownModel { get; set; }
 
+    /// <summary>Explicit destination-owned request mutation codes; empty on a clean request.</summary>
+    public string RequestMutationCodes { get; set; } = "";
+
     /// <summary>
     /// Replayed reasoning carriers dropped because another model minted them.
     /// Audited because the wire shows nothing — the turn is a normal 200 that

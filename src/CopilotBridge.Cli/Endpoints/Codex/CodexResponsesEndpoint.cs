@@ -157,6 +157,7 @@ internal static class CodexResponsesEndpoint
             // This makes the summary honest: effort=max→xhigh, not a bare max.
             summary.OutboundEffort = bridgeCtx.Response.OutboundEffortCoerced
                 ?? bridgeCtx.Request.Body.OutputConfig?.Effort;
+            summary.RequestMutationCodes = bridgeCtx.Response.RequestMutationCodes;
             summary.TargetVendor = bridgeCtx.Target?.Vendor.ToString();
             summary.TargetEndpoint = bridgeCtx.Target?.Endpoint;
 

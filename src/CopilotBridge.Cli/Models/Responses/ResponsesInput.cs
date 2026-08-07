@@ -42,17 +42,26 @@ namespace CopilotBridge.Cli.Models.Responses;
 [JsonDerivedType(typeof(ResponsesFunctionCallItem), "function_call")]
 [JsonDerivedType(typeof(ResponsesFunctionCallOutputItem), "function_call_output")]
 [JsonDerivedType(typeof(ResponsesReasoningItem), "reasoning")]
-internal abstract record ResponsesInputItem;
+internal abstract class ResponsesInputItem
+{
+    /// <summary>Future siblings retained once for every modeled input-item variant.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+}
 
 /// <summary>
 /// A conversation message. <c>role</c> is <c>user | assistant | developer |
 /// system</c> (Codex uses <c>developer</c> for its harness preamble — T1 maps it
 /// to IR <c>system</c>). <c>content</c> is an array of typed parts.
 /// </summary>
-internal sealed record ResponsesMessageItem : ResponsesInputItem
+internal sealed class ResponsesMessageItem : ResponsesInputItem
 {
     public required string Role { get; init; }
     public required IReadOnlyList<ResponsesContentPart> Content { get; init; }
+    public string? Id { get; init; }
+    public string? Phase { get; init; }
+    public string? Status { get; init; }
+
 }
 
 /// <summary>
@@ -62,18 +71,11 @@ internal sealed record ResponsesMessageItem : ResponsesInputItem
 /// the underlying JSON are preserved.
 /// </summary>
 /// <remarks>
-/// KNOWN RESIDUAL (field-granular loss): the universal unknown-item passthrough cures
-/// unmodeled <c>type</c>s, but a MODELED type like this is bound field-by-field, and STJ
-/// silently skips any wire field not modeled here (no <c>JsonUnmappedMemberHandling.Disallow</c>).
-/// That is the mechanism that produced the <c>namespace</c> bug (a new field that had to
-/// round-trip was dropped, 400ing the echo turn). Every field Copilot currently sends on a
-/// <c>function_call</c> IS modeled (corpus replay of 1213 real inbounds is clean), but a
-/// FUTURE new field would recur the bug. A full fix (carry unmapped members through the IR
-/// tool_use block) is a separate change — this record doesn't round-trip as itself, it
-/// becomes an IR <c>tool_use</c>, so <c>[JsonExtensionData]</c> here wouldn't survive to T2.
-/// Tracked in docs; if a new field appears, model it here AND re-emit it in T2.
+/// Future siblings are captured by the base item's extension-data dictionary. T1 pushes
+/// them into the tool-use block's OpenAI provider bag; T2 pulls them without either edge
+/// naming the other. Typed fields remain the semantic core the IR and destination inspect.
 /// </remarks>
-internal sealed record ResponsesFunctionCallItem : ResponsesInputItem
+internal sealed class ResponsesFunctionCallItem : ResponsesInputItem
 {
     public required string CallId { get; init; }
     public required string Name { get; init; }
@@ -94,6 +96,7 @@ internal sealed record ResponsesFunctionCallItem : ResponsesInputItem
     /// vercel/ai SDK (<c>providerMetadata.openai.namespace</c>).
     /// </summary>
     public string? Namespace { get; init; }
+
 }
 
 /// <summary>
@@ -101,12 +104,13 @@ internal sealed record ResponsesFunctionCallItem : ResponsesInputItem
 /// <c>output</c> ↔ the tool-result content. <c>output</c> may be a string or a
 /// structured value, held opaque.
 /// </summary>
-internal sealed record ResponsesFunctionCallOutputItem : ResponsesInputItem
+internal sealed class ResponsesFunctionCallOutputItem : ResponsesInputItem
 {
     public required string CallId { get; init; }
     public required JsonElement Output { get; init; }
     public string? Id { get; init; }
     public string? Status { get; init; }
+
 }
 
 /// <summary>
@@ -115,14 +119,17 @@ internal sealed record ResponsesFunctionCallOutputItem : ResponsesInputItem
 /// IR reasoning where it fits, else rides the part-level bag (the §7 round-trip
 /// test decides). Fields beyond the opaque blob are kept for fidelity.
 /// </summary>
-internal sealed record ResponsesReasoningItem : ResponsesInputItem
+internal sealed class ResponsesReasoningItem : ResponsesInputItem
 {
     public string? Id { get; init; }
     /// <summary>Opaque encrypted reasoning blob — byte-faithful, never mutated.</summary>
     public string? EncryptedContent { get; init; }
     /// <summary>Summary parts, if present — held opaque.</summary>
-    public JsonElement? Summary { get; init; }
-    public JsonElement? Content { get; init; }
+    /// <summary>Undefined means absent; Null remains an explicitly present JSON null.</summary>
+    public JsonElement Summary { get; init; }
+    /// <summary>Undefined means absent; Null remains an explicitly present JSON null.</summary>
+    public JsonElement Content { get; init; }
+
 }
 
 /// <summary>
@@ -135,7 +142,7 @@ internal sealed record ResponsesReasoningItem : ResponsesInputItem
 /// Never constructed by the source generator (it has no <c>[JsonDerivedType]</c>
 /// discriminator); the converter builds it for any unknown <c>type</c>.
 /// </summary>
-internal sealed record ResponsesUnknownItem : ResponsesInputItem
+internal sealed class ResponsesUnknownItem : ResponsesInputItem
 {
     /// <summary>The item's <c>type</c> value (for logging/diagnostics), or "" if absent.</summary>
     public required string Type { get; init; }
@@ -154,18 +161,25 @@ internal sealed record ResponsesUnknownItem : ResponsesInputItem
 [JsonDerivedType(typeof(ResponsesInputTextPart), "input_text")]
 [JsonDerivedType(typeof(ResponsesOutputTextPart), "output_text")]
 [JsonDerivedType(typeof(ResponsesInputImagePart), "input_image")]
-internal abstract record ResponsesContentPart;
-
-internal sealed record ResponsesInputTextPart : ResponsesContentPart
+internal abstract class ResponsesContentPart
 {
-    public required string Text { get; init; }
+    /// <summary>Future siblings retained once for every modeled content-part variant.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 }
 
-internal sealed record ResponsesOutputTextPart : ResponsesContentPart
+internal sealed class ResponsesInputTextPart : ResponsesContentPart
+{
+    public required string Text { get; init; }
+
+}
+
+internal sealed class ResponsesOutputTextPart : ResponsesContentPart
 {
     public required string Text { get; init; }
     /// <summary>Citations/annotations on assistant text — held opaque if present.</summary>
     public JsonElement? Annotations { get; init; }
+
 }
 
 /// <summary>
@@ -173,8 +187,9 @@ internal sealed record ResponsesOutputTextPart : ResponsesContentPart
 /// Responses wire (Codex strips <c>detail</c> under responses-lite). Maps to IR
 /// <c>image</c> with a base64 source.
 /// </summary>
-internal sealed record ResponsesInputImagePart : ResponsesContentPart
+internal sealed class ResponsesInputImagePart : ResponsesContentPart
 {
     public required string ImageUrl { get; init; }
     public string? Detail { get; init; }
+
 }

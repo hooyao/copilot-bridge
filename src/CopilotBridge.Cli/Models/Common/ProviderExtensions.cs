@@ -46,6 +46,9 @@ namespace CopilotBridge.Cli.Models.Common;
 /// </remarks>
 internal sealed record ProviderExtensions
 {
+    /// <summary>Neutral IR namespace owned by the OpenAI/Responses protocol.</summary>
+    public const string OpenAiNamespace = "openai";
+
     /// <summary>
     /// provider-name → opaque JSON object the bridge never interprets. e.g.
     /// <c>["openai"] = {"store":false,"service_tier":"default",

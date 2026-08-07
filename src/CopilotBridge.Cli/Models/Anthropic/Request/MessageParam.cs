@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using CopilotBridge.Cli.Models.Anthropic.Converters;
+using CopilotBridge.Cli.Models.Common;
 
 namespace CopilotBridge.Cli.Models.Anthropic.Request;
 
@@ -15,6 +16,13 @@ internal sealed record MessageParam
 
     [JsonConverter(typeof(ContentBlockParamListConverter))]
     public required IReadOnlyList<ContentBlockParam> Content { get; init; }
+
+    /// <summary>
+    /// Message-level provider-native data that the Anthropic-shaped IR cannot type.
+    /// A source pushes only its own namespace; a destination pulls only the namespace
+    /// it owns. Null for ordinary Claude Code messages, so the hot path is unchanged.
+    /// </summary>
+    public ProviderExtensions? ProviderExtensions { get; init; }
 }
 
 /// <summary>Role string constants.</summary>

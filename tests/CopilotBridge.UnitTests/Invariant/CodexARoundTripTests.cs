@@ -291,10 +291,10 @@ public class CodexARoundTripTests
         Assert.NotEmpty(origMsgs); // the fixtures do carry user turns
     }
 
-    // ── A8: developer-role messages fold into instructions ───────────────────
+    // ── A8: developer-role messages retain their input position ──────────────
 
     [Fact]
-    public void A8_DeveloperMessage_FoldsIntoInstructions()
+    public void A8_DeveloperMessage_RemainsInInputAndOutOfInstructions()
     {
         var requestJson = """
           {
@@ -311,12 +311,11 @@ public class CodexARoundTripTests
         var emitted = JsonNode.Parse(CodexRoundTrip.ToResponsesWire(ir))!.AsObject();
 
         var instructions = emitted["instructions"]!.GetValue<string>();
-        Assert.Contains("BASE-INSTRUCTIONS", instructions);
-        Assert.Contains("DEV-PREAMBLE", instructions);   // developer content was folded in, not dropped
-        // The developer message must NOT survive as an input[] message.
-        Assert.DoesNotContain(emitted["input"]!.AsArray(),
-            i => i!["type"]?.GetValue<string>() == "message"
-                 && i["role"]?.GetValue<string>() == "developer");
+        Assert.Equal("BASE-INSTRUCTIONS", instructions);
+        var input = emitted["input"]!.AsArray();
+        Assert.Equal("developer", input[0]!["role"]!.GetValue<string>());
+        Assert.Equal("DEV-PREAMBLE", input[0]!["content"]![0]!["text"]!.GetValue<string>());
+        Assert.Equal("user", input[1]!["role"]!.GetValue<string>());
     }
 
     // ── A9: non-JSON tool arguments → carried as grammar text, NOT rejected ────

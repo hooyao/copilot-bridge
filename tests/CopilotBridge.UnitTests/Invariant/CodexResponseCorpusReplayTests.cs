@@ -94,16 +94,14 @@ public class CodexResponseCorpusReplayTests
             try
             {
                 var actualRequest = CodexRoundTrip.RoundTrip(inboundBody.ToJsonString());
-                var capturedUpstream = JsonNode.Parse(File.ReadAllText(upstreamRequestPath))!
-                    ["body"]!;
-                NormalizeCapturedToolResultTextWrappers(inboundBody, capturedUpstream);
-                NormalizeCapturedReasoningFields(inboundBody, capturedUpstream);
-                if (!JsonNode.DeepEquals(actualRequest, capturedUpstream))
+                var expectedRequest = inboundBody.DeepClone();
+                ApplyExpectedRequestMutations(expectedRequest);
+                if (!JsonNode.DeepEquals(actualRequest, expectedRequest))
                 {
-                    var difference = FirstNodeDifference(actualRequest, capturedUpstream);
+                    var difference = FirstNodeDifference(expectedRequest, actualRequest);
                     failures.Add(
                         $"{traceId}: T1/T2 request differs at {difference} "
-                        + RequestItemContext(actualRequest, capturedUpstream, difference));
+                        + RequestItemContext(expectedRequest, actualRequest, difference));
                 }
                 else
                     requestReplays++;
@@ -313,89 +311,21 @@ public class CodexResponseCorpusReplayTests
     }
 
     /// <summary>
-    /// The audited old binary stringified Responses input_text/output_text blocks
-    /// inside function_call_output arrays. The fixed contract flattens their text
-    /// values, so normalize only that known-bad captured field from the independent
-    /// inbound source before comparing every other current T1/T2 value.
+    /// Apply only destination mutations established independently by the live
+    /// contract. The 2026-08-07 paired probe proved Copilot accepts valid msg ids,
+    /// phases, function-output ids, all-turns reasoning, developer placement, and
+    /// native output arrays, but rejects a message id such as item_0 because it does
+    /// not begin with msg. Everything else is required to remain value-identical.
     /// </summary>
-    private static void NormalizeCapturedToolResultTextWrappers(
-        JsonObject inbound,
-        JsonNode capturedUpstream)
+    private static void ApplyExpectedRequestMutations(JsonNode expected)
     {
-        if (inbound["input"] is not JsonArray inboundInput
-            || capturedUpstream["input"] is not JsonArray capturedInput)
-            return;
-
-        var outputsByCallId = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var node in inboundInput)
-        {
-            if (node is not JsonObject item
-                || item["type"]?.GetValue<string>() != "function_call_output"
-                || item["call_id"]?.GetValue<string>() is not { Length: > 0 } callId
-                || item["output"] is not JsonArray blocks)
-                continue;
-            var values = new List<string>(blocks.Count);
-            foreach (var blockNode in blocks)
-            {
-                if (blockNode is JsonObject block
-                    && block["type"]?.GetValue<string>() is "text" or "input_text" or "output_text"
-                    && block["text"] is JsonValue textValue
-                    && textValue.TryGetValue<string>(out var text))
-                    values.Add(text);
-                else
-                    values.Add(blockNode?.ToJsonString() ?? "null");
-            }
-            outputsByCallId[callId] = string.Join('\n', values);
-        }
-
-        foreach (var node in capturedInput)
-        {
+        if (expected["input"] is not JsonArray input) return;
+        foreach (var node in input)
             if (node is JsonObject item
-                && item["type"]?.GetValue<string>() == "function_call_output"
-                && item["call_id"]?.GetValue<string>() is { } callId
-                && outputsByCallId.TryGetValue(callId, out var output))
-                item["output"] = output;
-        }
-    }
-
-    /// <summary>
-    /// The audited old translator retained only encrypted_content (and sometimes
-    /// id) for modeled reasoning items. Match the independent inbound item to its
-    /// captured upstream counterpart by the opaque encrypted blob and restore only
-    /// the newly contracted id/summary/content fields before comparing all values.
-    /// </summary>
-    private static void NormalizeCapturedReasoningFields(
-        JsonObject inbound,
-        JsonNode capturedUpstream)
-    {
-        if (inbound["input"] is not JsonArray inboundInput
-            || capturedUpstream["input"] is not JsonArray capturedInput)
-            return;
-
-        var inboundByBlob = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
-        foreach (var node in inboundInput)
-        {
-            if (node is JsonObject item
-                && item["type"]?.GetValue<string>() == "reasoning"
-                && item["encrypted_content"]?.GetValue<string>() is { Length: > 0 } blob)
-                inboundByBlob[blob] = item;
-        }
-
-        foreach (var node in capturedInput)
-        {
-            if (node is not JsonObject captured
-                || captured["type"]?.GetValue<string>() != "reasoning"
-                || captured["encrypted_content"]?.GetValue<string>() is not { } blob
-                || !inboundByBlob.TryGetValue(blob, out var inboundItem))
-                continue;
-            foreach (var field in new[] { "id", "summary", "content" })
-            {
-                if (inboundItem[field] is { } value)
-                    captured[field] = value.DeepClone();
-                else
-                    captured.Remove(field);
-            }
-        }
+                && item["type"]?.GetValue<string>() == "message"
+                && item["id"]?.GetValue<string>() is { Length: > 0 } id
+                && !id.StartsWith("msg", StringComparison.Ordinal))
+                item.Remove("id");
     }
 
     private static List<SseItem<string>> ParseSse(string wire)

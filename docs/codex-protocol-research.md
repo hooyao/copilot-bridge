@@ -357,6 +357,33 @@ affect request-shape capture (the requests are what Track B needs) — but a tru
 end-to-end success belongs to the follow-up change's headless harness against the
 real bridge. Captured under git `bf667c7` source / `0.140.0-alpha.2` exe.
 
+### 3.4.1 Codex Desktop 0.147 / gpt-5.6 request-fidelity audit (2026-08-07)
+
+A 233-turn production corpus plus a fresh B3 real-client run exposed newer
+Responses Lite fields and resolved their Copilot acceptance with paired captured-
+body probes:
+
+- every request carries `reasoning.context:"all_turns"`; Codex source sets it
+  only for Responses Lite and documents omission as the `current_turn` default;
+  restoring it on the real body returned 200;
+- input messages carry `id` and assistant `phase`; valid `msg*` ids, phase, and
+  `function_call_output.id` returned 200 when restored together;
+- an older assistant `id:"item_0"` is invalid on Copilot `/responses` and returns
+  400 (`Expected an ID that begins with 'msg'`), so only that field requires a
+  narrow destination correction;
+- developer messages are accepted in-place; a complete current request containing
+  developer items, reasoning context, namespaced function history, custom exec
+  history and reasoning replay returned 200 without T1/T2 normalization;
+- a real native `function_call_output.output` array containing ordered
+  `input_text` blocks returned 200 when restored as the only changed axis, so
+  native arrays must not be flattened;
+- the same B3 run completed namespaced `collaboration.list_agents` and custom
+  `exec` call/output loops with zero Codex router/error rows.
+
+These are destination wire facts, not a license for source↔destination coupling:
+the Responses source pushes provider data and positions into IR extensions; the
+Responses destination pulls them and applies the invalid-id rule independently.
+
 ### 3.5 Tool shapes Codex emits
 `ToolSpec` enum, serialized `#[serde(tag="type")]` (`tools/src/tool_spec.rs:15-64`).
 `create_tools_json_for_responses_api` just `serde_json::to_value`s each (`:78-89`).
@@ -385,6 +412,7 @@ What Codex sends (Track B) × what Copilot `/responses` accepts (Track A) → br
 | `input[].role` | `developer` for preamble + `user`/`assistant` (§3.4) | accepted (live capture turns 200 in probe shape) | passthrough |
 | `reasoning.effort` | from `none/low/medium/high/xhigh` config (§3.2); `minimal` possible | **per-model** (§2.2): large models reject `minimal`; small models reject `none`+`xhigh` | **per-model coercion** (profile catalog) — not one global rule |
 | `reasoning.summary` | sent when reasoning on (§3.2) | 200 (§2.3) | passthrough |
+| `reasoning.context` | `all_turns` for Responses Lite (0.147) | 200 on real gpt-5.6 body (§3.4.1) | passthrough; omission changes semantics to `current_turn` |
 | `include:["reasoning.encrypted_content"]` | sent whenever reasoning on (§3.2) | 200 (§2.3) | **passthrough — multi-turn reasoning works** |
 | `store` | `false` for non-Azure (§3.2) | `true`→400, but Codex sends `false` | passthrough (Codex's value is fine); strip only if ever `true` |
 | `service_tier` | model-gated (§3.2) | **400** (§2.3) | **strip** |
@@ -395,6 +423,8 @@ What Codex sends (Track B) × what Copilot `/responses` accepts (Track A) → br
 | `tools: image_generation` | (§3.5) | **400** all 6 (§2.4) | **drop** |
 | vision `input_image` | data-URL image part | 200 on 5 vision models (§2.6) | passthrough; set `Copilot-Vision-Request: true` |
 | `tool_choice` | `"auto"` (§3.2) | 200 | passthrough |
+| message `id` / `phase` | valid `msg*` ids plus commentary/final phase; older assistant history may use `item_0` | valid metadata 200; `item_0` id 400 (§3.4.1) | preserve valid metadata; omit only rejected id and report coercion |
+| `function_call_output.output` array | ordered native content items (0.147 desktop) | real captured array 200 (§3.4.1) | passthrough unchanged; never use Claude flattening |
 | `stream` | always `true` (§3.2) | streams cleanly (§2.5) | passthrough |
 | SSE response | parser tolerant, needs terminal `response.completed`, no `[DONE]` handling (§3.3) | ends at `response.completed`, **no `[DONE]`** (§2.5) | **passthrough — no DONE-filter needed** |
 | headers `x-codex-*` | sent (§3.2) | not probed for rejection; Copilot generally ignores unknowns | passthrough; bridge adds its own official Copilot headers (replace, like `/cc`) |

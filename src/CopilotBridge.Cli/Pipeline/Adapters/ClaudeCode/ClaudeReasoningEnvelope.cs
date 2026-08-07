@@ -223,7 +223,7 @@ internal static class ClaudeReasoningEnvelope
     {
         if (bag is null) return bag;
         if (!bag.ByProvider.TryGetValue(
-                Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey, out var existing)
+                ProviderExtensions.OpenAiNamespace, out var existing)
             || existing.ValueKind != JsonValueKind.Object)
             return bag;
 
@@ -241,7 +241,7 @@ internal static class ClaudeReasoningEnvelope
         {
             ByProvider = new Dictionary<string, JsonElement>
             {
-                [Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey] = doc.RootElement.Clone(),
+                [ProviderExtensions.OpenAiNamespace] = doc.RootElement.Clone(),
             },
         };
     }
@@ -249,7 +249,7 @@ internal static class ClaudeReasoningEnvelope
     /// <summary>True when this block was decoded from a bridge carrier.</summary>
     internal static bool WasDecodedByBridge(ProviderExtensions? bag) =>
         bag?.ByProvider.TryGetValue(
-            Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey, out var b) == true
+            ProviderExtensions.OpenAiNamespace, out var b) == true
         && b.ValueKind == JsonValueKind.Object
         && b.TryGetProperty(DecodedBagKey, out var d)
         && d.ValueKind == JsonValueKind.True;
@@ -257,7 +257,7 @@ internal static class ClaudeReasoningEnvelope
     /// <summary>Read back the origin stamped by <see cref="WithOrigin"/>.</summary>
     internal static string? ReadOrigin(ProviderExtensions? bag) =>
         bag?.ByProvider.TryGetValue(
-            Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey, out var b) == true
+            ProviderExtensions.OpenAiNamespace, out var b) == true
         && b.ValueKind == JsonValueKind.Object
         && b.TryGetProperty(OriginBagKey, out var o)
         && o.ValueKind == JsonValueKind.String
@@ -310,7 +310,7 @@ internal static class ClaudeReasoningEnvelope
         {
             ByProvider = new Dictionary<string, JsonElement>
             {
-                [Codex.ResponsesToIrInboundAdapter.OpenAiProviderKey] = doc.RootElement.Clone(),
+                [ProviderExtensions.OpenAiNamespace] = doc.RootElement.Clone(),
             },
         };
     }
