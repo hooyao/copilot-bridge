@@ -68,7 +68,6 @@ A response projected from the bundled snapshot SHALL use the same Codex `ModelsR
 - **THEN** the two responses carry different `ETag` values
 
 ### Requirement: Operator controls the bundled fallback independently
-
 `Codex.ModelCatalog.BuiltinFallbackEnabled` SHALL default to true both in code and in the stock `appsettings.json`, so an upgraded installation whose configuration predates the key gains the fallback. When it is false, a confirmed-absent exact version SHALL return a non-2xx metadata error exactly as before this change. The flag SHALL be independent of `Codex.ModelCatalog.Enabled`, which continues to control whether the route is mapped at all. Neither flag SHALL affect `POST /codex/responses`.
 
 #### Scenario: Upgraded installation gains the fallback by default
@@ -87,6 +86,40 @@ A response projected from the bundled snapshot SHALL use the same Codex `ModelsR
 - **THEN** `/codex/models` is not mapped regardless of the fallback flag, and `POST /codex/responses` remains available
 
 ## MODIFIED Requirements
+
+### Requirement: Source catalog integrity and atomic persistence
+
+Before a downloaded catalog becomes usable, the bridge SHALL require a successful HTTP response from the canonical HTTPS source, a bounded response size, a Codex `ModelsResponse` object with a `models` array, unique non-empty slugs, and every entry's required instruction and client-behavior fields. An entry's instruction source SHALL be satisfied by EITHER a non-empty top-level `base_instructions` string OR a non-empty `model_messages.instructions_template` string, because Codex relocated the model prompt between catalog versions; an entry carrying neither SHALL be rejected. The bridge SHALL compute a SHA-256 digest over the exact source bytes. Persistent metadata SHALL bind at least the canonical client version, canonical source URL, source ETag when present, content digest, fetch time, and validation time to those bytes. Disk publication SHALL use a same-directory temporary file and atomic replacement so interruption cannot expose a partial entry. Cache contents SHALL be treated as untrusted on every process start and MUST NOT use reflection-based JSON serialization.
+
+#### Scenario: Valid source is durably promoted
+
+- **WHEN** canonical source bytes pass size, envelope, entry, and uniqueness validation
+- **THEN** the bridge records their digest and metadata, atomically publishes them to disk, and only then exposes the entry through memory
+
+#### Scenario: Either instruction carrier satisfies validation
+
+- **WHEN** a catalog entry carries its prompt as top-level `base_instructions`, or instead as `model_messages.instructions_template`
+- **THEN** the bridge accepts the entry in both cases without requiring the other field
+
+#### Scenario: Entry with no instruction source is rejected
+
+- **WHEN** a catalog entry carries neither a non-empty `base_instructions` nor a non-empty `model_messages.instructions_template`
+- **THEN** the bridge rejects that catalog rather than serving a model with no prompt
+
+#### Scenario: Oversized or malformed source is rejected
+
+- **WHEN** the source response exceeds the configured bound or is not a valid complete Codex catalog
+- **THEN** the bridge aborts that candidate without partially publishing it
+
+#### Scenario: Digest mismatch isolates disk corruption
+
+- **WHEN** a disk entry's bytes do not match its recorded SHA-256 digest or its metadata does not match the requested exact version and source URL
+- **THEN** the bridge ignores that entry, logs the integrity failure without logging catalog contents, and continues resolution at the canonical source
+
+#### Scenario: Interrupted write preserves prior entry
+
+- **WHEN** the process terminates or a filesystem error occurs before atomic replacement completes
+- **THEN** a previously validated cache entry remains readable and no partial candidate is treated as valid
 
 ### Requirement: Exact official Codex source resolution
 

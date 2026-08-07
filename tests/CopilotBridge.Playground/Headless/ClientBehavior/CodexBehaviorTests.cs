@@ -137,9 +137,71 @@ public class CodexBehaviorTests
             forceModelsFailure: false);
     }
 
+    /// <summary>
+    /// The client's exact tag does not exist upstream — the real skew, since OpenAI
+    /// ships Codex builds before tagging the release. A confirmed 404 must serve the
+    /// bridge's compile-time bundled snapshot (still Copilot-uplifted) instead of the
+    /// metadata error that previously repeated every few minutes, and the client must
+    /// go on to execute a real multi-step tool task on it.
+    /// </summary>
     [Fact]
-    public async Task Codex_ExactCatalog_OnlineThenOfflineRestart_UsesPersistentStaleCache()
+    public async Task Codex_AbsentUpstreamTag_ServesBundledCatalog_AndExecutesMultiToolTask()
     {
+        const string canary = "codex-bundled-fallback-canary-1050000";
+        using var cache = ClientBehaviorSupport.NewWorkDir("codex-bundled-fallback-cache");
+        var prompt =
+            "Perform these steps with separate shell tool calls, in order. Do not fabricate output:\n" +
+            "1. Run `echo first-bundled-line > codex_bundled_probe.txt`.\n" +
+            $"2. Run `echo {canary} >> codex_bundled_probe.txt`.\n" +
+            "3. Run `cat codex_bundled_probe.txt`, report its exact second line, and stop.";
+
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.Passthrough,
+            // A private empty cache dir is essential: a validated entry from any
+            // earlier run legitimately outranks the bundled snapshot, so sharing
+            // the default cache would satisfy the request from disk and never
+            // reach the confirmed-absence branch this case exists to exercise.
+            CodexCatalogCacheDirectory: cache.Path,
+            ForceCodexCatalogSourceAbsent: true));
+        using var work = ClientBehaviorSupport.NewWorkDir("codex-bundled-fallback");
+        using var codexHome = ClientBehaviorSupport.NewWorkDir("codex-bundled-fallback-home");
+        var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: prompt,
+            Model: ClientBehaviorSupport.LatestGpt,
+            Timeout: TimeSpan.FromMinutes(8),
+            CodexHome: codexHome.Path,
+            WorkingDirectory: work.Path,
+            ExpectedCodexVersion: ClientBehaviorSupport.CodexVersion));
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: "codex-bundled-catalog-fallback",
+                Client: "codex",
+                Route: "/codex",
+                Model: ClientBehaviorSupport.LatestGpt,
+                Scenario: ServeScenario.Passthrough,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: result.DispatchLogPath,
+                DispatchSinceUnix: result.StartedUnixSeconds,
+                DispatchUntilUnix: result.EndedUnixSeconds,
+                Prompt: $"forced_source_absent=true, canary={canary}",
+                DispatchThreadId: result.ThreadId),
+            result.Stdout,
+            result.Stderr,
+            ClientBehaviorSupport.Stamp(),
+            out _,
+            out _);
+
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine($"dispatch thread={result.ThreadId}, turn status={result.TurnStatus}");
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
+    [Fact]
+    public async Task Codex_ExactCatalog_OnlineThenOfflineRestart_UsesPersistentStaleCache()    {
         using var cache = ClientBehaviorSupport.NewWorkDir("codex-source-cache-persistent");
         using var onlineHome = ClientBehaviorSupport.NewWorkDir("codex-source-cache-online-home");
         using var offlineHome = ClientBehaviorSupport.NewWorkDir("codex-source-cache-offline-home");

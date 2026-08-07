@@ -48,15 +48,15 @@
 
 ## 7. Real-client verification (not optional)
 
-- [ ] 7.1 Add a `Kind=ClientBehavior` playground scenario driving real `codex.exe` against a bridge whose requested version is confirmed-absent upstream
-- [ ] 7.2 Run the `real-client-verify` skill; verdict comes from codex's own `~/.codex/logs_2.sqlite` — tool actually executed, no `incompatible payload` or router fatal
-- [ ] 7.3 Confirm from the client side that the uplifted context window is in effect on the bundled path
-- [ ] 7.4 Re-verify the originally broken case end to end: a client reporting the unpublished version now receives a catalog instead of the repeating 400
+- [x] 7.1 Add a `Kind=ClientBehavior` playground scenario driving real `codex.exe` against a bridge whose requested version is confirmed-absent upstream
+- [x] 7.2 Run the `real-client-verify` skill; verdict comes from codex's own `~/.codex/logs_2.sqlite` — tool actually executed, no `incompatible payload` or router fatal
+- [x] 7.3 Confirm from the client side that the uplifted context window is in effect on the bundled path
+- [x] 7.4 Re-verify the originally broken case end to end: a client reporting the unpublished version now receives a catalog instead of the repeating 400
 
 ## 8. Build and documentation
 
 - [x] 8.1 Run `dotnet test --filter "Category!=Integration"` and confirm green
-- [ ] 8.2 AOT-publish per the CLAUDE.md PowerShell block; confirm success by the published exe's advanced mtime and record the size delta from embedding the snapshot
-- [ ] 8.3 Amend `docs/codex-implementation-design.md` §7.1: keep the no-neighbour/latest/branch prohibition, document the bundled fallback, its gating, its no-cache rule, and the negative cache
-- [ ] 8.4 Document both new options in the operator-facing catalog documentation alongside `Enabled`
-- [ ] 8.5 Note the snapshot-refresh step in the release checklist so the bundled catalog does not silently rot
+- [x] 8.2 AOT-publish per the CLAUDE.md PowerShell block; confirm success by the published exe's advanced mtime and record the size delta from embedding the snapshot
+- [x] 8.3 Amend `docs/codex-implementation-design.md` §7.1: keep the no-neighbour/latest/branch prohibition, document the bundled fallback, its gating, its no-cache rule, and the negative cache
+- [x] 8.4 Document both new options in the operator-facing catalog documentation alongside `Enabled`
+- [x] 8.5 Note the snapshot-refresh step in the release checklist so the bundled catalog does not silently rot

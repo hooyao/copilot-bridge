@@ -34,6 +34,15 @@ the newest client, and this skew is structural rather than a one-off.
   the real tag once it is published.
 - Mark bundled-baseline responses as such in the projected envelope and logs, so
   a served fallback is never mistaken for the client's exact official catalog.
+- **Accept Codex's relocated instruction field.** While verifying this change
+  against the live source, `rust-v0.147.0` was published — and its entries drop
+  the top-level `base_instructions` string in favour of
+  `model_messages.instructions_template` (confirmed on the wire for all eight
+  models, and in `codex.exe`'s own embedded catalog). The bridge's validator
+  accepted only the old field, so it rejected the published catalog outright and
+  `/codex/models` still failed for a real 0.147.0 client — the same symptom as
+  the original bug, a different cause. Validation now accepts either carrier and
+  still rejects an entry with neither.
 - **BREAKING (spec-level, not wire-level):** this reverses a deliberate existing
   invariant. Three requirements currently forbid serving an embedded snapshot
   when the exact version is unavailable, and one scenario names the embedded
@@ -50,7 +59,11 @@ the newest client, and this skew is structural rather than a one-off.
 
 ### Modified Capabilities
 
-- `codex-model-catalog`: four requirements change.
+- `codex-model-catalog`: five requirements change.
+  - *Source catalog integrity and atomic persistence* — an entry's instruction
+    source is satisfied by either `base_instructions` or
+    `model_messages.instructions_template`; an entry with neither is still
+    rejected.
   - *Exact official Codex source resolution* — its "missing exact tag is not
     guessed" scenario currently forbids serving an `embedded` version; it is
     narrowed to forbid neighbour/stable/latest/branch substitution while

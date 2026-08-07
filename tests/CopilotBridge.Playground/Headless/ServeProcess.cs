@@ -50,7 +50,8 @@ internal sealed record ServeInvocation(
     int? KeepAliveIntervalSeconds = null,
     bool ForceModelsFailure = false,
     string? CodexCatalogCacheDirectory = null,
-    bool ForceCodexCatalogSourceFailure = false);
+    bool ForceCodexCatalogSourceFailure = false,
+    bool ForceCodexCatalogSourceAbsent = false);
 
 /// <summary>
 /// The appsettings shape a behavior run needs. Each value is applied by patching the
@@ -298,6 +299,15 @@ internal static class ServeProcess
                         "Forced Codex catalog source failure requires a Debug bridge build; "
                         + $"selected '{selectedConfiguration ?? "unknown"}' output.");
                 psi.Environment["COPILOT_BRIDGE_TEST_FAIL_CODEX_CATALOG_SOURCE"] = "1";
+            }
+            if (inv.ForceCodexCatalogSourceAbsent)
+            {
+                var selectedConfiguration = Directory.GetParent(buildOutputDir)?.Name;
+                if (!string.Equals(selectedConfiguration, "Debug", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "Forced Codex catalog source absence requires a Debug bridge build; "
+                        + $"selected '{selectedConfiguration ?? "unknown"}' output.");
+                psi.Environment["COPILOT_BRIDGE_TEST_ABSENT_CODEX_CATALOG_SOURCE"] = "1";
             }
 
             proc = new Process { StartInfo = psi };

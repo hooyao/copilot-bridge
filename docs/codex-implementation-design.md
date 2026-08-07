@@ -259,6 +259,30 @@ verified during implementation (was Q5).
   `https://raw.githubusercontent.com/openai/codex/rust-v{client_version}/codex-rs/models-manager/models.json`;
   the bridge treats fast-moving entries as opaque `JsonElement` values and
   rewrites only the backend allow-list. It never tries a neighboring or latest tag.
+- **Bundled fallback on confirmed absence.** OpenAI ships Codex clients before
+  tagging the matching release, so a brand-new client's exact tag can
+  legitimately not exist — Codex desktop reported `0.147.0` while
+  `rust-v0.147.0` returned 404 (its `0.146.0` and `0.147.0-alpha.*` neighbours
+  all resolved). That made the newest client, the one that most needs the
+  calibrated limits, the only one guaranteed to get a metadata error. On a
+  **definitive 404** with no validated entry, the bridge therefore projects one
+  compile-time snapshot embedded in the executable, gated on
+  `Codex.ModelCatalog.BuiltinFallbackEnabled` (default true). This does **not**
+  relax the rule above: the snapshot is a single fixed reviewed artifact, and
+  nothing searches or compares tags. Every non-404 outcome — timeout, transport
+  failure, throttling, server error — still fails closed, because a 404 is
+  positive information while a timeout is the absence of it.
+- **The snapshot is never cached; the 404 is.** A bundled resolution carries no
+  cache entry and is refused by the cacheability gate, so it can never be
+  promoted to disk or replayed as a fresh hit — otherwise a compile-time
+  snapshot would shadow the real tag once published. What is cached is the
+  absence itself: a process-local, never-persisted observation with its own
+  `AbsenceTtlHours` (default 6, required to be below `SourceTtlHours`). That
+  collapses the re-fetch storm while keeping the fallback self-healing, since
+  the real catalog is picked up within one TTL of being published. A validated
+  entry, even a stale one, always outranks the snapshot, and the bundled
+  outcome is logged distinctly with both the requested and captured versions.
+
 - Codex prerelease builds intentionally truncate the `/models` query to three
   components but retain their complete version in `Codex Desktop/{version}`,
   `codex_cli_rs/{version}`, or headless `codex_exec/{version}` User-Agent. The bridge requires matching cores before
@@ -273,9 +297,18 @@ verified during implementation (was Q5).
   source changed”; it is not an expiry. After the TTL, ETag revalidation refreshes
   metadata on 304 and validates/atomically promotes changed bytes on 200. If
   GitHub is unavailable or a replacement is invalid, an exact-version validated
-  memory/disk LKG is served stale. A cold miss returns a metadata error. The live
+  memory/disk LKG is served stale. A cold miss returns a metadata error unless
+  the source confirmed a 404 and the bundled fallback is enabled. The live
   Copilot overlay keeps its separate five-minute policy. Neither path turns a
   metadata outage into an inference outage.
+- **Refresh the bundled snapshot at release time.** It lives at
+  `src/CopilotBridge.Cli/Catalogs/Codex/Bundled/` with a `capture.json`
+  recording the version, source URL, upstream ETag, and SHA-256; the loader
+  re-checks that digest against the embedded bytes and fails at startup on a
+  mismatch, so a hand-edited snapshot cannot masquerade as official. Re-vendor
+  it from the newest official tag when cutting a release — it only applies to
+  versions with no upstream tag, but a stale snapshot means a newer client gets
+  an older baseline than necessary.
 
 ### 7.2 Source cache concurrency and persistence
 

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using CopilotBridge.Cli.Catalogs.Codex;
 using CopilotBridge.Cli.Hosting.Options;
+using CopilotBridge.Cli.Models.Codex;
 using CopilotBridge.Cli.Models.Copilot;
 using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.Extensions.Caching.Distributed;
@@ -268,6 +269,45 @@ public sealed class CodexBundledCatalogFallbackTests
         var compact = model.GetProperty("auto_compact_token_limit").GetInt32();
         Assert.InRange(compact, 1, 922_000 - 1);
     }
+
+    [Fact]
+    public void EitherInstructionCarrierIsAcceptedAndNeitherIsRejected()
+    {
+        // Contract: Codex relocated the model prompt in 0.147.0 — entries up to
+        // 0.146.0 carry top-level `base_instructions`, 0.147.0 carries
+        // `model_messages.instructions_template` instead (verified on the wire
+        // for all 8 models of each shape). Both are complete instruction
+        // sources; accepting only the old one rejected every current catalog,
+        // which is what made /codex/models 400 for a real 0.147.0 client.
+        var legacy = Baseline("""
+          {"models":[{"slug":"m","base_instructions":"prompt","context_window":100,"max_context_window":100,"auto_compact_token_limit":90,"supported_in_api":true,"visibility":"list"}]}
+          """);
+        var relocated = Baseline("""
+          {"models":[{"slug":"m","model_messages":{"instructions_template":"prompt"},"context_window":100,"max_context_window":100,"auto_compact_token_limit":90,"supported_in_api":true,"visibility":"list"}]}
+          """);
+        var neither = Baseline("""
+          {"models":[{"slug":"m","context_window":100,"max_context_window":100,"auto_compact_token_limit":90,"supported_in_api":true,"visibility":"list"}]}
+          """);
+        var blank = Baseline("""
+          {"models":[{"slug":"m","model_messages":{"instructions_template":"   "},"context_window":100,"max_context_window":100,"auto_compact_token_limit":90,"supported_in_api":true,"visibility":"list"}]}
+          """);
+
+        CodexCatalogBaselineValidator.Validate(legacy);
+        CodexCatalogBaselineValidator.Validate(relocated);
+        Assert.Throws<InvalidDataException>(() => CodexCatalogBaselineValidator.Validate(neither));
+        Assert.Throws<InvalidDataException>(() => CodexCatalogBaselineValidator.Validate(blank));
+    }
+
+    private static CodexCatalogBaseline Baseline(string json) =>
+        CodexCatalogBaseline.Parse(System.Text.Encoding.UTF8.GetBytes(json), new CodexCatalogCacheMetadata
+        {
+            SchemaVersion = 1,
+            ClientVersion = "0.147.0",
+            SourceUrl = "https://raw.githubusercontent.com/openai/codex/rust-v0.147.0/codex-rs/models-manager/models.json",
+            Sha256 = new string('c', 64),
+            FetchedAtUtc = Epoch,
+            ValidatedAtUtc = Epoch,
+        });
 
     private static CountingSource NotFoundSource() => new(CodexCatalogSourceStatus.NotFound);
 
