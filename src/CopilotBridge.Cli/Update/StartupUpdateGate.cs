@@ -83,7 +83,9 @@ internal sealed class StartupUpdateGate
         ReleaseDiscoveryResult discovery;
         try
         {
-            using var handler = UpdateDownloader.CreateDefaultHandler();
+            // Discovery gets its own no-connection-reuse handler so a rate-limit
+            // retry can re-select an egress address — see CreateDiscoveryHandler.
+            using var handler = GitHubReleaseClient.CreateDiscoveryHandler();
             using var http = new HttpClient(handler);
             var client = new GitHubReleaseClient(http, PerRequestTimeout, OverallDeadline);
             discovery = await client.DiscoverAsync(ct).ConfigureAwait(false);
