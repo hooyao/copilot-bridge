@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using CopilotBridge.Cli.Models;
@@ -40,7 +41,7 @@ internal static class GitHubAuthClient
                ?? throw new InvalidOperationException("Empty device-code response from GitHub.");
     }
 
-    public static async ValueTask<string> PollAccessTokenAsync(
+    public static async ValueTask<AccessTokenResponse> PollAccessTokenAsync(
         HttpClient http,
         DeviceCodeResponse deviceCode,
         CancellationToken ct = default)
@@ -63,21 +64,75 @@ internal static class GitHubAuthClient
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
             using var resp = await http.SendAsync(req, ct);
-            if (!resp.IsSuccessStatusCode) continue;
+            if (!resp.IsSuccessStatusCode)
+                throw new GitHubOAuthException(
+                    "device-token exchange", errorCode: null, resp.StatusCode);
 
             var result = await resp.Content.ReadFromJsonAsync(JsonContext.Default.AccessTokenResponse, ct);
-            if (result?.AccessToken is { Length: > 0 } token) return token;
+            if (result?.AccessToken is { Length: > 0 }) return result;
 
             switch (result?.Error)
             {
+                case "authorization_pending":
+                    break;
                 case "slow_down":
                     pollDelay += TimeSpan.FromSeconds(5);
                     break;
                 case "expired_token":
-                    throw new InvalidOperationException("Device code expired. Run `auth login` again.");
+                    throw new GitHubOAuthException("device-token exchange", result.Error);
                 case "access_denied":
-                    throw new InvalidOperationException("Authorization was denied.");
+                    throw new GitHubOAuthException("device-token exchange", result.Error);
+                case { Length: > 0 } error:
+                    throw new GitHubOAuthException("device-token exchange", error);
             }
         }
     }
+
+    public static async ValueTask<AccessTokenResponse> RefreshAccessTokenAsync(
+        HttpClient http,
+        string refreshToken,
+        CancellationToken ct = default)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, AccessTokenUrl)
+        {
+            Content = JsonContent.Create(
+                new RefreshTokenRequest
+                {
+                    ClientId = ClientId,
+                    RefreshToken = refreshToken,
+                },
+                JsonContext.Default.RefreshTokenRequest),
+        };
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var resp = await http.SendAsync(req, ct);
+        if (!resp.IsSuccessStatusCode && IsTransientRefreshStatus(resp.StatusCode))
+            throw new GitHubApiRequestException("refresh-token exchange", resp.StatusCode);
+
+        var result = await resp.Content.ReadFromJsonAsync(
+            JsonContext.Default.AccessTokenResponse, ct);
+        if (resp.IsSuccessStatusCode && result?.AccessToken is { Length: > 0 })
+            return result;
+
+        if (IsRefreshCredentialRejection(result?.Error))
+            throw new GitHubRefreshCredentialRejectedException(
+                result!.Error,
+                resp.IsSuccessStatusCode ? null : resp.StatusCode);
+
+        throw new GitHubOAuthException(
+            "refresh-token exchange",
+            result?.Error ?? "missing_access_token",
+            resp.IsSuccessStatusCode ? null : resp.StatusCode);
+    }
+
+    private static bool IsTransientRefreshStatus(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.RequestTimeout
+            or HttpStatusCode.TooManyRequests
+        || (int)statusCode >= 500;
+
+    private static bool IsRefreshCredentialRejection(string? errorCode) =>
+        errorCode is "bad_refresh_token"
+            or "invalid_grant"
+            or "expired_token"
+            or "revoked_token";
 }

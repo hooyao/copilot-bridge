@@ -3,27 +3,22 @@ using Microsoft.Extensions.Hosting;
 namespace CopilotBridge.Cli.Hosting.Logging;
 
 /// <summary>
-/// Runs immediately after the host starts and swaps the bootstrap Serilog
-/// logger for the production one (console + rolling file + audit sink). Has
-/// to run before <see cref="BridgeStartupHostedService"/> so the auth flow
-/// and startup banner are captured in the full pipeline; achieved by
-/// registering this service first in
-/// <see cref="BridgeServiceCollectionExtensions.AddBridgeServer"/>.
+/// Swaps the bootstrap Serilog logger for the production one (console + rolling
+/// file + audit sink) while the host constructs its ordered hosted-service list.
+/// Generic Host constructs every hosted service before it invokes any
+/// <see cref="IHostedService.StartAsync"/> method, so doing the swap in this
+/// service's own StartAsync would be too late: loggers injected into later
+/// hosted services would already target the disposed bootstrap instance.
+/// Registering this service first makes its constructor the ordering barrier.
 /// </summary>
 internal sealed class SerilogReplacerHostedService : IHostedService
 {
-    private readonly IServiceProvider _services;
-
     public SerilogReplacerHostedService(IServiceProvider services)
     {
-        _services = services;
+        SerilogBootstrapper.ReplaceWithFull(services);
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
-    {
-        SerilogBootstrapper.ReplaceWithFull(_services);
-        return Task.CompletedTask;
-    }
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     public Task StopAsync(CancellationToken cancellationToken)
     {

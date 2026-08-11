@@ -23,14 +23,11 @@ internal static class CopilotTokenClient
         using var req = new HttpRequestMessage(HttpMethod.Get, TokenUrl);
         req.Headers.Authorization = new AuthenticationHeaderValue("token", githubToken);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        req.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2025-04-01");
 
         using var resp = await http.SendAsync(req, ct);
         if (!resp.IsSuccessStatusCode)
-        {
-            var body = await resp.Content.ReadAsStringAsync(ct);
-            throw new InvalidOperationException(
-                $"Failed to fetch Copilot token: {(int)resp.StatusCode} {resp.ReasonPhrase}. {body}");
-        }
+            throw new GitHubApiRequestException("Copilot token exchange", resp.StatusCode);
 
         return await resp.Content.ReadFromJsonAsync(JsonContext.Default.CopilotTokenResponse, ct)
                ?? throw new InvalidOperationException("Empty Copilot token response.");

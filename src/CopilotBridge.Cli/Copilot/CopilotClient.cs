@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using CopilotBridge.Cli.Auth;
@@ -10,16 +11,10 @@ using Microsoft.Extensions.Options;
 namespace CopilotBridge.Cli.Copilot;
 
 /// <summary>
-/// Talks to Copilot's two upstream surfaces: the native Anthropic
-/// <c>/v1/messages</c> endpoint and the OpenAI-shaped <c>/responses</c> endpoint.
+/// Talks to Copilot's authenticated CAPI surfaces. Every send is built from one
+/// immutable auth lease. Connection failures before headers use the configured
+/// transient budget; an HTTP 401 uses a separate, single authentication replay.
 /// </summary>
-/// <remarks>
-/// Takes <see cref="IHttpClientFactory"/> and creates a client where it sends,
-/// rather than holding one in a field: a captured client pins a single pooled
-/// handler for the life of this singleton, so the factory's rotation never happens
-/// and DNS changes are never picked up. Each surface uses its own named client and
-/// therefore its own connection pool — see <see cref="UpstreamHttpClientNames"/>.
-/// </remarks>
 internal sealed class CopilotClient(
     IHttpClientFactory httpClientFactory,
     IAuthService auth,
@@ -30,16 +25,13 @@ internal sealed class CopilotClient(
 {
     private readonly UpstreamRetryOptions _retry = retryOptions.Value;
     private readonly UpstreamTimeoutOptions _timeout = timeoutOptions.Value;
+#if DEBUG
+    private int _testAuthRejectionInjected;
+#endif
 
     public async ValueTask<CopilotModelsResponse> GetModelsAsync(CancellationToken ct = default)
     {
-        var (token, baseUrl) = await ResolveAuthAsync(ct);
-
 #if DEBUG
-        // Real-client behavior coverage needs to prove that a cold Copilot metadata
-        // outage degrades only the catalog, while live /responses inference remains
-        // healthy. Keep this seam out of Release/AOT binaries entirely; ServeProcess
-        // enables it only for the explicit failure-fallback phase.
         if (string.Equals(
                 Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_FAIL_MODELS"),
                 "1",
@@ -47,230 +39,274 @@ internal sealed class CopilotClient(
             throw new HttpRequestException("Forced Copilot /models failure for behavior testing.");
 #endif
 
-        using var req = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/models");
-        headers.ApplyTo(req, token);
-        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        using var response = await SendAuthenticatedAsync(
+            lease =>
+            {
+                var request = new HttpRequestMessage(
+                    HttpMethod.Get, $"{lease.ApiBaseUrl}/models");
+                headers.ApplyTo(request, lease.Token);
+                request.Headers.Accept.Add(
+                    new MediaTypeWithQualityHeaderValue("application/json"));
+                return request;
+            },
+            UpstreamHttpClientNames.Metadata,
+            "GET /models",
+            HttpCompletionOption.ResponseContentRead,
+            useFirstByteBudget: false,
+            allowTransientRetries: false,
+            ct);
 
-        using var resp = await httpClientFactory
-            .CreateClient(UpstreamHttpClientNames.Metadata)
-            .SendAsync(req, ct);
-        if (!resp.IsSuccessStatusCode)
-        {
-            var body = await resp.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(
-                $"Failed to fetch Copilot models: {(int)resp.StatusCode} {resp.ReasonPhrase}. {body}");
-        }
+                $"Failed to fetch Copilot models: {(int)response.StatusCode} {response.ReasonPhrase}.");
 
-        return await resp.Content.ReadFromJsonAsync(JsonContext.Default.CopilotModelsResponse, ct)
+        return await response.Content.ReadFromJsonAsync(
+                   JsonContext.Default.CopilotModelsResponse, ct)
                ?? throw new InvalidOperationException("Empty Copilot models response.");
     }
 
-    public async ValueTask<HttpResponseMessage> PostMessagesAsync(
+    public ValueTask<HttpResponseMessage> PostMessagesAsync(
         ReadOnlyMemory<byte> body,
         bool vision = false,
         IReadOnlyList<string>? anthropicBeta = null,
         IReadOnlyDictionary<string, string?>? copilotHeaderOverrides = null,
-        CancellationToken ct = default)
-    {
-        var (token, baseUrl) = await ResolveAuthAsync(ct);
+        CancellationToken ct = default) =>
+        SendAuthenticatedAsync(
+            lease =>
+            {
+                var request = JsonPost(
+                    $"{lease.ApiBaseUrl}/v1/messages", body);
+                headers.ApplyTo(
+                    request, lease.Token, vision, copilotHeaderOverrides);
+                if (anthropicBeta is { Count: > 0 })
+                    request.Headers.Add(
+                        "anthropic-beta", string.Join(',', anthropicBeta));
+                return request;
+            },
+            UpstreamHttpClientNames.Anthropic,
+            "POST /v1/messages",
+            HttpCompletionOption.ResponseHeadersRead,
+            useFirstByteBudget: true,
+            allowTransientRetries: true,
+            ct);
 
-        // Idempotent retry of transient connection-layer failures. SendAsync
-        // with ResponseHeadersRead throws BEFORE returning a response when the
-        // connection can't be established / the TLS handshake fails / the
-        // socket is reset before headers arrive — at that point the request
-        // body was never processed upstream, so re-sending it is safe. Once
-        // SendAsync returns (headers in hand), we DON'T retry: SSE streaming
-        // may have started and a re-send would duplicate content. Each attempt
-        // builds a fresh HttpRequestMessage (they're single-use).
-        var attempt = 0;
+    public ValueTask<HttpResponseMessage> PostCountTokensAsync(
+        ReadOnlyMemory<byte> body,
+        CancellationToken ct = default) =>
+        SendAuthenticatedAsync(
+            lease =>
+            {
+                var request = JsonPost(
+                    $"{lease.ApiBaseUrl}/v1/messages/count_tokens", body);
+                headers.ApplyTo(request, lease.Token);
+                return request;
+            },
+            UpstreamHttpClientNames.Metadata,
+            "POST /v1/messages/count_tokens",
+            HttpCompletionOption.ResponseContentRead,
+            useFirstByteBudget: false,
+            allowTransientRetries: false,
+            ct);
+
+    public ValueTask<HttpResponseMessage> PostResponsesAsync(
+        ReadOnlyMemory<byte> body,
+        bool vision = false,
+        CancellationToken ct = default) =>
+        SendAuthenticatedAsync(
+            lease =>
+            {
+                var request = JsonPost($"{lease.ApiBaseUrl}/responses", body);
+                headers.ApplyTo(request, lease.Token, vision);
+                return request;
+            },
+            UpstreamHttpClientNames.Responses,
+            "POST /responses",
+            HttpCompletionOption.ResponseHeadersRead,
+            useFirstByteBudget: true,
+            allowTransientRetries: true,
+            ct);
+
+    private async ValueTask<HttpResponseMessage> SendAuthenticatedAsync(
+        Func<CopilotAuthLease, HttpRequestMessage> createRequest,
+        string clientName,
+        string operation,
+        HttpCompletionOption completionOption,
+        bool useFirstByteBudget,
+        bool allowTransientRetries,
+        CancellationToken ct)
+    {
+        var lease = await auth.GetCopilotTokenAsync(ct: ct);
+        var authReplayUsed = false;
+        var transientRetriesUsed = 0;
+
         while (true)
         {
-            var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages")
-            {
-                Content = new ReadOnlyMemoryContent(body)
-                {
-                    Headers = { ContentType = new MediaTypeHeaderValue("application/json") },
-                },
-            };
-            headers.ApplyTo(req, token, vision, copilotHeaderOverrides);
-            if (anthropicBeta is { Count: > 0 })
-            {
-                req.Headers.Add("anthropic-beta", string.Join(',', anthropicBeta));
-            }
-
+            var request = createRequest(lease);
+#if DEBUG
+            MaybeInjectOneShotRejectedBearer(request, operation, lease.Generation);
+#endif
+            HttpResponseMessage response;
             try
             {
-                // ResponseHeadersRead so the caller can stream the SSE body
-                // without buffering. The caller owns disposal of the result.
-                // The first-byte inactivity budget is applied per attempt inside
-                // the shared helper (backoff below is outside the armed window).
-                return await SendWithFirstByteBudgetAsync(
-                    req, httpClientFactory.CreateClient(UpstreamHttpClientNames.Anthropic), ct);
+                var http = httpClientFactory.CreateClient(clientName);
+                response = useFirstByteBudget
+                    ? await SendWithFirstByteBudgetAsync(request, http, ct)
+                    : await http.SendAsync(request, completionOption, ct);
             }
             catch (Exception ex) when (
-                attempt < _retry.MaxRetries
+                allowTransientRetries
+                && transientRetriesUsed < _retry.MaxRetries
                 && !ct.IsCancellationRequested
                 && TransientUpstreamError.Is(ex))
             {
-                req.Dispose();
-                attempt++;
-                var delayMs = ComputeBackoffMs(attempt);
+                request.Dispose();
+                transientRetriesUsed++;
+                var delayMs = ComputeBackoffMs(transientRetriesUsed);
                 log.LogWarning(
-                    "upstream POST /v1/messages transient failure ({Type}: {Message}); "
+                    "upstream {Operation} transient failure ({Type}: {Message}); "
                     + "retry {Attempt}/{Max} in {DelayMs}ms",
-                    ex.GetType().Name, ex.Message, attempt, _retry.MaxRetries, delayMs);
+                    operation,
+                    ex.GetType().Name,
+                    ex.Message,
+                    transientRetriesUsed,
+                    _retry.MaxRetries,
+                    delayMs);
                 await Task.Delay(delayMs, ct);
+                continue;
             }
             catch
             {
-                // Non-transient, or budget exhausted, or cancelled — let it
-                // propagate. The request object leaks its handle here only on
-                // the throwing path; SendAsync already owns/disposed it on
-                // failure, so no explicit Dispose (double-dispose-safe anyway).
+                request.Dispose();
                 throw;
             }
+
+            if (response.StatusCode != HttpStatusCode.Unauthorized || authReplayUsed)
+            {
+                LogTerminalClassification(operation, response.StatusCode, authReplayUsed);
+                return response;
+            }
+
+            // 401 is an authentication rejection: no model work was accepted.
+            // Dispose the response and single-use request, reject only the lease
+            // used, and replay once with a fresh request object and exact body bytes.
+            response.Dispose();
+            request.Dispose();
+            authReplayUsed = true;
+            log.LogWarning(
+                "upstream {Operation} rejected Copilot bearer generation={Generation}; "
+                + "refreshing and replaying once",
+                operation,
+                lease.Generation);
+            lease = await auth.GetCopilotTokenAsync(lease, ct);
         }
     }
 
     /// <summary>
-    /// Sends <paramref name="req"/> with <c>ResponseHeadersRead</c>, bounding the
-    /// wait for the first byte (response headers) by the first-byte inactivity
-    /// budget. Shared by <see cref="PostMessagesAsync"/> and
-    /// <see cref="PostResponsesAsync"/> so both forward paths get the same bound.
+    /// Bounds only the wait for response headers. Each connection retry gets the
+    /// full configured first-byte budget; the returned response body uses the
+    /// caller's cancellation token and is not tied to this temporary CTS.
     /// </summary>
-    /// <remarks>
-    /// Arms a per-call linked <see cref="CancellationTokenSource"/>: called once per
-    /// retry attempt, each fresh send gets the FULL budget (the caller's backoff
-    /// runs outside this method). On our timer firing — and only when the caller's
-    /// own <paramref name="ct"/> did NOT fire (so a client cancel wins the race) —
-    /// throws a terminal <see cref="UpstreamTimeoutException"/> the caller's
-    /// transient-retry <c>when</c> clause does not catch. Once headers arrive the
-    /// timer is disarmed (<c>CancelAfter(Infinite)</c>) so it cannot fire during the
-    /// caller's body read; the caller reads the body with its own <paramref name="ct"/>
-    /// (never this method's token), so disposing the linked CTS at method exit does
-    /// NOT abort that read — verified by <c>FirstByteCtsLifetimeProbe</c>. The CTS is
-    /// disposed on every path (a <c>using</c>) to avoid rooting a per-request
-    /// registration on <paramref name="ct"/> for the life of a long-running server.
-    /// Budget <c>&lt;= 0</c> ⇒ the original bare send (no CTS, no timer).
-    /// </remarks>
     private async ValueTask<HttpResponseMessage> SendWithFirstByteBudgetAsync(
-        HttpRequestMessage req, HttpClient http, CancellationToken ct)
+        HttpRequestMessage request,
+        HttpClient http,
+        CancellationToken ct)
     {
         var firstByteBudget = _timeout.FirstByteTimeoutSeconds;
         if (firstByteBudget <= 0)
-        {
-            return await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-        }
+            return await http.SendAsync(
+                request, HttpCompletionOption.ResponseHeadersRead, ct);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(firstByteBudget));
-        HttpResponseMessage resp;
+        HttpResponseMessage response;
         try
         {
-            resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+            response = await http.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                timeoutCts.Token);
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (
+            timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             throw new UpstreamTimeoutException(
-                UpstreamTimeoutPhase.FirstByte, TimeSpan.FromSeconds(firstByteBudget));
+                UpstreamTimeoutPhase.FirstByte,
+                TimeSpan.FromSeconds(firstByteBudget));
         }
 
-        // Headers arrived — disarm so the timer can't fire before the CTS is disposed
-        // at method exit; the body read uses the caller's ct, not this token.
         timeoutCts.CancelAfter(Timeout.InfiniteTimeSpan);
-        return resp;
+        return response;
     }
 
-    /// <summary>Exponential backoff for retry attempt N (1-based), clamped to MaxDelayMs.</summary>
     private int ComputeBackoffMs(int attempt)
     {
-        var raw = _retry.BaseDelayMs * Math.Pow(_retry.BackoffMultiplier, attempt - 1);
-        var clamped = Math.Min(raw, _retry.MaxDelayMs);
-        return (int)clamped;
+        var raw = _retry.BaseDelayMs * Math.Pow(
+            _retry.BackoffMultiplier, attempt - 1);
+        return (int)Math.Min(raw, _retry.MaxDelayMs);
     }
 
-    public async ValueTask<HttpResponseMessage> PostCountTokensAsync(
-        ReadOnlyMemory<byte> body,
-        CancellationToken ct = default)
+    private void LogTerminalClassification(
+        string operation,
+        HttpStatusCode status,
+        bool authReplayUsed)
     {
-        var (token, baseUrl) = await ResolveAuthAsync(ct);
-
-        var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages/count_tokens")
+        var classification = status switch
         {
-            Content = new ReadOnlyMemoryContent(body)
-            {
-                Headers = { ContentType = new MediaTypeHeaderValue("application/json") },
-            },
+            HttpStatusCode.Unauthorized when authReplayUsed => "copilot_auth_terminal",
+            HttpStatusCode.PaymentRequired => "quota_or_billing",
+            HttpStatusCode.Forbidden => "policy_or_entitlement",
+            HttpStatusCode.TooManyRequests => "rate_limit",
+            _ => null,
         };
-        headers.ApplyTo(req, token);
-
-        return await httpClientFactory
-            .CreateClient(UpstreamHttpClientNames.Metadata)
-            .SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
-    }
-
-    public async ValueTask<HttpResponseMessage> PostResponsesAsync(
-        ReadOnlyMemory<byte> body,
-        bool vision = false,
-        CancellationToken ct = default)
-    {
-        var (token, baseUrl) = await ResolveAuthAsync(ct);
-
-        // Same idempotent transient-retry contract as PostMessagesAsync: retry
-        // only connection-layer failures that throw BEFORE SendAsync returns
-        // headers (the request body never reached upstream, so re-send is safe);
-        // once headers are in hand, never retry (SSE may have started). The Codex
-        // backend emits no [DONE] — that's the strategy's concern, not the
-        // client's; here we just forward bytes.
-        var attempt = 0;
-        while (true)
+        if (classification is not null)
         {
-            var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/responses")
-            {
-                Content = new ReadOnlyMemoryContent(body)
-                {
-                    Headers = { ContentType = new MediaTypeHeaderValue("application/json") },
-                },
-            };
-            // Endpoint-agnostic official Copilot header set (no anthropic-version);
-            // Codex's x-codex-* headers are intentionally NOT forwarded — the
-            // bridge presents as the official VS Code client, like /cc.
-            headers.ApplyTo(req, token, vision);
-
-            try
-            {
-                // Same first-byte inactivity budget as PostMessagesAsync, applied per
-                // attempt via the shared helper. A first-byte timeout throws a terminal
-                // UpstreamTimeoutException (not transient), so the retry `when` below
-                // does not catch it — the Codex endpoint maps it to a 504. Uses the
-                // Responses pool, so Codex traffic cannot exhaust the connections the
-                // Claude Code path depends on.
-                return await SendWithFirstByteBudgetAsync(
-                    req, httpClientFactory.CreateClient(UpstreamHttpClientNames.Responses), ct);
-            }
-            catch (Exception ex) when (
-                attempt < _retry.MaxRetries
-                && !ct.IsCancellationRequested
-                && TransientUpstreamError.Is(ex))
-            {
-                req.Dispose();
-                attempt++;
-                var delayMs = ComputeBackoffMs(attempt);
-                log.LogWarning(
-                    "upstream POST /responses transient failure ({Type}: {Message}); "
-                    + "retry {Attempt}/{Max} in {DelayMs}ms",
-                    ex.GetType().Name, ex.Message, attempt, _retry.MaxRetries, delayMs);
-                await Task.Delay(delayMs, ct);
-            }
+            log.LogWarning(
+                "upstream {Operation} terminal status={Status} classification={Classification}",
+                operation, (int)status, classification);
         }
     }
 
-    private async ValueTask<(string Token, string BaseUrl)> ResolveAuthAsync(CancellationToken ct)
+    private static HttpRequestMessage JsonPost(
+        string url,
+        ReadOnlyMemory<byte> body) => new(HttpMethod.Post, url)
     {
-        var token = await auth.GetCopilotTokenAsync(ct);
-        var baseUrl = auth.CopilotApiBaseUrl
-            ?? throw new InvalidOperationException(
-                "Copilot API base URL is unknown — GetCopilotTokenAsync should have populated it.");
-        return (token, baseUrl);
+        Content = new ReadOnlyMemoryContent(body)
+        {
+            Headers = { ContentType = new MediaTypeHeaderValue("application/json") },
+        },
+    };
+
+#if DEBUG
+    private void MaybeInjectOneShotRejectedBearer(
+        HttpRequestMessage request,
+        string operation,
+        long generation)
+    {
+        if (!string.Equals(operation, "POST /responses", StringComparison.Ordinal)
+            || !string.Equals(
+                Environment.GetEnvironmentVariable(
+                    "COPILOT_BRIDGE_TEST_REJECT_COPILOT_AUTH_ONCE"),
+                "1",
+                StringComparison.Ordinal)
+            || Interlocked.CompareExchange(
+                ref _testAuthRejectionInjected, 1, 0) != 0)
+            return;
+
+        request.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer", CorruptBearerSignature(request.Headers.Authorization?.Parameter));
+        log.LogWarning(
+            "TEST ONLY: injected one-shot rejected Copilot bearer for {Operation} "
+            + "generation={Generation}",
+            operation, generation);
     }
+
+    private static string CorruptBearerSignature(string? token)
+    {
+        if (string.IsNullOrEmpty(token))
+            throw new InvalidOperationException(
+                "TEST ONLY auth rejection seam found no bearer to corrupt.");
+        var replacement = token[^1] == '0' ? '1' : '0';
+        return token[..^1] + replacement;
+    }
+#endif
 }

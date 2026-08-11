@@ -354,9 +354,9 @@ public class CopilotGapProbes
         var auth = new AuthService(new SingleClientHttpClientFactory(http));
         try
         {
-            var token = await auth.GetCopilotTokenAsync();
-            var baseUrl = auth.CopilotApiBaseUrl
-                ?? throw new InvalidOperationException("CopilotApiBaseUrl unknown after token fetch.");
+            var lease = await auth.GetCopilotTokenAsync();
+            var token = lease.Token;
+            var baseUrl = lease.ApiBaseUrl;
 
             var headers = new CopilotHeaderFactory();
             var body = """

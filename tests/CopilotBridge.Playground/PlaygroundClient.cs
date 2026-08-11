@@ -58,9 +58,9 @@ internal sealed class PlaygroundClient : IDisposable
         string? anthropicBeta = null,
         CancellationToken ct = default)
     {
-        var token = await _auth.GetCopilotTokenAsync(ct);
-        var baseUrl = _auth.CopilotApiBaseUrl
-            ?? throw new InvalidOperationException("CopilotApiBaseUrl is unknown after token fetch.");
+        var lease = await _auth.GetCopilotTokenAsync(ct: ct);
+        var token = lease.Token;
+        var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages");
         _headers.ApplyTo(req, token, vision);
@@ -83,9 +83,9 @@ internal sealed class PlaygroundClient : IDisposable
         string jsonBody,
         CancellationToken ct = default)
     {
-        var token = await _auth.GetCopilotTokenAsync(ct);
-        var baseUrl = _auth.CopilotApiBaseUrl
-            ?? throw new InvalidOperationException("CopilotApiBaseUrl is unknown after token fetch.");
+        var lease = await _auth.GetCopilotTokenAsync(ct: ct);
+        var token = lease.Token;
+        var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages/count_tokens");
         _headers.ApplyTo(req, token);
@@ -109,9 +109,9 @@ internal sealed class PlaygroundClient : IDisposable
         bool vision = false,
         CancellationToken ct = default)
     {
-        var token = await _auth.GetCopilotTokenAsync(ct);
-        var baseUrl = _auth.CopilotApiBaseUrl
-            ?? throw new InvalidOperationException("CopilotApiBaseUrl is unknown after token fetch.");
+        var lease = await _auth.GetCopilotTokenAsync(ct: ct);
+        var token = lease.Token;
+        var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/responses");
         _headers.ApplyTo(req, token, vision);
@@ -133,9 +133,9 @@ internal sealed class PlaygroundClient : IDisposable
         string jsonBody,
         CancellationToken ct = default)
     {
-        var token = await _auth.GetCopilotTokenAsync(ct);
-        var baseUrl = _auth.CopilotApiBaseUrl
-            ?? throw new InvalidOperationException("CopilotApiBaseUrl is unknown after token fetch.");
+        var lease = await _auth.GetCopilotTokenAsync(ct: ct);
+        var token = lease.Token;
+        var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/responses");
         _headers.ApplyTo(req, token);
@@ -161,9 +161,9 @@ internal sealed class PlaygroundClient : IDisposable
         string? jsonBody = null,
         CancellationToken ct = default)
     {
-        var token = await _auth.GetCopilotTokenAsync(ct);
-        var baseUrl = _auth.CopilotApiBaseUrl
-            ?? throw new InvalidOperationException("CopilotApiBaseUrl is unknown after token fetch.");
+        var lease = await _auth.GetCopilotTokenAsync(ct: ct);
+        var token = lease.Token;
+        var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(method, $"{baseUrl}{relativePath}");
         _headers.ApplyTo(req, token);
@@ -188,9 +188,9 @@ internal sealed class PlaygroundClient : IDisposable
         string jsonBody,
         CancellationToken ct = default)
     {
-        var token = await _auth.GetCopilotTokenAsync(ct);
-        var baseUrl = _auth.CopilotApiBaseUrl
-            ?? throw new InvalidOperationException("CopilotApiBaseUrl is unknown after token fetch.");
+        var lease = await _auth.GetCopilotTokenAsync(ct: ct);
+        var token = lease.Token;
+        var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages");
         _headers.ApplyTo(req, token);
@@ -219,9 +219,9 @@ internal sealed class PlaygroundClient : IDisposable
         string jsonBody,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var token = await _auth.GetCopilotTokenAsync(ct);
-        var baseUrl = _auth.CopilotApiBaseUrl
-            ?? throw new InvalidOperationException("CopilotApiBaseUrl is unknown after token fetch.");
+        var lease = await _auth.GetCopilotTokenAsync(ct: ct);
+        var token = lease.Token;
+        var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages");
         _headers.ApplyTo(req, token);

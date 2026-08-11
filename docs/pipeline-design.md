@@ -668,8 +668,8 @@ is a captive dependency.
 anti-pattern; a *cached* one pins a pooled handler and defeats rotation, so
 consumers lease per call — one named client per upstream surface, see
 `UpstreamHttpClientNames`),
-`AuthService`/`IAuthService` (owns the token-refresh timer and in-memory token
-cache), the immutable catalog/registry lookup tables (`ModelProfileCatalog`,
+`AuthService`/`IAuthService` (owns refreshable GitHub OAuth credentials and the
+in-memory atomic Copilot auth lease), the immutable catalog/registry lookup tables (`ModelProfileCatalog`,
 `CodexModelProfileCatalog`, `IModelRegistry`), the Codex metadata services
 (`CodexCatalogSourceCache`, `CodexCatalogDiskStore`,
 `CodexCatalogOverlayService`, and `CodexCatalogProjector`),
@@ -775,6 +775,54 @@ The command-auth token is only the stable public sentinel emitted by
 `auth provider-token`. Inbound provider authorization is never promoted to an
 upstream credential: both metadata and inference obtain the real Copilot token
 only through `IAuthService`.
+
+### 4.10 Authentication leases and bounded 401 recovery
+
+Authentication has two separately managed tiers behind the sealed
+`AuthService` facade:
+
+1. **GitHub OAuth credential (encrypted at rest).** Device login preserves the
+   access token plus optional `expires_in`, rotating `refresh_token`, and
+   `refresh_token_expires_in`, and mints an opaque credential id. Refreshes keep
+   that id and increment its generation; a fresh login gets a new id even though
+   its generation restarts at one. `GitHubCredentialManager` refreshes five minutes
+   before a known access-token deadline. Rotation is process-single-flight and
+   path-locked across processes; after acquiring the file lock it reloads the
+   credential-id/generation pair so only one process consumes a rotating refresh
+   token and a stale rejection cannot target a fresh login. Fresh-login commits
+   take the primary lock, and logout takes both configured path locks in stable
+   order before deletion, so an older refresh cannot overwrite or recreate the
+   credential. The complete
+   v2 credential commits by restrictive temp-file + flush + atomic replace. The
+   existing encrypted `github_token.dat` remains a raw access-token compatibility
+   mirror for older binaries. Legacy raw files still load, but a rejected legacy
+   token has no refresh state and yields an actionable logout/login error. A fresh
+   device login may validly omit expiry and refresh fields as well; that credential
+   remains non-refreshable rather than being assigned invented metadata.
+2. **Copilot bearer (memory only).** `GetCopilotTokenAsync` returns an immutable
+   `CopilotAuthLease`: bearer, `endpoints.api`, receipt-relative refresh deadline,
+   server expiry for diagnostics, and generation. The local deadline follows the
+   official-client clock-skew rule (`receipt + refresh_in + 60s`, refreshed five
+   minutes early); callers never read a token and endpoint from separate snapshots.
+
+Every authenticated CAPI send (`/v1/messages`, `/responses`, `/models`, and
+`/v1/messages/count_tokens`) is built from one lease. A first HTTP 401 disposes
+the rejected response/request, rejects exactly that generation, obtains the
+already-newer or freshly minted lease, rebuilds the single-use request with the
+same body bytes and business headers, and replays once. A second 401 is terminal.
+400/402/403/429 and all other statuses never enter auth replay. Connection-layer
+retries retain one shared budget across the auth replay, while each actual send
+retains its configured first-byte inactivity budget.
+
+GitHub `401 Bad credentials` during `/user` or Copilot-token exchange similarly
+uses at most one refresh-token rotation and one replay. If refresh metadata is
+absent or rejected, the persisted record is preserved and interactive login is
+required. Rate limits, 5xx responses, and transport failures remain transient and
+use bounded retry/backoff without marking the credential rejected. Lifecycle logs
+carry layer, trigger, status/classification, generation,
+timing and API host only—never access/refresh tokens, Authorization values, token
+prefixes, hashes, or response bodies. See `docs/token-storage.md` for file and
+threat-model details.
 
 ## 5. Request pipeline (current: `Pipeline<MessagesRequest>`)
 
@@ -1937,10 +1985,13 @@ Before opening the listening socket, `BridgeHost.RunStartupAsync`:
    logs `[INF] No GitHub token on disk — starting device-code flow`, then
    the injected `PrintDeviceCode` callback writes the verification URL +
    user code to stdout. `EnsureGitHubTokenAsync` **blocks** polling GitHub
-   until the user completes the browser handshake; the token is then
-   DPAPI-encrypted and saved next to the .exe.
-3. `auth.GetCopilotTokenAsync(ct)` — exchanges the GitHub token for a
-   short-lived Copilot bearer token, started the in-memory refresh timer.
+   until the user completes the browser handshake; the complete OAuth credential
+   is encrypted and saved next to the executable (DPAPI on Windows, derived-key
+   protection on Linux/macOS). An existing refreshable credential is silently
+   rotated first when its access-token deadline is near.
+3. `auth.GetCopilotTokenAsync(ct)` — exchanges the usable GitHub credential for
+   an atomic short-lived Copilot token/endpoint lease and arms its in-memory
+   receipt-relative refresh timer. A GitHub 401 here rotates once before failing.
 4. `ModelProfileCatalog` is a static DI singleton (hand-curated, no
    network call) — startup just logs its profile count and ids. The
    catalog deliberately does **not** derive from Copilot's `/models`
@@ -1956,6 +2007,13 @@ operators who want to handshake offline before starting the server.
 ```
 src/CopilotBridge.Cli/
 ├── Program.cs                                   # System.CommandLine root + subcommands; Serilog init
+│
+├── Auth/
+│   ├── AuthService.cs                           # sealed facade: device flow, GitHub refresh, Copilot lease
+│   ├── GitHubCredentialManager.cs               # proactive/reactive OAuth refresh + single-flight
+│   ├── GitHubCredentialStore.cs                 # encrypted v2 + legacy mirror + atomic/path-locked rotation
+│   ├── TokenStore.cs                            # process-default OS protector/store composition
+│   └── CopilotAuthLease.cs                      # immutable token + endpoint + deadlines + generation
 │
 ├── Pipeline/
 │   ├── BridgeContext.cs                         # context + request + response containers + ResponseMode

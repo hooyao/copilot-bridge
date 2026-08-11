@@ -235,6 +235,78 @@ In other words, the base URL **comes from the Copilot token's `endpoints.api` fi
 
 **Conclusion**: our implementation should **not** stitch URLs based on an `accountType` string — use whatever the Copilot token returns. caozhiyuan/copilot-api's if/else is a reverse-engineering simplification; the official approach is cleaner.
 
+#### 3.0.2a OAuth/Copilot token lifetimes and 401 recovery (verified 2026-08)
+
+There are two distinct credentials and a 401 must be attributed to the correct
+hop:
+
+| Credential | Obtained from | Lifetime / refresh source |
+| --- | --- | --- |
+| GitHub user access token | device flow at `github.com/login/oauth/access_token` | A valid OAuth response may omit all expiry/refresh fields; expiring GitHub App user tokens include `expires_in`, rotating `refresh_token`, and `refresh_token_expires_in` |
+| Copilot bearer | `GET api.github.com/copilot_internal/v2/token` | Always short-lived; response carries `expires_at`, `refresh_in`, and `endpoints.api` |
+
+The affected account's fresh device login produced a v2 record with
+`refreshable=False`, unknown access expiry, and no refresh expiry. This is not an
+exchange failure: the checked-in Copilot reference types a successful response
+for client id `Iv1.b507a08c87ecfe98` as only `access_token`, `token_type`, and
+`scope`, matching GitHub's documented OAuth App device-flow example. GitHub's
+[refresh-token contract](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens)
+applies when a GitHub App enables expiring user access tokens (eight-hour access,
+six-month refresh). The bridge preserves those optional fields when present but
+must not invent them when absent.
+
+For that expiring-token flow, GitHub states that using a refresh token invalidates
+both it and the old access token, and the response supplies newly rotated values.
+If a response anomalously contains a new access token but omits its replacement
+refresh token, retaining the submitted token would persist a credential known to
+be spent. The bridge instead commits the new access token as non-refreshable and
+logs only that state.
+
+A live Enterprise sample returned a 30-minute Copilot bearer with
+`refresh_in=1500` (25 minutes). The official VS Code token manager does not trust
+the absolute epoch as its only clock: after receipt it sets the effective local
+expiry to `now + refresh_in + 60`, and considers the token stale five minutes
+before that. Its CAPI error handler clears the cached Copilot token after HTTP
+401/403 so a later request mints a replacement. The bridge follows the same
+receipt-relative safety shape and additionally replays one current request on
+401 because it retains the exact request bytes.
+
+The GitHub token exchange uses `Authorization: token <github-token>` and
+`X-GitHub-Api-Version: 2025-04-01`; chat CAPI calls still use §3.0.4's newer
+2026 API header. Do not copy the internal-token API version onto public
+`GET /user`—the live public endpoint rejects that version with HTTP 400.
+Device/refresh responses must be preserved as a credential
+record—not reduced to `access_token`—or a refreshable `ghu_` token eventually
+becomes an unrecoverable `Bad credentials` failure.
+
+Production evidence that motivated the fix was unambiguous at the hop level:
+after the failure, `auth whoami`, `auth copilot-status`, and
+`debug list-models --all` all received GitHub REST 401 with
+`{"message":"Bad credentials"}`. Restarting did not help because it reloaded the
+same rejected GitHub token; deleting it and completing device login did. This is
+not a gpt-5.6 request-shape failure—once GitHub auth is rejected, every model and
+endpoint fails before inference.
+
+The approximately one-hour observation does not establish a one-hour GitHub
+token lifetime. A previously minted Copilot bearer can mask an already-revoked
+GitHub credential until its next in-memory refresh. GitHub documents revocation
+after credential exposure, user/app/third-party or enterprise action, and after
+exceeding ten tokens for one user/application/scope combination. Its
+[`oauth_authorization.destroy` security-log event](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/token-expiration-and-revocation)
+is the server-side evidence to check if `Bad credentials` recurs.
+
+Bridge recovery contract:
+
+- GitHub 401: rotate once when refresh metadata exists, replay once; otherwise
+  require logout/login. Never loop and never destroy the last committed record.
+- Copilot CAPI 401: reject only the token/endpoint lease generation used,
+  obtain the already-newer or freshly minted lease, rebuild the request, replay
+  once. A second 401 is terminal.
+- 400/402/403/429 are not same-request auth replays; they retain validation,
+  billing/quota, policy/entitlement, and rate-limit meaning.
+- No token, prefix, hash, Authorization value, or error body containing credential
+  material is written to logs or CLI diagnostics.
+
 #### 3.0.3 RequestType → URL mapping (the `makeRequest` switch)
 
 ```js
@@ -937,8 +1009,9 @@ I lean **probe**: it's cheap (~50 lines of C#) and eliminates the routing-layer'
 ```
 1. CopilotTokenClient + AuthService.GetCopilotTokenAsync()
    - GET /copilot_internal/v2/token
-   - In-memory cache + Timer(refresh_in - 60)
-   Acceptance: copilot-bridge auth copilot-status prints the current token + expiry
+   - Atomic token/endpoint lease + receipt-relative refresh + bounded 401 recovery
+   Acceptance: `copilot-bridge auth copilot-status` prints expiry, refresh time,
+   and API base URL without any token bytes
 
 2. CopilotClient.GetModelsAsync() + temporary debug list-models subcommand
    - GET /models

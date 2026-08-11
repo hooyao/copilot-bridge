@@ -635,6 +635,12 @@ the invariant in words first ("given X, the audit must contain Y, because Z"), t
 assert observable bytes/events. A new test that passes on the first run is
 suspect — mutation-check it.
 
+The bootstrap-to-full Serilog swap occurs while DI constructs the first
+registered hosted service. This ordering is deliberate: Generic Host constructs
+the complete hosted-service list before calling any `StartAsync`, so a swap in
+`StartAsync` is too late for loggers already injected into startup/auth services
+and causes their lifecycle events to disappear from the rolling file.
+
 ---
 
 ## Appendix A — File map

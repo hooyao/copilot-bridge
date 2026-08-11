@@ -15,9 +15,10 @@ namespace CopilotBridge.Cli.Hosting.Logging;
 ///   <item><see cref="BuildBootstrap"/> at the top of <c>Program.cs</c> —
 ///         console-to-stderr only.</item>
 ///   <item><see cref="ReplaceWithFull"/> from
-///         <see cref="SerilogReplacerHostedService.StartAsync"/> — adds the
-///         rolling file and the audit sink (when tracing is enabled),
-///         atomically replaces <see cref="Log.Logger"/>.</item>
+///         <see cref="SerilogReplacerHostedService"/>'s constructor — adds the
+///         rolling file and the audit sink (when tracing is enabled), then
+///         atomically replaces <see cref="Log.Logger"/> before DI constructs
+///         later hosted services and their injected loggers.</item>
 /// </list>
 /// </summary>
 internal static class SerilogBootstrapper

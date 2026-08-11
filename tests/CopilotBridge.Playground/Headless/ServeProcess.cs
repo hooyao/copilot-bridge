@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Nodes;
+using CopilotBridge.Cli.Auth;
 
 namespace CopilotBridge.Playground.Headless;
 
@@ -51,7 +52,8 @@ internal sealed record ServeInvocation(
     bool ForceModelsFailure = false,
     string? CodexCatalogCacheDirectory = null,
     bool ForceCodexCatalogSourceFailure = false,
-    bool ForceCodexCatalogSourceAbsent = false);
+    bool ForceCodexCatalogSourceAbsent = false,
+    bool ForceCopilotAuthRejectionOnce = false);
 
 /// <summary>
 /// The appsettings shape a behavior run needs. Each value is applied by patching the
@@ -104,6 +106,11 @@ internal sealed class ServeHandle : IAsyncDisposable
     public string StderrTail
     {
         get { lock (_stderrTail) return _stderrTail.ToString(); }
+    }
+
+    public string StderrAll
+    {
+        get { lock (_stderrAll) return _stderrAll.ToString(); }
     }
 
     internal ServeHandle(Process process, string scratchDir, string baseUrl, string traceDir,
@@ -309,6 +316,15 @@ internal static class ServeProcess
                         + $"selected '{selectedConfiguration ?? "unknown"}' output.");
                 psi.Environment["COPILOT_BRIDGE_TEST_ABSENT_CODEX_CATALOG_SOURCE"] = "1";
             }
+            if (inv.ForceCopilotAuthRejectionOnce)
+            {
+                var selectedConfiguration = Directory.GetParent(buildOutputDir)?.Name;
+                if (!string.Equals(selectedConfiguration, "Debug", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "Forced one-shot Copilot auth rejection requires a Debug bridge build; "
+                        + $"selected '{selectedConfiguration ?? "unknown"}' output.");
+                psi.Environment["COPILOT_BRIDGE_TEST_REJECT_COPILOT_AUTH_ONCE"] = "1";
+            }
 
             proc = new Process { StartInfo = psi };
             var stderrTail = new StringBuilder();
@@ -494,7 +510,7 @@ internal static class ServeProcess
             // the ~/github_token.dat HOME fallback, and best-effort scratch cleanup could
             // leave the copied blob behind — so exclude it outright.
             var name = Path.GetFileName(file);
-            if (string.Equals(name, "github_token.dat", StringComparison.OrdinalIgnoreCase))
+            if (GitHubCredentialStore.IsCredentialArtifactName(name))
                 continue;
 
             // Skip the bridge's own runtime output subtrees if a prior JIT run left them

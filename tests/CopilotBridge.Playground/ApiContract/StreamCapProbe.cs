@@ -186,9 +186,9 @@ public class StreamCapProbe
         var auth = new AuthService(new SingleClientHttpClientFactory(http));
         var headers = new CopilotHeaderFactory();
 
-        var token = await auth.GetCopilotTokenAsync(outerCt);
-        var baseUrl = auth.CopilotApiBaseUrl
-            ?? throw new InvalidOperationException("CopilotApiBaseUrl unknown after token fetch.");
+        var lease = await auth.GetCopilotTokenAsync(ct: outerCt);
+        var token = lease.Token;
+        var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages");
         headers.ApplyTo(req, token);

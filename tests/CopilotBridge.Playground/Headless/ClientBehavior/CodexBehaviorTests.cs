@@ -70,6 +70,22 @@ public class CodexBehaviorTests
         await DriveAndRecordAsync("codex-multistep-toolchain", prompt);
     }
 
+    [Fact]
+    public async Task Codex_OneShotCopilot401_RefreshesAndCompletesToolChain_ForVerdict()
+    {
+        const string canary = "codex-auth-replay-canary-64017";
+        var prompt =
+            "Perform these steps with separate real shell tool calls, in order; do not fabricate output:\n"
+            + "1. Run `echo auth-first-line > auth_replay_probe.txt`.\n"
+            + $"2. Run `echo {canary} >> auth_replay_probe.txt`.\n"
+            + "3. Run `cat auth_replay_probe.txt`, report the exact second line, and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-one-shot-auth-401-recovery",
+            prompt,
+            forceCopilotAuthRejectionOnce: true);
+    }
+
     /// <summary>
     /// A task shaped to drive codex's CODE-EXECUTION grammar tool (the custom
     /// <c>exec</c>) rather than a plain shell <c>function_call</c>: it asks for an
@@ -234,9 +250,13 @@ public class CodexBehaviorTests
         string caseId,
         string prompt,
         string? modelReasoningEffort = null,
-        string? modelReasoningSummary = null)
+        string? modelReasoningSummary = null,
+        string expectedCodexVersion = ClientBehaviorSupport.CodexVersion,
+        bool forceCopilotAuthRejectionOnce = false)
     {
-        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(ServeScenario.Passthrough));
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.Passthrough,
+            ForceCopilotAuthRejectionOnce: forceCopilotAuthRejectionOnce));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
 
         // Disposable work dir so codex's file-writing tools mutate a throwaway dir, never
@@ -251,7 +271,7 @@ public class CodexBehaviorTests
             Timeout: TimeSpan.FromMinutes(6),
             CodexHome: codexHome.Path,
             WorkingDirectory: work.Path,
-            ExpectedCodexVersion: ClientBehaviorSupport.CodexVersion,
+            ExpectedCodexVersion: expectedCodexVersion,
             ModelReasoningEffort: modelReasoningEffort,
             ModelReasoningSummary: modelReasoningSummary));
 
@@ -279,8 +299,30 @@ public class CodexBehaviorTests
         _output.WriteLine($"[manifest] {manifestPath}");
         _output.WriteLine("[verdict] run `/real-client-verify`; it reads the isolated SQLite log for this exact thread.");
 
+        if (forceCopilotAuthRejectionOnce)
+        {
+            Assert.Equal(1, CountOccurrences(
+                bridge.StderrAll,
+                "TEST ONLY: injected one-shot rejected Copilot bearer"));
+            Assert.Equal(1, CountOccurrences(
+                bridge.StderrAll,
+                "rejected Copilot bearer generation="));
+        }
+
         // Harness contract only. The skill owns the semantic SQLite verdict.
         ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        var start = 0;
+        while ((start = text.IndexOf(value, start, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            start += value.Length;
+        }
+        return count;
     }
 
     private async Task DriveLongContextCatalogCaseAsync(
