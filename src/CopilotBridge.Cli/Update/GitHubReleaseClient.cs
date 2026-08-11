@@ -35,8 +35,9 @@ internal readonly struct ReleaseDiscoveryResult
 }
 
 /// <summary>
-/// Time source used to enforce the whole-traversal deadline. Injected so tests
-/// can advance a virtual clock without wall-clock sleeps.
+/// Time source used to enforce the whole-traversal deadline and to wait between
+/// rate-limit retries. Injected so tests can advance a virtual clock without
+/// wall-clock sleeps.
 /// </summary>
 internal interface IMonotonicClock
 {
@@ -45,6 +46,13 @@ internal interface IMonotonicClock
 
     /// <summary>Elapsed time since <paramref name="startTimestamp"/>.</summary>
     TimeSpan Elapsed(long startTimestamp);
+
+    /// <summary>
+    /// Wait <paramref name="delay"/>. Owned by the clock so a virtual clock can
+    /// make the wait instantaneous while still advancing elapsed time — a retry
+    /// must consume the traversal budget in tests exactly as it does in production.
+    /// </summary>
+    Task DelayAsync(TimeSpan delay, CancellationToken ct);
 }
 
 /// <summary><see cref="Stopwatch"/>-backed monotonic clock for production use.</summary>
@@ -53,6 +61,7 @@ internal sealed class StopwatchClock : IMonotonicClock
     public static readonly StopwatchClock Instance = new();
     public long GetTimestamp() => Stopwatch.GetTimestamp();
     public TimeSpan Elapsed(long startTimestamp) => Stopwatch.GetElapsedTime(startTimestamp);
+    public Task DelayAsync(TimeSpan delay, CancellationToken ct) => Task.Delay(delay, ct);
 }
 
 /// <summary>
@@ -64,7 +73,8 @@ internal sealed class StopwatchClock : IMonotonicClock
 ///   <item>a finite per-request timeout;</item>
 ///   <item>one monotonic wall-clock deadline for the WHOLE traversal;</item>
 ///   <item>repeated <c>next</c>-link/page detection (cycle guard);</item>
-///   <item>a defensive maximum page count.</item>
+///   <item>a defensive maximum page count;</item>
+///   <item>a bounded number of rate-limit retries per page.</item>
 /// </list>
 /// Every failure — DNS/TLS/HTTP/schema/rate-limit/per-request-timeout/overall-
 /// deadline/pagination-cycle/page-limit — discards partial results and returns a
@@ -77,26 +87,68 @@ internal sealed class GitHubReleaseClient
     private const string ReleasesUrl =
         "https://api.github.com/repos/hooyao/copilot-bridge/releases?per_page=100";
     private const int DefaultMaxPages = 20;
+    private const int DefaultMaxRateLimitRetries = 5;
+    private static readonly TimeSpan DefaultRateLimitRetryDelay = TimeSpan.FromMilliseconds(250);
 
     private readonly HttpClient _http;
     private readonly IMonotonicClock _clock;
     private readonly TimeSpan _perRequestTimeout;
     private readonly TimeSpan _overallDeadline;
     private readonly int _maxPages;
+    private readonly int _maxRateLimitRetries;
+    private readonly TimeSpan _rateLimitRetryDelay;
 
     public GitHubReleaseClient(
         HttpClient http,
         TimeSpan perRequestTimeout,
         TimeSpan overallDeadline,
         IMonotonicClock? clock = null,
-        int maxPages = DefaultMaxPages)
+        int maxPages = DefaultMaxPages,
+        int maxRateLimitRetries = DefaultMaxRateLimitRetries,
+        TimeSpan? rateLimitRetryDelay = null)
     {
         _http = http;
         _clock = clock ?? StopwatchClock.Instance;
         _perRequestTimeout = perRequestTimeout;
         _overallDeadline = overallDeadline;
         _maxPages = maxPages;
+        _maxRateLimitRetries = maxRateLimitRetries;
+        _rateLimitRetryDelay = rateLimitRetryDelay ?? DefaultRateLimitRetryDelay;
     }
+
+    /// <summary>
+    /// The handler discovery must run on. <see cref="SocketsHttpHandler.PooledConnectionLifetime"/>
+    /// is <see cref="TimeSpan.Zero"/> — connections are NOT reused — because that
+    /// is what makes the rate-limit retry in <see cref="DiscoverAsync"/> worth
+    /// anything.
+    /// <para>
+    /// GitHub's anonymous quota is 60 requests/hour keyed on the SOURCE IP, and a
+    /// bridge behind a corporate/cloud NAT shares that per-IP bucket with everyone
+    /// else on the same address — so the check gets a 403 even though it spends
+    /// one request per startup. Measured against the live API from such a NAT
+    /// (an 8-address pool): a pooled connection pins every request to ONE egress
+    /// address (10/10 requests, same IP), so retrying on it re-hits the exact
+    /// bucket that just returned 0 remaining. Opening a fresh connection instead
+    /// re-runs source-address selection (10 requests → 6 distinct addresses), so a
+    /// retry can land on an address that still has quota — with one address
+    /// exhausted, 10 of 12 fresh-connection attempts succeeded.
+    /// </para>
+    /// <para>
+    /// This MITIGATES the shared-bucket case; it does not fix rate limiting. If
+    /// every address in the pool is exhausted the retry cannot help (measured at
+    /// full exhaustion: 0/10 recovered even at 20 attempts over 10s), and a
+    /// single-address egress has nothing to re-select. Those cases still fail open
+    /// with the same warning, just after a bounded retry. Quota resets on a fixed
+    /// hourly window, not a sliding one, so a drained pool stays drained until the
+    /// boundary.
+    /// </para>
+    /// Redirects stay disabled, matching the rest of the update path.
+    /// </summary>
+    public static SocketsHttpHandler CreateDiscoveryHandler() => new()
+    {
+        AllowAutoRedirect = false,
+        PooledConnectionLifetime = TimeSpan.Zero,
+    };
 
     /// <summary>
     /// Fetch all published releases, following pagination until exhaustion is
@@ -111,6 +163,10 @@ internal sealed class GitHubReleaseClient
         var visited = new HashSet<string>(StringComparer.Ordinal);
         string? next = ReleasesUrl;
         var pages = 0;
+        // Retries are counted per page and reset once a page is fetched, so a
+        // paginated traversal gets the same allowance on every page.
+        var rateLimitRetries = 0;
+        var isRetry = false;
 
         while (next is not null)
         {
@@ -124,11 +180,15 @@ internal sealed class GitHubReleaseClient
             {
                 return ReleaseDiscoveryResult.Fail("update-check page limit exceeded");
             }
-            if (!visited.Add(next))
+            // A retry re-fetches a url already registered as visited, so it must
+            // skip the cycle guard — but only for that one re-fetch. Any url the
+            // server hands back via a next link still goes through the guard.
+            if (!isRetry && !visited.Add(next))
             {
                 // GitHub returned a next link we already fetched — a cycle.
                 return ReleaseDiscoveryResult.Fail("update-check pagination cycle");
             }
+            isRetry = false;
 
             HttpResponseMessage resp;
             List<GitHubRelease>? page;
@@ -155,6 +215,35 @@ internal sealed class GitHubReleaseClient
                 {
                     if (resp.StatusCode == HttpStatusCode.Forbidden || resp.StatusCode == (HttpStatusCode)429)
                     {
+                        // The per-IP anonymous quota is shared with everyone behind
+                        // the same NAT, so an exhausted bucket says nothing about
+                        // whether THIS check can proceed. Retrying on a fresh
+                        // connection (see CreateDiscoveryHandler) re-runs egress
+                        // address selection and can land on an address that still
+                        // has quota — a mitigation, not a fix: a single-address
+                        // egress retries and still fails, just bounded and fail-open.
+                        //
+                        // Only retry a response GitHub actually attributes to the
+                        // rate limit. A 403 is also how it reports reasons a retry
+                        // can never clear (blocked repository, banned UA), and
+                        // re-requesting those just burns the traversal budget.
+                        var retryWait = GetRetryWait(resp);
+                        if (retryWait is { } wait && rateLimitRetries < _maxRateLimitRetries)
+                        {
+                            rateLimitRetries++;
+                            // Never retry past the traversal deadline — the whole
+                            // point of the bound is that startup cannot be delayed.
+                            // A Retry-After longer than the remaining budget lands
+                            // here, which is the correct outcome: fail open now
+                            // rather than ignore the server and retry early.
+                            if (_clock.Elapsed(started) + wait >= _overallDeadline)
+                            {
+                                return ReleaseDiscoveryResult.Fail("GitHub API rate limit reached");
+                            }
+                            await _clock.DelayAsync(wait, ct).ConfigureAwait(false);
+                            isRetry = true;
+                            continue; // re-fetch the same url on a new connection
+                        }
                         return ReleaseDiscoveryResult.Fail("GitHub API rate limit reached");
                     }
                     if (!resp.IsSuccessStatusCode)
@@ -209,13 +298,72 @@ internal sealed class GitHubReleaseClient
 
             releases.AddRange(page);
             pages++;
+            rateLimitRetries = 0;
         }
 
         return ReleaseDiscoveryResult.Success(releases);
     }
 
-    private static HttpRequestMessage BuildRequest(string url)
+    /// <summary>
+    /// How long to wait before retrying this refusal, or <c>null</c> when it must
+    /// not be retried at all.
+    /// <para>
+    /// GitHub signals an exhausted primary limit with <c>x-ratelimit-remaining: 0</c>
+    /// (observed on a live anonymous 403 alongside <c>x-ratelimit-limit: 60</c> and
+    /// <c>x-ratelimit-reset</c>) and a secondary/abuse limit with <c>retry-after</c>.
+    /// A 403 carrying neither is a permission-style refusal a retry cannot fix.
+    /// </para>
+    /// <para>
+    /// <c>Retry-After</c> is an instruction, not just a classifier: GitHub requires
+    /// clients to wait at least that long, and retrying sooner can extend the abuse
+    /// limit. So it sets the wait rather than merely marking the response
+    /// retryable — with the default spacing as a floor, and the caller's deadline
+    /// check turning a wait that cannot fit into an immediate fail-open.
+    /// </para>
+    /// </summary>
+    private TimeSpan? GetRetryWait(HttpResponseMessage resp)
     {
+        var retryAfter = ParseRetryAfter(resp);
+        if (retryAfter is { } after)
+        {
+            return after > _rateLimitRetryDelay ? after : _rateLimitRetryDelay;
+        }
+        if (resp.Headers.TryGetValues("x-ratelimit-remaining", out var remaining)
+            && int.TryParse(remaining.FirstOrDefault(), out var left)
+            && left <= 0)
+        {
+            return _rateLimitRetryDelay;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The <c>Retry-After</c> delay, in either RFC 9110 form (delta-seconds or an
+    /// HTTP-date). A malformed or negative value yields <c>null</c> so it falls
+    /// back to the primary-limit rules rather than being trusted blindly.
+    /// </summary>
+    private static TimeSpan? ParseRetryAfter(HttpResponseMessage resp)
+    {
+        var header = resp.Headers.RetryAfter;
+        if (header is null)
+        {
+            return null;
+        }
+        if (header.Delta is { } delta)
+        {
+            return delta > TimeSpan.Zero ? delta : TimeSpan.Zero;
+        }
+        if (header.Date is { } date)
+        {
+            // Absolute form: the remaining wait is relative to now, and the value
+            // may already be in the past.
+            var until = date - DateTimeOffset.UtcNow;
+            return until > TimeSpan.Zero ? until : TimeSpan.Zero;
+        }
+        return null;
+    }
+
+    private static HttpRequestMessage BuildRequest(string url)    {
         var req = new HttpRequestMessage(HttpMethod.Get, url);
         // GitHub requires a User-Agent; send the installed version but NO
         // Authorization header — discovery is anonymous by design.

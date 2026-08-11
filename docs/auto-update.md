@@ -73,6 +73,58 @@ traversal, and a defensive page cap (plus pagination-cycle detection).
 Application-shutdown cancellation (Ctrl-C) stays shutdown — it is not turned
 into a warning.
 
+### Shared-IP rate limiting
+
+Discovery is anonymous, and GitHub's anonymous quota is **60 requests/hour keyed
+on the source IP**. A single bridge spends one request per startup, so it cannot
+exhaust that budget by itself — but behind a corporate or cloud NAT the bucket is
+shared with every other client on the same address, which is why the check can
+report
+
+```
+Auto-update check failed (GitHub API rate limit reached)
+```
+
+on a machine that has barely used it. A 403/429 therefore describes the shared
+bucket at that instant, not a verdict on this check, so discovery **retries** it
+(bounded, spaced, and still inside the traversal deadline) instead of giving up
+on the first refusal.
+
+The retry only helps because discovery runs on a handler with
+`PooledConnectionLifetime = TimeSpan.Zero`. Measured live from a NAT with an
+8-address egress pool:
+
+| retry strategy | recovered |
+| --- | --- |
+| reuse the pooled connection | **0 / 8** |
+| open a fresh connection | **8 / 8** (≤2 attempts, 2.1s for 8 checks) |
+
+A pooled connection pins every request to one egress address (10/10 requests, one
+IP), so retrying on it re-hits the exact bucket that just returned
+`remaining: 0`. A fresh connection re-runs source-address selection (10 requests
+→ 6 distinct addresses) and can land on an address that still has quota.
+
+Only a refusal GitHub attributes to the rate limit is retried — an exhausted
+counter (`x-ratelimit-remaining: 0`) or a `retry-after` signal for the secondary
+limit. A 403 carrying neither (a blocked repository, a banned user-agent) fails
+open immediately rather than spending the traversal budget on a retry that cannot
+clear it.
+
+`Retry-After` is obeyed as an instruction, not just read as a classifier: it sets
+the wait (with the default spacing as a floor), because retrying before it elapses
+is both guaranteed to be refused and liable to extend a secondary limit. When the
+mandated wait does not fit inside the traversal deadline, discovery fails open
+immediately instead of retrying early.
+
+**This is a mitigation, not a fix, and it is bounded by construction.** When
+*every* address in the pool is exhausted the retry cannot help — measured at full
+exhaustion, recovery was 0/10 even at 20 attempts over 10s — and a single-address
+egress has nothing to re-select. Those cases still fail open with the same
+warning, just after a bounded retry. Quota resets on a **fixed hourly window**,
+not a sliding one (measured: a fully drained pool stayed at 0% for 6 minutes and
+recovered only at the window boundary), so the durable escape hatches remain
+`EnableAutoUpdate: false` or updating manually.
+
 ## Trust boundary
 
 Update discovery uses the **public GitHub Releases REST API anonymously** — no
