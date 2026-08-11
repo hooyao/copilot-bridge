@@ -41,17 +41,19 @@ internal static class RootCli
         var authLogin = new Command("login", "Log in to GitHub via device-code flow");
         authLogin.SetAction((_, _) => AuthCommand.LoginAsync());
 
-        var authWhoami = new Command("whoami", "Verify the saved token by calling api.github.com/user");
+        var authWhoami = new Command("whoami",
+            "Validate/refresh the saved GitHub credential via api.github.com/user");
         authWhoami.SetAction((_, _) => AuthCommand.WhoAmIAsync());
 
-        var authStatus = new Command("status", "Check login status (offline)");
+        var authStatus = new Command("status",
+            "Show encrypted credential format, source, and expiry (offline)");
         authStatus.SetAction((_, _) => Task.FromResult(AuthCommand.Status()));
 
         var authLogout = new Command("logout", "Delete the encrypted token");
         authLogout.SetAction((_, _) => Task.FromResult(AuthCommand.Logout()));
 
         var authCopilotStatus = new Command("copilot-status",
-            "Exchange the GitHub token for a Copilot token, print expiry + base URL");
+            "Exchange/refresh auth and print Copilot expiry + base URL (never token bytes)");
         authCopilotStatus.SetAction((_, _) => AuthCommand.CopilotStatusAsync());
 
         // Hidden command-auth helper for Codex model discovery. It prints a stable,

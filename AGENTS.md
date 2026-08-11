@@ -58,6 +58,21 @@ git clone https://github.com/ericc-ch/copilot-api references/copilot-api
 Read it before touching protocol-level code (headers, auth flow, model ids).
 **Never edit anything under `references/`.**
 
+## Agent instructions and project skills
+
+- **`AGENTS.md` is canonical.** Codex and other compatible agents read it
+  directly; `CLAUDE.md` contains only Claude Code's `@AGENTS.md` import. Never
+  maintain a second copy of these instructions.
+- Repo-owned hand-maintained skills live in both `.claude/skills/` and
+  `.agents/skills/`. The mirrors must remain semantically identical after
+  changing only self-referential root paths (`.claude/skills/` versus
+  `.agents/skills/`); do not mechanically rename protocol facts or model ids.
+- Codex-only generated OpenSpec and `/opsx:*` skills are tracked under
+  `.agents/skills/`. When changing a repo-owned skill, run
+  `AgentRepositoryCompatibilityTests` before shipping.
+- `.codex/config.toml` is machine-local and may contain credentials. It is
+  ignored deliberately; never stage it or copy its values into tracked files.
+
 ## Build / run / publish / test
 
 ```pwsh
@@ -271,8 +286,8 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
   accessibility modifiers).
 - PowerShell-shaped commands by default.
 - Keep local-only scratch out of commits (all gitignored already): `references/`,
-  `.mcp.json`, `github_token.dat`, `log/`, `request-traces/`, session-handoff
-  `.txt` dumps.
+  `.mcp.json`, `.codex/config.toml`, `github_token.dat`, `log/`,
+  `request-traces/`, session-handoff `.txt` dumps.
 - **New tests:** pure logic → `tests/CopilotBridge.UnitTests` (CI runs these —
   fast, no deps). Anything needing live Copilot or `claude.exe` →
   `tests/CopilotBridge.Playground`, tagged `[Trait("Category", "Integration")]`

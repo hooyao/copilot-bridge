@@ -70,8 +70,28 @@ appsettings.local.json
 !.claude/skills/ship-pr/
 !.claude/skills/real-client-verify/
 
-# Local-only: MCP server config + Claude Code session-handoff dumps (never commit)
+# Codex project skills follow the same selective-tracking rule. Keep personal or
+# plugin-installed skills local; include only the repo-owned packages below.
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/copilot-model-sync/
+!.agents/skills/real-client-verify/
+!.agents/skills/ship-pr/
+!.agents/skills/openspec-apply-change/
+!.agents/skills/openspec-archive-change/
+!.agents/skills/openspec-explore/
+!.agents/skills/openspec-propose/
+!.agents/skills/openspec-sync-specs/
+!.agents/skills/source-command-opsx-apply/
+!.agents/skills/source-command-opsx-archive/
+!.agents/skills/source-command-opsx-explore/
+!.agents/skills/source-command-opsx-propose/
+!.agents/skills/source-command-opsx-sync/
+
+# Local-only: MCP/Codex config + Claude Code session-handoff dumps (never commit)
 .mcp.json
+.codex/config.toml
 *-this-session-is-being-continued-*.txt
 
 # Claude Code's own npm install lands at the repo root when the user runs

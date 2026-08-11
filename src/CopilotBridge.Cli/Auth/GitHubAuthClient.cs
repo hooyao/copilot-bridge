@@ -40,7 +40,7 @@ internal static class GitHubAuthClient
                ?? throw new InvalidOperationException("Empty device-code response from GitHub.");
     }
 
-    public static async ValueTask<string> PollAccessTokenAsync(
+    public static async ValueTask<AccessTokenResponse> PollAccessTokenAsync(
         HttpClient http,
         DeviceCodeResponse deviceCode,
         CancellationToken ct = default)
@@ -63,21 +63,57 @@ internal static class GitHubAuthClient
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
             using var resp = await http.SendAsync(req, ct);
-            if (!resp.IsSuccessStatusCode) continue;
+            if (!resp.IsSuccessStatusCode)
+                throw new GitHubOAuthException(
+                    "device-token exchange", errorCode: null, resp.StatusCode);
 
             var result = await resp.Content.ReadFromJsonAsync(JsonContext.Default.AccessTokenResponse, ct);
-            if (result?.AccessToken is { Length: > 0 } token) return token;
+            if (result?.AccessToken is { Length: > 0 }) return result;
 
             switch (result?.Error)
             {
+                case "authorization_pending":
+                    break;
                 case "slow_down":
                     pollDelay += TimeSpan.FromSeconds(5);
                     break;
                 case "expired_token":
-                    throw new InvalidOperationException("Device code expired. Run `auth login` again.");
+                    throw new GitHubOAuthException("device-token exchange", result.Error);
                 case "access_denied":
-                    throw new InvalidOperationException("Authorization was denied.");
+                    throw new GitHubOAuthException("device-token exchange", result.Error);
+                case { Length: > 0 } error:
+                    throw new GitHubOAuthException("device-token exchange", error);
             }
         }
+    }
+
+    public static async ValueTask<AccessTokenResponse> RefreshAccessTokenAsync(
+        HttpClient http,
+        string refreshToken,
+        CancellationToken ct = default)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, AccessTokenUrl)
+        {
+            Content = JsonContent.Create(
+                new RefreshTokenRequest
+                {
+                    ClientId = ClientId,
+                    RefreshToken = refreshToken,
+                },
+                JsonContext.Default.RefreshTokenRequest),
+        };
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var resp = await http.SendAsync(req, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new GitHubOAuthException("refresh-token exchange", null, resp.StatusCode);
+
+        var result = await resp.Content.ReadFromJsonAsync(
+            JsonContext.Default.AccessTokenResponse, ct);
+        if (result?.AccessToken is { Length: > 0 }) return result;
+
+        throw new GitHubOAuthException(
+            "refresh-token exchange",
+            result?.Error ?? "missing_access_token");
     }
 }

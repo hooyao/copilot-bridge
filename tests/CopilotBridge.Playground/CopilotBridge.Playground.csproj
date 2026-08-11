@@ -38,6 +38,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <Content Include="..\Fixtures\Codex\**\*" Link="Fixtures\Codex\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\CopilotBridge.UnitTests\Fixtures\codex-request-multiturn-8.json"
+             Link="Fixtures\Auth401\codex-request-multiturn-8.json"
+             CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

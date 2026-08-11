@@ -166,7 +166,11 @@ internal static class BridgeServiceCollectionExtensions
         // AddSingleton<TService, TImpl> is trim-clean since .NET 8).
         services.AddSingleton(sp => new AuthService(
             sp.GetRequiredService<IHttpClientFactory>(),
-            deviceCodePrinter));
+            TokenStore.CredentialStore,
+            TimeProvider.System,
+            sp.GetRequiredService<ILoggerFactory>(),
+            deviceCodePrinter,
+            enableBackgroundRefresh: true));
         // Forwarding singleton — same AuthService instance reachable through
         // both the concrete type and the IAuthService interface. Must stay
         // a factory; AddSingleton<IAuthService, AuthService>() would create
@@ -294,8 +298,10 @@ internal static class BridgeServiceCollectionExtensions
         services.AddSingleton<RequestSummaryLogger>();
 
         // --- Hosted services (ordering matters!) --------------------------
-        // 1. Replace bootstrap Serilog with the full logger before anything
-        //    else runs, so subsequent startup logs land in console+file+audit.
+        // 1. Replace bootstrap Serilog while DI constructs the ordered hosted
+        //    service list. Generic Host constructs the whole list before calling
+        //    StartAsync, so the constructor is the barrier that ensures loggers
+        //    injected into later services target the full console+file pipeline.
         services.AddHostedService<SerilogReplacerHostedService>();
         // 2. Auth + routes validation + startup banner.
         services.AddHostedService<BridgeStartupHostedService>();

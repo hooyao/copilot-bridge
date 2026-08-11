@@ -1,18 +1,19 @@
 # Token storage security model
 
-The bridge persists one secret at rest: the long-lived **GitHub OAuth token**
-(obtained via the device-code flow). It is always encrypted on disk — never
-plaintext — but the encryption scheme is chosen per platform at runtime, because
-the strong OS-native facility we use on Windows (DPAPI) has no portable
-equivalent we were willing to depend on.
+The bridge persists GitHub OAuth credential state obtained through device flow:
+an access token plus any access expiry, rotating refresh token, and refresh-token
+expiry returned by GitHub. Every secret-bearing file is encrypted on disk—never
+plaintext—but the encryption scheme is chosen per platform at runtime, because
+the strong OS-native facility used on Windows (DPAPI) has no portable equivalent
+we were willing to depend on.
 
 This document describes both schemes, the on-disk format of the non-Windows one,
 and — importantly — the **threat model and its limits**, so you can decide
 whether the bridge's at-rest protection is sufficient for your host.
 
-> Implementation: `src/CopilotBridge.Cli/Auth/`. The public surface
-> (`TokenStore.TryLoad/Save/Delete`) is identical across platforms; only the
-> `ITokenProtector` behind it differs.
+> Implementation: `src/CopilotBridge.Cli/Auth/`. `AuthService` is the facade,
+> `GitHubCredentialManager` owns refresh, and `GitHubCredentialStore` owns the
+> encrypted files. Only the `ITokenProtector` differs by platform.
 
 ## The two schemes
 
@@ -23,6 +24,56 @@ whether the bridge's at-rest protection is sufficient for your host.
 
 CPU architecture is irrelevant to the choice — DPAPI is an OS service, so
 `win-arm64` uses exactly the same path as `win-x64`.
+
+## Credential files and rotation
+
+The current format uses two encrypted files in the authoritative credential
+directory:
+
+| File | Encrypted plaintext payload | Purpose |
+| --- | --- | --- |
+| `github_credentials.v2.dat` | Source-generated JSON: pinned format version, access token/deadline, optional refresh token/deadline, token type, scope, generation | Authoritative credential record used by current binaries |
+| `github_token.dat` | Raw access-token string | Compatibility mirror readable by older bridge binaries |
+
+The v2 record is always authoritative. Lookup order is v2 primary (next to the
+executable), v2 home fallback, legacy primary, then legacy home fallback. A valid
+v2 fallback therefore beats a stale raw primary mirror. Existing installations
+with only `github_token.dat` continue without a rewrite; such a record has unknown
+expiry and no refresh capability unless a later device login actually returns
+refresh metadata.
+
+Device login preserves `expires_in`, `refresh_token`, and
+`refresh_token_expires_in` when GitHub supplies them. A known access-token expiry
+is refreshed five minutes early. Each refresh-token grant rotates and atomically
+commits the complete v2 generation before the new credential is exposed. The
+compatibility mirror is updated second; failure there limits downgrade behavior
+but cannot corrupt the current runtime's authoritative state.
+
+The submitted refresh token is single-use. If GitHub returns a new access token
+but unexpectedly omits its replacement refresh token, the bridge does not retain
+the spent prior token: it commits the new generation as non-refreshable and logs
+that boolean outcome without credential material.
+
+The absence of those optional fields is a valid OAuth result. In that case
+`auth status` reports `refreshable: False` and unknown expiry; the access token is
+still usable, but a later server-side revocation requires interactive login. It
+does not mean the device-token exchange failed, and the bridge must not synthesize
+a deadline or refresh token.
+
+Rotating refresh tokens are single-use state, so process-local locking is not
+enough. Refresh acquires a lock file next to the authoritative v2 path, reloads
+the generation after obtaining it, and skips the network call if another process
+already committed a newer credential. A commit writes already-encrypted bytes to
+a restrictive same-directory temporary file, flushes it, and atomically replaces
+v2. A pre-commit crash leaves the prior complete record readable. On Unix both v2
+and the raw mirror are forced to `0600`.
+
+A GitHub `401 Bad credentials` triggers at most one refresh-token rotation and
+one replay. If the record is legacy, the refresh token is expired/rejected, or
+the replay is also 401, the bridge preserves the last record and tells the
+operator to run `auth logout` followed by `auth login`; it never refresh-loops.
+Logout removes both formats at primary and fallback locations plus in-memory
+Copilot leases.
 
 ### Windows — DPAPI
 
@@ -93,7 +144,7 @@ domain separation, not secrecy).
   user simply re-runs `auth login`. This mirrors DPAPI's "copied from another
   machine → re-login" UX exactly.
 
-**File permissions.** On Unix the token file is created `0600` (owner read/write
+**File permissions.** On Unix each credential file is created `0600` (owner read/write
 only) atomically via `FileStreamOptions.UnixCreateMode`, so there's no
 brief window at default umask.
 
@@ -101,9 +152,9 @@ brief window at default umask.
 
 **What it protects against (all platforms):**
 
-- The token file being copied to another machine — the derived key won't match
+- A credential file being copied to another machine — the derived key won't match
   (different `machineId`), DPAPI won't decrypt → useless ciphertext.
-- Casual disclosure: the file is never plaintext; `cat`-ing it yields ciphertext.
+- Casual disclosure: neither file is plaintext; `cat`-ing either yields ciphertext.
 
 **Windows (DPAPI):** additionally, another user on the same machine cannot
 decrypt it (OS-enforced, key bound to the Windows account).
@@ -134,6 +185,11 @@ ubiquity of the fallback path).
   scheme with an injected fixed key provider (round-trip, IV freshness,
   wrong-machine/user, every tamper position, truncation, unknown version, blob
   layout). `MachineKeyProviderParseTests` covers `ParseIOPlatformUUID`.
+- **Credential lifecycle unit contracts:** `GitHubCredentialStoreTests`,
+  `GitHubCredentialManagerTests`, `AuthServiceGitHubRecoveryTests`, and
+  `AuthenticationSecretRedactionTests` cover legacy migration, encrypted v2 +
+  mirror, atomic/locked rotation, expiry/401 refresh, bounded failure, and
+  no-secret diagnostics.
 - **Real Linux/macOS (CI only):** `copilot-bridge debug selftest-tokenstore`
   (hidden command) runs the **real** machine-id probing + encrypt/decrypt
   round-trip + `0600` check against a temp file — non-destructive, no login

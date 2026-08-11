@@ -28,7 +28,13 @@ public sealed class CountTokensResponsesEndpointTests
         public string? CopilotApiBaseUrl => "https://api.test.githubcopilot.com";
         public DateTimeOffset? CopilotTokenExpiry => DateTimeOffset.MaxValue;
         public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default) => new("gh");
-        public ValueTask<string> GetCopilotTokenAsync(CancellationToken ct = default) => new("copilot");
+        public ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
+            CopilotAuthLease? rejectedLease = null, CancellationToken ct = default) =>
+            new(new CopilotAuthLease
+            {
+                Token = "copilot", ApiBaseUrl = CopilotApiBaseUrl!,
+                RefreshAt = DateTimeOffset.MaxValue, ServerExpiresAt = DateTimeOffset.MaxValue, Generation = 1,
+            });
         public void SignOut() { }
     }
 

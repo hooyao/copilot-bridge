@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.ServerSentEvents;
 using System.Text;
+using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Anthropic.Request;
@@ -328,8 +329,13 @@ public class CodexUpstreamTimeoutTests
         public DateTimeOffset? CopilotTokenExpiry => DateTimeOffset.MaxValue;
         public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default) =>
             ValueTask.FromResult("gh-token");
-        public ValueTask<string> GetCopilotTokenAsync(CancellationToken ct = default) =>
-            ValueTask.FromResult("test-token");
+        public ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
+            CopilotAuthLease? rejectedLease = null, CancellationToken ct = default) =>
+            ValueTask.FromResult(new CopilotAuthLease
+            {
+                Token = "test-token", ApiBaseUrl = CopilotApiBaseUrl!,
+                RefreshAt = DateTimeOffset.MaxValue, ServerExpiresAt = DateTimeOffset.MaxValue, Generation = 1,
+            });
         public void SignOut() { }
     }
 }

@@ -65,9 +65,11 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
    ```
 
    Open that URL in your browser, enter the code, and approve. The bridge saves
-   an **encrypted** token next to the executable, so every later start is silent
-   — no login prompt. (On Windows, double-clicking opens a console window that
-   shows the URL and the live log.)
+   the complete OAuth credential state **encrypted** next to the executable and
+   silently rotates refreshable GitHub tokens before expiry. The legacy
+   `github_token.dat` remains an encrypted access-token compatibility mirror;
+   current binaries use `github_credentials.v2.dat`. (On Windows,
+   double-clicking opens a console window that shows the URL and live log.)
 
 3. Leave it running. Now point your CLI at it.
 
@@ -467,6 +469,50 @@ Two log channels:
   inbound headers/body, upstream URL/headers/body, all SSE events (including the
   filtered `[DONE]`), and duration. Off by default because traces contain full
   prompts — turn it on to debug a cache-hit or protocol mismatch, then off again.
+
+### Authentication troubleshooting
+
+Run these in order while the failure is present:
+
+```pwsh
+copilot-bridge auth status
+copilot-bridge auth whoami
+copilot-bridge auth copilot-status
+copilot-bridge debug list-models --all
+```
+
+- `auth status` reports the authoritative encrypted file, legacy/v2 format,
+  refreshability, and deadlines—never token bytes.
+- `auth whoami` validates (and when possible refreshes) the stored GitHub OAuth
+  credential.
+- `auth copilot-status` exchanges it for one Copilot bearer/endpoint lease and
+  prints only expiry, refresh time, and API URL.
+- `debug list-models --all` proves the resulting Copilot lease can reach CAPI and
+  shows which models the current account/policy actually exposes.
+
+`refreshable: False` with unknown access expiry is a valid device-login result,
+not a failed token exchange. The Copilot OAuth client currently returns no
+refresh metadata for some accounts, so the bridge can reuse that GitHub token but
+cannot silently replace it if GitHub later revokes it. The separately minted
+Copilot bearer is still short-lived and refreshes in memory.
+
+If `whoami` and the token exchange both report GitHub `401 Bad credentials`, the
+failure occurs before model inference and therefore is not specific to gpt-5.6
+or any request body. A refreshable v2 credential is rotated once automatically;
+if its refresh token is missing, expired, or rejected, GitHub requires a new
+interactive authorization. Check the account security log for an
+`oauth_authorization.destroy` event, then run:
+
+```pwsh
+copilot-bridge auth logout
+copilot-bridge auth login
+```
+
+If GitHub auth succeeds but a gpt-5.6 id is absent from `/models`, check the
+Copilot plan and organization model policy instead. Sol requires Pro+/Max or an
+enabled Business/Enterprise policy; Terra and Luna require a paid Copilot plan,
+and Business/Enterprise administrators must explicitly enable the new-model
+policy during rollout.
 
 ## Roadmap
 

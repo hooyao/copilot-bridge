@@ -83,7 +83,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
         try
         {
             await _auth.EnsureGitHubTokenAsync(cancellationToken).ConfigureAwait(false);
-            await _auth.GetCopilotTokenAsync(cancellationToken).ConfigureAwait(false);
+            await _auth.GetCopilotTokenAsync(ct: cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

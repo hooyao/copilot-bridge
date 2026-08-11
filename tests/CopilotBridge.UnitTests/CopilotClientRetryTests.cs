@@ -164,6 +164,183 @@ public class CopilotClientRetryTests
         Assert.Equal(1, handler.CallCount);
     }
 
+    // ── Authentication 401 replay contract ──────────────────────────────
+
+    [Fact]
+    public async Task PostResponses_First401_RefreshesLeaseAndReplaysExactBytesOnce()
+    {
+        var rejectedContent = new DisposalTrackingContent();
+        var handler = new CapturingScriptedHandler([
+            _ => new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = rejectedContent },
+            _ => new HttpResponseMessage(HttpStatusCode.OK),
+        ]);
+        var auth = new RotatingAuth();
+        var client = BuildClient(handler, maxRetries: 0, auth: auth);
+        var body = System.Text.Encoding.UTF8.GetBytes("{\"model\":\"gpt-5.6-sol\",\"stream\":true}");
+
+        using var response = await client.PostResponsesAsync(body, vision: true);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(1, auth.RejectionCount);
+        var requests = handler.Requests.ToArray();
+        Assert.Equal("Bearer old-copilot-token", requests[0].Authorization);
+        Assert.Equal("Bearer new-copilot-token", requests[1].Authorization);
+        Assert.Equal("https://api.old.test/responses", requests[0].Uri.AbsoluteUri);
+        Assert.Equal("https://api.new.test/responses", requests[1].Uri.AbsoluteUri);
+        Assert.Equal(body, requests[0].Body);
+        Assert.Equal(body, requests[1].Body);
+        Assert.Equal("true", requests[0].Headers["Copilot-Vision-Request"]);
+        Assert.Equal("true", requests[1].Headers["Copilot-Vision-Request"]);
+        Assert.True(rejectedContent.Disposed);
+    }
+
+    [Fact]
+    public async Task PostMessages_First401_PreservesBetaOverridesAndBodyOnReplay()
+    {
+        var handler = new CapturingScriptedHandler([
+            _ => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+            _ => new HttpResponseMessage(HttpStatusCode.OK),
+        ]);
+        var client = BuildClient(handler, maxRetries: 0, auth: new RotatingAuth());
+        var body = System.Text.Encoding.UTF8.GetBytes("{\"model\":\"claude-opus-5\",\"stream\":true}");
+        var overrides = new Dictionary<string, string?>
+        {
+            ["Editor-Version"] = "vscode/contract-test",
+        };
+
+        using var response = await client.PostMessagesAsync(
+            body,
+            vision: true,
+            anthropicBeta: ["beta-one", "beta-two"],
+            copilotHeaderOverrides: overrides);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var requests = handler.Requests.ToArray();
+        Assert.Equal(2, requests.Length);
+        Assert.All(requests, request =>
+        {
+            Assert.Equal(body, request.Body);
+            Assert.Equal("beta-one,beta-two", request.Headers["anthropic-beta"]);
+            Assert.Equal("vscode/contract-test", request.Headers["Editor-Version"]);
+            Assert.Equal("true", request.Headers["Copilot-Vision-Request"]);
+        });
+    }
+
+    [Fact]
+    public async Task ModelsAndCountTokens_First401_EachRefreshAndReplayOnce()
+    {
+        var modelHandler = new CapturingScriptedHandler([
+            _ => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"data\":[]}"),
+            },
+        ]);
+        var modelClient = BuildClient(modelHandler, maxRetries: 0, auth: new RotatingAuth());
+
+        var models = await modelClient.GetModelsAsync();
+
+        Assert.Empty(models.Data);
+        Assert.Equal(2, modelHandler.Requests.Count);
+
+        var countHandler = new CapturingScriptedHandler([
+            _ => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"input_tokens\":7}"),
+            },
+        ]);
+        var countClient = BuildClient(countHandler, maxRetries: 0, auth: new RotatingAuth());
+        var body = System.Text.Encoding.UTF8.GetBytes("{\"model\":\"claude-opus-5\"}");
+
+        using var countResponse = await countClient.PostCountTokensAsync(body);
+
+        Assert.Equal(HttpStatusCode.OK, countResponse.StatusCode);
+        Assert.Equal(2, countHandler.Requests.Count);
+        Assert.All(countHandler.Requests, request => Assert.Equal(body, request.Body));
+    }
+
+    [Fact]
+    public async Task Second401_IsTerminalAndNeverLoops()
+    {
+        var handler = new CapturingScriptedHandler([
+            _ => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+            _ => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+            _ => new HttpResponseMessage(HttpStatusCode.OK),
+        ]);
+        var auth = new RotatingAuth();
+        var client = BuildClient(handler, maxRetries: 0, auth: auth);
+
+        using var response = await client.PostResponsesAsync(SomeBody());
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(1, auth.RejectionCount);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.PaymentRequired)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    public async Task Non401_StatusNeverTriggersAuthReplay(HttpStatusCode status)
+    {
+        var handler = new CapturingScriptedHandler([
+            _ => new HttpResponseMessage(status),
+            _ => new HttpResponseMessage(HttpStatusCode.OK),
+        ]);
+        var auth = new RotatingAuth();
+        var client = BuildClient(handler, maxRetries: 0, auth: auth);
+
+        using var response = await client.PostResponsesAsync(SomeBody());
+
+        Assert.Equal(status, response.StatusCode);
+        Assert.Single(handler.Requests);
+        Assert.Equal(0, auth.RejectionCount);
+    }
+
+    [Fact]
+    public async Task AuthReplay_DoesNotResetConsumedTransientRetryBudget()
+    {
+        var handler = new ScriptedHandler([
+            () => throw new HttpRequestException("first connection failure"),
+            () => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+            () => throw new HttpRequestException("second connection failure"),
+            () => new HttpResponseMessage(HttpStatusCode.OK),
+        ]);
+        var auth = new RotatingAuth();
+        var client = BuildClient(handler, maxRetries: 1, auth: auth);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.PostResponsesAsync(SomeBody()).AsTask());
+
+        Assert.Equal(3, handler.CallCount);
+        Assert.Equal(1, auth.RejectionCount);
+    }
+
+    [Fact]
+    public async Task AuthReplay_StillAppliesOneFullFirstByteBudgetToReplay()
+    {
+        var handler = new First401ThenStallHandler();
+        var auth = new RotatingAuth();
+        var client = BuildClient(
+            handler,
+            maxRetries: 3,
+            timeout: new UpstreamTimeoutOptions
+            {
+                FirstByteTimeoutSeconds = 1,
+                StreamIdleTimeoutSeconds = 0,
+            },
+            auth: auth);
+
+        await Assert.ThrowsAsync<UpstreamTimeoutException>(() =>
+            client.PostResponsesAsync(SomeBody()).AsTask());
+
+        Assert.Equal(2, handler.CallCount);
+        Assert.Equal(1, auth.RejectionCount);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
 
     private static ReadOnlyMemory<byte> SomeBody() =>
@@ -217,6 +394,65 @@ public class CopilotClientRetryTests
         }
     }
 
+    private sealed class CapturingScriptedHandler(
+        Func<HttpRequestMessage, HttpResponseMessage>[] script) : HttpMessageHandler
+    {
+        private int _callCount;
+        public System.Collections.Concurrent.ConcurrentQueue<CapturedRequest> Requests { get; } = new();
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var body = request.Content is null
+                ? Array.Empty<byte>()
+                : await request.Content.ReadAsByteArrayAsync(cancellationToken);
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var header in request.Headers)
+                headers[header.Key] = string.Join(',', header.Value);
+            Requests.Enqueue(new CapturedRequest(
+                request.RequestUri!,
+                request.Headers.Authorization?.ToString() ?? "",
+                body,
+                headers));
+            var index = Interlocked.Increment(ref _callCount) - 1;
+            return script[Math.Min(index, script.Length - 1)](request);
+        }
+    }
+
+    private sealed record CapturedRequest(
+        Uri Uri,
+        string Authorization,
+        byte[] Body,
+        Dictionary<string, string> Headers);
+
+    private sealed class DisposalTrackingContent : StringContent
+    {
+        public DisposalTrackingContent() : base("unauthorized") { }
+        public bool Disposed { get; private set; }
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class First401ThenStallHandler : HttpMessageHandler
+    {
+        public int CallCount { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            if (CallCount == 1)
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("unreachable");
+        }
+    }
+
     /// <summary>Minimal IAuthService that returns a fixed token + base URL without network.</summary>
     private sealed class FakeAuth : IAuthService
     {
@@ -226,8 +462,13 @@ public class CopilotClientRetryTests
         public DateTimeOffset? CopilotTokenExpiry => DateTimeOffset.MaxValue;
         public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default) =>
             ValueTask.FromResult("gh-token");
-        public ValueTask<string> GetCopilotTokenAsync(CancellationToken ct = default) =>
-            ValueTask.FromResult("test-token");
+        public ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
+            CopilotAuthLease? rejectedLease = null, CancellationToken ct = default) =>
+            ValueTask.FromResult(new CopilotAuthLease
+            {
+                Token = "test-token", ApiBaseUrl = CopilotApiBaseUrl!,
+                RefreshAt = DateTimeOffset.MaxValue, ServerExpiresAt = DateTimeOffset.MaxValue, Generation = 1,
+            });
         public void SignOut() { }
     }
 
@@ -238,8 +479,51 @@ public class CopilotClientRetryTests
         public string? CopilotApiBaseUrl => "https://api.test.githubcopilot.com";
         public DateTimeOffset? CopilotTokenExpiry => DateTimeOffset.MaxValue;
         public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default) => ValueTask.FromResult(token);
-        public ValueTask<string> GetCopilotTokenAsync(CancellationToken ct = default) => ValueTask.FromResult(token);
+        public ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
+            CopilotAuthLease? rejectedLease = null, CancellationToken ct = default) =>
+            ValueTask.FromResult(new CopilotAuthLease
+            {
+                Token = token, ApiBaseUrl = CopilotApiBaseUrl!,
+                RefreshAt = DateTimeOffset.MaxValue, ServerExpiresAt = DateTimeOffset.MaxValue, Generation = 1,
+            });
         public void SignOut() { }
+    }
+
+    private sealed class RotatingAuth : IAuthService
+    {
+        private CopilotAuthLease _current = Lease(
+            "old-copilot-token", "https://api.old.test", generation: 1);
+
+        public int RejectionCount { get; private set; }
+        public bool IsAuthenticated => true;
+        public string TokenLocation => "(test)";
+        public string? CopilotApiBaseUrl => _current.ApiBaseUrl;
+        public DateTimeOffset? CopilotTokenExpiry => _current.ServerExpiresAt;
+        public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default) =>
+            ValueTask.FromResult("gh-token");
+
+        public ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
+            CopilotAuthLease? rejectedLease = null,
+            CancellationToken ct = default)
+        {
+            if (rejectedLease?.Generation == _current.Generation)
+            {
+                RejectionCount++;
+                _current = Lease("new-copilot-token", "https://api.new.test", generation: 2);
+            }
+            return ValueTask.FromResult(_current);
+        }
+
+        public void SignOut() { }
+
+        private static CopilotAuthLease Lease(string token, string baseUrl, long generation) => new()
+        {
+            Token = token,
+            ApiBaseUrl = baseUrl,
+            RefreshAt = DateTimeOffset.MaxValue,
+            ServerExpiresAt = DateTimeOffset.MaxValue,
+            Generation = generation,
+        };
     }
 
     private sealed class AuthorizationCaptureHandler : HttpMessageHandler
