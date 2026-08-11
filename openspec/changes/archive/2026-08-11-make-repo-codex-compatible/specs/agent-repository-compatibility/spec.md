@@ -30,6 +30,10 @@ shipping, and OpenSpec workflows required by `AGENTS.md`.
 - **WHEN** the operator invokes an `/opsx:*` workflow
 - **THEN** the corresponding tracked OpenSpec skill is available under `.agents/skills`
 
+#### Scenario: Ship review contains more than one page of threads
+- **WHEN** the ship workflow evaluates a pull request with more than 100 review threads
+- **THEN** its primary safety check paginates every thread page and counts every unresolved thread before permitting merge
+
 ### Requirement: Mirrored project skills retain semantic parity
 Every hand-maintained project skill mirrored between `.claude/skills` and
 `.agents/skills` SHALL have the same file set and content after normalizing only

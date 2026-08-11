@@ -48,20 +48,27 @@ done
 # GraphQL is the ONLY place isResolved lives; gh pr view can't see it. We resolve
 # every comment after replying, so unresolved == genuinely-open == needs action.
 THREADS_JSON="$(gh api graphql -f query='
-  query($owner:String!,$name:String!,$pr:Int!){
+  query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
     repository(owner:$owner,name:$name){
       pullRequest(number:$pr){
-        reviewThreads(first:100){ nodes{ isResolved } }
+        reviewThreads(first:100,after:$endCursor){
+          nodes{ isResolved }
+          pageInfo{ hasNextPage endCursor }
+        }
       }
     }
-  }' -f owner="$OWNER" -f name="$NAME" -F pr="$PR" 2>/dev/null)" \
+  }' -f owner="$OWNER" -f name="$NAME" -F pr="$PR" \
+  --paginate --slurp 2>/dev/null)" \
   || fail "graphql reviewThreads query failed (auth/network?) — NOT zero comments"
 
 # Guard against a well-formed-but-empty/error body being read as 0.
-if ! echo "$THREADS_JSON" | jq -e '.data.repository.pullRequest.reviewThreads.nodes' >/dev/null 2>&1; then
+if ! echo "$THREADS_JSON" | jq -e '
+  type=="array" and length>0
+  and all(.[]; .data.repository.pullRequest.reviewThreads.nodes != null)
+' >/dev/null 2>&1; then
   fail "reviewThreads response missing expected shape — treating as error, not zero"
 fi
-OPEN="$(echo "$THREADS_JSON" | jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length')" \
+OPEN="$(echo "$THREADS_JSON" | jq '[.[].data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length')" \
   || fail "could not count unresolved threads"
 echo "OPEN_COMMENTS=${OPEN}"
 

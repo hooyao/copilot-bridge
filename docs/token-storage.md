@@ -75,6 +75,12 @@ a restrictive same-directory temporary file, flushes it, and atomically replaces
 v2. A pre-commit crash leaves the prior complete record readable. On Unix both v2
 and the raw mirror are forced to `0600`.
 
+Every writer participates in that ordering. Fresh device login takes the primary
+path lock before committing, so an older refresh either finishes first or reloads
+and yields to the new identity. Logout locks both configured v2 paths in stable
+order before deleting every credential representation, preventing an in-flight
+refresh from recreating a token after sign-out.
+
 A GitHub `401 Bad credentials` triggers at most one refresh-token rotation and
 one replay. If the record is legacy, the refresh token is expired/rejected, or
 the replay is also 401, the bridge preserves the last record and tells the

@@ -92,6 +92,14 @@ The system SHALL single-flight refreshes within a process and coordinate rotatin
 - **WHEN** a process reports rejection for credential instance A after another process has committed fresh-login instance B with the same generation number
 - **THEN** the process reloads and uses instance B without rejecting it or consuming its refresh token
 
+#### Scenario: Fresh login races an older refresh
+- **WHEN** interactive login and refresh of the prior credential attempt to commit to the same authoritative path concurrently
+- **THEN** both writers use the same path-scoped lock so the fresh login remains authoritative and the older refresh cannot overwrite it afterward
+
+#### Scenario: Logout races a refresh
+- **WHEN** logout deletes credentials while another process is refreshing either configured v2 path
+- **THEN** deletion holds the corresponding path locks until every credential representation is removed, and the older refresh cannot recreate a credential after logout
+
 ### Requirement: Copilot bearer and endpoint form one lease
 The system SHALL publish each Copilot bearer together with its API base URL, local refresh deadline, hard-expiry diagnostic, and generation as one immutable lease. Callers SHALL never combine a token from one lease with the endpoint from another.
 

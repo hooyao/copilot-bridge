@@ -27,6 +27,7 @@ internal sealed class GitHubCredentialStore
 {
     private const string LegacyFileName = "github_token.dat";
     private const string VersionedFileName = "github_credentials.v2.dat";
+    private static readonly TimeSpan MutationLockTimeout = TimeSpan.FromSeconds(15);
 
     private readonly ITokenProtector _protector;
     private readonly Action<string>? _diagnostic;
@@ -63,8 +64,13 @@ internal sealed class GitHubCredentialStore
             ?? TryLoadLegacy(LegacyFallbackPath);
     }
 
-    public bool SaveNew(GitHubCredentialRecord record) =>
-        SaveVersioned(record, VersionedPrimaryPath);
+    public bool SaveNew(GitHubCredentialRecord record)
+    {
+        using var rotationLock = AcquireRotationLock(
+            VersionedPrimaryPath,
+            MutationLockTimeout);
+        return SaveVersioned(record, VersionedPrimaryPath);
+    }
 
     public bool SaveVersioned(GitHubCredentialRecord record, string authoritativePath)
     {
@@ -134,14 +140,63 @@ internal sealed class GitHubCredentialStore
         }
     }
 
+    private IDisposable AcquireRotationLock(string authoritativePath, TimeSpan timeout)
+    {
+        ValidateVersionedPath(authoritativePath);
+        var lockPath = authoritativePath + ".lock";
+        Directory.CreateDirectory(Path.GetDirectoryName(lockPath)!);
+        var stopwatch = Stopwatch.StartNew();
+
+        while (true)
+        {
+            try
+            {
+                return new RotationLock(new FileStream(
+                    lockPath,
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    bufferSize: 1,
+                    FileOptions.None));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (stopwatch.Elapsed >= timeout)
+                    throw new TimeoutException(
+                        "Timed out waiting for the GitHub credential rotation lock.", ex);
+                Thread.Sleep(TimeSpan.FromMilliseconds(25));
+            }
+        }
+    }
+
     public void Delete()
     {
-        foreach (var path in AllCredentialPaths())
+        var comparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+        var versionedPaths = new[] { VersionedPrimaryPath, VersionedFallbackPath }
+            .Distinct(comparer)
+            .Order(comparer)
+            .ToArray();
+        var locks = new List<IDisposable>(versionedPaths.Length);
+        try
         {
-            if (File.Exists(path)) File.Delete(path);
+            foreach (var path in versionedPaths)
+                locks.Add(AcquireRotationLock(path, MutationLockTimeout));
+
+            foreach (var path in AllCredentialPaths())
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
         }
-        foreach (var path in new[] { VersionedPrimaryPath + ".lock", VersionedFallbackPath + ".lock" })
-            TryDelete(path);
+        finally
+        {
+            for (var index = locks.Count - 1; index >= 0; index--)
+                locks[index].Dispose();
+        }
+
+        foreach (var path in versionedPaths)
+            TryDelete(path + ".lock");
     }
 
     private StoredGitHubCredential? TryLoadVersioned(string path)
@@ -254,8 +309,9 @@ internal sealed class GitHubCredentialStore
         catch (UnauthorizedAccessException) { }
     }
 
-    private sealed class RotationLock(FileStream stream) : IAsyncDisposable
+    private sealed class RotationLock(FileStream stream) : IDisposable, IAsyncDisposable
     {
+        public void Dispose() => stream.Dispose();
         public ValueTask DisposeAsync() => stream.DisposeAsync();
     }
 }

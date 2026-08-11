@@ -263,6 +263,110 @@ public sealed class GitHubCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Fresh_login_waits_for_old_refresh_and_commits_last()
+    {
+        var (refreshStore, protector) = CreateStore();
+        var loginStore = new GitHubCredentialStore(
+            Path.GetDirectoryName(refreshStore.VersionedPrimaryPath)!,
+            Path.GetDirectoryName(refreshStore.VersionedFallbackPath)!,
+            protector);
+        refreshStore.SaveNew(SampleRecord(generation: 1) with
+        {
+            CredentialId = "old-login",
+        });
+        var freshLogin = SampleRecord(generation: 1) with
+        {
+            AccessToken = "ghu_fresh_login",
+            CredentialId = "fresh-login",
+        };
+
+        var refreshLock = await refreshStore.AcquireRotationLockAsync(
+            refreshStore.VersionedPrimaryPath,
+            TimeSpan.FromSeconds(2),
+            CancellationToken.None);
+        try
+        {
+            using var started = new ManualResetEventSlim();
+            var loginTask = Task.Run(() =>
+            {
+                started.Set();
+                return loginStore.SaveNew(freshLogin);
+            });
+            Assert.True(started.Wait(TimeSpan.FromSeconds(1)));
+            await Task.Delay(100);
+            Assert.False(loginTask.IsCompleted);
+
+            refreshStore.SaveVersioned(
+                SampleRecord(generation: 2) with { CredentialId = "old-login" },
+                refreshStore.VersionedPrimaryPath);
+            await refreshLock.DisposeAsync();
+
+            Assert.True(await loginTask);
+        }
+        finally
+        {
+            await refreshLock.DisposeAsync();
+        }
+
+        var committed = refreshStore.TryLoad()!.Record;
+        Assert.Equal("fresh-login", committed.CredentialId);
+        Assert.Equal("ghu_fresh_login", committed.AccessToken);
+        Assert.Equal(1, committed.Generation);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Logout_waits_for_each_rotation_path_and_cannot_be_undone(
+        bool useFallback)
+    {
+        var (refreshStore, protector) = CreateStore();
+        var logoutStore = new GitHubCredentialStore(
+            Path.GetDirectoryName(refreshStore.VersionedPrimaryPath)!,
+            Path.GetDirectoryName(refreshStore.VersionedFallbackPath)!,
+            protector);
+        var path = useFallback
+            ? refreshStore.VersionedFallbackPath
+            : refreshStore.VersionedPrimaryPath;
+        refreshStore.SaveVersioned(
+            SampleRecord(generation: 1) with { CredentialId = "old-login" },
+            path);
+
+        var refreshLock = await refreshStore.AcquireRotationLockAsync(
+            path,
+            TimeSpan.FromSeconds(2),
+            CancellationToken.None);
+        try
+        {
+            using var started = new ManualResetEventSlim();
+            var logoutTask = Task.Run(() =>
+            {
+                started.Set();
+                logoutStore.Delete();
+            });
+            Assert.True(started.Wait(TimeSpan.FromSeconds(1)));
+            await Task.Delay(100);
+            Assert.False(logoutTask.IsCompleted);
+
+            refreshStore.SaveVersioned(
+                SampleRecord(generation: 2) with { CredentialId = "old-login" },
+                path);
+            await refreshLock.DisposeAsync();
+            await logoutTask;
+        }
+        finally
+        {
+            await refreshLock.DisposeAsync();
+        }
+
+        Assert.Null(refreshStore.TryLoad());
+        Assert.False(File.Exists(refreshStore.VersionedPrimaryPath));
+        Assert.False(File.Exists(refreshStore.VersionedFallbackPath));
+        Assert.False(File.Exists(refreshStore.LegacyPrimaryPath));
+        Assert.False(File.Exists(refreshStore.LegacyFallbackPath));
+    }
+
+    [Fact]
     public void Failed_precommit_keeps_previous_generation_and_cleans_temp_file()
     {
         var (healthyStore, protector) = CreateStore();

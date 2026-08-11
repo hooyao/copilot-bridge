@@ -68,6 +68,12 @@ skill file sets/content, required Codex/OpenSpec skill presence, and the exact
 local-config ignore rule. These are observable repository behaviors, require no
 network, and run on every supported OS.
 
+The ship workflow's unresolved-thread check uses GraphQL cursor pagination with
+`gh api --paginate --slurp`, validates every returned page, and aggregates all
+nodes before deriving its merge gate. A fixed `first:100` window is not an
+acceptable safety boundary because a later unresolved thread would look like an
+all-clear.
+
 ## Risks / Trade-offs
 
 - **Two skill roots can drift** → Normalize only root paths and compare every

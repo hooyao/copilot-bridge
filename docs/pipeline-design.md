@@ -789,7 +789,10 @@ Authentication has two separately managed tiers behind the sealed
    before a known access-token deadline. Rotation is process-single-flight and
    path-locked across processes; after acquiring the file lock it reloads the
    credential-id/generation pair so only one process consumes a rotating refresh
-   token and a stale rejection cannot target a fresh login. The complete
+   token and a stale rejection cannot target a fresh login. Fresh-login commits
+   take the primary lock, and logout takes both configured path locks in stable
+   order before deletion, so an older refresh cannot overwrite or recreate the
+   credential. The complete
    v2 credential commits by restrictive temp-file + flush + atomic replace. The
    existing encrypted `github_token.dat` remains a raw access-token compatibility
    mirror for older binaries. Legacy raw files still load, but a rejected legacy
