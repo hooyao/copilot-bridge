@@ -57,3 +57,4 @@
 - [x] 7.3 Keep the auth-replay ClientBehavior case on the shared reviewed Codex version and re-run the real-client verdict. *(Verified with Codex 0.147.0-alpha.6.6: three completed custom-exec call/output loops, one genuine bearer refresh/replay, canary present, no abort, SQLite router fatal=0 and ERROR=0.)*
 - [x] 7.4 Isolate the process-global Serilog ordering contract from parallel tests and restore the original logger after the test.
 - [x] 7.5 Serialize fresh-login commits and logout deletion under the same path-scoped locks as refresh so an older in-flight rotation cannot overwrite or recreate credentials.
+- [x] 7.6 Keep credential mutation lock files permanently so Unix processes cannot synchronize on different inodes after unlink-and-recreate.

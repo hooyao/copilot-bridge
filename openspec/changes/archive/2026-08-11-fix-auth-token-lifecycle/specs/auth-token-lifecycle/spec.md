@@ -69,7 +69,7 @@ The system SHALL treat a GitHub `401 Bad credentials` response as rejection of t
 - **THEN** the system surfaces the second response as a terminal authentication failure without another refresh or replay
 
 ### Requirement: Credential rotation is safe under concurrency and failure
-The system SHALL single-flight refreshes within a process and coordinate rotating refresh-token use across processes sharing one credential path. Rotation SHALL re-read the authoritative record after acquiring the cross-process lock and SHALL leave the prior complete record recoverable if persistence fails.
+The system SHALL single-flight refreshes within a process and coordinate rotating refresh-token use across processes sharing one credential path. Rotation SHALL re-read the authoritative record after acquiring the cross-process lock and SHALL leave the prior complete record recoverable if persistence fails. The empty path lock SHALL remain at a stable filesystem identity after release and credential deletion.
 
 #### Scenario: Concurrent requests detect the same expiry
 - **WHEN** multiple callers in one process concurrently request authentication for an expiring credential
@@ -94,6 +94,10 @@ The system SHALL single-flight refreshes within a process and coordinate rotatin
 #### Scenario: Logout races a refresh
 - **WHEN** logout deletes credentials while another process is refreshing either configured v2 path
 - **THEN** deletion holds the corresponding path locks until every credential representation is removed, and the older refresh cannot recreate a credential after logout
+
+#### Scenario: Another process acquires a released credential lock
+- **WHEN** one process releases a credential mutation lock and another process later acquires that path
+- **THEN** the lock file was not unlinked or recreated, so every contender synchronizes on the same filesystem object
 
 ### Requirement: Copilot bearer and endpoint form one lease
 The system SHALL publish each Copilot bearer together with its API base URL, local refresh deadline, hard-expiry diagnostic, and generation as one immutable lease. Callers SHALL never combine a token from one lease with the endpoint from another.

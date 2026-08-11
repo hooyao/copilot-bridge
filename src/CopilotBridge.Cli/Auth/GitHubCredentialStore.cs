@@ -54,6 +54,20 @@ internal sealed class GitHubCredentialStore
     public string VersionedPrimaryPath { get; }
     public string VersionedFallbackPath { get; }
 
+    internal static bool IsCredentialArtifactName(string fileName)
+    {
+        if (string.IsNullOrEmpty(fileName)) return false;
+
+        return string.Equals(fileName, LegacyFileName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(fileName, VersionedFileName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(
+                fileName,
+                VersionedFileName + ".lock",
+                StringComparison.OrdinalIgnoreCase)
+            || IsAtomicTemporaryName(fileName, LegacyFileName)
+            || IsAtomicTemporaryName(fileName, VersionedFileName);
+    }
+
     public StoredGitHubCredential? TryLoad()
     {
         // A versioned fallback carries refresh state and must beat a stale raw
@@ -195,8 +209,8 @@ internal sealed class GitHubCredentialStore
                 locks[index].Dispose();
         }
 
-        foreach (var path in versionedPaths)
-            TryDelete(path + ".lock");
+        // Keep the empty lock files permanently. On Unix, unlinking after release
+        // can split synchronization across the old inode and a newly-created one.
     }
 
     private StoredGitHubCredential? TryLoadVersioned(string path)
@@ -302,12 +316,11 @@ internal sealed class GitHubCredentialStore
             throw new InvalidOperationException("GitHub credential has no access token.");
     }
 
-    private static void TryDelete(string path)
-    {
-        try { if (File.Exists(path)) File.Delete(path); }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-    }
+    private static bool IsAtomicTemporaryName(string fileName, string persistedName) =>
+        fileName.StartsWith(
+            "." + persistedName + ".",
+            StringComparison.OrdinalIgnoreCase)
+        && fileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase);
 
     private sealed class RotationLock(FileStream stream) : IDisposable, IAsyncDisposable
     {

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Nodes;
+using CopilotBridge.Cli.Auth;
 
 namespace CopilotBridge.Playground.Headless;
 
@@ -509,9 +510,7 @@ internal static class ServeProcess
             // the ~/github_token.dat HOME fallback, and best-effort scratch cleanup could
             // leave the copied blob behind — so exclude it outright.
             var name = Path.GetFileName(file);
-            if (string.Equals(name, "github_token.dat", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, "github_credentials.v2.dat", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, "github_credentials.v2.dat.lock", StringComparison.OrdinalIgnoreCase))
+            if (GitHubCredentialStore.IsCredentialArtifactName(name))
                 continue;
 
             // Skip the bridge's own runtime output subtrees if a prior JIT run left them

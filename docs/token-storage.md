@@ -70,10 +70,12 @@ a deadline or refresh token.
 Rotating refresh tokens are single-use state, so process-local locking is not
 enough. Refresh acquires a lock file next to the authoritative v2 path, reloads
 the credential-id/generation pair after obtaining it, and skips the network call
-if another process already committed a refresh or fresh login. A commit writes already-encrypted bytes to
-a restrictive same-directory temporary file, flushes it, and atomically replaces
-v2. A pre-commit crash leaves the prior complete record readable. On Unix both v2
-and the raw mirror are forced to `0600`.
+if another process already committed a refresh or fresh login. The empty lock
+file is intentionally retained after release and logout so every Unix process
+continues to lock the same inode; it contains no credential material. A commit
+writes already-encrypted bytes to a restrictive same-directory temporary file,
+flushes it, and atomically replaces v2. A pre-commit crash leaves the prior
+complete record readable. On Unix both v2 and the raw mirror are forced to `0600`.
 
 Every writer participates in that ordering. Fresh device login takes the primary
 path lock before committing, so an older refresh either finishes first or reloads

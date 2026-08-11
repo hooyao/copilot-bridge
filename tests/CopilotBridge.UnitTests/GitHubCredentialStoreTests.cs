@@ -222,7 +222,7 @@ public sealed class GitHubCredentialStoreTests : IDisposable
     }
 
     [Fact]
-    public void Delete_removes_every_credential_representation()
+    public void Delete_removes_every_credential_representation_but_keeps_path_locks()
     {
         var (store, _) = CreateStore();
         store.SaveNew(SampleRecord(generation: 1));
@@ -234,6 +234,29 @@ public sealed class GitHubCredentialStoreTests : IDisposable
         Assert.False(File.Exists(store.VersionedFallbackPath));
         Assert.False(File.Exists(store.LegacyPrimaryPath));
         Assert.False(File.Exists(store.LegacyFallbackPath));
+        Assert.True(File.Exists(store.VersionedPrimaryPath + ".lock"));
+        Assert.True(File.Exists(store.VersionedFallbackPath + ".lock"));
+    }
+
+    [Theory]
+    [InlineData("github_token.dat")]
+    [InlineData("github_credentials.v2.dat")]
+    [InlineData("github_credentials.v2.dat.lock")]
+    [InlineData(".github_token.dat.0123456789abcdef0123456789abcdef.tmp")]
+    [InlineData(".github_credentials.v2.dat.0123456789abcdef0123456789abcdef.tmp")]
+    public void Credential_artifact_classifier_covers_persisted_and_atomic_files(string fileName)
+    {
+        Assert.True(GitHubCredentialStore.IsCredentialArtifactName(fileName));
+    }
+
+    [Theory]
+    [InlineData("appsettings.json")]
+    [InlineData("github_token.dat.backup")]
+    [InlineData("github_credentials.v2.dat.lock.notes")]
+    [InlineData(".unrelated.0123456789abcdef0123456789abcdef.tmp")]
+    public void Credential_artifact_classifier_preserves_unrelated_files(string fileName)
+    {
+        Assert.False(GitHubCredentialStore.IsCredentialArtifactName(fileName));
     }
 
     [Fact]
