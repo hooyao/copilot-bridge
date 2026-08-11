@@ -227,16 +227,20 @@ internal sealed class GitHubReleaseClient
                         // rate limit. A 403 is also how it reports reasons a retry
                         // can never clear (blocked repository, banned UA), and
                         // re-requesting those just burns the traversal budget.
-                        if (IsRateLimited(resp) && rateLimitRetries < _maxRateLimitRetries)
+                        var retryWait = GetRetryWait(resp);
+                        if (retryWait is { } wait && rateLimitRetries < _maxRateLimitRetries)
                         {
                             rateLimitRetries++;
                             // Never retry past the traversal deadline — the whole
                             // point of the bound is that startup cannot be delayed.
-                            if (_clock.Elapsed(started) + _rateLimitRetryDelay >= _overallDeadline)
+                            // A Retry-After longer than the remaining budget lands
+                            // here, which is the correct outcome: fail open now
+                            // rather than ignore the server and retry early.
+                            if (_clock.Elapsed(started) + wait >= _overallDeadline)
                             {
                                 return ReleaseDiscoveryResult.Fail("GitHub API rate limit reached");
                             }
-                            await _clock.DelayAsync(_rateLimitRetryDelay, ct).ConfigureAwait(false);
+                            await _clock.DelayAsync(wait, ct).ConfigureAwait(false);
                             isRetry = true;
                             continue; // re-fetch the same url on a new connection
                         }
@@ -301,22 +305,62 @@ internal sealed class GitHubReleaseClient
     }
 
     /// <summary>
-    /// Whether GitHub attributes this refusal to the rate limit, so a retry has a
-    /// chance of clearing it. GitHub signals an exhausted primary limit with
-    /// <c>x-ratelimit-remaining: 0</c> (observed on a live anonymous 403 alongside
-    /// <c>x-ratelimit-limit: 60</c> and <c>x-ratelimit-reset</c>), and a secondary
-    /// / abuse limit with <c>retry-after</c>. A 403 carrying neither is a
-    /// permission-style refusal a retry cannot fix, so it is not retried.
+    /// How long to wait before retrying this refusal, or <c>null</c> when it must
+    /// not be retried at all.
+    /// <para>
+    /// GitHub signals an exhausted primary limit with <c>x-ratelimit-remaining: 0</c>
+    /// (observed on a live anonymous 403 alongside <c>x-ratelimit-limit: 60</c> and
+    /// <c>x-ratelimit-reset</c>) and a secondary/abuse limit with <c>retry-after</c>.
+    /// A 403 carrying neither is a permission-style refusal a retry cannot fix.
+    /// </para>
+    /// <para>
+    /// <c>Retry-After</c> is an instruction, not just a classifier: GitHub requires
+    /// clients to wait at least that long, and retrying sooner can extend the abuse
+    /// limit. So it sets the wait rather than merely marking the response
+    /// retryable — with the default spacing as a floor, and the caller's deadline
+    /// check turning a wait that cannot fit into an immediate fail-open.
+    /// </para>
     /// </summary>
-    private static bool IsRateLimited(HttpResponseMessage resp)
+    private TimeSpan? GetRetryWait(HttpResponseMessage resp)
     {
-        if (resp.Headers.TryGetValues("x-ratelimit-remaining", out var remaining)
-            && int.TryParse(remaining.FirstOrDefault(), out var left))
+        var retryAfter = ParseRetryAfter(resp);
+        if (retryAfter is { } after)
         {
-            return left <= 0;
+            return after > _rateLimitRetryDelay ? after : _rateLimitRetryDelay;
         }
-        // A secondary rate limit may omit the primary counters but sends Retry-After.
-        return resp.Headers.TryGetValues("retry-after", out _);
+        if (resp.Headers.TryGetValues("x-ratelimit-remaining", out var remaining)
+            && int.TryParse(remaining.FirstOrDefault(), out var left)
+            && left <= 0)
+        {
+            return _rateLimitRetryDelay;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The <c>Retry-After</c> delay, in either RFC 9110 form (delta-seconds or an
+    /// HTTP-date). A malformed or negative value yields <c>null</c> so it falls
+    /// back to the primary-limit rules rather than being trusted blindly.
+    /// </summary>
+    private static TimeSpan? ParseRetryAfter(HttpResponseMessage resp)
+    {
+        var header = resp.Headers.RetryAfter;
+        if (header is null)
+        {
+            return null;
+        }
+        if (header.Delta is { } delta)
+        {
+            return delta > TimeSpan.Zero ? delta : TimeSpan.Zero;
+        }
+        if (header.Date is { } date)
+        {
+            // Absolute form: the remaining wait is relative to now, and the value
+            // may already be in the past.
+            var until = date - DateTimeOffset.UtcNow;
+            return until > TimeSpan.Zero ? until : TimeSpan.Zero;
+        }
+        return null;
     }
 
     private static HttpRequestMessage BuildRequest(string url)    {

@@ -275,6 +275,78 @@ public class GitHubReleaseClientTests
     }
 
     [Fact]
+    public async Task Retry_after_sets_the_wait_instead_of_the_default_spacing()
+    {
+        // Contract: Retry-After is an INSTRUCTION, not just a classifier. GitHub
+        // requires clients not to retry before it elapses, and retrying sooner can
+        // extend a secondary/abuse limit. Waiting the default 250ms against a
+        // "Retry-After: 5" would burn every retry while the server is guaranteed
+        // to keep refusing, so the header must drive the delay.
+        var clock = new FakeClock();
+        var handler = new FakeHttpMessageHandler((_, i) =>
+        {
+            if (i > 0) return FakeHttpMessageHandler.Json(OneReleasePage);
+            var resp = FakeHttpMessageHandler.Json("""{"message":"secondary rate limit"}""",
+                status: HttpStatusCode.Forbidden);
+            resp.Headers.TryAddWithoutValidation("retry-after", "5");
+            return resp;
+        });
+
+        var result = await RetryClient(handler, clock, maxRateLimitRetries: 5,
+            retryDelay: TimeSpan.FromMilliseconds(250)).DiscoverAsync(CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(TimeSpan.FromSeconds(5), Assert.Single(clock.Delays));
+    }
+
+    [Fact]
+    public async Task Retry_after_longer_than_the_deadline_fails_open_without_retrying()
+    {
+        // Contract: when the server-mandated wait cannot fit inside the traversal
+        // deadline, the only two options are "ignore the server and retry early" or
+        // "give up now". Startup must not be delayed and the server must not be
+        // disobeyed, so discovery fails open immediately — without a second request.
+        var clock = new FakeClock();
+        var handler = new FakeHttpMessageHandler((_, _) =>
+        {
+            var resp = FakeHttpMessageHandler.Json("""{"message":"secondary rate limit"}""",
+                status: HttpStatusCode.Forbidden);
+            resp.Headers.TryAddWithoutValidation("retry-after", "600"); // ≫ the 30s deadline
+            return resp;
+        });
+
+        var result = await RetryClient(handler, clock, maxRateLimitRetries: 5)
+            .DiscoverAsync(CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Single(handler.Requests); // no retry was attempted
+        Assert.Empty(clock.Delays);      // and nothing was waited
+    }
+
+    [Fact]
+    public async Task Retry_after_below_the_default_spacing_still_waits_the_default()
+    {
+        // Contract: Retry-After raises the floor, it does not lower it. A tiny (or
+        // zero) value must not turn the retry into a hot loop against an endpoint
+        // that is already refusing.
+        var clock = new FakeClock();
+        var handler = new FakeHttpMessageHandler((_, i) =>
+        {
+            if (i > 0) return FakeHttpMessageHandler.Json(OneReleasePage);
+            var resp = FakeHttpMessageHandler.Json("""{"message":"secondary rate limit"}""",
+                status: HttpStatusCode.Forbidden);
+            resp.Headers.TryAddWithoutValidation("retry-after", "0");
+            return resp;
+        });
+
+        var result = await RetryClient(handler, clock, maxRateLimitRetries: 5,
+            retryDelay: TimeSpan.FromMilliseconds(250)).DiscoverAsync(CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(TimeSpan.FromMilliseconds(250), Assert.Single(clock.Delays));
+    }
+
+    [Fact]
     public void Discovery_handler_does_not_reuse_connections()
     {
         // Contract: the retry is only worth anything on a NEW connection. A pooled

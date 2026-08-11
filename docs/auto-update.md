@@ -110,6 +110,12 @@ limit. A 403 carrying neither (a blocked repository, a banned user-agent) fails
 open immediately rather than spending the traversal budget on a retry that cannot
 clear it.
 
+`Retry-After` is obeyed as an instruction, not just read as a classifier: it sets
+the wait (with the default spacing as a floor), because retrying before it elapses
+is both guaranteed to be refused and liable to extend a secondary limit. When the
+mandated wait does not fit inside the traversal deadline, discovery fails open
+immediately instead of retrying early.
+
 **This is a mitigation, not a fix, and it is bounded by construction.** When
 *every* address in the pool is exhausted the retry cannot help — measured at full
 exhaustion, recovery was 0/10 even at 20 attempts over 10s — and a single-address

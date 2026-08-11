@@ -61,6 +61,17 @@
       limit), so a blocked-repository 403 fails open immediately
 - [x] 5.2 Contract tests for both branches, mutation-checked (mutations 6 and 7)
 
+## 7. PR review follow-ups (PR #69)
+
+- [x] 7.1 Round 1 (Copilot): `Retry-After` was used only to CLASSIFY the refusal
+      while every retry still waited the default 250ms — so a real secondary
+      limit (`Retry-After: 60`) would burn the whole allowance while the server
+      was guaranteed to keep refusing, and could prolong the abuse limit. It now
+      sets the wait (default spacing as a floor), and a mandated wait that cannot
+      fit inside the traversal deadline fails open WITHOUT a further request.
+      Both RFC 9110 forms are parsed (delta-seconds and HTTP-date).
+      Mutation-checked: mutations 8 (ignore the header) and 9 (no floor) killed.
+
 ## 6. Documentation
 
 - [x] 6.1 Document the mechanism, the measured numbers, and the explicit limits
