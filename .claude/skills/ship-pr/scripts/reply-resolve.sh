@@ -31,6 +31,13 @@ BODY="$4"
 OWNER="${REPO%%/*}"
 NAME="${REPO##*/}"
 
+for tool in gh jq; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "required tool '$tool' not found on PATH" >&2
+    exit 1
+  }
+done
+
 # databaseId and PR are numeric — validate before splicing CID into a jq filter.
 if ! [[ "$CID" =~ ^[0-9]+$ ]]; then
   echo "comment id must be numeric (the REST databaseId), got: $CID" >&2
@@ -42,14 +49,23 @@ if ! [[ "$PR" =~ ^[0-9]+$ ]]; then
 fi
 
 # --- 1. Map the comment databaseId → its thread node id (on this specific PR) ----
-THREAD_ID="$(gh api graphql -f query='
-  query($owner:String!,$name:String!,$pr:Int!){
+THREADS_JSON="$(gh api graphql -f query='
+  query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
     repository(owner:$owner,name:$name){ pullRequest(number:$pr){
-      reviewThreads(first:100){ nodes{ id comments(first:50){ nodes{ databaseId } } } }
+      reviewThreads(first:100,after:$endCursor){
+        nodes{ id comments(first:100){ nodes{ databaseId } } }
+        pageInfo{ hasNextPage endCursor }
+      }
     } }
   }' -f owner="$OWNER" -f name="$NAME" -F pr="$PR" \
-  --jq ".data.repository.pullRequest.reviewThreads.nodes[] | select(.comments.nodes[].databaseId==${CID}) | .id" 2>/dev/null | head -1)" \
+  --paginate --slurp 2>/dev/null)" \
   || { echo "thread lookup failed for comment ${CID} on PR ${PR}" >&2; exit 1; }
+
+THREAD_ID="$(echo "$THREADS_JSON" | jq -r --argjson cid "$CID" '
+  .[].data.repository.pullRequest.reviewThreads.nodes[]
+  | select(any(.comments.nodes[]; .databaseId==$cid))
+  | .id
+' | head -1)" || { echo "could not parse thread lookup for comment ${CID}" >&2; exit 1; }
 
 if [[ -z "${THREAD_ID:-}" ]]; then
   echo "could not find a review thread containing comment ${CID} on PR ${PR}" >&2

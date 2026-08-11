@@ -72,7 +72,9 @@ The ship workflow's unresolved-thread check uses GraphQL cursor pagination with
 `gh api --paginate --slurp`, validates every returned page, and aggregates all
 nodes before deriving its merge gate. A fixed `first:100` window is not an
 acceptable safety boundary because a later unresolved thread would look like an
-all-clear.
+all-clear. The reply-and-resolve helper uses the same pagination contract when
+mapping a comment id back to its thread; otherwise the workflow could discover a
+later-page finding but be unable to clear it safely.
 
 ## Risks / Trade-offs
 

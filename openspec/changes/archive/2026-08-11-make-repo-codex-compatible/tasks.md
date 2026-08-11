@@ -23,3 +23,4 @@
 
 - [x] 5.1 Keep the mirrored real-client SQLite reader on a supported .NET 10 Core provider plus SQLitePCLRaw 3.x bundle; verify the reader runs without the vulnerable 2.1.x package warning.
 - [x] 5.2 Paginate the ship-pr review-thread safety query and aggregate unresolved threads across every GraphQL page before authorizing merge.
+- [x] 5.3 Paginate reply-resolve thread lookup as well, so a later-page unresolved comment can be addressed and resolved after the status gate finds it.

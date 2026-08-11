@@ -34,6 +34,10 @@ shipping, and OpenSpec workflows required by `AGENTS.md`.
 - **WHEN** the ship workflow evaluates a pull request with more than 100 review threads
 - **THEN** its primary safety check paginates every thread page and counts every unresolved thread before permitting merge
 
+#### Scenario: An unresolved comment is on a later thread page
+- **WHEN** the workflow replies to and resolves a comment outside the first 100 review threads
+- **THEN** thread lookup paginates all pages and locates the owning thread instead of leaving the known comment unresolved
+
 ### Requirement: Mirrored project skills retain semantic parity
 Every hand-maintained project skill mirrored between `.claude/skills` and
 `.agents/skills` SHALL have the same file set and content after normalizing only
