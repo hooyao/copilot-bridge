@@ -204,18 +204,18 @@ public sealed class AuthService : IAuthService, IDisposable
         try
         {
             refreshed = await _githubCredentials.RefreshAfterRejectionAsync(
-                credential.Generation, ct).ConfigureAwait(false);
+                credential, ct).ConfigureAwait(false);
         }
         catch (GitHubReauthenticationRequiredException)
         {
-            _githubCredentials.MarkTerminallyRejected(credential.Generation);
+            _githubCredentials.MarkTerminallyRejected(credential);
             throw;
         }
         using var second = await SendGitHubUserRequestAsync(refreshed.AccessToken, ct)
             .ConfigureAwait(false);
         if (second.StatusCode == HttpStatusCode.Unauthorized)
         {
-            _githubCredentials.MarkTerminallyRejected(refreshed.Generation);
+            _githubCredentials.MarkTerminallyRejected(refreshed);
             throw new GitHubReauthenticationRequiredException(
                 "the refreshed GitHub access token was also rejected by user lookup",
                 new GitHubApiRequestException("user lookup", second.StatusCode));
@@ -266,11 +266,11 @@ public sealed class AuthService : IAuthService, IDisposable
             try
             {
                 credential = await _githubCredentials.RefreshAfterRejectionAsync(
-                    credential.Generation, ct).ConfigureAwait(false);
+                    credential, ct).ConfigureAwait(false);
             }
             catch (GitHubReauthenticationRequiredException)
             {
-                _githubCredentials.MarkTerminallyRejected(credential.Generation);
+                _githubCredentials.MarkTerminallyRejected(credential);
                 throw;
             }
 
@@ -282,7 +282,7 @@ public sealed class AuthService : IAuthService, IDisposable
             catch (GitHubApiRequestException retryEx) when (
                 retryEx.StatusCode == HttpStatusCode.Unauthorized)
             {
-                _githubCredentials.MarkTerminallyRejected(credential.Generation);
+                _githubCredentials.MarkTerminallyRejected(credential);
                 throw new GitHubReauthenticationRequiredException(
                     "the refreshed GitHub access token was also rejected", retryEx);
             }

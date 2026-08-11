@@ -783,10 +783,13 @@ Authentication has two separately managed tiers behind the sealed
 
 1. **GitHub OAuth credential (encrypted at rest).** Device login preserves the
    access token plus optional `expires_in`, rotating `refresh_token`, and
-   `refresh_token_expires_in`. `GitHubCredentialManager` refreshes five minutes
+   `refresh_token_expires_in`, and mints an opaque credential id. Refreshes keep
+   that id and increment its generation; a fresh login gets a new id even though
+   its generation restarts at one. `GitHubCredentialManager` refreshes five minutes
    before a known access-token deadline. Rotation is process-single-flight and
    path-locked across processes; after acquiring the file lock it reloads the
-   generation so only one process consumes a rotating refresh token. The complete
+   credential-id/generation pair so only one process consumes a rotating refresh
+   token and a stale rejection cannot target a fresh login. The complete
    v2 credential commits by restrictive temp-file + flush + atomic replace. The
    existing encrypted `github_token.dat` remains a raw access-token compatibility
    mirror for older binaries. Legacy raw files still load, but a rejected legacy
@@ -811,7 +814,9 @@ retains its configured first-byte inactivity budget.
 GitHub `401 Bad credentials` during `/user` or Copilot-token exchange similarly
 uses at most one refresh-token rotation and one replay. If refresh metadata is
 absent or rejected, the persisted record is preserved and interactive login is
-required. Lifecycle logs carry layer, trigger, status/classification, generation,
+required. Rate limits, 5xx responses, and transport failures remain transient and
+use bounded retry/backoff without marking the credential rejected. Lifecycle logs
+carry layer, trigger, status/classification, generation,
 timing and API host only—never access/refresh tokens, Authorization values, token
 prefixes, hashes, or response bodies. See `docs/token-storage.md` for file and
 threat-model details.

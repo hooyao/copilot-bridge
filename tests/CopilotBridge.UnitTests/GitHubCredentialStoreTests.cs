@@ -86,6 +86,35 @@ public sealed class GitHubCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public void Fresh_logins_mint_distinct_persisted_identity_and_refresh_preserves_it()
+    {
+        // Contract: a generation is only monotonic within one credential instance.
+        // Fresh logins both start at generation 1, so their persisted identities
+        // must differ while rotation of one login preserves its identity.
+        var receivedAt = new DateTimeOffset(2026, 8, 11, 0, 0, 0, TimeSpan.Zero);
+        var response = new AccessTokenResponse { AccessToken = "ghu_login" };
+        var first = GitHubCredentialRecord.FromOAuthResponse(response, receivedAt, 1);
+        var second = GitHubCredentialRecord.FromOAuthResponse(response, receivedAt, 1);
+        var rotated = GitHubCredentialRecord.FromOAuthResponse(
+            new AccessTokenResponse
+            {
+                AccessToken = "ghu_rotated",
+                RefreshToken = "ghr_rotated",
+            },
+            receivedAt.AddMinutes(10),
+            2,
+            first);
+
+        var firstId = SerializedCredentialId(first);
+        var secondId = SerializedCredentialId(second);
+        var rotatedId = SerializedCredentialId(rotated);
+
+        Assert.False(string.IsNullOrWhiteSpace(firstId));
+        Assert.NotEqual(firstId, secondId);
+        Assert.Equal(firstId, rotatedId);
+    }
+
+    [Fact]
     public void Refresh_response_without_replacement_does_not_reuse_spent_refresh_token()
     {
         // Contract: GitHub refresh tokens rotate. Once the old token is used it
@@ -308,6 +337,17 @@ public sealed class GitHubCredentialStoreTests : IDisposable
         Scope = "read:user",
         Generation = generation,
     };
+
+    private static string? SerializedCredentialId(GitHubCredentialRecord record)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(
+            record,
+            JsonContext.Default.GitHubCredentialRecord);
+        using var json = JsonDocument.Parse(bytes);
+        return json.RootElement.TryGetProperty("credential_id", out var property)
+            ? property.GetString()
+            : null;
+    }
 
     private sealed class TestProtector : ITokenProtector
     {

@@ -32,6 +32,9 @@ internal sealed record GitHubCredentialRecord
     [JsonPropertyName("scope")]
     public string? Scope { get; init; }
 
+    [JsonPropertyName("credential_id")]
+    public string CredentialId { get; init; } = "";
+
     [JsonPropertyName("generation")]
     public long Generation { get; init; }
 
@@ -69,6 +72,9 @@ internal sealed record GitHubCredentialRecord
             RefreshTokenExpiresAt = refreshExpiry,
             TokenType = response.TokenType ?? previous?.TokenType,
             Scope = response.Scope ?? previous?.Scope,
+            CredentialId = string.IsNullOrWhiteSpace(previous?.CredentialId)
+                ? Guid.NewGuid().ToString("N")
+                : previous.CredentialId,
             Generation = generation,
         };
     }

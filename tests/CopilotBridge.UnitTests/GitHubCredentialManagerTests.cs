@@ -86,7 +86,8 @@ public sealed class GitHubCredentialManagerTests : IDisposable
     public async Task Rejected_current_generation_refreshes_once()
     {
         var store = CreateStore();
-        store.SaveNew(RefreshableRecord(generation: 7, accessExpiresIn: TimeSpan.FromHours(1)));
+        var rejected = RefreshableRecord(generation: 7, accessExpiresIn: TimeSpan.FromHours(1));
+        store.SaveNew(rejected);
         var handler = new OAuthHandler(new Queue<HttpResponseMessage>([
             Json(HttpStatusCode.OK, """
                 {"access_token":"ghu_after_401","expires_in":3600,"refresh_token":"ghr_after_401","refresh_token_expires_in":7200}
@@ -95,7 +96,7 @@ public sealed class GitHubCredentialManagerTests : IDisposable
         var manager = CreateManager(store, handler);
 
         var credential = await manager.RefreshAfterRejectionAsync(
-            rejectedGeneration: 7,
+            rejected,
             CancellationToken.None);
 
         Assert.Equal("ghu_after_401", credential.AccessToken);
@@ -112,7 +113,7 @@ public sealed class GitHubCredentialManagerTests : IDisposable
         var manager = CreateManager(store, handler);
 
         var credential = await manager.RefreshAfterRejectionAsync(
-            rejectedGeneration: 7,
+            RefreshableRecord(generation: 7, accessExpiresIn: TimeSpan.FromHours(1)),
             CancellationToken.None);
 
         Assert.Equal(8, credential.Generation);
@@ -175,7 +176,9 @@ public sealed class GitHubCredentialManagerTests : IDisposable
         var manager = CreateManager(store, handler);
 
         var error = await Assert.ThrowsAsync<GitHubReauthenticationRequiredException>(() =>
-            manager.RefreshAfterRejectionAsync(0, CancellationToken.None).AsTask());
+            manager.RefreshAfterRejectionAsync(
+                GitHubCredentialRecord.FromLegacyToken("ghu_legacy_bad"),
+                CancellationToken.None).AsTask());
 
         Assert.Contains("auth logout", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("auth login", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -183,14 +186,17 @@ public sealed class GitHubCredentialManagerTests : IDisposable
         Assert.Equal("ghu_legacy_bad", store.TryLoad()!.Record.AccessToken);
     }
 
-    [Fact]
-    public async Task Rejected_refresh_token_preserves_committed_record_and_terminates()
+    [Theory]
+    [InlineData(HttpStatusCode.OK)]
+    [InlineData(HttpStatusCode.BadRequest)]
+    public async Task Rejected_refresh_token_preserves_committed_record_and_terminates(
+        HttpStatusCode responseStatus)
     {
         var store = CreateStore();
         var original = RefreshableRecord(generation: 3, accessExpiresIn: TimeSpan.FromMinutes(1));
         store.SaveNew(original);
         var handler = new OAuthHandler(new Queue<HttpResponseMessage>([
-            Json(HttpStatusCode.OK, """
+            Json(responseStatus, """
                 {"error":"bad_refresh_token","error_description":"refresh token rejected"}
                 """),
         ]));
@@ -199,8 +205,36 @@ public sealed class GitHubCredentialManagerTests : IDisposable
         await Assert.ThrowsAsync<GitHubReauthenticationRequiredException>(() =>
             manager.GetUsableAsync(CancellationToken.None).AsTask());
 
+        await Assert.ThrowsAsync<GitHubReauthenticationRequiredException>(() =>
+            manager.GetUsableAsync(CancellationToken.None).AsTask());
+
         Assert.Single(handler.Requests);
         Assert.Equal(original, store.TryLoad()!.Record);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task Transient_refresh_failure_does_not_require_login_and_can_retry(
+        HttpStatusCode transientStatus)
+    {
+        var store = CreateStore();
+        store.SaveNew(RefreshableRecord(generation: 5, accessExpiresIn: TimeSpan.FromMinutes(1)));
+        var handler = new OAuthHandler(new Queue<HttpResponseMessage>([
+            Json(transientStatus, "{\"message\":\"temporarily unavailable\"}"),
+            Json(HttpStatusCode.OK, """
+                {"access_token":"ghu_retry","expires_in":3600,"refresh_token":"ghr_retry","refresh_token_expires_in":7200}
+                """),
+        ]));
+        var manager = CreateManager(store, handler);
+
+        var error = await Assert.ThrowsAsync<GitHubApiRequestException>(() =>
+            manager.GetUsableAsync(CancellationToken.None).AsTask());
+        var recovered = await manager.GetUsableAsync(CancellationToken.None);
+
+        Assert.Equal(transientStatus, error.StatusCode);
+        Assert.Equal("ghu_retry", recovered.AccessToken);
+        Assert.Equal(2, handler.Requests.Count);
     }
 
     public void Dispose()
@@ -234,6 +268,7 @@ public sealed class GitHubCredentialManagerTests : IDisposable
         RefreshTokenExpiresAt = _time.GetUtcNow().AddDays(30),
         TokenType = "bearer",
         Scope = "read:user",
+        CredentialId = "login-a",
         Generation = generation,
     };
 

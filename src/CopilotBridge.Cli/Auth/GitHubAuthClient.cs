@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using CopilotBridge.Cli.Models;
@@ -105,15 +106,33 @@ internal static class GitHubAuthClient
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         using var resp = await http.SendAsync(req, ct);
-        if (!resp.IsSuccessStatusCode)
-            throw new GitHubOAuthException("refresh-token exchange", null, resp.StatusCode);
+        if (!resp.IsSuccessStatusCode && IsTransientRefreshStatus(resp.StatusCode))
+            throw new GitHubApiRequestException("refresh-token exchange", resp.StatusCode);
 
         var result = await resp.Content.ReadFromJsonAsync(
             JsonContext.Default.AccessTokenResponse, ct);
-        if (result?.AccessToken is { Length: > 0 }) return result;
+        if (resp.IsSuccessStatusCode && result?.AccessToken is { Length: > 0 })
+            return result;
+
+        if (IsRefreshCredentialRejection(result?.Error))
+            throw new GitHubRefreshCredentialRejectedException(
+                result!.Error,
+                resp.IsSuccessStatusCode ? null : resp.StatusCode);
 
         throw new GitHubOAuthException(
             "refresh-token exchange",
-            result?.Error ?? "missing_access_token");
+            result?.Error ?? "missing_access_token",
+            resp.IsSuccessStatusCode ? null : resp.StatusCode);
     }
+
+    private static bool IsTransientRefreshStatus(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.RequestTimeout
+            or HttpStatusCode.TooManyRequests
+        || (int)statusCode >= 500;
+
+    private static bool IsRefreshCredentialRejection(string? errorCode) =>
+        errorCode is "bad_refresh_token"
+            or "invalid_grant"
+            or "expired_token"
+            or "revoked_token";
 }

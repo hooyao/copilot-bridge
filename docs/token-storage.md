@@ -32,7 +32,7 @@ directory:
 
 | File | Encrypted plaintext payload | Purpose |
 | --- | --- | --- |
-| `github_credentials.v2.dat` | Source-generated JSON: pinned format version, access token/deadline, optional refresh token/deadline, token type, scope, generation | Authoritative credential record used by current binaries |
+| `github_credentials.v2.dat` | Source-generated JSON: pinned format version, access token/deadline, optional refresh token/deadline, token type, scope, opaque credential id, generation | Authoritative credential record used by current binaries |
 | `github_token.dat` | Raw access-token string | Compatibility mirror readable by older bridge binaries |
 
 The v2 record is always authoritative. Lookup order is v2 primary (next to the
@@ -49,6 +49,13 @@ commits the complete v2 generation before the new credential is exposed. The
 compatibility mirror is updated second; failure there limits downgrade behavior
 but cannot corrupt the current runtime's authoritative state.
 
+Each fresh device login mints an opaque credential id and starts its generation
+counter at one; refresh rotation preserves that id while incrementing the
+generation. Rejection and stale-refresh checks use the pair, not generation alone.
+That distinction lets a running bridge accept a fresh login written by another
+process even though both old and new records use generation one. Pre-release v2
+records without the field remain readable and receive an id on their next refresh.
+
 The submitted refresh token is single-use. If GitHub returns a new access token
 but unexpectedly omits its replacement refresh token, the bridge does not retain
 the spent prior token: it commits the new generation as non-refreshable and logs
@@ -62,8 +69,8 @@ a deadline or refresh token.
 
 Rotating refresh tokens are single-use state, so process-local locking is not
 enough. Refresh acquires a lock file next to the authoritative v2 path, reloads
-the generation after obtaining it, and skips the network call if another process
-already committed a newer credential. A commit writes already-encrypted bytes to
+the credential-id/generation pair after obtaining it, and skips the network call
+if another process already committed a refresh or fresh login. A commit writes already-encrypted bytes to
 a restrictive same-directory temporary file, flushes it, and atomically replaces
 v2. A pre-commit crash leaves the prior complete record readable. On Unix both v2
 and the raw mirror are forced to `0600`.
@@ -72,6 +79,9 @@ A GitHub `401 Bad credentials` triggers at most one refresh-token rotation and
 one replay. If the record is legacy, the refresh token is expired/rejected, or
 the replay is also 401, the bridge preserves the last record and tells the
 operator to run `auth logout` followed by `auth login`; it never refresh-loops.
+Rate limits, server failures, timeouts, and other transient refresh failures do
+not mark the credential rejected: the current record stays committed and the
+bounded timer/request policy may retry later.
 Logout removes both formats at primary and fallback locations plus in-memory
 Copilot leases.
 

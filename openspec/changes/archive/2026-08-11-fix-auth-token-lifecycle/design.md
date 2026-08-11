@@ -62,7 +62,7 @@ The official VS Code Copilot client treats the full GitHub/Copilot lifecycle as 
 
 ### 1. Store a versioned credential record and keep a legacy access-token mirror
 
-Introduce a source-generated `GitHubCredentialRecord` containing a pinned format version, access token, optional access expiry, optional refresh token and refresh expiry, token type, scope, and credential generation. Protect the complete serialized record with the same `ITokenProtector` selected today; only the plaintext shape changes.
+Introduce a source-generated `GitHubCredentialRecord` containing a pinned format version, access token, optional access expiry, optional refresh token and refresh expiry, token type, scope, an opaque credential-instance id, and generation. Fresh login mints an id; rotation preserves it. Protect the complete serialized record with the same `ITokenProtector` selected today; only the plaintext shape changes.
 
 The authoritative v2 record will use a distinct filename next to the existing `github_token.dat`. A successful device login or refresh writes the v2 record and then updates `github_token.dat` as an encrypted raw-access-token compatibility mirror. New binaries prefer v2 at either supported location, then fall back to the legacy primary/fallback lookup. This costs one additional small encrypted file but lets an older binary keep reading the latest access token after downgrade; a single-file in-place format change would make every older binary send JSON as its bearer and fail immediately.
 
@@ -73,7 +73,7 @@ Alternatives considered:
 
 ### 2. Commit credential rotation under a path-scoped cross-process lock
 
-Each credential load records its authoritative path and generation. Refresh acquires an in-process `SemaphoreSlim`, then a bounded file lock associated with that authoritative v2 path. After acquiring both, it reloads the record and skips the network call if another process already committed a newer usable generation. This is required because GitHub refresh tokens rotate and a spent refresh token cannot safely be consumed twice.
+Each credential load records its authoritative path and credential-id/generation pair. Refresh acquires an in-process `SemaphoreSlim`, then a bounded file lock associated with that authoritative v2 path. After acquiring both, it reloads the record and skips the network call if another process already committed a newer rotation or a distinct fresh login. Generation alone is insufficient because every fresh login starts at one. This is required because GitHub refresh tokens rotate and a spent refresh token cannot safely be consumed twice.
 
 Writes use protect-then-atomic-replace in the credential directory: build and encrypt the complete record in memory, write a restrictive temporary file, flush it, and atomically move it over the v2 target. Only after v2 commit does the code refresh the legacy mirror. A mirror failure is logged but does not roll back the authoritative credential. Temporary filenames are explicit and directory-scoped; no broad cleanup is performed.
 
@@ -94,7 +94,7 @@ spent prior token. The bridge commits the new access token as a non-refreshable
 generation and logs only `refreshable=false`; interactive login will be required
 before its next expiry.
 
-`AuthService` remains the sealed facade. Callers do not read files or call OAuth helpers. It obtains a usable GitHub credential before Copilot token exchange, refreshes proactively when a known access expiry is within a five-minute safety window, and performs one reactive refresh when GitHub returns `401 Bad credentials`. A rejected refresh token produces a typed terminal error instructing the operator to logout/login; it never enters a timer or request hot loop.
+`AuthService` remains the sealed facade. Callers do not read files or call OAuth helpers. It obtains a usable GitHub credential before Copilot token exchange, refreshes proactively when a known access expiry is within a five-minute safety window, and performs one reactive refresh when GitHub returns `401 Bad credentials`. Invalid, expired, or revoked refresh credentials produce a typed terminal error instructing the operator to logout/login; rate limits, server errors, and transport failures remain transient and use bounded retry/backoff. Neither class enters a request hot loop.
 
 `auth whoami`, startup authentication, `auth copilot-status`, and debug model discovery use this same facade so their results cannot disagree about whether a stored credential can refresh.
 
@@ -143,7 +143,7 @@ Playground API-contract coverage sends captured request bytes through a scripted
 ## Risks / Trade-offs
 
 - **GitHub may omit refresh fields for some accounts** → Store them as optional; non-expiring and legacy tokens continue to work, while a rejected non-refreshable token produces an actionable login error.
-- **Rotating refresh tokens create multi-process races** → Use a path-scoped cross-process lock, generation re-check, and authoritative atomic v2 commit.
+- **Rotating refresh tokens and fresh logins create multi-process races** → Use a path-scoped cross-process lock, credential-id/generation re-check, and authoritative atomic v2 commit.
 - **The compatibility mirror can lag if its write fails** → The current binary keeps using committed v2 state and logs the downgrade limitation; logout/login remains the recovery for an old binary.
 - **A server could return 401 after partially processing a request** → Rely on HTTP authentication semantics and cap replay at one; never replay other statuses through the auth path.
 - **Clock changes can still affect persisted GitHub UTC deadlines** → Refresh early and recover reactively from one GitHub 401; Copilot deadlines use receipt-relative `refresh_in`.

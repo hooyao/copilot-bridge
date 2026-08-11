@@ -83,7 +83,6 @@ public class CodexBehaviorTests
         await DriveAndRecordAsync(
             "codex-one-shot-auth-401-recovery",
             prompt,
-            expectedCodexVersion: "0.144.1",
             forceCopilotAuthRejectionOnce: true);
     }
 

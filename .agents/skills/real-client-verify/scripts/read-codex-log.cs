@@ -28,10 +28,13 @@
 // we opt this app OUT of CPM below — it is a standalone tool, not part of the build.
 
 #:property ManagePackageVersionsCentrally=false
-#:package Microsoft.Data.Sqlite@9.0.4
+#:package Microsoft.Data.Sqlite.Core@10.0.2
+#:package SQLitePCLRaw.bundle_e_sqlite3@3.0.2
 
 using Microsoft.Data.Sqlite;
 using System.Text;
+
+SQLitePCL.Batteries_V2.Init();
 
 if (args.Length < 1)
 {

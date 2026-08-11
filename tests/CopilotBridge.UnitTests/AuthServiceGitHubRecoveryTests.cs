@@ -89,6 +89,74 @@ public sealed class AuthServiceGitHubRecoveryTests : IDisposable
     }
 
     [Fact]
+    public async Task Fresh_login_same_generation_is_not_rejected_by_old_terminal_state()
+    {
+        var store = CreateStoreWith(VersionedCredential(
+            credentialId: "login-a",
+            accessToken: "ghu_login_a",
+            refreshToken: null,
+            generation: 1));
+        var handler = new SequenceHandler(new Queue<HttpResponseMessage>([
+            Json(HttpStatusCode.Unauthorized, "{\"message\":\"Bad credentials\"}"),
+            Json(HttpStatusCode.OK,
+                "{\"token\":\"copilot_b\",\"expires_at\":2000000000,\"refresh_in\":1500,\"endpoints\":{\"api\":\"https://api.b.test\"}}"),
+        ]));
+        using var auth = CreateAuth(store, handler);
+
+        await Assert.ThrowsAsync<GitHubReauthenticationRequiredException>(() =>
+            auth.GetCopilotTokenAsync(ct: CancellationToken.None).AsTask());
+
+        store.SaveNew(VersionedCredential(
+            credentialId: "login-b",
+            accessToken: "ghu_login_b",
+            refreshToken: null,
+            generation: 1));
+        var lease = await auth.GetCopilotTokenAsync(ct: CancellationToken.None);
+
+        Assert.Equal("copilot_b", lease.Token);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(
+            ["ghu_login_a", "ghu_login_b"],
+            handler.Requests.Select(request => request.AuthorizationParameter));
+    }
+
+    [Fact]
+    public async Task Rejected_old_instance_reloads_fresh_login_without_consuming_its_refresh_token()
+    {
+        var store = CreateStoreWith(VersionedCredential(
+            credentialId: "login-a",
+            accessToken: "ghu_login_a",
+            refreshToken: "ghr_login_a",
+            generation: 1));
+        var handler = new SequenceHandler(
+            new Queue<HttpResponseMessage>([
+                Json(HttpStatusCode.Unauthorized, "{\"message\":\"Bad credentials\"}"),
+                Json(HttpStatusCode.OK,
+                    "{\"token\":\"copilot_b\",\"expires_at\":2000000000,\"refresh_in\":1500,\"endpoints\":{\"api\":\"https://api.b.test\"}}"),
+            ]),
+            requestNumber =>
+            {
+                if (requestNumber != 1) return;
+                store.SaveNew(VersionedCredential(
+                    credentialId: "login-b",
+                    accessToken: "ghu_login_b",
+                    refreshToken: "ghr_login_b",
+                    generation: 1));
+            });
+        using var auth = CreateAuth(store, handler);
+
+        var lease = await auth.GetCopilotTokenAsync(ct: CancellationToken.None);
+
+        Assert.Equal("copilot_b", lease.Token);
+        var requests = handler.Requests.ToArray();
+        Assert.Equal(2, requests.Length);
+        Assert.All(requests, request =>
+            Assert.Contains("copilot_internal/v2/token", request.Uri.AbsoluteUri));
+        Assert.Equal("ghu_login_a", requests[0].AuthorizationParameter);
+        Assert.Equal("ghu_login_b", requests[1].AuthorizationParameter);
+    }
+
+    [Fact]
     public async Task Background_refresh_401_without_refresh_token_is_terminal_and_not_rearmed()
     {
         // Contract: when a scheduled Copilot-bearer refresh discovers that GitHub
@@ -199,6 +267,31 @@ public sealed class AuthServiceGitHubRecoveryTests : IDisposable
         return store;
     }
 
+    private GitHubCredentialStore CreateStoreWith(GitHubCredentialRecord credential)
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var store = new GitHubCredentialStore(
+            Path.Combine(_root, suffix, "primary"),
+            Path.Combine(_root, suffix, "fallback"),
+            new TestProtector());
+        store.SaveNew(credential);
+        return store;
+    }
+
+    private GitHubCredentialRecord VersionedCredential(
+        string credentialId,
+        string accessToken,
+        string? refreshToken,
+        long generation) => new()
+        {
+            AccessToken = accessToken,
+            AccessTokenExpiresAt = _now.AddHours(1),
+            RefreshToken = refreshToken,
+            RefreshTokenExpiresAt = refreshToken is null ? null : _now.AddDays(1),
+            CredentialId = credentialId,
+            Generation = generation,
+        };
+
     private AuthService CreateAuth(
         GitHubCredentialStore store,
         HttpMessageHandler handler,
@@ -225,9 +318,12 @@ public sealed class AuthServiceGitHubRecoveryTests : IDisposable
         Content = new StringContent(body, Encoding.UTF8, "application/json"),
     };
 
-    private sealed class SequenceHandler(Queue<HttpResponseMessage> responses) : HttpMessageHandler
+    private sealed class SequenceHandler(
+        Queue<HttpResponseMessage> responses,
+        Action<int>? onRequest = null) : HttpMessageHandler
     {
         private readonly object _gate = new();
+        private int _requestCount;
         public ConcurrentQueue<CapturedRequest> Requests { get; } = new();
 
         protected override async Task<HttpResponseMessage> SendAsync(
@@ -243,6 +339,7 @@ public sealed class AuthServiceGitHubRecoveryTests : IDisposable
                 : null;
             Requests.Enqueue(new CapturedRequest(
                 request.RequestUri!, request.Headers.Authorization?.Parameter, body, apiVersion));
+            onRequest?.Invoke(Interlocked.Increment(ref _requestCount));
             lock (_gate)
             {
                 if (responses.Count == 0)

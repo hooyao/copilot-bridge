@@ -8,17 +8,25 @@ using Xunit;
 
 namespace CopilotBridge.UnitTests;
 
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class SerilogGlobalLoggerCollection
+{
+    public const string Name = "Process-global Serilog logger";
+}
+
 /// <summary>
 /// Contract: the production logger must replace the bootstrap logger before DI
 /// constructs later hosted services. Otherwise their injected MEL loggers keep
 /// targeting the disposed bootstrap instance and startup/auth events disappear.
 /// </summary>
+[Collection(SerilogGlobalLoggerCollection.Name)]
 public sealed class SerilogHostedServiceOrderingTests
 {
     [Fact]
     public async Task Hosted_service_start_event_reaches_full_rolling_log()
     {
         var canary = $"hosted-start-{Guid.NewGuid():N}";
+        var originalLogger = Log.Logger;
         Log.Logger = SerilogBootstrapper.BuildBootstrap();
 
         try
@@ -53,8 +61,10 @@ public sealed class SerilogHostedServiceOrderingTests
         }
         finally
         {
-            Log.CloseAndFlush();
-            Log.Logger = new LoggerConfiguration().CreateLogger();
+            var testLogger = Log.Logger;
+            Log.Logger = originalLogger;
+            if (!ReferenceEquals(testLogger, originalLogger))
+                (testLogger as IDisposable)?.Dispose();
         }
     }
 

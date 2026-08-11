@@ -18,7 +18,7 @@ internal sealed class GitHubCredentialManager(
     private static readonly TimeSpan RotationLockTimeout = TimeSpan.FromSeconds(15);
 
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
-    private long _terminalRejectedGeneration = long.MinValue;
+    private CredentialVersion? _terminalRejectedVersion;
     private bool _disposed;
 
     public bool IsAuthenticated => store.TryLoad() is not null;
@@ -35,22 +35,22 @@ internal sealed class GitHubCredentialManager(
             return current.Record;
 
         return await RefreshAsync(
-            current.Record.Generation,
+            VersionOf(current.Record),
             force: false,
             trigger: "deadline",
             ct).ConfigureAwait(false);
     }
 
     public ValueTask<GitHubCredentialRecord> RefreshAfterRejectionAsync(
-        long rejectedGeneration,
+        GitHubCredentialRecord rejectedCredential,
         CancellationToken ct = default) =>
-        RefreshAsync(rejectedGeneration, force: true, trigger: "github_401", ct);
+        RefreshAsync(VersionOf(rejectedCredential), force: true, trigger: "github_401", ct);
 
-    public void MarkTerminallyRejected(long generation) =>
-        Volatile.Write(ref _terminalRejectedGeneration, generation);
+    public void MarkTerminallyRejected(GitHubCredentialRecord credential) =>
+        Volatile.Write(ref _terminalRejectedVersion, VersionOf(credential));
 
     public void ClearTerminalRejection() =>
-        Volatile.Write(ref _terminalRejectedGeneration, long.MinValue);
+        Volatile.Write(ref _terminalRejectedVersion, null);
 
     public void Dispose()
     {
@@ -60,7 +60,7 @@ internal sealed class GitHubCredentialManager(
     }
 
     private async ValueTask<GitHubCredentialRecord> RefreshAsync(
-        long observedGeneration,
+        CredentialVersion observedVersion,
         bool force,
         string trigger,
         CancellationToken ct)
@@ -70,7 +70,7 @@ internal sealed class GitHubCredentialManager(
         {
             var current = LoadOrThrow();
             ThrowIfTerminallyRejected(current.Record);
-            if (current.Record.Generation > observedGeneration)
+            if (!VersionOf(current.Record).Equals(observedVersion))
                 return current.Record;
             if (!force && !NeedsRefresh(current.Record, timeProvider.GetUtcNow()))
                 return current.Record;
@@ -89,7 +89,7 @@ internal sealed class GitHubCredentialManager(
             // committed a newer generation while we waited for the file lock.
             current = LoadOrThrow();
             ThrowIfTerminallyRejected(current.Record);
-            if (current.Record.Generation > observedGeneration)
+            if (!VersionOf(current.Record).Equals(observedVersion))
                 return current.Record;
             if (!force && !NeedsRefresh(current.Record, timeProvider.GetUtcNow()))
                 return current.Record;
@@ -126,8 +126,9 @@ internal sealed class GitHubCredentialManager(
                     timeProvider.GetElapsedTime(started).TotalMilliseconds);
                 return refreshed;
             }
-            catch (GitHubOAuthException ex)
+            catch (GitHubRefreshCredentialRejectedException ex)
             {
+                MarkTerminallyRejected(current.Record);
                 log.LogWarning(
                     "GitHub credential refresh trigger={Trigger} outcome=reauth_required "
                     + "status={Status} error_code={ErrorCode}",
@@ -161,10 +162,13 @@ internal sealed class GitHubCredentialManager(
 
     private void ThrowIfTerminallyRejected(GitHubCredentialRecord record)
     {
-        if (record.Generation == Volatile.Read(ref _terminalRejectedGeneration))
+        if (VersionOf(record).Equals(Volatile.Read(ref _terminalRejectedVersion)))
             throw new GitHubReauthenticationRequiredException(
                 "GitHub rejected this credential generation after bounded refresh");
     }
+
+    private static CredentialVersion VersionOf(GitHubCredentialRecord record) =>
+        new(record.CredentialId, record.Generation);
 
     private static bool NeedsRefresh(
         GitHubCredentialRecord record,
@@ -176,4 +180,6 @@ internal sealed class GitHubCredentialManager(
         expiry is null
             ? null
             : Math.Max(0, (long)(expiry.Value - timeProvider.GetUtcNow()).TotalSeconds);
+
+    private sealed record CredentialVersion(string CredentialId, long Generation);
 }

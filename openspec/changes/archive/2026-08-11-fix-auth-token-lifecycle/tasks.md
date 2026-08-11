@@ -49,3 +49,10 @@
 - [x] 6.5 With an affected user, capture only OAuth field presence and expiry durations after login, then verify the bridge crosses the prior failure window without deleting the token file; never collect credential values. *(Verified 2026-08-11: v2, `refreshable=False`, access expiry unknown, no refresh expiry. The same bridge process and unchanged credential files crossed the observed Copilot refresh deadline, old bearer's hard expiry, and the full prior approximately one-hour window; live gpt-5.6 requests remained 200 through 23:05, while `whoami`, Copilot-token exchange, and 39-model discovery all succeeded. Official OAuth documentation and the protocol reference confirm the field shape is a valid non-refreshable response, not a failed exchange.)*
 - [x] 6.6 Publish Windows Native AOT with `build-aot.bat`, verify the release binary and updater packaging still succeed, inspect binary size, and record any size change in `docs/size-history.md`.
 - [x] 6.7 Review final logs, traces, test artifacts, and git diff for credential disclosure, temporary auth files, unrelated changes, and any unverified acceptance item before declaring the fix complete.
+
+## 7. PR Review Follow-ups
+
+- [x] 7.1 Key terminal rejection and stale-refresh checks on a persisted credential-instance identity plus generation so a fresh login cannot collide with the rejected credential.
+- [x] 7.2 Classify transient OAuth refresh failures separately from invalid/expired/revoked refresh credentials, and mark genuine proactive rejection terminal without repeated network use.
+- [x] 7.3 Keep the auth-replay ClientBehavior case on the shared reviewed Codex version and re-run the real-client verdict. *(Verified with Codex 0.147.0-alpha.6.6: three completed custom-exec call/output loops, one genuine bearer refresh/replay, canary present, no abort, SQLite router fatal=0 and ERROR=0.)*
+- [x] 7.4 Isolate the process-global Serilog ordering contract from parallel tests and restore the original logger after the test.

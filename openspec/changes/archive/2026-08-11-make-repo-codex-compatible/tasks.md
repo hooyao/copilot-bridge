@@ -18,3 +18,7 @@
 
 - [x] 4.1 Run the focused compatibility contracts and the complete CI-safe unit suite.
 - [x] 4.2 Audit the intended Git diff for plaintext credentials, local `.codex/config.toml`, unrelated untracked files, and residual semantic drift between mirrored skills.
+
+## 5. PR Review Follow-ups
+
+- [x] 5.1 Keep the mirrored real-client SQLite reader on a supported .NET 10 Core provider plus SQLitePCLRaw 3.x bundle; verify the reader runs without the vulnerable 2.1.x package warning.

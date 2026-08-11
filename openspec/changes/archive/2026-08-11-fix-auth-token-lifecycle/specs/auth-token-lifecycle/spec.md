@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Complete GitHub OAuth credential state is preserved securely
-The system SHALL preserve the access token and every expiry and rotating refresh-token field returned by GitHub device authorization in a versioned credential record protected by the existing OS-specific token protector. Credential serialization SHALL use the source-generated JSON context, and no credential field SHALL be written in plaintext.
+The system SHALL preserve the access token, every expiry and rotating refresh-token field returned by GitHub device authorization, and an opaque credential-instance identity in a versioned credential record protected by the existing OS-specific token protector. A fresh device login SHALL mint a new identity while refresh rotation SHALL preserve it. Credential serialization SHALL use the source-generated JSON context, and no credential field SHALL be written in plaintext.
 
 #### Scenario: Device flow returns a refreshable credential
 - **WHEN** GitHub completes device authorization with `access_token`, `expires_in`, `refresh_token`, and `refresh_token_expires_in`
@@ -10,6 +10,10 @@ The system SHALL preserve the access token and every expiry and rotating refresh
 #### Scenario: Device flow returns a non-expiring credential
 - **WHEN** GitHub completes device authorization without expiry or refresh-token fields
 - **THEN** the system persists the access token without inventing expiry metadata and continues to support it as a non-refreshable credential
+
+#### Scenario: Fresh login reuses the initial generation number
+- **WHEN** interactive device login replaces an older credential whose generation is also the initial value
+- **THEN** the new record has a distinct credential-instance identity so running processes cannot confuse it with the rejected older credential
 
 ### Requirement: Existing credential files remain usable
 The system SHALL load existing encrypted raw-token files without requiring an immediate login, SHALL prefer a valid versioned credential when both formats exist, and SHALL remove every supported credential representation on logout. A legacy raw token SHALL be treated as having unknown expiry and no refresh capability.
@@ -45,6 +49,10 @@ The system SHALL refresh a GitHub access token with the OAuth refresh-token gran
 - **WHEN** a refresh grant returns a new access token without the replacement refresh token that GitHub's rotation contract requires
 - **THEN** the system commits the new access-token generation as non-refreshable and does not retain the spent prior refresh token
 
+#### Scenario: Refresh service is transiently unavailable
+- **WHEN** a refresh attempt receives a rate-limit response, server error, timeout, or other transient transport failure
+- **THEN** the system preserves the committed credential, does not require interactive login, and allows the bounded timer/request retry policy to try again later
+
 ### Requirement: GitHub 401 recovery is bounded and classified
 The system SHALL treat a GitHub `401 Bad credentials` response as rejection of the access token used for that call. If a refresh token is available, it SHALL perform at most one credential refresh and one replay of the failed GitHub call; otherwise it SHALL report that interactive GitHub login is required.
 
@@ -74,6 +82,10 @@ The system SHALL single-flight refreshes within a process and coordinate rotatin
 #### Scenario: Process stops during rotation
 - **WHEN** writing or replacing the refreshed credential fails before commit
 - **THEN** the previously committed credential file remains readable and no partially written record becomes authoritative
+
+#### Scenario: Fresh login replaces the observed generation
+- **WHEN** a process reports rejection for credential instance A after another process has committed fresh-login instance B with the same generation number
+- **THEN** the process reloads and uses instance B without rejecting it or consuming its refresh token
 
 ### Requirement: Copilot bearer and endpoint form one lease
 The system SHALL publish each Copilot bearer together with its API base URL, local refresh deadline, hard-expiry diagnostic, and generation as one immutable lease. Callers SHALL never combine a token from one lease with the endpoint from another.
