@@ -148,13 +148,13 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             // response stages + the outbound T4 adapter then operate on IR shape.
             //
             // Keepalive is selected by the DOWNSTREAM CLIENT PROTOCOL, not by this
-            // (upstream) strategy: routing sends a `/cc` request to a Responses model
-            // (the CC→gpt route), and that client is Claude Code with the same idle
-            // watchdogs a native `/cc` stream faces. Scoping injection to the
-            // passthrough strategy would leave that supported route exposed. A native
-            // `/codex` client gets no keepalive — what a Responses client accepts as
-            // progress has not been probed, and T4 renders this IR back to Responses.
-            var keepAliveSeconds = IsAnthropicClientRoute(ctx.Request.Path)
+            // (upstream) strategy: both supported streaming clients have event-level
+            // idle watchdogs. Claude Code discards Anthropic ping events; Codex resets
+            // its parsed-event idle timer before ignoring the same complete data event
+            // as an unknown Responses type. Both routes therefore share the ONE
+            // StreamIdleReader deadline calculation below; T4 renders the native Codex
+            // ping without admitting it into the upstream-event fidelity ledger.
+            var keepAliveSeconds = IsStreamingClientRoute(ctx.Request.Path)
                 ? _timeout.KeepAliveIntervalSeconds
                 : 0;
             var preserveNativeEvents = ctx.Request.Path.StartsWith(
@@ -234,20 +234,19 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
     /// <c>message_delta</c> → <c>message_stop</c>). No <c>[DONE]</c> to handle.
     /// </summary>
     /// <summary>
-    /// True when the DOWNSTREAM client speaks the Anthropic protocol — i.e. the request
-    /// arrived on a <c>/cc</c> route — regardless of which upstream backend routing
-    /// selected for it.
+    /// True when the request arrived on one of the two downstream streaming protocol
+    /// routes this bridge owns, regardless of which upstream backend routing selected.
     /// </summary>
     /// <remarks>
     /// This strategy is chosen by upstream vendor (<c>CopilotResponses</c>), which does
-    /// NOT imply a Codex client: the CC→gpt route sends a Claude Code request to a
-    /// Responses model, and that client has exactly the idle watchdogs a native
-    /// <c>/cc</c> stream faces. Keepalive eligibility therefore keys on the inbound
-    /// route, not on the strategy. Endpoints register <c>/cc/v1/messages</c> and
-    /// <c>/codex/responses</c>, so the prefix is an unambiguous protocol signal.
+    /// not identify the downstream client: the CC→gpt route and native Codex both reach
+    /// it. Eligibility therefore keys on the inbound route, not the strategy. Endpoints
+    /// register <c>/cc/v1/messages</c> and <c>/codex/responses</c>, so the prefixes are
+    /// unambiguous protocol signals.
     /// </remarks>
-    private static bool IsAnthropicClientRoute(string path) =>
-        path.StartsWith("/cc/", StringComparison.OrdinalIgnoreCase);
+    private static bool IsStreamingClientRoute(string path) =>
+        path.StartsWith("/cc/", StringComparison.OrdinalIgnoreCase)
+        || path.StartsWith("/codex/", StringComparison.OrdinalIgnoreCase);
 
     private async IAsyncEnumerable<SseItem<string>> TranslateStreamAsync(
         HttpResponseMessage resp,
@@ -277,10 +276,10 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             // it must emit Anthropic event:error or Responses response.failed.
             // Budget <= 0 ⇒ the original loop (parser driven by `ct` only).
             //
-            // keepAliveSeconds is non-zero ONLY for an Anthropic-protocol client
-            // (the CC→gpt route): the IR is Anthropic-shaped here, so a `ping` is a
-            // valid event to interleave and reaches Claude Code unchanged through T4's
-            // identity stream. A native /codex client gets 0 — see ForwardAsync.
+            // keepAliveSeconds is shared by both downstream streaming protocols. The IR
+            // is Anthropic-shaped here, so the bridge-owned ping can be interleaved once
+            // over this single pending read. Claude Code receives it unchanged; native
+            // Codex T4 recognizes its identity and emits it before fidelity accounting.
             var keepAlive = TimeSpan.FromSeconds(keepAliveSeconds);
             var needsReader = streamIdleSeconds > 0 || keepAliveSeconds > 0;
             using var readCts = needsReader

@@ -71,7 +71,21 @@ public sealed class AuthService : IAuthService, IDisposable
             loggerFactory.CreateLogger<GitHubCredentialManager>());
     }
 
-    public bool IsAuthenticated => _githubCredentials.IsAuthenticated;
+    public bool IsAuthenticated
+    {
+        get
+        {
+#if DEBUG
+            // Deterministic behavior servers never contact GitHub or Copilot. Treat
+            // the Debug-only test upstream as authenticated so a real-client harness
+            // does not enter device flow merely to obtain a credential it cannot use.
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(
+                    "COPILOT_BRIDGE_TEST_UPSTREAM_BASE_URL")))
+                return true;
+#endif
+            return _githubCredentials.IsAuthenticated;
+        }
+    }
 
     public string TokenLocation => _githubCredentials.TokenLocation;
 
@@ -93,6 +107,11 @@ public sealed class AuthService : IAuthService, IDisposable
 
     public async ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default)
     {
+#if DEBUG
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(
+                "COPILOT_BRIDGE_TEST_UPSTREAM_BASE_URL")))
+            return "behavior-test-github-token";
+#endif
         if (_credentialStore.TryLoad() is not null)
             return (await _githubCredentials.GetUsableAsync(ct).ConfigureAwait(false)).AccessToken;
 

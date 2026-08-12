@@ -76,22 +76,80 @@ public class RequestAuditCodexSeamTests
         return resp;
     }
 
+    private static HttpResponseMessage StreamingResponse(Stream body)
+    {
+        var resp = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(body) };
+        resp.Content.Headers.TryAddWithoutValidation("Content-Type", "text/event-stream");
+        return resp;
+    }
+
+    private sealed class SilentGapStream(byte[] prefix, TimeSpan silence, byte[] suffix) : Stream
+    {
+        private int _position;
+        private bool _waited;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => _position; set => throw new NotSupportedException(); }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (_position < prefix.Length)
+            {
+                var count = Math.Min(buffer.Length, prefix.Length - _position);
+                prefix.AsSpan(_position, count).CopyTo(buffer.Span);
+                _position += count;
+                return count;
+            }
+            if (!_waited)
+            {
+                await Task.Delay(silence, cancellationToken);
+                _waited = true;
+            }
+            var suffixOffset = _position - prefix.Length;
+            if (suffixOffset >= suffix.Length) return 0;
+            var suffixCount = Math.Min(buffer.Length, suffix.Length - suffixOffset);
+            suffix.AsSpan(suffixOffset, suffixCount).CopyTo(buffer.Span);
+            _position += suffixCount;
+            return suffixCount;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
     private const string CodexRequest =
         """{"model":"gpt-5.3-codex","instructions":"sys","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"codex-probe"}]}],"reasoning":{"effort":"high"}}""";
 
     private sealed record Result(List<BridgeIoPayload> Audits, byte[]? PostedBody);
 
-    private static async Task<Result> RunCodex(string requestJson, bool tracingEnabled)
+    private static async Task<Result> RunCodex(
+        string requestJson,
+        bool tracingEnabled,
+        HttpResponseMessage? upstreamResponse = null,
+        UpstreamTimeoutOptions? timeouts = null)
     {
         var recorder = new RecordingLoggerProvider();
         using var loggerFactory = LoggerFactory.Create(b => b.AddProvider(recorder));
         var audit = TestAudit.Create(tracingEnabled, loggerFactory.CreateLogger<MessagesRequest>());
 
         var bridgeCtx = new BridgeContext<MessagesRequest>();
-        var client = new StubClient(BufferedResponse(Encoding.UTF8.GetBytes("""{"type":"response","status":"completed"}""")));
+        var client = new StubClient(upstreamResponse
+            ?? BufferedResponse(Encoding.UTF8.GetBytes("""{"type":"response","status":"completed"}""")));
         var strategy = new CopilotResponsesStrategy(
             client, new CodexModelProfileCatalog(), bridgeCtx, audit,
-            Options.Create(new UpstreamTimeoutOptions { FirstByteTimeoutSeconds = 0, StreamIdleTimeoutSeconds = 0 }),
+            Options.Create(timeouts ?? new UpstreamTimeoutOptions
+            {
+                FirstByteTimeoutSeconds = 0,
+                StreamIdleTimeoutSeconds = 0,
+                KeepAliveIntervalSeconds = 0,
+            }),
             NullLogger<CopilotResponsesStrategy>.Instance);
 
         var http = new DefaultHttpContext();
@@ -188,5 +246,49 @@ public class RequestAuditCodexSeamTests
     {
         var r = await RunCodex(CodexRequest, tracingEnabled: false);
         Assert.Empty(r.Audits);
+    }
+
+    /// <summary>
+    /// Contract: the native Codex edge records a bridge keepalive as injected while
+    /// the raw upstream artifact stays byte-faithful. This drives the real endpoint,
+    /// T1/T2/T3, response inspection seam, T4, writer flush, and audit capture.
+    /// </summary>
+    [Fact]
+    public async Task Codex_StreamingKeepAlive_IsMarkedInjected_AndAbsentFromRawUpstream()
+    {
+        const string streamingRequest =
+            """{"model":"gpt-5.6-sol","instructions":"sys","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"wait"}]}],"stream":true}""";
+        var prefix = Encoding.UTF8.GetBytes(
+            "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":1,"
+            + "\"response\":{\"id\":\"resp_audit_ping\",\"model\":\"gpt-5.6-sol\"}}\n\n");
+        var suffix = Encoding.UTF8.GetBytes(
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,"
+            + "\"response\":{\"id\":\"resp_audit_ping\",\"status\":\"completed\",\"output\":[]}}\n\n");
+        var upstream = new SilentGapStream(prefix, TimeSpan.FromMilliseconds(2200), suffix);
+
+        var result = await RunCodex(
+            streamingRequest,
+            tracingEnabled: true,
+            StreamingResponse(upstream),
+            new UpstreamTimeoutOptions
+            {
+                FirstByteTimeoutSeconds = 0,
+                StreamIdleTimeoutSeconds = 30,
+                KeepAliveIntervalSeconds = 1,
+            });
+
+        var inbound = result.Audits.Single(a => a.Kind == "inbound-resp");
+        var pings = inbound.Events!.Where(e => e.EventType == "ping").ToList();
+        Assert.NotEmpty(pings);
+        Assert.All(pings, ping =>
+        {
+            Assert.True(ping.Injected);
+            Assert.Equal("{\"type\":\"ping\"}", ping.Data);
+        });
+
+        var rawUpstream = BodyText(result.Audits.Single(a => a.Kind == "upstream-resp"));
+        Assert.DoesNotContain("\"type\":\"ping\"", rawUpstream, StringComparison.Ordinal);
+        Assert.Contains("response.created", rawUpstream, StringComparison.Ordinal);
+        Assert.Contains("response.completed", rawUpstream, StringComparison.Ordinal);
     }
 }

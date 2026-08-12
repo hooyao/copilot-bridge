@@ -241,6 +241,79 @@ public class CodexBehaviorTests
     }
 
     /// <summary>
+    /// Native Codex keepalive behavior: the deterministic Responses upstream emits
+    /// <c>response.created</c>, stays byte-silent for longer than this run's isolated
+    /// Codex parsed-event watchdog, then resumes with a custom <c>exec</c> call. The
+    /// exec performs two nested shell operations and the upstream returns final text
+    /// only after Codex echoes the actual tool output on the next request.
+    /// </summary>
+    [Fact]
+    public async Task Codex_SilentResponsesTurn_SurvivesViaSharedKeepaliveDeadline_ForVerdict()
+    {
+        const string caseId = "codex-native-keepalive-survives-silence";
+        const string canary = "codex-keepalive-canary-86317";
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        using var codexHome = ClientBehaviorSupport.NewWorkDir(caseId + "-home");
+
+        // 7s exceeds Codex's isolated 3s parsed-event watchdog. The bridge pings at
+        // 1s and retains authority with a 20s upstream-idle deadline.
+        var silence = TimeSpan.FromSeconds(7);
+        await using var upstream = SilentResponsesUpstreamServer.Start(work.Path, canary, silence);
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.PassthroughTestUpstream,
+            TestUpstreamBaseUrl: upstream.BaseUrl,
+            StreamIdleTimeoutSeconds: 20,
+            KeepAliveIntervalSeconds: 1));
+
+        var prompt =
+            "Execute the requested multi-step tool task: write the supplied canary to a file, "
+            + "read the file back with a separate tool operation, then report the exact canary and stop.";
+        var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: prompt,
+            Model: ClientBehaviorSupport.LatestGpt,
+            Timeout: TimeSpan.FromMinutes(3),
+            CodexHome: codexHome.Path,
+            WorkingDirectory: work.Path,
+            ExpectedCodexVersion: ClientBehaviorSupport.CodexVersion,
+            StreamIdleTimeoutMs: 3_000));
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "codex",
+                Route: "/codex",
+                Model: ClientBehaviorSupport.LatestGpt,
+                Scenario: ServeScenario.PassthroughTestUpstream,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: result.DispatchLogPath,
+                DispatchSinceUnix: result.StartedUnixSeconds,
+                DispatchUntilUnix: result.EndedUnixSeconds,
+                Prompt: prompt,
+                DispatchThreadId: result.ThreadId),
+            result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
+            out _, out _);
+
+        _output.WriteLine(
+            $"silent responses upstream={upstream.BaseUrl} silence={silence} "
+            + $"sampling={upstream.SamplingRequests} tool-output={upstream.ToolOutputRequests}");
+        _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
+        _output.WriteLine(
+            $"dispatch log={result.DispatchLogPath} thread={result.ThreadId} "
+            + $"window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine(
+            "[verdict] require injected:true ping events across the 7s silence, a native "
+            + "custom_tool_call plus matching output on the next request, the exact canary, "
+            + "and zero idle-timeout/router-fatal rows in Codex's own SQLite log.");
+
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(
+            result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
+    /// <summary>
     /// Shared driver: boot a real bridge subprocess (passthrough), run real Codex
     /// app-server on the prompt at the latest gpt id, and write its isolated SQLite
     /// dispatch evidence to the run manifest. The xUnit layer asserts ONLY the harness

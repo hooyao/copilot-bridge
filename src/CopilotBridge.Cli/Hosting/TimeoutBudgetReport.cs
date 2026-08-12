@@ -6,8 +6,8 @@ namespace CopilotBridge.Cli.Hosting;
 
 /// <summary>
 /// Reports, once at startup, which timeout bounds apply to a long-thinking turn —
-/// per phase, from both the bridge and the client — and warns when Claude Code's
-/// configuration would abort before the bridge's own budget applies.
+/// per phase, from the bridge, Claude Code, and Codex — and warns when an
+/// unprotected client watchdog would abort before the bridge's own budget applies.
 /// </summary>
 /// <remarks>
 /// <para>The operator otherwise has to derive this from two separate config files,
@@ -20,10 +20,10 @@ namespace CopilotBridge.Cli.Hosting;
 /// client's whole-request cap is wall-clock across everything. A single "effective"
 /// minimum would be wrong — with first-byte 60 s and stream-idle 600 s it would
 /// report 60 s for a turn whose real exposure after headers is 600 s.</para>
-/// <para><b>It reports what it can see.</b> Only the GLOBAL client settings are
-/// readable from startup — a project-scoped <c>settings.local.json</c> belongs to
-/// the Claude session's directory, which a bridge serving many repositories cannot
-/// identify.</para>
+/// <para><b>It reports what it can see.</b> Only GLOBAL client settings are readable
+/// from startup: Claude Code's project-scoped <c>settings.local.json</c> belongs to
+/// the session's directory, while Codex's active global provider lives in
+/// <c>config.toml</c>.</para>
 /// </remarks>
 internal static class TimeoutBudgetReport
 {
@@ -41,9 +41,16 @@ internal static class TimeoutBudgetReport
     /// </param>
     public static void Emit(
         UpstreamTimeoutOptions budgets, ILogger log, string? settingsPathOverride = null,
-        bool wholeResponseBuffering = false)
+        bool wholeResponseBuffering = false,
+        string? codexConfigPathOverride = null)
     {
         var snapshot = ClaudeCodeTimeoutReader.Read(settingsPathOverride);
+        var codex = CodexTimeoutReader.Read(codexConfigPathOverride);
+        var keepAliveCanReach = KeepAliveCanReach(budgets, wholeResponseBuffering);
+        var claudeKeepAliveEffective = KeepAliveEffectiveFor(
+            budgets, keepAliveCanReach, snapshot.StreamIdle);
+        var codexKeepAliveEffective = KeepAliveEffectiveFor(
+            budgets, keepAliveCanReach, codex.StreamIdle);
 
         // One table, not a paragraph per bound. Each row is a phase, and the row
         // says which side ends the turn in that phase — the question an operator
@@ -51,26 +58,43 @@ internal static class TimeoutBudgetReport
         // startup log is the wrong place to explain them.
         log.LogInformation(
             "Timeouts (what ends a turn):\n"
-            + "  idle gap        bridge {BridgeIdle,-9} client {ClientIdle,-9} -> {IdleWinner}\n"
+            + "  idle gap (Claude) bridge {BridgeIdle,-9} client {ClientIdle,-9} -> {ClaudeIdleWinner}\n"
+            + "  Codex idle gap   bridge {BridgeIdle,-9} client {CodexIdle,-9} -> {CodexIdleWinner}\n"
             + "  first byte      bridge {BridgeFirstByte,-9} client {ClientFirstByte,-9} -> {FirstByteWinner}\n"
-            + "  whole request   bridge {BridgeWhole,-9} client {ClientWhole,-9} -> {WholeWinner}"
+            + "  whole request (Claude) bridge {BridgeWhole,-9} client {ClientWhole,-9} -> {WholeWinner}"
             + "{Notes}",
             Describe(budgets.StreamIdleTimeoutSeconds),
             DescribeClient(snapshot.StreamIdle),
-            Winner(budgets.StreamIdleTimeoutSeconds, snapshot.StreamIdle),
+            IdleWinner(
+                budgets.StreamIdleTimeoutSeconds,
+                snapshot.StreamIdle,
+                claudeKeepAliveEffective),
+            Describe(budgets.StreamIdleTimeoutSeconds),
+            DescribeClient(codex.StreamIdle),
+            IdleWinner(
+                budgets.StreamIdleTimeoutSeconds,
+                codex.StreamIdle,
+                codexKeepAliveEffective),
             Describe(budgets.FirstByteTimeoutSeconds),
             None,
             Describe(budgets.FirstByteTimeoutSeconds),
             None,
             DescribeClient(snapshot.RequestTimeout),
             DescribeClient(snapshot.RequestTimeout),
-            BuildNotes(snapshot, budgets, wholeResponseBuffering));
+            BuildNotes(
+                snapshot,
+                codex,
+                budgets,
+                wholeResponseBuffering,
+                keepAliveCanReach,
+                claudeKeepAliveEffective,
+                codexKeepAliveEffective));
 
         // Warnings stay separate: they are the only lines an operator must act on,
         // so they must not be buried in the table above.
         if (!snapshot.Readable)
         {
-            WarnIfBudgetExceedsClientMaximum(log, budgets);
+            WarnIfBudgetExceedsClientMaximum(log, budgets, claudeKeepAliveEffective);
             return;
         }
 
@@ -80,35 +104,49 @@ internal static class TimeoutBudgetReport
         // undercut is unavoidable, and WarnIfBudgetExceedsClientMaximum gives the
         // only advice that works (lower the budget). Emitting both would hand the
         // operator two contradictory instructions, one of them impossible.
-        if (!ClaudeCodeTimeoutPolicy.StreamIdleBudgetExceedsClientMaximum(
+        if (!claudeKeepAliveEffective
+            && !ClaudeCodeTimeoutPolicy.StreamIdleBudgetExceedsClientMaximum(
                 budgets.StreamIdleTimeoutSeconds))
         {
             WarnIfUndercut(
                 log, snapshot.StreamIdle, budgets.StreamIdleTimeoutSeconds,
                 "stream-idle", nameof(UpstreamTimeoutOptions.StreamIdleTimeoutSeconds));
         }
-        WarnIfBudgetExceedsClientMaximum(log, budgets);
+        WarnIfBudgetExceedsClientMaximum(log, budgets, claudeKeepAliveEffective);
     }
 
     /// <summary>Placeholder for a cell where that side imposes no bound on the phase.</summary>
     private const string None = "-";
 
     /// <summary>
-    /// Which side ends the turn in the idle-gap phase: the shorter of the two, since
-    /// both timers run over the same interval there. (The other rows have only one
-    /// side, so their winner is that side.)
+    /// Which side ends the turn in the idle-gap phase. With effective keepalive the
+    /// client timer is repeatedly refreshed and the bridge budget owns the decision;
+    /// without it, the shorter active numeric bound wins.
     /// </summary>
-    private static string Winner(int bridgeSeconds, ClientTimeoutValue client)
+    private static string IdleWinner(
+        int bridgeSeconds,
+        ClientTimeoutValue client,
+        bool keepAliveEffective)
     {
         var bridgeMs = bridgeSeconds > 0 ? (long)bridgeSeconds * 1000L : (long?)null;
         var clientMs = client.EffectiveMs;
 
+        if (keepAliveEffective)
+        {
+            return bridgeMs is { } bounded
+                ? $"bridge {FormatMs(bounded)} (keepalive)"
+                : "no bound (keepalive)";
+        }
+
         return (bridgeMs, clientMs) switch
         {
-            (null, null) => "no bound",
-            (not null, null) => client.IsUnknown ? $"{FormatMs(bridgeMs.Value)}?" : FormatMs(bridgeMs.Value),
-            (null, not null) => FormatMs(clientMs!.Value),
-            _ => FormatMs(Math.Min(bridgeMs!.Value, clientMs!.Value)),
+            (null, null) => client.IsUnknown ? "unknown" : "no bound",
+            (not null, null) => client.IsUnknown
+                ? "unknown"
+                : $"bridge {FormatMs(bridgeMs.Value)}",
+            (null, not null) => $"client {FormatMs(clientMs!.Value)}",
+            _ when bridgeMs!.Value <= clientMs!.Value => $"bridge {FormatMs(bridgeMs.Value)}",
+            _ => $"client {FormatMs(clientMs!.Value)}",
         };
     }
 
@@ -117,21 +155,44 @@ internal static class TimeoutBudgetReport
     /// they apply. Anything an operator does not need at startup stays in the docs.
     /// </summary>
     private static string BuildNotes(
-        ClientTimeoutSnapshot snapshot, UpstreamTimeoutOptions budgets, bool wholeResponseBuffering)
+        ClientTimeoutSnapshot snapshot,
+        CodexTimeoutSnapshot codex,
+        UpstreamTimeoutOptions budgets,
+        bool wholeResponseBuffering,
+        bool keepAliveCanReach,
+        bool claudeKeepAliveEffective,
+        bool codexKeepAliveEffective)
     {
-        var keepAlive = DescribeKeepAlive(budgets, wholeResponseBuffering);
+        var keepAlive = DescribeKeepAlive(
+            budgets,
+            wholeResponseBuffering,
+            keepAliveCanReach,
+            snapshot.StreamIdle,
+            claudeKeepAliveEffective,
+            codex.StreamIdle,
+            codexKeepAliveEffective);
+        var codexNote = codex.Readable
+            ? $"\n  Codex client value from {codex.ConfigPath}"
+            : $"\n  Codex client value unknown ({codex.Reason})";
 
         if (!snapshot.Readable)
         {
-            return keepAlive
-                   + $"\n  client values unknown ({snapshot.Reason}) — a shorter client watchdog"
+            return keepAlive + codexNote
+                   + $"\n  Claude client values unknown ({snapshot.Reason}) — a shorter client watchdog"
                    + "\n  could end a turn before any bridge budget";
         }
 
-        var notes = keepAlive + "\n  client values take effect on Claude Code's next restart";
+        var notes = keepAlive + codexNote
+                    + "\n  Claude client values take effect on Claude Code's next restart";
+        if (!snapshot.StreamIdle.IsExplicit
+            || !snapshot.RequestTimeout.IsExplicit
+            || (codex.Readable && !codex.StreamIdle.IsExplicit))
+        {
+            notes += "\n  * = built-in client default (not explicitly configured)";
+        }
         if (!snapshot.StreamIdle.IsExplicit || !snapshot.RequestTimeout.IsExplicit)
         {
-            notes += "\n  * = client default (not configured); run `" + ConfigCommand + "` to set it";
+            notes += "\n  run `" + ConfigCommand + "` to write Claude Code's managed values";
         }
         return notes;
     }
@@ -151,7 +212,14 @@ internal static class TimeoutBudgetReport
     ///   stream to inject into at all.</item>
     /// </list>
     /// </summary>
-    private static string DescribeKeepAlive(UpstreamTimeoutOptions budgets, bool wholeResponseBuffering)
+    private static string DescribeKeepAlive(
+        UpstreamTimeoutOptions budgets,
+        bool wholeResponseBuffering,
+        bool keepAliveCanReach,
+        ClientTimeoutValue claudeIdle,
+        bool claudeKeepAliveEffective,
+        ClientTimeoutValue codexIdle,
+        bool codexKeepAliveEffective)
     {
         if (budgets.KeepAliveIntervalSeconds <= 0)
         {
@@ -172,19 +240,50 @@ internal static class TimeoutBudgetReport
                    + $"\n  stream-idle budget ({budgets.StreamIdleTimeoutSeconds}s), so the budget always fires first";
         }
 
-        return $"\n  keepalive: bridge sends ping every {budgets.KeepAliveIntervalSeconds}s while upstream is"
-               + "\n  silent, so the client's idle watchdogs should not fire";
+        if (!keepAliveCanReach)
+            throw new InvalidOperationException("Keepalive reachability disagrees with its report state.");
+
+        return $"\n  keepalive: bridge sends ping every {budgets.KeepAliveIntervalSeconds}s while upstream is silent"
+               + $"\n  protection: Claude {Protection(claudeIdle, claudeKeepAliveEffective)};"
+               + $" Codex {Protection(codexIdle, codexKeepAliveEffective)}";
+    }
+
+    private static bool KeepAliveCanReach(
+        UpstreamTimeoutOptions budgets,
+        bool wholeResponseBuffering) =>
+        budgets.KeepAliveIntervalSeconds > 0
+        && !wholeResponseBuffering
+        && (budgets.StreamIdleTimeoutSeconds <= 0
+            || budgets.KeepAliveIntervalSeconds < budgets.StreamIdleTimeoutSeconds);
+
+    private static bool KeepAliveEffectiveFor(
+        UpstreamTimeoutOptions budgets,
+        bool keepAliveCanReach,
+        ClientTimeoutValue client) =>
+        keepAliveCanReach
+        && client.EffectiveMs is { } clientMs
+        && (long)budgets.KeepAliveIntervalSeconds * 1000L < clientMs;
+
+    private static string Protection(ClientTimeoutValue client, bool effective)
+    {
+        if (client.IsUnknown) return "unknown";
+        return effective
+            ? "active"
+            : $"inactive (watchdog {FormatMs(client.EffectiveMs!.Value)} precedes ping)";
     }
 
     /// <summary>
-    /// Warn when a bridge budget is larger than any value the client will honor. In
-    /// that state the derived client value is necessarily SHORTER than the budget,
-    /// so the client fires first no matter how often the operator re-runs the config
-    /// command — the only fix is lowering the budget, which the warning must say
-    /// instead of pointing at a remedy that cannot work.
+    /// Warn when a bridge budget is larger than any value Claude Code will honor and
+    /// keepalive is not protecting the live stream. In that state the derived client
+    /// value is necessarily shorter, so the only fix is lowering the budget.
     /// </summary>
-    private static void WarnIfBudgetExceedsClientMaximum(ILogger log, UpstreamTimeoutOptions budgets)
+    private static void WarnIfBudgetExceedsClientMaximum(
+        ILogger log,
+        UpstreamTimeoutOptions budgets,
+        bool keepAliveEffective)
     {
+        if (keepAliveEffective) return;
+
         if (ClaudeCodeTimeoutPolicy.StreamIdleBudgetExceedsClientMaximum(
                 budgets.StreamIdleTimeoutSeconds))
         {

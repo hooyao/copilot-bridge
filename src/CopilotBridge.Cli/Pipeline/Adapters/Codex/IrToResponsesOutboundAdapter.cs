@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Models.Anthropic.Request;
+using CopilotBridge.Cli.Pipeline.Strategies;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.Extensions.Logging;
 
@@ -344,6 +345,17 @@ internal sealed class AnthropicToResponsesStream
 
     public IEnumerable<SseItem<string>> Translate(SseItem<string> irEvt)
     {
+        // A downstream keepalive is bridge activity, not an upstream Responses event.
+        // Pass it through before native-mode semantic accumulation so it resets
+        // Codex's parsed-event idle watchdog without consuming a ledger ordinal or
+        // making the next genuine fidelity group look mutated. Reference identity is
+        // deliberate: an upstream event with identical JSON still belongs to T3/T4.
+        if (StreamKeepAlive.IsInjected(irEvt))
+        {
+            yield return irEvt;
+            yield break;
+        }
+
         if (irEvt.EventType == NativeResponsesEventCarrier.BeginType)
         {
             _nativeMode = true;

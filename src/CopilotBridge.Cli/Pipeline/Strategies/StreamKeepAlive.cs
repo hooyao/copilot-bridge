@@ -3,7 +3,7 @@ using System.Net.ServerSentEvents;
 namespace CopilotBridge.Cli.Pipeline.Strategies;
 
 /// <summary>
-/// The downstream keepalive the bridge injects into an Anthropic-protocol stream
+/// The downstream keepalive the bridge injects into an Anthropic or Responses stream
 /// while upstream is silent, plus the means to recognize one again downstream.
 /// </summary>
 /// <remarks>
@@ -19,6 +19,12 @@ namespace CopilotBridge.Cli.Pipeline.Strategies;
 /// then <c>continue</c>s on <c>type === "ping"</c>, so a ping re-arms both idle
 /// watchdogs while touching no content block, no usage accumulation and no stall
 /// statistics; the UI layer discards it outright. See <c>docs/timeout-chain.md</c>.</para>
+/// <para>Verified inert in Codex 0.144.1 and current source: its 300 s default
+/// <c>stream_idle_timeout</c> wraps each parsed <c>eventsource().next()</c>; a complete
+/// <c>data: {"type":"ping"}</c> event completes that wait, then the Responses
+/// dispatcher ignores the unknown type. A comment-only <c>: ping</c> is not equivalent:
+/// the event-source parser discards comments and yields no event, so the timer keeps
+/// running.</para>
 /// <para>Lives here rather than on a strategy so the response edge can mark injected
 /// events for the trace without depending on which strategy produced the stream.</para>
 /// </remarks>
@@ -31,7 +37,10 @@ internal static class StreamKeepAlive
     /// </summary>
     private const string PingData = "{\"type\":\"ping\"}";
 
-    /// <summary>A synthetic Anthropic <c>ping</c> event.</summary>
+    /// <summary>
+    /// A synthetic <c>ping</c> data event valid for both downstream SSE consumers.
+    /// Claude Code recognizes it explicitly; Codex ignores the unknown Responses type.
+    /// </summary>
     public static SseItem<string> Ping() => new(PingData, "ping");
 
     /// <summary>

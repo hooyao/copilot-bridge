@@ -20,7 +20,7 @@ namespace CopilotBridge.UnitTests;
 /// (<c>Pipeline:UpstreamTimeout:KeepAliveIntervalSeconds</c>).
 ///
 /// <para>The contract, in words: Copilot sends no keepalive while a model is
-/// thinking, so an Anthropic client's own idle watchdogs would end a healthy
+/// thinking, so Claude Code's and Codex's own idle watchdogs would end a healthy
 /// long-thinking turn. The bridge therefore injects the <c>ping</c> the upstream
 /// omits WHILE UPSTREAM IS SILENT — and, critically, those injected pings must not
 /// buy the upstream any more time, because they are exactly what stops the client
@@ -512,7 +512,7 @@ public class StreamKeepAliveContractTests
     };
 
     private static async Task<List<SseItem<string>>> ForwardResponsesAndDrainAsync(
-        string path, Stream upstream, int keepAliveSeconds)
+        string path, Stream upstream, int keepAliveSeconds, int streamIdleSeconds = 30)
     {
         var ctx = ResponsesCtx(path);
         var strategy = new CopilotBridge.Cli.Pipeline.Strategies.Codex.CopilotResponsesStrategy(
@@ -523,7 +523,7 @@ public class StreamKeepAliveContractTests
             Options.Create(new UpstreamTimeoutOptions
             {
                 FirstByteTimeoutSeconds = 0,
-                StreamIdleTimeoutSeconds = 30,
+                StreamIdleTimeoutSeconds = streamIdleSeconds,
                 KeepAliveIntervalSeconds = keepAliveSeconds,
             }),
             NullLogger<CopilotBridge.Cli.Pipeline.Strategies.Codex.CopilotResponsesStrategy>.Instance);
@@ -537,11 +537,12 @@ public class StreamKeepAliveContractTests
     /// <summary>A Responses-shaped stream that opens an item, goes silent, then completes.</summary>
     private static SilentGapStream SilentResponsesStream(TimeSpan silence) => new(
         Encoding.UTF8.GetBytes(
-            "event: response.created\ndata: {\"type\":\"response.created\"}\n\n"),
+            "event: response.created\ndata: {\"type\":\"response.created\","
+            + "\"response\":{\"id\":\"resp_keepalive\",\"model\":\"gpt-5.6-sol\"}}\n\n"),
         silence,
         Encoding.UTF8.GetBytes(
             "event: response.completed\ndata: {\"type\":\"response.completed\","
-            + "\"response\":{\"status\":\"completed\"}}\n\n"));
+            + "\"response\":{\"id\":\"resp_keepalive\",\"status\":\"completed\"}}\n\n"));
 
     /// <summary>
     /// Contract: keepalive eligibility follows the DOWNSTREAM CLIENT PROTOCOL, not the
@@ -562,17 +563,128 @@ public class StreamKeepAliveContractTests
     }
 
     /// <summary>
-    /// Contract: a NATIVE Codex client gets no keepalive. Its stream is rendered back
-    /// to the Responses protocol by T4, and what a Responses client accepts as progress
-    /// has not been probed — so the bridge must not invent an event for it.
+    /// Contract: a native Codex client gets the same silence-triggered deadline
+    /// management as Claude Code. The complete ping data event is what completes
+    /// Codex's timed parsed-event wait; an SSE comment would be swallowed before that
+    /// wait observes activity.
     /// </summary>
     [Fact]
-    public async Task ResponsesStrategy_CodexRoute_InjectsNoKeepAlive()
+    public async Task ResponsesStrategy_CodexRoute_InjectsCompleteKeepAliveDataEvent()
     {
         var items = await ForwardResponsesAndDrainAsync(
             "/codex/responses", SilentResponsesStream(TimeSpan.FromMilliseconds(2500)), keepAliveSeconds: 1);
 
+        var pings = items.Where(IsPing).ToList();
+        Assert.NotEmpty(pings);
+        Assert.All(pings, p => Assert.Equal("{\"type\":\"ping\"}", p.Data));
+        Assert.True(items.FindIndex(IsPing) > 0, "a Codex ping must not precede the first upstream event");
+    }
+
+    /// <summary>
+    /// Contract: the shared configuration switch disables the second deadline for
+    /// native Codex too. The upstream may be silent, but no synthetic event appears.
+    /// </summary>
+    [Fact]
+    public async Task ResponsesStrategy_CodexRoute_KeepAliveDisabled_InjectsNothing()
+    {
+        var items = await ForwardResponsesAndDrainAsync(
+            "/codex/responses", SilentResponsesStream(TimeSpan.FromMilliseconds(1200)), keepAliveSeconds: 0);
+
         Assert.DoesNotContain(items, IsPing);
+    }
+
+    /// <summary>
+    /// Contract: no Codex ping may make an upstream whose first event has not arrived
+    /// look started. The first parsed upstream event remains the only activity.
+    /// </summary>
+    [Fact]
+    public async Task ResponsesStrategy_CodexRoute_SilenceBeforeFirstEvent_InjectsNothing()
+    {
+        var terminal = Encoding.UTF8.GetBytes(
+            "event: response.completed\ndata: {\"type\":\"response.completed\","
+            + "\"response\":{\"id\":\"resp_first\",\"status\":\"completed\"}}\n\n");
+        var upstream = new SilentGapStream([], TimeSpan.FromMilliseconds(2200), terminal);
+
+        var items = await ForwardResponsesAndDrainAsync(
+            "/codex/responses", upstream, keepAliveSeconds: 1);
+
+        Assert.DoesNotContain(items, IsPing);
+    }
+
+    /// <summary>
+    /// Contract: Codex keepalives use the same two-deadline reader as Claude Code.
+    /// Pings may reach the downstream edge during silence, but the bridge's upstream
+    /// idle deadline still fires from the last genuine upstream event.
+    /// </summary>
+    [Fact]
+    public async Task ResponsesStrategy_CodexRoute_PingsDoNotPostponeUpstreamIdleTimeout()
+    {
+        var ctx = ResponsesCtx("/codex/responses");
+        var upstream = SilentResponsesStream(TimeSpan.FromSeconds(8));
+        var strategy = new CopilotBridge.Cli.Pipeline.Strategies.Codex.CopilotResponsesStrategy(
+            new StubClient(StreamingResponse(upstream)),
+            new CopilotBridge.Cli.Pipeline.Routing.CodexModelProfileCatalog(),
+            ctx,
+            TestAudit.Create(false),
+            Options.Create(new UpstreamTimeoutOptions
+            {
+                FirstByteTimeoutSeconds = 0,
+                StreamIdleTimeoutSeconds = 2,
+                KeepAliveIntervalSeconds = 1,
+            }),
+            NullLogger<CopilotBridge.Cli.Pipeline.Strategies.Codex.CopilotResponsesStrategy>.Instance);
+        await strategy.ForwardAsync();
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var pings = 0;
+        var ex = await Assert.ThrowsAsync<UpstreamTimeoutException>(async () =>
+        {
+            await foreach (var item in ctx.Response.EventStream!)
+                if (IsPing(item)) pings++;
+        });
+
+        Assert.Equal(UpstreamTimeoutPhase.StreamIdle, ex.Phase);
+        Assert.True(pings >= 1, "at least one downstream ping must precede the upstream timeout");
+        Assert.InRange(started.Elapsed, TimeSpan.FromSeconds(1.5), TimeSpan.FromSeconds(6));
+    }
+
+    /// <summary>
+    /// Contract: a bridge ping sits BETWEEN native Responses fidelity groups. It is
+    /// not an upstream semantic event, consumes no ledger ordinal, and must not make
+    /// T4 fail closed. The surrounding upstream JSON values remain untouched.
+    /// </summary>
+    [Fact]
+    public void CodexT4_InjectedPing_BypassesNativeFidelityAccounting()
+    {
+        var created = new SseItem<string>(
+            "{\"type\":\"response.created\",\"sequence_number\":1,"
+            + "\"response\":{\"id\":\"resp_native\",\"model\":\"gpt-5.6-sol\",\"future\":17}}",
+            "response.created");
+        var completed = new SseItem<string>(
+            "{\"type\":\"response.completed\",\"sequence_number\":2,\"future_terminal\":true,"
+            + "\"response\":{\"id\":\"resp_native\",\"status\":\"completed\",\"output\":[]}}",
+            "response.completed");
+        var ledger = new CopilotBridge.Cli.Pipeline.Strategies.Codex.NativeResponsesEventLedger();
+        var t3 = new CopilotBridge.Cli.Pipeline.Strategies.Codex.ResponsesToAnthropicStream(
+            "gpt-5.6-sol", preserveNativeEvents: true, nativeLedger: ledger);
+        var ir = new List<SseItem<string>>();
+        ir.AddRange(t3.Translate(created));
+        ir.Add(StreamKeepAlive.Ping());
+        ir.AddRange(t3.Translate(completed));
+
+        var t4 = new CopilotBridge.Cli.Pipeline.Adapters.Codex.AnthropicToResponsesStream(
+            "gpt-5.6-sol", nativeLedger: ledger);
+        var output = new List<SseItem<string>>();
+        foreach (var item in ir) output.AddRange(t4.Translate(item));
+        output.AddRange(t4.Flush());
+
+        Assert.Equal(["response.created", "ping", "response.completed"],
+            output.Select(item => item.EventType).ToArray());
+        Assert.Equal(created.Data, output[0].Data);
+        Assert.True(StreamKeepAlive.IsInjected(output[1]));
+        Assert.Equal(completed.Data, output[2].Data);
+        Assert.DoesNotContain(output, item => item.EventType == "response.failed");
+        Assert.Equal(0, ledger.Count);
     }
 
     /// <summary>
