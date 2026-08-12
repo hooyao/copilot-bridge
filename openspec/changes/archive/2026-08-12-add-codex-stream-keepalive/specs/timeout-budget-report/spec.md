@@ -1,19 +1,5 @@
-# timeout-budget-report Specification
+## MODIFIED Requirements
 
-## Purpose
-
-Make the real end-to-end timeout of a long-thinking turn visible at startup for
-both Claude Code and Codex, and warn when an unprotected client would abort before
-the bridge's own budget applies.
-
-Without this the binding bound is effectively invisible: it usually lives in the
-*client*, not the bridge, so the bridge can log a healthy `200` while Claude Code
-or Codex kills the stream. The operator would otherwise have to derive the answer
-from bridge budgets plus separate client configuration and built-in defaults. This
-capability reports each phase, accounts for runtime keepalives, states which party
-actually terminates a silent gap, and preserves actionable warnings when a client
-watchdog remains exposed.
-## Requirements
 ### Requirement: Timeout bounds are reported per phase at startup
 
 The bridge SHALL report, once at startup, which timeout bounds apply to long-thinking turns for each supported downstream client. It SHALL report its configured upstream budgets (`Pipeline:UpstreamTimeout`) alongside:
@@ -96,41 +82,3 @@ The Codex row SHALL expose a shorter unprotected watchdog directly in the table.
 - **WHEN** Claude Code's raw watchdog value is shorter than the bridge budget but live keepalive injection is effective
 - **THEN** the idle-gap row identifies the bridge as termination authority
 - **AND** the bridge does not warn that Claude Code will abort first.
-
-### Requirement: The client's wall-clock cap is reported as a residual bound
-
-The bridge SHALL report Claude Code's whole-request timeout (`API_TIMEOUT_MS`) as
-a **residual wall-clock bound** — one the bridge cannot out-wait — rather than as
-a value that outlasts its budgets.
-
-The distinction is not cosmetic. The bridge's budgets bound *inactivity*, so a
-healthy turn that keeps emitting has no total duration at all, and a stalled turn
-may legitimately consume the first-byte budget and then one or more stream-idle
-gaps before any bridge timer fires. No finite wall-clock value can therefore be
-guaranteed to outlast them, and any derivation that implies otherwise is false.
-
-Accordingly the bridge SHALL NOT warn that this key "undercuts" a budget: such a
-warning would fire on correct configurations and no value would silence it.
-
-#### Scenario: A client whole-request cap shorter than a bridge budget
-
-- **WHEN** the client's stored whole-request timeout is shorter than a bridge inactivity budget
-- **THEN** the bridge reports it as a wall-clock cap that ends the turn at the client regardless of the budgets
-- **AND** emits no undercut warning for that key.
-
-#### Scenario: The written value is not presented as a guarantee
-
-- **WHEN** the bridge reports the whole-request cap
-- **THEN** the report does not state or imply that the client is guaranteed to outlast the bridge on that bound.
-
-#### Scenario: The reported bound is not labelled as definitive
-
-- **WHEN** the bridge reports the shortest bound it can see from its budgets and the global client settings
-- **THEN** the report identifies the client contribution as coming from global settings
-- **AND** states that a project-scoped override may be shorter and is not visible from startup.
-
-#### Scenario: Bounds governing different phases are not collapsed into one number
-
-- **WHEN** the first-byte budget and the stream-idle budget differ
-- **THEN** the report states each against the phase it governs
-- **AND** it does not present a single minimum across them as the bound for the turn.

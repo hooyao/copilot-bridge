@@ -1,28 +1,5 @@
-# stream-keepalive Specification
+## MODIFIED Requirements
 
-## Purpose
-
-Keeps Claude Code and Codex from ending a healthy long-thinking turn by
-synthesizing the keepalive GitHub Copilot omits. Zero `ping` events appeared
-across 137 captured upstream traces, and a measured `claude-opus-5` turn at
-`effort=xhigh` opened a thinking block and then put nothing on the wire for
-600 s. Claude Code expects Anthropic pings during such silence; Codex applies a
-300 s default timeout to each parsed Responses SSE event. Without bridge
-activity, either client can mistake healthy inference for a dead stream.
-
-This capability defines when the bridge injects a keepalive (only while upstream
-is silent, never before the stream's first upstream event), what it may not do
-(reset the bridge's own stream-idle budget, alter usage, or open/close content
-blocks), who ends a stalled turn (the bridge, via that budget — never the client),
-and how an injected keepalive stays distinguishable from an upstream event so the
-diagnostic value of a silent upstream is preserved rather than masked. It covers
-both `/cc` and `/codex`: the wire event is an Anthropic `ping` for Claude Code and
-a complete, otherwise ignored Responses `ping` data event for Codex. Client-side
-timeout configuration remains a second line of defence — see
-[`timeout-budget-report`](../timeout-budget-report/spec.md) and
-[`client-autoconfiguration`](../client-autoconfiguration/spec.md) — because a
-runtime keepalive and a static client bound cover different failure modes.
-## Requirements
 ### Requirement: Downstream keepalive during upstream silence
 
 The bridge SHALL synthesize and flush a downstream-protocol-compatible keepalive whenever the upstream has produced no event for longer than a configured **keepalive interval** while relaying an SSE stream to an Anthropic-protocol client (`/cc`) or a Responses-protocol Codex client (`/codex`), and SHALL repeat one keepalive per elapsed interval for as long as the silence continues.
@@ -153,6 +130,8 @@ rather than falsely warning that the refreshed client watchdog fires first.
 - **WHEN** the operator runs the Claude Code configuration command, or the bridge starts with a client bound shorter than its stream-idle budget while keepalive is off or inactive
 - **THEN** Claude Code timeout values are written as before, and an unprotected undercut still produces the actionable warning
 - **AND** an active keepalive is reported as runtime protection rather than as a client-first timeout.
+
+## ADDED Requirements
 
 ### Requirement: Synthetic keepalives do not participate in native Responses fidelity groups
 

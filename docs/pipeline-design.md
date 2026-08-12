@@ -465,17 +465,27 @@ prompt cache) is never aborted.
   keepalives can postpone the idle timeout (ties go to the idle budget). A caller
   that wants no keepalive passes `TimeSpan.Zero` and gets the previous behaviour.
   Callers emit `StreamKeepAlive.Ping()` on each `KeepAliveDue`, but only after the
-  first upstream event.
+  first upstream event. The same calculation and pending read serve both client
+  protocols; there is no endpoint-side periodic writer or Codex-specific clock.
 
-  Eligibility is by **downstream client protocol, not upstream strategy**: both the
-  `/cc` passthrough strategy and the Responses strategy inject when the inbound route
-  is `/cc` (the CC→gpt route reaches a Claude Code client through the Responses
-  backend), while a native `/codex` client gets none. The injected ping is teed
-  *above* `RawResponseCapture`, so `upstream-resp` structurally cannot contain it, and
-  `ResponseInspectionStage`'s per-block withholding relays it live rather than
-  buffering it to `content_block_stop` — withholding exists to gate model *content*,
-  and holding a keepalive for the block it was invented to cover would defeat it.
-  See `docs/timeout-chain.md` and the `stream-keepalive` capability.
+  Eligibility is by **downstream client protocol, not upstream strategy**: the
+  `/cc` passthrough strategy and the Responses strategy inject for `/cc` (including
+  CC→gpt), and the Responses strategy also injects for native `/codex`. The payload
+  is a complete SSE event (`event: ping`, `data: {"type":"ping"}`), not an SSE
+  comment: Codex 0.144.1 and current source apply their 300 s default idle timeout to
+  each parsed `eventsource().next()`, and the parser discards comment-only frames
+  without yielding. A complete event resets that wait; Codex then ignores its unknown
+  `type` without changing response state.
+
+  Native Codex T4 passes the identity-marked ping through **before** native Responses
+  fidelity accounting, so it consumes no upstream ordinal and cannot contaminate the
+  semantic sequence authorizing restoration of the next genuine event. The injected
+  ping is teed *above* `RawResponseCapture`, so `upstream-resp` structurally cannot
+  contain it; both client endpoints mark it `injected: true`. Response inspection's
+  per-block withholding relays it live rather than buffering it to
+  `content_block_stop` — withholding exists to gate model *content*, and holding a
+  keepalive for the block it was invented to cover would defeat it. See
+  `docs/timeout-chain.md` and the `stream-keepalive` capability.
 
   The bridge is the earlier deterministic actor by construction: `config
   claude-code` derives Claude Code's `CLAUDE_STREAM_IDLE_TIMEOUT_MS` from this

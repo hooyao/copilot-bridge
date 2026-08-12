@@ -19,7 +19,8 @@ internal sealed record CodexAppServerInvocation(
     string ExpectedCodexVersion,
     TimeSpan? Timeout = null,
     string? ModelReasoningEffort = null,
-    string? ModelReasoningSummary = null);
+    string? ModelReasoningSummary = null,
+    long? StreamIdleTimeoutMs = null);
 
 internal sealed record CodexAppServerResult(
     int ExitCode,
@@ -51,6 +52,17 @@ internal static class CodexAppServerProcess
             original: null,
             connection,
             CodexProviderAuthInvocation.ResolveCurrent());
+        if (invocation.StreamIdleTimeoutMs is { } streamIdleTimeoutMs)
+        {
+            const string wireLine = "wire_api = \"responses\"\n";
+            var withTimeout = wireLine
+                + $"stream_idle_timeout_ms = {streamIdleTimeoutMs}\n";
+            var rewritten = config.Replace(wireLine, withTimeout, StringComparison.Ordinal);
+            if (ReferenceEquals(rewritten, config) || rewritten == config)
+                throw new InvalidOperationException(
+                    "Could not inject the isolated Codex provider stream idle timeout.");
+            config = rewritten;
+        }
         File.WriteAllText(Path.Combine(invocation.CodexHome, "config.toml"), config);
 
         var start = new ProcessStartInfo

@@ -79,7 +79,7 @@ internal sealed class UpstreamTimeoutOptions
 
     /// <summary>
     /// Interval (seconds) between synthetic keepalive (<c>ping</c>) events the
-    /// bridge injects into a <b>/cc</b> (Anthropic client) stream while the
+    /// bridge injects into <b>/cc</b> and <b>/codex</b> streams while the
     /// <b>upstream is silent</b>. Copilot sends no keepalive of its own while a
     /// model is thinking, so without this an Anthropic client's own idle watchdogs
     /// end a perfectly healthy deep-thinking turn. Injecting the keepalive the
@@ -101,7 +101,9 @@ internal sealed class UpstreamTimeoutOptions
     /// For Claude Code that is the <b>180 s</b> byte-level watchdog, which the
     /// bridge's own <c>_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL</c> key (written to
     /// unlock the native 1M context) selects in place of the 300 s default. The
-    /// default 15 s leaves margin for a few buffered or dropped pings. A value
+    /// default 15 s leaves margin for a few buffered or dropped pings. Codex defaults
+    /// its parsed-event idle timeout to <b>300 s</b>; the same interval completes that
+    /// wait through a full data event which Codex then ignores as an unknown type. A value
     /// <c>&gt;=</c> <see cref="StreamIdleTimeoutSeconds"/> means the idle budget
     /// always fires first and no ping is ever due — coherent, but pointless.</para>
     /// <para>Injection does not replace the client-side timeout keys
@@ -109,8 +111,9 @@ internal sealed class UpstreamTimeoutOptions
     /// the cases a runtime keepalive cannot cover (injection disabled, a buffering
     /// intermediary, a bridge that itself stalls). See
     /// <c>docs/timeout-chain.md</c>.</para>
-    /// <para><b>/cc only.</b> The Codex (Responses) path is unaffected — a
-    /// Responses-protocol keepalive is a separate, unprobed question.</para>
+    /// <para>The same timeout manager serves both routes: one pending upstream read,
+    /// separate upstream-idle and downstream-activity deadlines, and keepalive ticks
+    /// never reset the upstream timestamp.</para>
     /// </remarks>
     public int KeepAliveIntervalSeconds { get; set; } = 15;
 

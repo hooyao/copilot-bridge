@@ -78,9 +78,9 @@ internal enum ServeScenario
     /// the confirmed context-window 400 and then serves compact recovery.</summary>
     CcToGptContextRecovery,
 
-    /// <summary>Native /cc passthrough (no routing rewrites) against a deterministic
-    /// test upstream supplied by the caller. Used by keepalive and client protocol
-    /// probes that need an Anthropic-shaped upstream.</summary>
+    /// <summary>Native /cc or /codex passthrough (no routing rewrites) against a
+    /// deterministic test upstream supplied by the caller. Used by keepalive and
+    /// client protocol probes that need an exact upstream wire shape.</summary>
     PassthroughTestUpstream,
 }
 

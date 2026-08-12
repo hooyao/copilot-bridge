@@ -14,7 +14,7 @@ namespace CopilotBridge.Cli.Hosting.ClientConfig;
 /// not concern this bridge.</param>
 /// <param name="IsExplicit">True when the value came from the file; false when it
 /// is the built-in default that applies in the key's absence.</param>
-internal sealed record ClientTimeoutValue(string Key, int? EffectiveMs, bool IsExplicit)
+internal sealed record ClientTimeoutValue(string Key, long? EffectiveMs, bool IsExplicit)
 {
     /// <summary>True when neither a stored value nor a known default applies.</summary>
     public bool IsUnknown => EffectiveMs is null;

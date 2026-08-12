@@ -23,9 +23,9 @@ internal enum StreamReadOutcome
 
 /// <summary>
 /// Advances an SSE enumerator with a per-event <b>inactivity</b> bound, shared by
-/// the <c>/cc</c> passthrough and Codex translation streaming loops, and — on the
-/// <c>/cc</c> path — also reports when a downstream keepalive is due because
-/// upstream has gone quiet.
+/// the <c>/cc</c> passthrough and Codex translation streaming loops, and reports
+/// when a downstream keepalive is due for either client protocol because upstream
+/// has gone quiet.
 /// </summary>
 /// <remarks>
 /// <para>The idle deadline is a separate <see cref="Task.Delay(TimeSpan, CancellationToken)"/>

@@ -1,10 +1,11 @@
-# Timeouts along the Claude Code → copilot-bridge → Copilot chain
+# Timeouts along the client → copilot-bridge → Copilot chain
 
-Reference for the "a deep-thinking turn times out" failure: what bounds a turn,
+Reference for the "a deep-thinking turn times out" failure in Claude Code or
+Codex: what bounds a turn,
 which knob moves what, and how to diagnose a recurrence. Everything here is
-**measured** — from the running `claude.exe` (2.1.220), the bridge's own logs and
-request traces, and a controlled lab that drives the real client against an
-upstream that goes silent on demand.
+**measured** — from the running `claude.exe` (2.1.220), Codex 0.144.1 source and
+client logs, the bridge's own logs and request traces, and controlled labs that
+drive the real clients against an upstream that goes silent on demand.
 
 ## The shipped model
 
@@ -35,11 +36,20 @@ outlast them. One bound stays outside that guarantee — see
 
 ```
 Timeouts (what ends a turn):
-  idle gap        bridge 10m       client 15m       -> 10m
+  idle gap (Claude) bridge 10m     client 15m       -> bridge 10m (keepalive)
+  Codex idle gap   bridge 10m       client 5m*       -> bridge 10m (keepalive)
   first byte      bridge 15m       client -         -> 15m
   whole request   bridge -         client 60m       -> 60m
+  keepalive: bridge sends ping every 15s while upstream is silent,
+  so Claude and Codex idle watchdogs are refreshed
   client values take effect on Claude Code's next restart
 ```
+
+5. **Codex has its own parsed-event idle watchdog.** Codex 0.144.1 and current
+   `openai/codex` source default `stream_idle_timeout_ms` to 300,000 and wrap every
+   parsed Responses SSE `stream.next()` in that timeout. The bridge does not rewrite
+   the user's Codex configuration; it keeps the event wait active with the same
+   silence-triggered runtime keepalive used for Claude Code.
 
 A `-` means that side imposes no bound on that phase — the client has no
 first-byte watchdog, and the bridge has no whole-request cap. The bounds are
@@ -47,6 +57,12 @@ listed **per phase and never reduced to one minimum**: they do not compete over
 the same interval (the first-byte timer disarms once headers arrive; stream-idle
 governs each subsequent gap), so a single "effective timeout" would understate a
 turn's real exposure.
+
+The arrow is keepalive-aware, not merely `min(bridge, client)`. In the Codex row
+above the raw client watchdog is five minutes, but a complete ping event arrives
+every 15 seconds and resets it; only genuine upstream activity resets the bridge's
+ten-minute budget. The bridge therefore ends a stalled gap at ten minutes. If
+keepalive is off/inactive, the arrow falls back to the shorter numeric bound.
 
 A `WARNING` naming a `CLAUDE_*` key means the client aborts first and the bridge's
 budget never applies. It fires for a **missing** key too — absence is not benign
@@ -116,14 +132,14 @@ behaviour: a deep enough workload will exceed it while perfectly healthy.
 > 34-second wall-clock window despite different start times, i.e. one transport
 > interruption killing concurrent requests, not a per-request server deadline.
 
-The bridge **injects the keepalive the upstream omits**. While a `/cc` stream is in
-flight and upstream has been silent longer than
+The bridge **injects the keepalive the upstream omits**. While a `/cc` or `/codex`
+stream is in flight and upstream has been silent longer than
 `Pipeline:UpstreamTimeout:KeepAliveIntervalSeconds` (default 15 s), the bridge
-synthesizes an Anthropic `ping` and flushes it downstream, repeating once per
-interval until upstream speaks again. The client's watchdogs therefore never judge
-upstream silence at all — the bridge's own budget is the only thing that ends a
-stalled turn. That closes both gaps the client-side env keys leave open: no client
-restart is needed, and clients the bridge never configured are covered too.
+synthesizes and flushes a complete `ping` data event, repeating once per interval
+until upstream speaks again. The client's watchdogs therefore never judge upstream
+silence at all — the bridge's own budget is the only thing that ends a stalled turn.
+That closes both gaps the client-side settings leave open: no client restart is
+needed, and clients the bridge never configured are covered too.
 
 Why a `ping` is the right instrument — verified against the shipped `claude.exe`
 2.1.220 binary, not assumed:
@@ -142,6 +158,21 @@ then skips every business branch, so it can touch no content block, no usage
 accumulation and no stall statistic. Watchdog ① (`Axg`) re-arms in `pull()` on any
 chunk, so the ping's bytes feed it too, and the UI layer discards pings outright
 (`if (P_r(e.event)) return`) — no flicker.
+
+For Codex the same wire event works for a different, source-confirmed reason:
+
+```rust
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
+let response = timeout(idle_timeout, stream.next()).await;
+// parse {"type":"ping"}; unknown kinds are logged at trace and ignored
+```
+
+The timed future is the **parsed next event**, not the raw socket read. Therefore a
+conventional SSE comment (`: ping`) is insufficient: Codex's `eventsource-stream`
+parser discards comments and empty-data frames, so `stream.next()` remains pending.
+The bridge emits `event: ping` plus `data: {"type":"ping"}`. That completes the
+wait and resets Codex's deadline, after which its Responses dispatcher ignores the
+unknown kind without touching content, usage, output items, or terminal state.
 
 Two invariants make this safe rather than a way to hide a hang:
 
@@ -176,6 +207,7 @@ and fall back to the env keys alone.
 | CC ② event-level idle watchdog | 300 s silence (floor) | on | `CLAUDE_STREAM_IDLE_TIMEOUT_MS` |
 | CC ③ SDK whole-request | 600 s | on | `API_TIMEOUT_MS` |
 | CC ④ non-streaming fallback | 300 s per attempt | on | `API_TIMEOUT_MS` |
+| Codex parsed-event idle watchdog | 300 s silence | on | provider `stream_idle_timeout_ms` |
 | Bridge ⑤ first-byte idle | 240 s | on | `FirstByteTimeoutSeconds` |
 | Bridge ⑥ stream-idle | 240 s | on | `StreamIdleTimeoutSeconds` |
 | Bridge ⑦ `HttpClient.Timeout` | **removed** (was 600 s; bounded the header wait only) | — | — |

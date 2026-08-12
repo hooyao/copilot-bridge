@@ -11,6 +11,7 @@ using CopilotBridge.Cli.Endpoints.ClaudeCode;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Routing;
+using CopilotBridge.Cli.Pipeline.Strategies;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -200,7 +201,11 @@ internal static class CodexResponsesEndpoint
                 var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, ct);
                 await foreach (var evt in clientStream.WithCancellation(ct))
                 {
-                    capturedEvents?.Add(new CapturedSseEvent(evt.EventType, evt.Data, Filtered: false));
+                    capturedEvents?.Add(new CapturedSseEvent(
+                        evt.EventType,
+                        evt.Data,
+                        Filtered: false,
+                        Injected: StreamKeepAlive.IsInjected(evt)));
                     await WriteSseEventAsync(httpCtx.Response, evt.EventType, evt.Data, ct);
                 }
             }
