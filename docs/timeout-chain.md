@@ -58,11 +58,15 @@ the same interval (the first-byte timer disarms once headers arrive; stream-idle
 governs each subsequent gap), so a single "effective timeout" would understate a
 turn's real exposure.
 
-The arrow is keepalive-aware, not merely `min(bridge, client)`. In the Codex row
-above the raw client watchdog is five minutes, but a complete ping event arrives
-every 15 seconds and resets it; only genuine upstream activity resets the bridge's
-ten-minute budget. The bridge therefore ends a stalled gap at ten minutes. If
-keepalive is off/inactive, the arrow falls back to the shorter numeric bound.
+The arrow is keepalive-aware, not merely `min(bridge, client)`. Protection is
+calculated independently for each client: the ping interval must be shorter than
+both the bridge idle budget and that client's watchdog, and pings must be able to
+reach a live stream. In the Codex row above the raw client watchdog is five minutes,
+but a complete ping arrives every 15 seconds and resets it; only genuine upstream
+activity resets the bridge's ten-minute budget. The bridge therefore ends a stalled
+gap at ten minutes. If pings are off, buffered, or too slow for one client, that row
+falls back to the shorter numeric bound. An unknown client value keeps the winner
+unknown rather than promising protection.
 
 A `WARNING` naming a `CLAUDE_*` key means the client aborts first and the bridge's
 budget never applies. It fires for a **missing** key too — absence is not benign

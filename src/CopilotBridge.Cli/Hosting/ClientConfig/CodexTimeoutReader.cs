@@ -47,7 +47,9 @@ internal static class CodexTimeoutReader
         }
     }
 
-    public static CodexTimeoutSnapshot Read(string? pathOverride = null)
+    public static CodexTimeoutSnapshot Read(
+        string? pathOverride = null,
+        string expectedBaseUrlSuffix = "/codex")
     {
         var path = pathOverride ?? DefaultConfigPath;
         try
@@ -73,8 +75,17 @@ internal static class CodexTimeoutReader
             if (table is null)
                 return Unknown(path, $"[{ProviderTable}] is missing");
 
-            var explicitMs = FindTableInteger(table, CodexTimeoutPolicy.StreamIdleKey);
-            if (explicitMs is null)
+            var baseUrl = FindTableString(table, "base_url");
+            if (baseUrl is null
+                || !baseUrl.TrimEnd('/').EndsWith(expectedBaseUrlSuffix, StringComparison.Ordinal))
+                return Unknown(path, $"[{ProviderTable}] is not pointed at this bridge");
+
+            var wireApi = FindTableString(table, "wire_api");
+            if (!string.Equals(wireApi, "responses", StringComparison.Ordinal))
+                return Unknown(path, $"[{ProviderTable}].wire_api is not responses");
+
+            var timeoutPair = FindTablePair(table, CodexTimeoutPolicy.StreamIdleKey);
+            if (timeoutPair is null)
             {
                 return new CodexTimeoutSnapshot(
                     path,
@@ -86,6 +97,10 @@ internal static class CodexTimeoutReader
                         IsExplicit: false));
             }
 
+            if (timeoutPair.Value is not IntegerValueSyntax timeoutValue)
+                return Unknown(path, $"{CodexTimeoutPolicy.StreamIdleKey} is not an integer");
+
+            var explicitMs = timeoutValue.Value;
             if (explicitMs < 0)
                 return Unknown(path, $"{CodexTimeoutPolicy.StreamIdleKey} is negative");
 
@@ -95,7 +110,7 @@ internal static class CodexTimeoutReader
                 Reason: null,
                 StreamIdle: new ClientTimeoutValue(
                     CodexTimeoutPolicy.StreamIdleKey,
-                    explicitMs.Value,
+                    explicitMs,
                     IsExplicit: true));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -125,14 +140,24 @@ internal static class CodexTimeoutReader
         return null;
     }
 
-    private static long? FindTableInteger(TableSyntax table, string key)
+    private static string? FindTableString(TableSyntax table, string key)
     {
         foreach (var item in table.Items)
         {
             if (item is KeyValueSyntax pair
                 && pair.Key?.ToString().Trim() == key
-                && pair.Value is IntegerValueSyntax value)
+                && pair.Value is StringValueSyntax value)
                 return value.Value;
+        }
+        return null;
+    }
+
+    private static KeyValueSyntax? FindTablePair(TableSyntax table, string key)
+    {
+        foreach (var item in table.Items)
+        {
+            if (item is KeyValueSyntax pair && pair.Key?.ToString().Trim() == key)
+                return pair;
         }
         return null;
     }

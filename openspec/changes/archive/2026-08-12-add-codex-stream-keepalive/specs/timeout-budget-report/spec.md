@@ -11,7 +11,7 @@ The report SHALL identify the client and source of each value. Claude Code and C
 
 Bounds SHALL be reported per phase and SHALL NOT be collapsed into one global minimum. The first-byte budget is disarmed when response headers arrive; stream-idle bounds govern each later silent gap; Claude Code's whole-request cap is wall-clock across all phases.
 
-The idle-gap termination calculation SHALL account for runtime keepalive management. When keepalive injection can reach the live stream (the interval is positive and strictly shorter than a positive bridge stream-idle budget, and whole-response buffering is disabled), the report SHALL identify the bridge stream-idle budget as the party that ends an upstream-silent gap: repeated downstream pings refresh the client watchdog without resetting the bridge budget. When keepalive is off or inactive, the report SHALL identify the shorter active numeric bound. A disabled bridge budget SHALL be described as imposing no bound and SHALL NOT be treated as zero.
+The idle-gap termination calculation SHALL account for runtime keepalive management per client. Keepalive protection is effective only when the interval is positive, can reach the live stream, is strictly shorter than a positive bridge stream-idle budget, and is also strictly shorter than that client's effective watchdog. Only then SHALL the report identify the bridge stream-idle budget as the party that ends an upstream-silent gap: repeated downstream pings refresh that client without resetting the bridge budget. When keepalive is off, inactive, or too slow for one client, that client's row SHALL identify the shorter active numeric bound. An unknown client bound SHALL keep the winner unknown rather than promising protection. A disabled bridge budget SHALL be described as imposing no bound and SHALL NOT be treated as zero.
 
 Reading either client configuration SHALL be best-effort and non-fatal. A missing, unreadable, malformed, or non-bridge-pointed file SHALL NOT fail startup or suppress the other report rows; its client contribution SHALL be shown as unknown.
 
@@ -36,13 +36,13 @@ Reading either client configuration SHALL be best-effort and non-fatal. A missin
 
 #### Scenario: Active keepalive makes the bridge authoritative
 
-- **WHEN** a client's numeric idle watchdog is shorter than the bridge stream-idle budget but live keepalive injection is effective
+- **WHEN** a client's numeric idle watchdog is shorter than the bridge stream-idle budget and the live keepalive interval is shorter than both
 - **THEN** that client's idle-gap row identifies the bridge budget as the termination authority
 - **AND** does not warn that the refreshed client watchdog numerically undercuts the bridge.
 
 #### Scenario: Inactive keepalive exposes the shorter watchdog
 
-- **WHEN** keepalive is disabled, cannot reach the client because responses are whole-buffered, or is not shorter than the bridge idle budget
+- **WHEN** keepalive is disabled, cannot reach the client because responses are whole-buffered, is not shorter than the bridge idle budget, or is not shorter than that client's watchdog
 - **THEN** each idle-gap row identifies the shorter active bridge/client numeric bound
 - **AND** existing actionable warnings remain applicable where the bridge manages the client setting.
 
@@ -60,6 +60,8 @@ The bridge SHALL emit the existing Claude Code configuration warning when its id
 When live keepalive injection is effective, the startup report SHALL show that the bridge owns the idle-gap termination and SHALL NOT claim that the refreshed client watchdog will abort first. Static client configuration remains a second line of defence, but its raw numeric value is not the runtime winner while pings are reaching the client.
 
 The Codex row SHALL expose a shorter unprotected watchdog directly in the table. This change does not make the bridge rewrite Codex's provider timeout setting.
+
+A Codex provider SHALL count as bridge-pointed only when its active provider name, `/codex` base URL suffix, and `wire_api = "responses"` all match. A present `stream_idle_timeout_ms` with a non-integer or negative value SHALL be reported as unknown, not silently replaced by the built-in default; the 300-second default applies only when the key is genuinely absent.
 
 #### Scenario: Client idle watchdog undercuts the bridge stream-idle budget
 

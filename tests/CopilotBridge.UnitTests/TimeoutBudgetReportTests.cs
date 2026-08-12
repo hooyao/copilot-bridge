@@ -118,20 +118,27 @@ public class TimeoutBudgetReportTests
         return path;
     }
 
-    private static string WriteCodexConfig(long? streamIdleMs, string provider = "copilot-bridge")
+    private static string WriteCodexConfig(
+        long? streamIdleMs,
+        string provider = "copilot-bridge",
+        string baseUrl = "http://localhost:8765/codex",
+        string wireApi = "responses",
+        string? rawStreamIdle = null)
     {
         var dir = Path.Combine(Path.GetTempPath(), "cb-codex-report-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, "config.toml");
-        var timeout = streamIdleMs is { } value
-            ? $"stream_idle_timeout_ms = {value}\n"
-            : string.Empty;
+        var timeout = rawStreamIdle is not null
+            ? $"stream_idle_timeout_ms = {rawStreamIdle}\n"
+            : streamIdleMs is { } value
+                ? $"stream_idle_timeout_ms = {value}\n"
+                : string.Empty;
         File.WriteAllText(path,
             $"model_provider = \"{provider}\"\n\n"
             + "[model_providers.copilot-bridge]\n"
             + "name = \"copilot-bridge\"\n"
-            + "base_url = \"http://localhost:8765/codex\"\n"
-            + "wire_api = \"responses\"\n"
+            + $"base_url = \"{baseUrl}\"\n"
+            + $"wire_api = \"{wireApi}\"\n"
             + timeout);
         return path;
     }
@@ -221,6 +228,40 @@ public class TimeoutBudgetReportTests
     }
 
     [Fact]
+    public void Codex_present_timeout_with_wrong_type_is_unknown_not_default()
+    {
+        var claude = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var codex = WriteCodexConfig(streamIdleMs: null, rawStreamIdle: "\"3000\"");
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(
+            Budgets(900, 600), log, claude, codexConfigPathOverride: codex);
+
+        var row = Row(Table(events), "Codex idle gap");
+        Assert.Contains("client unknown", row, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-> unknown", row, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("5m*", row, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("https://example.com/v1", "responses")]
+    [InlineData("http://localhost:8765/codex", "chat")]
+    public void Codex_provider_name_without_bridge_route_and_responses_wire_is_unknown(
+        string baseUrl,
+        string wireApi)
+    {
+        var claude = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var codex = WriteCodexConfig(60_000, baseUrl: baseUrl, wireApi: wireApi);
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(
+            Budgets(900, 600), log, claude, codexConfigPathOverride: codex);
+
+        Assert.Contains("unknown", Row(Table(events), "Codex idle gap"),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Active_keepalive_makes_bridge_the_Codex_idle_gap_terminator()
     {
         var claude = WriteSettings(BridgePointedSettings("900000", "1200000"));
@@ -249,6 +290,37 @@ public class TimeoutBudgetReportTests
 
         Assert.EndsWith("-> client 1m", Row(Table(events), "Codex idle gap").TrimEnd(),
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Keepalive_slower_than_Codex_watchdog_does_not_claim_protection()
+    {
+        var claude = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var codex = WriteCodexConfig(streamIdleMs: 3_000);
+        var (events, log) = Recorder();
+        var budgets = Budgets(900, 600);
+        budgets.KeepAliveIntervalSeconds = 15;
+
+        TimeoutBudgetReport.Emit(budgets, log, claude, codexConfigPathOverride: codex);
+
+        Assert.EndsWith("-> client 3s", Row(Table(events), "Codex idle gap").TrimEnd(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Keepalive_slower_than_Claude_watchdog_does_not_suppress_warning()
+    {
+        var claude = WriteSettings(BridgePointedSettings("3000", "1200000"));
+        var codex = WriteCodexConfig(streamIdleMs: null);
+        var (events, log) = Recorder();
+        var budgets = Budgets(900, 600);
+        budgets.KeepAliveIntervalSeconds = 15;
+
+        TimeoutBudgetReport.Emit(budgets, log, claude, codexConfigPathOverride: codex);
+
+        Assert.EndsWith("-> client 3s", Row(Table(events), "idle gap").TrimEnd(),
+            StringComparison.Ordinal);
+        Assert.Single(Warnings(events));
     }
 
     // ---- Requirement: effective end-to-end timeout is reported at startup ----
