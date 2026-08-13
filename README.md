@@ -86,13 +86,12 @@ copilot-bridge config claude-code --port 9000      # override the port from apps
 copilot-bridge config status                       # show where each client points + any drift
 ```
 
-It merges the bridge's keys into your existing settings, leaving your unrelated
-settings intact; the port comes from `appsettings.json` (`Server.Port`) unless you
-pass `--port`. (It does clear one legacy key — the old
-`CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` override — so Claude Code can use its
-`stream:false` recovery on a mid-stream fault, which the bridge translates on
-cross-model routes.) Add `--show-content` to a `--dry-run` to print the full
-merged file — it includes your other settings, so avoid it in shared logs.
+The command is connection-only. It updates `ANTHROPIC_BASE_URL`, fills the
+required non-secret `ANTHROPIC_AUTH_TOKEN` placeholder only when that key is
+absent, and preserves every timeout, retry, watchdog, 1M/first-party, telemetry,
+and fallback value. The port comes from `appsettings.json` (`Server.Port`) unless
+you pass `--port`. Add `--show-content` to a `--dry-run` to print the full merged
+file — it includes your other settings, so avoid it in shared logs.
 
 **Or do it by hand** — add an `env` block to `.claude/settings.local.json` (or
 your global `~/.claude/settings.json`). Claude Code reads this file as **strict
@@ -102,31 +101,22 @@ JSON**, so it must not contain comments:
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
-    "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1",
-    "DISABLE_ERROR_REPORTING": "1",
-    "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "900000",
-    "API_TIMEOUT_MS": "3600000"
+    "ANTHROPIC_AUTH_TOKEN": "dummy"
   }
 }
 ```
 
 - `ANTHROPIC_AUTH_TOKEN` — unused (the bridge authenticates with your GitHub
   token), but Claude Code requires *something* set.
-- `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` + `DISABLE_ERROR_REPORTING` — unlock
-  the full 1M window for native-1M models (opus-4.6/4.7/4.8, sonnet-4.6/5),
-  including after `--resume`, and keep telemetry off. See
-  `docs/context-window.md` §5.
-- `CLAUDE_STREAM_IDLE_TIMEOUT_MS` — keeps Claude Code's idle watchdog from
-  aborting a deep-thinking turn before the bridge's budget applies. Derived from
-  `Pipeline:UpstreamTimeout`, so re-run `config claude-code` after changing a
-  budget.
-- `API_TIMEOUT_MS` — a wall-clock cap on the whole request. Raised well above the
-  client default, but **not** derived and carrying no such guarantee: a long turn
-  can still end here first.
-
-  Claude Code reads `env` at process start — **restart it** for either to take
-  effect. See [Long-thinking timeouts](#long-thinking-timeouts).
+- Optional Claude Code behavior keys such as
+  `CLAUDE_STREAM_IDLE_TIMEOUT_MS`, `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS`, and
+  `API_TIMEOUT_MS` remain your settings. The bridge reports them beside its own
+  independent budgets but never derives or writes them. Claude Code reads `env`
+  at process start, so restart it after editing those values. See
+  [Long-thinking timeouts](#long-thinking-timeouts).
+- `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` and `DISABLE_ERROR_REPORTING` are
+  likewise user-owned. See [`docs/context-window.md`](docs/context-window.md)
+  before opting into their context-window and telemetry effects.
 
 Then pick any Claude model in Claude Code as usual — the bridge maps it to the
 matching Copilot model.
@@ -146,12 +136,19 @@ Codex process or a legacy provider block keeps the old bundled catalog.
 
 This edits `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) in place,
 preserving every unrelated table, comment, and literal — it only repoints
-`model_provider` and writes the bridge provider plus its nested `auth` block,
-leaving every rival provider and explicit context/auto-compact override intact.
+`model_provider` and surgically upserts the bridge provider's `name`, `base_url`,
+`wire_api`, and nested command-auth fields. Existing provider timeout, retry,
+WebSocket, query, and header fields remain untouched, as do rival providers and
+explicit context/auto-compact overrides.
 The auth command emits a stable public sentinel only; your GitHub/Copilot token
 stays inside the bridge's `AuthService` and is never written to Codex config.
-Codex honors a single global config, so there is no `--scope` here. `--dry-run`
-and `--port` work the same as above.
+If an existing provider expresses `auth` as an inline table or dotted keys, the
+command refuses to append a conflicting explicit auth table and names the
+`[model_providers.copilot-bridge.auth]` shape to convert to; it never writes an
+invalid TOML merge.
+This bridge command intentionally targets the global file, so it has no `--scope`;
+Codex project/profile/CLI layers can still affect a particular future process.
+`--dry-run` and `--port` work the same as above.
 
 For the current 1M-class gpt models (`gpt-5.4`, `gpt-5.5`, and the three
 `gpt-5.6` codenames), Copilot reports **1,050,000 total context**, **922,000
@@ -203,7 +200,7 @@ only touch it to tune. Each detector row is toggled by its own `Enabled` flag
 | **`Tracing.Enabled`** | `false` | Dump every request/response as JSON under `request-traces/`. Contains full prompts — turn back off after debugging. |
 | **`Pipeline:Detectors:ResponseLeakGuard`** | on | Auto-repairs a leaked tool call / Claude Code control envelope by forcing a clean retry. Turn off individual `Signatures` (`Invoke`, `TaskNotification`, `TeammateMessage`, `Channel`, `CrossSessionMessage`, `Tick`, `SystemReminder`) to clear a false positive — the retry error names the exact switch. `Signal` (`OverloadedError`/`ApiError`) picks the retry error surface. `BufferScannableBlocks: true` withholds each `text`/`thinking` block until scanned so a leak in one never reaches the client (`tool_use` blocks still stream live; default relays until detection). |
 | **`Pipeline:Detectors:RunawayGuard`** | on | Circuit-breaker for degenerate output; forces a retryable `overloaded_error`. Thresholds: `MaxDeltaBytes` (12 MiB), `MaxDeltaCount` (20000), `RepetitionWindow`/`RepetitionMinUniqueRatio` (500 / 0.05), `RepetitionMaxConsecutiveRepeat` (50). Fix a false trip by **raising** the threshold, not disabling. |
-| **`Pipeline:UpstreamTimeout`** | on | Two *idle* timers (not total caps; `<= 0` disables): `FirstByteTimeoutSeconds` (240) for response headers, `StreamIdleTimeoutSeconds` (240) for the gap between streamed events. `StreamIdleAction` (`Retry`/`Truncate`) and `StreamIdleSignal` (`OverloadedError`/`ApiError`) govern mid-stream surfacing. These are the **only** upstream bound (no coarse HTTP cap), and `StreamIdleTimeoutSeconds` also derives Claude Code's idle env key — see [Long-thinking timeouts](#long-thinking-timeouts). |
+| **`Pipeline:UpstreamTimeout`** | on | Exact independent bridge values: `FirstByteTimeoutSeconds` (240) bounds response headers per send; `StreamIdleTimeoutSeconds` (240) bounds each parsed upstream SSE event gap; `KeepAliveIntervalSeconds` (15) schedules downstream pings after the first upstream event. `<= 0` disables that timer. No margin, clamp, fallback, coarse HTTP cap, or client-config rewrite is applied. `StreamIdleAction` (`Retry`/`Truncate`) and `StreamIdleSignal` (`OverloadedError`/`ApiError`) govern mid-stream surfacing. See [Long-thinking timeouts](#long-thinking-timeouts). |
 | **`Pipeline:Detectors:ToolInputValidation`** | observe-only | Validates `tool_use` input against the tool schema and flags `tool_input_invalid=true`, but does **not** abort — Claude Code self-heals. Set `MalformedJsonAction` / `SchemaViolationAction` to `AbortOverloaded`/`AbortApiError` only for a backend that doesn't; `PreserveStream` then picks delta-before-error (`true`) vs buffer-for-a-real-HTTP-error (`false`). |
 | **`Routing.Locations`** | `[]` | nginx-style per-request model/header rewrites. See below. |
 
@@ -237,66 +234,38 @@ prompt) dies part-way with `API Error: Stream idle timeout - no chunks received`
 or the bridge logs a `504` a few minutes later.
 
 **Cause:** Copilot sends no keepalive while a model is thinking. Extended
-reasoning puts *nothing* on the wire for minutes, and Claude Code's own idle
-watchdog reads that silence as a dead stream and kills a perfectly healthy turn.
-The bridge is still waiting happily — the abort happens entirely inside the
-client, which is why it's invisible in the bridge's logs.
+reasoning can put *nothing* on the upstream wire for minutes. The bridge and each
+client have independent clocks over different portions of that wait.
 
-**Fix:** the bridge owns the budgets, and `config claude-code` writes client
-values derived from them so the client always outlasts the bridge:
+At startup, place these values side by side:
 
-```bash
-copilot-bridge config claude-code --scope global   # writes both timeout keys
-```
+| Layer | Native setting | Scope |
+|---|---|---|
+| Bridge | `FirstByteTimeoutSeconds` | Upstream response headers per send attempt |
+| Bridge | `StreamIdleTimeoutSeconds` | Each complete parsed upstream SSE event gap |
+| Bridge | `KeepAliveIntervalSeconds` | Downstream ping interval after the first upstream event; not a timeout |
+| Claude Code | `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | Parsed SSE event idle |
+| Claude Code | `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | Byte-stream idle |
+| Claude Code | `API_TIMEOUT_MS` | One normal or after-stream-error request attempt |
+| Codex | provider `stream_idle_timeout_ms` | Parsed SSE event idle |
+| Codex | provider request/stream retry keys | Additional retry counts, not durations |
 
-The defaults (`FirstByteTimeoutSeconds` 240, `StreamIdleTimeoutSeconds` 240) cover
-ordinary long thinking. For consistently deep workloads raise them and re-run the
-command above (budgets are read at startup, so restart the bridge too):
+The bridge uses every positive appsettings value exactly and treats `<= 0` as
+disabled. It adds no hidden headroom and never copies a bridge number into either
+client. Edit the native client settings yourself, then restart that client when
+its configuration model requires it. Running `config claude-code` or
+`config codex` later preserves those behavior values.
 
-```jsonc
-"Pipeline": { "UpstreamTimeout": {
-  "FirstByteTimeoutSeconds": 900,   // also bounds the non-streaming recovery request
-  "StreamIdleTimeoutSeconds": 600   // gap between SSE events while the model thinks
-}}
-```
+Keepalive helps only after the first genuine upstream event and only while a
+complete ping reaches the downstream socket. It does not reset the bridge's
+upstream idle deadline, and whole-response buffering prevents it from protecting
+the client mid-turn. The first-event gap therefore remains an unprotected
+comparison; equal client/bridge deadlines are a race.
 
-For scale: a measured `claude-opus-5` turn at `effort=xhigh` opened a thinking
-block and then sent **nothing for 600 s** before producing its answer.
-
-Every start prints what's actually in force, and warns when the client would give
-up first:
-
-```
-Timeouts:  bridge first-byte 900s, stream-idle 600s (Pipeline:UpstreamTimeout — idle budgets, not total caps)
-Timeouts:  Claude Code stream-idle 15m, request 60m (global client env — applies on Claude Code's next start)
-Timeouts:  waiting for headers — bridge 900s; then per silent gap — bridge 600s vs
-           client 15m (whichever is shorter ends the turn)
-```
-
-Each line covers a different phase — the first-byte timer is disarmed once headers
-arrive, and `API_TIMEOUT_MS` is a separate wall-clock cap across the whole request
-— so there is deliberately no single "effective" number. A `WARNING` naming a
-`CLAUDE_*` key means the client's idle watchdog fires first, and the bridge's
-budget never gets to apply.
-
-**Setting the env vars by hand** (if you manage `settings.json` through dotfiles
-or MDM rather than letting the bridge write it):
-
-| Key | Why |
-| --- | --- |
-| `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | The **only** knob that lifts both of Claude Code's idle watchdogs. Setting `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` alone leaves the other pinned at its 300 s floor. |
-| `API_TIMEOUT_MS` | A **wall-clock** cap on the whole request. The bridge writes a fixed generous value rather than deriving one: its own budgets bound *inactivity*, so a turn that keeps emitting has no total duration and no finite wall-clock value can be guaranteed to outlast them. It is still worth raising because it also bounds each attempt of the non-streaming recovery request, which emits no bytes until the model finishes. Treat it as a ceiling the bridge cannot out-wait. |
-
-Set `CLAUDE_STREAM_IDLE_TIMEOUT_MS` to at least the bridge's stream-idle budget —
-that one must outlast it. `API_TIMEOUT_MS` cannot be set to outlast an inactivity
-budget at all, so just give it plenty of headroom. Claude Code reads `env` at
-process start, so **restart it** for either to take effect.
-
-> One trap worth knowing: enabling the 1M context window tightens this. The
-> `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` key the bridge writes for 1M also
-> makes Claude Code apply its *first-party* idle bound — 180 s instead of 300 s.
-
-Measurements, the eight bounds along the chain, and how to diagnose a recurrence:
+The header wait, first event, later event gaps, buffered body, request attempts,
+sampling attempts, and whole turn are different scopes. A retry starts a new
+attempt, so there is deliberately no fabricated whole-turn timeout. Exact client
+defaults, source links, phase composition, and diagnostic guidance:
 [`docs/timeout-chain.md`](docs/timeout-chain.md).
 
 ## Limitations
@@ -334,13 +303,12 @@ native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
   backend still serves the larger window, but Claude Code's own auto-compaction
   triggers at 200k until you re-select `opus[1m]`. See
   [`docs/context-window.md`](docs/context-window.md).
-- **Timeout settings need a client restart, and only cover clients the bridge
-  configured.** `config claude-code` writes Claude Code's timeout env keys, but
-  Claude Code reads `env` at process start — a running session keeps its old
-  bounds. A Claude Code pointed at the bridge by other means (hand-edited
-  settings, MDM, a shared dotfile repo) gets the startup warning but not the fix;
-  set the two keys yourself. See
-  [Long-thinking timeouts](#long-thinking-timeouts).
+- **Startup can observe only global client files.** It cannot know the repo/env
+  values of a future Claude process or the project/profile/CLI context of a future
+  Codex process. The report labels that boundary and never rewrites a timeout.
+  Claude Code reads `env` at process start, so a running session keeps its prior
+  user-selected values until restarted. See [Long-thinking
+  timeouts](#long-thinking-timeouts).
 - **Cost counts against your Copilot subscription.** The bridge has no Anthropic
   key and never falls back to `api.anthropic.com`.
 - **Token storage is weaker off Windows.** Your GitHub token is always encrypted

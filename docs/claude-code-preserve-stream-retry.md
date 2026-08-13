@@ -48,7 +48,8 @@ If fallback is not disabled, it calls `executeNonStreamingRequest(...)`. When th
 initialConsecutive529Errors: is529Error(streamingError) ? 1 : 0
 ```
 
-Therefore the Claude Code setting that copilot-bridge should write is an environment setting that ensures this fallback path is not disabled:
+An operator who wants this Claude Code recovery path can leave the key absent or
+select it explicitly in the native client configuration:
 
 ```jsonc
 {
@@ -58,15 +59,17 @@ Therefore the Claude Code setting that copilot-bridge should write is an environ
 }
 ```
 
-This is not a magic "force retry" switch. It is a guardrail to avoid users or inherited config disabling the fallback path.
+This is not a magic "force retry" switch. `config claude-code` is
+connection-only and preserves the key exactly, including absence; it does not
+choose the policy.
 
 > **Verified update (Claude Code 2.1.207).** Disabling fallback does not produce a
 > same-mode whole-turn retry for a mid-stream SSE error; it surfaces a terminal API
 > error. With fallback enabled, Claude tombstones the partial attempt and issues a
 > non-streaming request (the `stream` field is omitted). The `/cc` client edge now
 > translates a successful buffered Responses object into Anthropic IR before
-> response detectors run on cross-model routes, and
-> `copilot-bridge config claude-code` removes the legacy disable override.
+> response detectors run on cross-model routes. The bridge supports the recovery
+> request when Claude Code chooses to issue it.
 
 ### Current Claude Code may preserve partial output after visible text has streamed
 

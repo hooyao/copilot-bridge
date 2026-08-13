@@ -20,9 +20,10 @@ internal interface IClientConfigurator
     /// (e.g. <c>"claude-code"</c>, <c>"codex"</c>).</summary>
     string ClientId { get; }
 
-    /// <summary>Scopes this client supports. Claude Code: Global + Repo.
-    /// Codex: Global only. The dispatcher validates a requested scope against this
-    /// before calling <see cref="Plan"/>.</summary>
+    /// <summary>Scopes this bridge command supports. Claude Code: Global + Repo.
+    /// Codex command: the user/global baseline only (not a claim that Codex has no
+    /// higher-precedence project/profile/CLI layers). The dispatcher validates a
+    /// requested scope against this before calling <see cref="Plan"/>.</summary>
     IReadOnlyList<ConfigScope> SupportedScopes { get; }
 
     /// <summary>

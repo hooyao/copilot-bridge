@@ -53,7 +53,11 @@ internal sealed record ServeInvocation(
     string? CodexCatalogCacheDirectory = null,
     bool ForceCodexCatalogSourceFailure = false,
     bool ForceCodexCatalogSourceAbsent = false,
-    bool ForceCopilotAuthRejectionOnce = false);
+    bool ForceCopilotAuthRejectionOnce = false,
+    string? ClaudeSettingsPath = null,
+    string? CodexConfigPath = null,
+    string? ClaudeVersion = null,
+    string? WorkingDirectory = null);
 
 /// <summary>
 /// The appsettings shape a behavior run needs. Each value is applied by patching the
@@ -265,10 +269,12 @@ internal static class ServeProcess
             var psi = new ProcessStartInfo
             {
                 FileName = scratchExe,
-                WorkingDirectory = scratchDir,
+                WorkingDirectory = inv.WorkingDirectory ?? scratchDir,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 RedirectStandardInput = true, // redirected stdin → FatalErrorHandler skips its keypress pause
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
@@ -288,6 +294,12 @@ internal static class ServeProcess
                         + "the fault-recovery scenario against live Copilot.");
                 psi.Environment["COPILOT_BRIDGE_TEST_UPSTREAM_BASE_URL"] = inv.TestUpstreamBaseUrl;
             }
+            if (inv.ClaudeSettingsPath is not null)
+                psi.Environment["COPILOT_BRIDGE_TEST_CLAUDE_SETTINGS_PATH"] = inv.ClaudeSettingsPath;
+            if (inv.CodexConfigPath is not null)
+                psi.Environment["COPILOT_BRIDGE_TEST_CODEX_CONFIG_PATH"] = inv.CodexConfigPath;
+            if (inv.ClaudeVersion is not null)
+                psi.Environment["COPILOT_BRIDGE_TEST_CLAUDE_VERSION"] = inv.ClaudeVersion;
             if (inv.ForceModelsFailure)
             {
                 var selectedConfiguration = Directory.GetParent(buildOutputDir)?.Name;
@@ -562,6 +574,9 @@ internal static class ServeProcess
             + "Build the CLI project first.");
     }
 
+    internal static string LocateBridgeExecutable() =>
+        Path.Combine(LocateBuildOutputDir(), "copilot-bridge.exe");
+
     /// <summary>
     /// Stable root for behavior-run evidence (bridge traces + run manifests), OUTSIDE
     /// any per-run scratch dir so it survives the bridge stopping. Under the repo at
@@ -596,10 +611,15 @@ internal static class ServeProcess
 
     private static int GetFreeLoopbackPort()
     {
-        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+            if (port != 8765) return port;
+        }
+        throw new InvalidOperationException("Could not allocate a scratch bridge port other than 8765.");
     }
 
     private static async Task KillQuietly(Process proc)

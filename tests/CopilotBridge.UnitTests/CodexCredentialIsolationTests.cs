@@ -14,7 +14,7 @@ public sealed class CodexCredentialIsolationTests
     {
         const string realToken = "copilot-real-token-credential-isolation-canary";
         var invocation = new CodexProviderAuthInvocation("bridge.exe", ["auth", "provider-token"]);
-        var connection = new BridgeConnection(8765, false, 0, 0);
+        var connection = new BridgeConnection(8765);
         var (config, _) = CodexConfigurator.BuildContent(null, connection, invocation);
 
         var baseline = CodexCatalogTestFixtures.LoadCapturedBaseline();

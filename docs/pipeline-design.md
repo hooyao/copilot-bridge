@@ -429,11 +429,11 @@ The forward paths (both `/cc` and Codex) bound how long they wait on an
 *unresponsive* Copilot with two independent **inactivity** budgets — not a
 total-duration cap. As long as upstream keeps making progress the relevant timer
 resets, so a legitimately slow-but-progressing request (e.g. a near-full-`[1m]`
-prompt whose first byte legitimately takes minutes while Copilot builds a large
+prompt whose response headers legitimately take minutes while Copilot builds a large
 prompt cache) is never aborted.
 
-- **First-byte budget** (`FirstByteTimeoutSeconds`, default 240) bounds the wait
-  for response headers, applied *per send attempt* inside
+- **Response-header budget** (historical key `FirstByteTimeoutSeconds`, default
+  240) bounds the wait for upstream response headers, applied *per send attempt* inside
   `CopilotClient.PostMessagesAsync` (a linked `CancellationTokenSource` +
   `CancelAfter`, disarmed the instant headers arrive so it can't fire during the
   body read). Because it wraps each `SendAsync` individually, retry backoff never
@@ -487,20 +487,24 @@ prompt cache) is never aborted.
   keepalive for the block it was invented to cover would defeat it. See
   `docs/timeout-chain.md` and the `stream-keepalive` capability.
 
-  The bridge is the earlier deterministic actor by construction: `config
-  claude-code` derives Claude Code's `CLAUDE_STREAM_IDLE_TIMEOUT_MS` from this
-  budget plus a margin, so the client always outlasts it, and startup warns if it
-  does not (see `docs/timeout-chain.md`). On expiry the upstream strategy throws
+  Client idle settings remain independent operator-owned values. Startup reads the
+  inspectable global Claude/Codex files, labels their visibility boundary, and
+  reports an undercut or equal-deadline race without rewriting either client.
+  Keepalive cannot protect the first-event gap because no ping is emitted before
+  the first genuine upstream event; whole-response buffering likewise prevents a
+  ping from reaching the downstream socket. On expiry the upstream strategy throws
   `UpstreamTimeoutException(StreamIdle)` through the hub stream; the downstream
   client edge selects the protocol-specific failure surface (see below). An
   observation cancelled at that deadline is right-censored and cannot establish
   whether upstream would later have resumed, so timeout tuning remains a separate
-  operator decision — note Copilot sends no keepalive during extended thinking, so
-  240s covers ordinary long thinking, but a measured opus-5 turn at effort=xhigh
-  stayed silent for 600s, so consistently deep workloads want more.
+  operator decision — Copilot can remain silent for many minutes during extended
+  thinking, so operators tune the bridge and native client settings separately.
 
 Each budget disables at `<= 0` (no timer armed, no allocation — the byte-identical
-`/cc` passthrough hot path is unchanged). Surfacing, mapped by the endpoint's one
+`/cc` passthrough hot path is unchanged). Every positive response-header,
+stream-idle, and keepalive value is used exactly: startup validates the actual
+`CancelAfter`/`Task.Delay` representable range and introduces no margin, clamp, or
+fallback. Surfacing, mapped by the endpoint's one
 `catch (UpstreamTimeoutException)`:
 
 - **Before headers** (first-byte): a real `504 Gateway Timeout`.
@@ -510,9 +514,10 @@ Each budget disables at `<= 0` (no timer armed, no allocation — the byte-ident
   attempt and issues its `stream:false` recovery request. Buffered T3 translates a
   successful cross-routed Responses object into Anthropic Messages IR before
   response detectors run; the `/cc` client edge then remains identity while Codex
-  T4 converts the same IR back to Responses;
-  `config claude-code` removes `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` so this
-  recovery path remains enabled;
+  T4 converts the same IR back to Responses. If Claude Code chooses to issue a
+  non-streaming recovery request, the bridge supports it; the connection command
+  preserves `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` rather than selecting that
+  client policy;
   `StreamIdleAction=Truncate` instead ends the stream with no error event. Note the
   detector framework is pull-based (it inspects events that *arrive*), so an idle
   gap — the absence of an event — cannot be a detector; the injection happens at

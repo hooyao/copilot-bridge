@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Options;
+
 namespace CopilotBridge.Cli.Hosting.Options;
 
 /// <summary>
@@ -34,8 +36,8 @@ namespace CopilotBridge.Cli.Hosting.Options;
 internal sealed class UpstreamTimeoutOptions
 {
     /// <summary>
-    /// Inactivity budget (seconds) for Copilot to return response headers — the
-    /// first byte — measured per send attempt (retry backoff does not count
+    /// Inactivity budget (seconds) for Copilot to return upstream response
+    /// headers, measured per send attempt (retry backoff does not count
     /// against it). A near-full-context prompt legitimately takes minutes to first
     /// byte (cache creation), so this is generous by design. On timeout the bridge
     /// aborts the send and, because no bytes have reached the client, returns a
@@ -60,16 +62,12 @@ internal sealed class UpstreamTimeoutOptions
     /// sent, the wire status stays <c>200</c>; by default the bridge injects the
     /// same retryable <c>overloaded_error</c> the response guards use (so Claude
     /// Code re-attempts the turn), unless <see cref="StreamIdleAction"/> selects
-    /// truncation. Drives Claude Code's <c>CLAUDE_STREAM_IDLE_TIMEOUT_MS</c> (this
-    /// value plus a margin) so the client outlasts the bridge.
+    /// truncation. This value is never copied into a client configuration.
     /// <para>Default 240 (4 min). Copilot emits <b>no keepalive</b> while a model is
     /// thinking, so a deep-thinking turn is legitimately silent for minutes with
-    /// nothing on the wire — a measured <c>claude-opus-5</c> turn at
-    /// <c>effort=xhigh</c> opened a thinking block and then sent nothing for
-    /// <b>600 s</b>. The former 60 s default aborted such a turn while it was
-    /// perfectly healthy. 240 s covers ordinary long thinking; raise it further
-    /// (e.g. 600) for consistently deep workloads, then re-run
-    /// <c>config claude-code</c> so the client follows. See
+    /// nothing on the wire — measured deep-thinking turns have remained silent
+    /// for more than ten minutes. A low budget can therefore abort a healthy turn.
+    /// Operators tune this bridge value and the native client settings independently. See
     /// <c>docs/timeout-chain.md</c>.</para>
     /// A timeout observation is right-censored at cancellation and cannot establish
     /// whether upstream would later have resumed; tune this operator knob separately
@@ -81,10 +79,10 @@ internal sealed class UpstreamTimeoutOptions
     /// Interval (seconds) between synthetic keepalive (<c>ping</c>) events the
     /// bridge injects into <b>/cc</b> and <b>/codex</b> streams while the
     /// <b>upstream is silent</b>. Copilot sends no keepalive of its own while a
-    /// model is thinking, so without this an Anthropic client's own idle watchdogs
-    /// end a perfectly healthy deep-thinking turn. Injecting the keepalive the
-    /// upstream omits makes THIS bridge the sole authority on when a stalled turn
-    /// ends. Default 15 (s). <c>&lt;= 0</c> disables injection entirely.
+    /// model is thinking, so without this a client's own idle watchdog can end a
+    /// perfectly healthy deep-thinking turn. A delivered ping refreshes only the
+    /// downstream client; bridge and client deadlines remain independent. Default
+    /// 15 (s). <c>&lt;= 0</c> disables injection entirely.
     /// </summary>
     /// <remarks>
     /// <para><b>Silence-triggered, not periodic.</b> While upstream events arrive at
@@ -98,18 +96,14 @@ internal sealed class UpstreamTimeoutOptions
     /// stop the client from judging silence, so if they also fed the bridge's budget
     /// nothing would be judging it and a hung upstream would stream pings forever.</para>
     /// <para><b>Must be shorter than the client's tightest watchdog to be useful.</b>
-    /// For Claude Code that is the <b>180 s</b> byte-level watchdog, which the
-    /// bridge's own <c>_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL</c> key (written to
-    /// unlock the native 1M context) selects in place of the 300 s default. The
-    /// default 15 s leaves margin for a few buffered or dropped pings. Codex defaults
+    /// The default 15 s leaves room for buffered or delayed pings. Codex defaults
     /// its parsed-event idle timeout to <b>300 s</b>; the same interval completes that
     /// wait through a full data event which Codex then ignores as an unknown type. A value
     /// <c>&gt;=</c> <see cref="StreamIdleTimeoutSeconds"/> means the idle budget
     /// always fires first and no ping is ever due — coherent, but pointless.</para>
-    /// <para>Injection does not replace the client-side timeout keys
-    /// <c>config claude-code</c> writes; those remain a second line of defence for
-    /// the cases a runtime keepalive cannot cover (injection disabled, a buffering
-    /// intermediary, a bridge that itself stalls). See
+    /// <para>Injection does not replace any user-owned client timeout. Those remain
+    /// independent bounds for cases a runtime keepalive cannot cover (before the
+    /// first event, injection disabled, buffering, or a bridge that itself stalls). See
     /// <c>docs/timeout-chain.md</c>.</para>
     /// <para>The same timeout manager serves both routes: one pending upstream read,
     /// separate upstream-idle and downstream-activity deadlines, and keepalive ticks
@@ -150,4 +144,28 @@ internal enum UpstreamTimeoutAction
 
     /// <summary>End the stream with no error event (silent cut-short 200).</summary>
     Truncate = 1,
+}
+
+/// <summary>Fails startup before any request can reach an unsupported timer value.</summary>
+internal sealed class UpstreamTimeoutOptionsValidator : IValidateOptions<UpstreamTimeoutOptions>
+{
+    // System.Threading.Timer-backed APIs accept at most uint.MaxValue - 1 ms.
+    internal const int MaxTimerSeconds = 4_294_967;
+
+    public ValidateOptionsResult Validate(string? name, UpstreamTimeoutOptions options)
+    {
+        var errors = new List<string>();
+        ValidateTimer(nameof(options.FirstByteTimeoutSeconds), options.FirstByteTimeoutSeconds, errors);
+        ValidateTimer(nameof(options.StreamIdleTimeoutSeconds), options.StreamIdleTimeoutSeconds, errors);
+        ValidateTimer(nameof(options.KeepAliveIntervalSeconds), options.KeepAliveIntervalSeconds, errors);
+        return errors.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(errors);
+    }
+
+    private static void ValidateTimer(string key, int seconds, List<string> errors)
+    {
+        if (seconds <= 0 || seconds <= MaxTimerSeconds) return;
+        errors.Add(
+            $"Pipeline:UpstreamTimeout:{key}={seconds}s cannot be represented by the runtime timer; "
+            + $"use <= {MaxTimerSeconds}s, or <= 0 to disable that phase.");
+    }
 }

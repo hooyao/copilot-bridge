@@ -276,12 +276,23 @@ public class ClaudeCodeBehaviorTests
         const string canary = "cc-stream-recovery-canary-64129";
         using var work = ClientBehaviorSupport.NewWorkDir(caseId);
         var probePath = Path.Combine(work.Path, "cbridge_probe.txt");
+        var observedSettingsPath = Path.Combine(work.Path, "observed-global-settings.json");
+        File.WriteAllText(observedSettingsPath, """
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "11000",
+              "CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS": "13000"
+            } }
+            """);
         await using var upstream = ResponsesFaultRecoveryServer.Start(probePath, canary);
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
             ServeScenario.CcToGptFaultRecovery,
             TestUpstreamBaseUrl: upstream.BaseUrl,
             StreamIdleTimeoutSeconds: 1,
-            WholeResponseBuffering: true));
+            WholeResponseBuffering: true,
+            ClaudeSettingsPath: observedSettingsPath,
+            CodexConfigPath: Path.Combine(work.Path, "missing-codex-config.toml"),
+            ClaudeVersion: "2.1.221"));
 
         var prompt =
             "Actually use the Bash tool to write the exact text " + canary
@@ -294,7 +305,14 @@ public class ClaudeCodeBehaviorTests
             Verbose: true,
             AllowedTools: "Bash,Read",
             Timeout: TimeSpan.FromMinutes(4),
-            WorkingDirectory: work.Path));
+            WorkingDirectory: work.Path,
+            // Distinct client idle values plus absent API_TIMEOUT_MS. The real
+            // client therefore runs with event=11s (subject to its 5m floor),
+            // byte=13s, normal-request=10m default, and after-stream-error=5m
+            // default. The deterministic bridge timeout fires first at 1s.
+            ClearTimeoutEnv: true,
+            StreamIdleTimeoutMs: 11_000,
+            ByteIdleTimeoutMs: 13_000));
 
         var manifestPath = BehaviorRun.Write(
             new BehaviorManifest(
@@ -315,6 +333,7 @@ public class ClaudeCodeBehaviorTests
 
         _output.WriteLine($"fault upstream={upstream.BaseUrl} requests={upstream.RequestCount}");
         _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
+        _output.WriteLine(bridge.StderrAll);
         _output.WriteLine($"claude.exe exit={result.ExitCode} duration={result.Duration}");
         _output.WriteLine($"[manifest] {manifestPath}");
         _output.WriteLine("[verdict] run `/real-client-verify` against the transcript and request-id traces.");

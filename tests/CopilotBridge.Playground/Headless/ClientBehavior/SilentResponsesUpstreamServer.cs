@@ -23,24 +23,37 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
     private readonly string _workDirectory;
     private readonly string _canary;
     private readonly TimeSpan _silence;
+    private readonly bool _failFirstSampling;
+    private readonly bool _failFirstHttpRequest;
+    private readonly TimeSpan _firstFailureSilence;
     private int _samplingRequests;
     private int _toolOutputRequests;
+    private int _timedOutSamplingRequests;
+    private int _httpFailedRequests;
 
     public string BaseUrl { get; }
     public int SamplingRequests => Volatile.Read(ref _samplingRequests);
     public int ToolOutputRequests => Volatile.Read(ref _toolOutputRequests);
+    public int TimedOutSamplingRequests => Volatile.Read(ref _timedOutSamplingRequests);
+    public int HttpFailedRequests => Volatile.Read(ref _httpFailedRequests);
     public TimeSpan Silence => _silence;
 
     private SilentResponsesUpstreamServer(
         string baseUrl,
         string workDirectory,
         string canary,
-        TimeSpan silence)
+        TimeSpan silence,
+        bool failFirstSampling,
+        bool failFirstHttpRequest,
+        TimeSpan firstFailureSilence)
     {
         BaseUrl = baseUrl;
         _workDirectory = workDirectory;
         _canary = canary;
         _silence = silence;
+        _failFirstSampling = failFirstSampling;
+        _failFirstHttpRequest = failFirstHttpRequest;
+        _firstFailureSilence = firstFailureSilence;
         _listener.Prefixes.Add(baseUrl + "/");
         _listener.Start();
         _acceptLoop = AcceptLoopAsync();
@@ -49,14 +62,23 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
     public static SilentResponsesUpstreamServer Start(
         string workDirectory,
         string canary,
-        TimeSpan silence)
+        TimeSpan silence,
+        bool failFirstSampling = false,
+        bool failFirstHttpRequest = false,
+        TimeSpan? firstFailureSilence = null)
     {
         using var socket = new TcpListener(IPAddress.Loopback, 0);
         socket.Start();
         var port = ((IPEndPoint)socket.LocalEndpoint).Port;
         socket.Stop();
         return new SilentResponsesUpstreamServer(
-            $"http://127.0.0.1:{port}", workDirectory, canary, silence);
+            $"http://127.0.0.1:{port}",
+            workDirectory,
+            canary,
+            silence,
+            failFirstSampling,
+            failFirstHttpRequest,
+            firstFailureSilence ?? TimeSpan.FromSeconds(10));
     }
 
     public async ValueTask DisposeAsync()
@@ -96,23 +118,41 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
 
             using var request = JsonDocument.Parse(body);
             var hasToolOutput = HasToolOutput(request.RootElement, ExecCallId);
+            var samplingNumber = 0;
             if (hasToolOutput)
                 Interlocked.Increment(ref _toolOutputRequests);
             else
-                Interlocked.Increment(ref _samplingRequests);
-
-            context.Response.StatusCode = 200;
-            context.Response.ContentType = "text/event-stream";
-            context.Response.SendChunked = true;
+                samplingNumber = Interlocked.Increment(ref _samplingRequests);
 
             if (hasToolOutput)
             {
+                context.Response.StatusCode = 200;
+                context.Response.ContentType = "text/event-stream";
+                context.Response.SendChunked = true;
                 await WriteFinalTextAsync(context.Response);
                 return;
             }
 
             if (!HasCustomExecTool(request.RootElement))
                 throw new InvalidDataException("Codex request did not advertise the custom exec tool.");
+
+            if (_failFirstHttpRequest && samplingNumber == 1)
+            {
+                Interlocked.Increment(ref _httpFailedRequests);
+                await WriteRetryableHttpFailureAsync(context.Response);
+                return;
+            }
+
+            context.Response.StatusCode = 200;
+            context.Response.ContentType = "text/event-stream";
+            context.Response.SendChunked = true;
+
+            if (_failFirstSampling
+                && Interlocked.CompareExchange(ref _timedOutSamplingRequests, 1, 0) == 0)
+            {
+                await WriteFirstSamplingStallAsync(context.Response);
+                return;
+            }
 
             await WriteSilentThenExecAsync(context.Response);
         }
@@ -128,6 +168,36 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
         {
             try { context.Response.Close(); } catch { }
         }
+    }
+
+    private static async Task WriteRetryableHttpFailureAsync(HttpListenerResponse response)
+    {
+        var bytes = Encoding.UTF8.GetBytes(
+            "{\"error\":{\"message\":\"temporary upstream failure\","
+            + "\"type\":\"server_error\",\"code\":\"server_error\"}}");
+        response.StatusCode = 500;
+        response.ContentType = "application/json";
+        response.ContentLength64 = bytes.Length;
+        await response.OutputStream.WriteAsync(bytes);
+        await response.OutputStream.FlushAsync();
+    }
+
+    private async Task WriteFirstSamplingStallAsync(HttpListenerResponse response)
+    {
+        await WriteEventAsync(response, "response.created", JsonSerializer.Serialize(new
+        {
+            type = "response.created",
+            sequence_number = 1,
+            response = new
+            {
+                id = "resp_retryable_stream_timeout",
+                @object = "response",
+                status = "in_progress",
+                model = "gpt-5.6-sol",
+                output = Array.Empty<object>(),
+            },
+        }));
+        await Task.Delay(_firstFailureSilence, _stop.Token);
     }
 
     private async Task WriteSilentThenExecAsync(HttpListenerResponse response)

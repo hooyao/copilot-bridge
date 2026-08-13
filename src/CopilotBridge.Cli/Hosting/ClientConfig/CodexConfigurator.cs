@@ -83,8 +83,20 @@ internal sealed class CodexConfigurator : IClientConfigurator
             doc = Tomlyn.Parsing.SyntaxParser.Parse(original + "\n", sourcePath);
         }
 
+        RejectConflictingAuthRepresentations(doc);
         var summary = MergeInto(doc, connection, authInvocation);
-        return (doc.ToString(), summary);
+        var content = doc.ToString();
+        var reparsed = Tomlyn.Parsing.SyntaxParser.Parse(content, sourcePath);
+        if (reparsed.HasErrors)
+        {
+            var first = reparsed.Diagnostics.Count > 0
+                ? reparsed.Diagnostics[0].ToString()
+                : "unknown error";
+            throw new ClientConfigException(
+                "The planned Codex config is not valid TOML. Refusing to write it; "
+                + $"parser said: {first}");
+        }
+        return (content, summary);
     }
 
     public string? Apply(ConfigPlan plan) => ConfigFileWriter.Write(plan);
@@ -98,11 +110,6 @@ internal sealed class CodexConfigurator : IClientConfigurator
         {
             return new ConfigState(ClientId, scope, path, Exists: false,
                 ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
-                ExpectedFallback: null, CurrentFallback: null,
-                ExpectedAssume1m: null, CurrentAssume1m: null,
-                ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
-                ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
-                ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
                 Details: ["not configured (file does not exist)"]);
         }
 
@@ -115,11 +122,6 @@ internal sealed class CodexConfigurator : IClientConfigurator
         {
             return new ConfigState(ClientId, scope, path, Exists: true,
                 ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
-                ExpectedFallback: null, CurrentFallback: null,
-                ExpectedAssume1m: null, CurrentAssume1m: null,
-                ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
-                ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
-                ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
                 Details: ["file has TOML syntax errors (cannot read — fix or remove it, then re-run)"]);
         }
 
@@ -150,18 +152,15 @@ internal sealed class CodexConfigurator : IClientConfigurator
         {
             $"{ModelProviderKey} = {provider ?? "(unset)"}",
             $"[{ProviderTableName}].base_url = {baseUrl ?? "(unset)"}",
+            $"[{ProviderTableName}].stream_idle_timeout_ms = {FindTableValueDisplay(providerTable, "stream_idle_timeout_ms") ?? "(unset)"}",
+            $"[{ProviderTableName}].request_max_retries = {FindTableValueDisplay(providerTable, "request_max_retries") ?? "(unset)"}",
+            $"[{ProviderTableName}].stream_max_retries = {FindTableValueDisplay(providerTable, "stream_max_retries") ?? "(unset)"}",
             $"[{ProviderAuthTableName}] = {(authTable is null ? "missing" : "present")}",
         };
 
         return new ConfigState(ClientId, scope, path, Exists: true,
             ConfiguredForBridge: configured, CurrentBaseUrl: configured ? baseUrl : null,
-            ExpectedBaseUrl: expected, ExpectedFallback: null, CurrentFallback: null,
-            ExpectedAssume1m: null, CurrentAssume1m: null,
-            ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
-            // Codex manages neither long-thinking timeout key (they are Claude Code
-            // env vars); null expected + null current keeps them out of drift.
-            ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
-            ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
+            ExpectedBaseUrl: expected,
             Details: details,
             AdditionalDriftFacts: drift);
     }
@@ -181,10 +180,17 @@ internal sealed class CodexConfigurator : IClientConfigurator
         UpsertTopLevelString(doc, ModelProviderKey, ProviderName);
         summary.Add($"set {ModelProviderKey} = \"{ProviderName}\"");
 
-        // Region 2: the named provider table, replaced by name if it already exists.
+        // Region 2: surgically upsert only bridge-owned connection/auth fields.
         UpsertProviderTable(doc, connection.CodexBaseUrl, authInvocation);
-        summary.Add($"set [{ProviderTableName}] base_url = \"{connection.CodexBaseUrl}\", wire_api = \"{WireApi}\"");
-        summary.Add("enable command-auth model discovery (timeout 5000 ms, refresh-on-401)");
+        summary.Add($"upsert [{ProviderTableName}].name = \"{ProviderName}\"");
+        summary.Add($"upsert [{ProviderTableName}].base_url = \"{connection.CodexBaseUrl}\"");
+        summary.Add($"upsert [{ProviderTableName}].wire_api = \"{WireApi}\"");
+        summary.Add($"upsert [{ProviderAuthTableName}].command = {TomlBasicString(authInvocation.Command)}");
+        var renderedArgs = string.Join(", ", authInvocation.Args.Select(TomlBasicString));
+        summary.Add($"upsert [{ProviderAuthTableName}].args = [ {renderedArgs} ]");
+        summary.Add($"upsert [{ProviderAuthTableName}].timeout_ms = {CodexProviderAuthInvocation.TimeoutMs}");
+        summary.Add($"upsert [{ProviderAuthTableName}].refresh_interval_ms = {CodexProviderAuthInvocation.RefreshIntervalMs}");
+        summary.Add("preserved client-owned provider timeout, retry, transport, query, and header fields");
 
         return summary;
     }
@@ -224,69 +230,89 @@ internal sealed class CodexConfigurator : IClientConfigurator
     }
 
     /// <summary>
-    /// Create or replace the <c>[model_providers.copilot-bridge]</c> table, matched by
-    /// name. Other tables (including a rival provider block) are untouched. The new
-    /// table is parsed from a well-formed TOML fragment so its header (dotted, unquoted
-    /// key) and trivia are correct.
+    /// Create the bridge provider/auth tables when absent and otherwise replace only
+    /// bridge-owned values in place. Every user-owned item in those tables survives.
     /// </summary>
     /// <remarks>
-    /// The leading blank line is only added when <b>appending a fresh</b> table (so it
-    /// does not collide with the previous table's final line). When <b>replacing</b> an
-    /// existing block the new table inherits the leading trivia already present in the
-    /// document, so no extra newline is added — this is what makes a re-run byte-stable
-    /// (idempotent): a leading newline on replace would accumulate a blank line each run.
+    /// Values and new key-value nodes are lifted from parsed TOML fragments rather than
+    /// constructed by hand, preserving valid trivia under Native AOT.
     /// </remarks>
     private static void UpsertProviderTable(
         DocumentSyntax doc,
         string baseUrl,
         CodexProviderAuthInvocation authInvocation)
     {
-        var existingProviderIndex = -1;
-        var existingAuthIndex = -1;
-        for (var i = 0; i < doc.Tables.ChildrenCount; i++)
-        {
-            if (doc.Tables.GetChild(i) is not TableSyntax existing) continue;
-            var tableName = TableName(existing);
-            if (tableName == ProviderTableName)
-            {
-                existingProviderIndex = i;
-            }
-            else if (tableName == ProviderAuthTableName)
-            {
-                existingAuthIndex = i;
-            }
-        }
-
-        var leading = existingProviderIndex >= 0 ? string.Empty : "\n";
+        var providerTable = FindTable(doc, ProviderTableName)
+            ?? AppendTable(doc, ProviderTableName);
+        var authTable = FindTable(doc, ProviderAuthTableName)
+            ?? AppendTable(doc, ProviderAuthTableName);
         var args = string.Join(", ", authInvocation.Args.Select(TomlBasicString));
-        var fragment = Tomlyn.Parsing.SyntaxParser.Parse(
-            $"{leading}[{ProviderTableName}]\n" +
-            $"name = {TomlBasicString(ProviderName)}\n" +
-            $"base_url = {TomlBasicString(baseUrl)}\n" +
-            $"wire_api = {TomlBasicString(WireApi)}\n\n" +
-            $"[{ProviderAuthTableName}]\n" +
-            $"command = {TomlBasicString(authInvocation.Command)}\n" +
-            $"args = [ {args} ]\n" +
-            $"timeout_ms = {CodexProviderAuthInvocation.TimeoutMs}\n" +
-            $"refresh_interval_ms = {CodexProviderAuthInvocation.RefreshIntervalMs}\n",
-            "fragment");
-        if (fragment.HasErrors)
-            throw new InvalidOperationException("Could not construct the managed Codex provider tables.");
+        UpsertTableValue(providerTable, "name", TomlBasicString(ProviderName));
+        UpsertTableValue(providerTable, "base_url", TomlBasicString(baseUrl));
+        UpsertTableValue(providerTable, "wire_api", TomlBasicString(WireApi));
+        UpsertTableValue(authTable, "command", TomlBasicString(authInvocation.Command));
+        UpsertTableValue(authTable, "args", $"[ {args} ]");
+        UpsertTableValue(authTable, "timeout_ms", CodexProviderAuthInvocation.TimeoutMs.ToString(CultureInfo.InvariantCulture));
+        UpsertTableValue(authTable, "refresh_interval_ms", CodexProviderAuthInvocation.RefreshIntervalMs.ToString(CultureInfo.InvariantCulture));
+    }
 
-        var newProviderTable = fragment.Tables.GetChild(0)!;
-        fragment.Tables.RemoveChildAt(0);
-        var newAuthTable = fragment.Tables.GetChild(0)!;
-        fragment.Tables.RemoveChildAt(0);
+    /// <summary>
+    /// TOML permits the nested auth object to be written as an inline table or as
+    /// dotted keys inside the provider table. Appending an explicit auth table on
+    /// top of either representation would redefine the same key and corrupt an
+    /// otherwise valid user config. Refuse that ambiguous rewrite before changing
+    /// any syntax node; the operator can convert it to the explicit table shape the
+    /// bridge manages without losing unrelated auth fields.
+    /// </summary>
+    private static void RejectConflictingAuthRepresentations(DocumentSyntax doc)
+    {
+        var providerTable = FindTable(doc, ProviderTableName);
+        if (providerTable is null) return;
 
-        // Remove from highest index first so the other saved index remains valid.
-        foreach (var index in new[] { existingProviderIndex, existingAuthIndex }
-            .Where(i => i >= 0).OrderByDescending(i => i))
+        foreach (var item in providerTable.Items)
         {
-            doc.Tables.RemoveChildAt(index);
+            if (item is not KeyValueSyntax pair || !IsAuthKey(pair.Key)) continue;
+            throw new ClientConfigException(
+                $"Existing [{ProviderTableName}] expresses auth as '{KeyName(pair.Key)}'. "
+                + $"Refusing to append [{ProviderAuthTableName}] because that would redefine "
+                + "the same TOML object. Convert the auth value to the explicit table form "
+                + $"[{ProviderAuthTableName}], preserving any custom fields, then re-run.");
+        }
+    }
+
+    private static bool IsAuthKey(KeySyntax? key)
+    {
+        return string.Equals(KeyPart(key?.Key), "auth", StringComparison.Ordinal);
+    }
+
+    private static TableSyntax AppendTable(DocumentSyntax doc, string tableName)
+    {
+        var fragment = Tomlyn.Parsing.SyntaxParser.Parse($"\n[{tableName}]\n", "fragment");
+        if (fragment.HasErrors || fragment.Tables.GetChild(0) is not TableSyntax table)
+            throw new InvalidOperationException($"Could not construct TOML table [{tableName}].");
+        fragment.Tables.RemoveChildAt(0);
+        doc.Tables.Add(table);
+        return table;
+    }
+
+    private static void UpsertTableValue(TableSyntax table, string key, string valueSyntax)
+    {
+        var fragment = Tomlyn.Parsing.SyntaxParser.Parse($"[x]\n{key} = {valueSyntax}\n", "fragment");
+        if (fragment.HasErrors || fragment.Tables.GetChild(0) is not TableSyntax fragmentTable
+            || fragmentTable.Items.GetChild(0) is not KeyValueSyntax fragmentKv)
+            throw new InvalidOperationException($"Could not construct TOML key {key}.");
+
+        foreach (var item in table.Items)
+        {
+            if (item is not KeyValueSyntax existing || KeyName(existing.Key) != key) continue;
+            var value = fragmentKv.Value!;
+            fragmentKv.Value = null;
+            existing.Value = value;
+            return;
         }
 
-        doc.Tables.Add(newProviderTable);
-        doc.Tables.Add(newAuthTable);
+        fragmentTable.Items.RemoveChildAt(0);
+        table.Items.Add(fragmentKv);
     }
 
     private static string? FindTopLevelString(DocumentSyntax doc, string key)
@@ -333,6 +359,17 @@ internal sealed class CodexConfigurator : IClientConfigurator
             if (item is KeyValueSyntax kv && KeyName(kv.Key) == key
                 && kv.Value is IntegerValueSyntax value)
                 return value.Value;
+        }
+        return null;
+    }
+
+    private static string? FindTableValueDisplay(TableSyntax? table, string key)
+    {
+        if (table is null) return null;
+        foreach (var item in table.Items)
+        {
+            if (item is KeyValueSyntax kv && KeyName(kv.Key) == key)
+                return kv.Value?.ToString().Trim();
         }
         return null;
     }
@@ -387,11 +424,24 @@ internal sealed class CodexConfigurator : IClientConfigurator
     }
 
     /// <summary>The dotted-key name of a key-value's key, e.g. <c>model_provider</c>.</summary>
-    private static string KeyName(KeySyntax? key) => key?.ToString().Trim() ?? string.Empty;
+    private static string KeyName(KeySyntax? key)
+    {
+        if (key is null) return string.Empty;
+        var parts = new List<string> { KeyPart(key.Key) };
+        foreach (var dotted in key.DotKeys) parts.Add(KeyPart(dotted.Key));
+        return string.Join('.', parts);
+    }
+
+    private static string KeyPart(BareKeyOrStringValueSyntax? key) => key switch
+    {
+        BareKeySyntax bare => bare.Key?.Text ?? string.Empty,
+        StringValueSyntax quoted => quoted.Value ?? string.Empty,
+        _ => key?.ToString().Trim() ?? string.Empty,
+    };
 
     /// <summary>The dotted-key name of a table header, e.g.
     /// <c>model_providers.copilot-bridge</c>.</summary>
-    private static string TableName(TableSyntax table) => table.Name?.ToString().Trim() ?? string.Empty;
+    private static string TableName(TableSyntax table) => KeyName(table.Name);
 
     /// <summary>
     /// Resolve <c>$CODEX_HOME/config.toml</c>, falling back to <c>~/.codex/config.toml</c>.

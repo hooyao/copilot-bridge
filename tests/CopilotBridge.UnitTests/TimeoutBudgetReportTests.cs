@@ -6,102 +6,363 @@ using Xunit;
 
 namespace CopilotBridge.UnitTests;
 
-/// <summary>
-/// Contract tests for the timeout-budget-report capability. Asserted from the
-/// spec: the report names its bounds and their source; a client bound that would
-/// fire first warns and names BOTH remedies; a missing client key warns exactly
-/// like a too-short one (it is known-bad, not unknown); a disabled bridge budget
-/// reads as "no bound" and is excluded from the minimum; and an unreadable client
-/// file never fails startup.
-/// </summary>
+/// <summary>Golden and edge contracts for the compact read-only startup inventory.</summary>
 public class TimeoutBudgetReportTests
 {
-    private static UpstreamTimeoutOptions Budgets(int firstByteSeconds, int streamIdleSeconds) =>
-        new() { FirstByteTimeoutSeconds = firstByteSeconds, StreamIdleTimeoutSeconds = streamIdleSeconds };
-
-    // ---- Requirement: keepalive injection is visible in the report ----
-
-    /// <summary>
-    /// Contract: the report states whether the bridge is injecting keepalives. With
-    /// injection on, the client's idle watchdogs effectively never fire — which
-    /// changes how the idle-gap row is to be read — and pings will appear in traces.
-    /// An operator who cannot see this from startup would misread both.
-    /// </summary>
     [Fact]
-    public void Report_states_that_keepalive_injection_is_active()
+    public void Default_global_configs_render_the_approved_inventory_exactly()
     {
-        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var claude = Write("settings.json", """
+            { "env": { "ANTHROPIC_BASE_URL": "http://localhost:8765/cc" } }
+            """);
+        var codex = Write("config.toml", """
+            model_provider = "copilot-bridge"
+            [model_providers.copilot-bridge]
+            name = "copilot-bridge"
+            base_url = "http://localhost:8765/codex"
+            wire_api = "responses"
+            """);
         var (events, log) = Recorder();
+        var budgets = new UpstreamTimeoutOptions
+        {
+            FirstByteTimeoutSeconds = 240,
+            StreamIdleTimeoutSeconds = 240,
+            KeepAliveIntervalSeconds = 15,
+        };
 
-        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
-        budgets.KeepAliveIntervalSeconds = 15;
-        TimeoutBudgetReport.Emit(budgets, log, path);
+        TimeoutBudgetReport.Emit(
+            budgets,
+            log,
+            claude,
+            codexConfigPathOverride: codex,
+            retryOptions: new UpstreamRetryOptions { MaxRetries = 2 },
+            claudeVersionOverride: ClaudeCodeTimeoutPolicy.VerifiedClientVersion);
 
-        var table = Table(events);
-        Assert.Contains("keepalive", table, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("15s", table, StringComparison.Ordinal);
+        var expected = $$"""
+            Timeouts (observed configuration; startup does not rewrite values):
+              Bridge — appsettings.json
+                upstream response headers  4m / send attempt
+                upstream SSE event gap     4m / parsed event gap
+                downstream keepalive       15s, after first upstream event
+                network retries            2
+                buffered body              no limit after headers
+              Claude Code — {{claude}} (global only)
+                SSE event idle             unset -> 5m*
+                SSE byte idle              unset -> 5m*
+                request timeout            unset -> normal 10m*; after stream error 5m*
+                retries                    not visible at bridge startup
+              Codex — {{codex}} (global only)
+                SSE event idle             unset -> 5m* / parsed event
+                request retries            unset -> 4*
+                stream retries             unset -> 5*
+                whole request              no limit
+              note: timeouts apply per attempt; a retry starts a new attempt, so there is no fixed whole-turn limit
+              scope: global client configs only; project/profile/CLI/env overrides are not included
+              * = client built-in default
+            """.ReplaceLineEndings();
+
+        Assert.Equal(expected, Inventory(events).ReplaceLineEndings());
     }
 
-    /// <summary>
-    /// Contract: a POSITIVE interval does not mean pings will flow. When it is not
-    /// shorter than the stream-idle budget, StreamIdleReader deliberately lets the
-    /// budget fire first and no ping is ever due — so promising pings here would make
-    /// the report confidently wrong about the one thing an operator reads it for.
-    /// </summary>
     [Fact]
-    public void Report_states_keepalive_inactive_when_interval_is_not_shorter_than_budget()
+    public void Explicit_values_show_human_duration_and_client_floor_without_milliseconds_noise()
     {
-        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var claude = Write("settings.json", """
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "60000",
+              "API_TIMEOUT_MS": "900000"
+            } }
+            """);
+        var codex = Write("config.toml", """
+            model_provider = "copilot-bridge"
+            [model_providers.copilot-bridge]
+            name = "copilot-bridge"
+            base_url = "http://localhost:8765/codex"
+            wire_api = "responses"
+            stream_idle_timeout_ms = 0
+            request_max_retries = 0
+            stream_max_retries = 0
+            """);
         var (events, log) = Recorder();
 
-        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 30);
-        budgets.KeepAliveIntervalSeconds = 30; // equal → the budget always wins
-        TimeoutBudgetReport.Emit(budgets, log, path);
+        TimeoutBudgetReport.Emit(
+            Budgets(240, 240, 15), log, claude, codexConfigPathOverride: codex,
+            claudeVersionOverride: ClaudeCodeTimeoutPolicy.VerifiedClientVersion);
 
-        var table = Table(events);
-        Assert.Contains("keepalive: INACTIVE", table, StringComparison.Ordinal);
-        Assert.DoesNotContain("sends ping every", table, StringComparison.Ordinal);
+        var inventory = Inventory(events);
+        Assert.Contains("configured 1m -> effective 5m (client floor)", inventory);
+        Assert.Contains("request timeout            15m, explicit", inventory);
+        Assert.Contains("SSE event idle             0s, explicit", inventory);
+        Assert.Contains("request retries            0, explicit", inventory);
+        Assert.DoesNotContain("300000ms", inventory);
+        Assert.DoesNotContain("900000ms", inventory);
+        Assert.DoesNotContain("up to", inventory, StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>
-    /// Contract: whole-response buffering (ResponseLeakGuard.PreserveStream=false)
-    /// drains the response and delivers it as one body, so there is no live stream to
-    /// inject into and no keepalive can reach the client mid-turn. The report must say
-    /// so rather than promise protection the configuration cannot deliver.
-    /// </summary>
     [Fact]
-    public void Report_states_keepalive_inactive_under_whole_response_buffering()
+    public void Present_invalid_client_values_are_not_rendered_as_absent_defaults()
     {
-        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var claude = Write("settings.json", """
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_STREAM_IDLE_TIMEOUT_MS": false,
+              "API_TIMEOUT_MS": {}
+            } }
+            """);
+        var codex = Write("config.toml", """
+            model_provider = "copilot-bridge"
+            [model_providers.copilot-bridge]
+            name = "copilot-bridge"
+            base_url = "http://localhost:8765/codex"
+            wire_api = "responses"
+            stream_idle_timeout_ms = "300000"
+            request_max_retries = -1
+            stream_max_retries = "5"
+            """);
         var (events, log) = Recorder();
 
-        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
-        budgets.KeepAliveIntervalSeconds = 15; // would otherwise be active
-        TimeoutBudgetReport.Emit(budgets, log, path, wholeResponseBuffering: true);
+        TimeoutBudgetReport.Emit(
+            Budgets(240, 240, 15),
+            log,
+            claude,
+            codexConfigPathOverride: codex,
+            claudeVersionOverride: ClaudeCodeTimeoutPolicy.VerifiedClientVersion);
 
-        var table = Table(events);
-        Assert.Contains("keepalive: INACTIVE", table, StringComparison.Ordinal);
-        Assert.Contains("PreserveStream=false", table, StringComparison.Ordinal);
+        var inventory = Inventory(events);
+        Assert.Contains("SSE event idle             invalid (false)", inventory);
+        Assert.Contains("request timeout            invalid ({})", inventory);
+        Assert.Contains("SSE event idle             invalid (\"300000\") / parsed event", inventory);
+        Assert.Contains("request retries            invalid (-1)", inventory);
+        Assert.Contains("stream retries             invalid (\"5\")", inventory);
     }
 
-    /// <summary>
-    /// Contract: with injection disabled the report must NOT imply the client is
-    /// protected — the client's own watchdog is then the only thing standing between
-    /// a healthy long-thinking turn and an abort, and the report has to say so.
-    /// </summary>
     [Fact]
-    public void Report_states_when_keepalive_injection_is_off()
+    public void Unverified_claude_version_prints_configured_value_and_unknown_effect_instead_of_guessing()
     {
-        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
+        var claude = Write("settings.json", """
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "60000"
+            } }
+            """);
         var (events, log) = Recorder();
 
-        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
-        budgets.KeepAliveIntervalSeconds = 0;
-        TimeoutBudgetReport.Emit(budgets, log, path);
+        TimeoutBudgetReport.Emit(
+            Budgets(240, 240, 15),
+            log,
+            claude,
+            codexConfigPathOverride: Missing("config.toml"),
+            claudeVersionOverride: "2.1.999");
 
-        var table = Table(events);
-        Assert.Contains("keepalive: OFF", table, StringComparison.Ordinal);
+        var inventory = Inventory(events);
+        Assert.Contains(
+            "configured 1m; Claude Code 2.1.999 has not been verified; effective behavior is version-dependent",
+            inventory);
+        Assert.DoesNotContain("configured 1m -> effective 5m", inventory);
     }
+
+    [Fact]
+    public void Codex_provider_with_wrong_name_is_not_treated_as_the_active_bridge_baseline()
+    {
+        var codex = Write("config.toml", """
+            model_provider = "copilot-bridge"
+            [model_providers.copilot-bridge]
+            name = "lookalike"
+            base_url = "http://localhost:8765/codex"
+            wire_api = "responses"
+            stream_idle_timeout_ms = 900000
+            """);
+
+        var snapshot = CodexTimeoutReader.Read(codex);
+
+        Assert.False(snapshot.Readable);
+        Assert.Equal(ClientValueSource.Unknown, snapshot.EventIdle.Source);
+        Assert.Contains("name is lookalike, not copilot-bridge", snapshot.Reason);
+    }
+
+    [Fact]
+    public void Equal_unprotected_deadline_warns_that_it_is_a_race()
+    {
+        var claude = Write("settings.json", """
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "300000"
+            } }
+            """);
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(
+            Budgets(240, 300, 0),
+            log,
+            claude,
+            codexConfigPathOverride: Missing("config.toml"),
+            claudeVersionOverride: ClaudeCodeTimeoutPolicy.VerifiedClientVersion);
+
+        var warning = Assert.Single(events, e => e.Level == LogLevel.Warning);
+        Assert.Contains("races the bridge", warning.Message);
+        Assert.Contains("CLAUDE_STREAM_IDLE_TIMEOUT_MS", warning.Message);
+        Assert.Contains("Pipeline:UpstreamTimeout:StreamIdleTimeoutSeconds", warning.Message);
+        Assert.DoesNotContain("config claude-code", warning.Message);
+    }
+
+    [Fact]
+    public void Effective_keepalive_does_not_hide_the_unprotected_first_event_gap()
+    {
+        var claude = Write("settings.json", """
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "300000"
+            } }
+            """);
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(
+            Budgets(240, 600, 15),
+            log,
+            claude,
+            codexConfigPathOverride: Missing("config.toml"),
+            claudeVersionOverride: ClaudeCodeTimeoutPolicy.VerifiedClientVersion);
+
+        var warning = Assert.Single(events, e => e.Level == LogLevel.Warning);
+        Assert.Contains("keepalive starts only after that event", warning.Message);
+    }
+
+    [Fact]
+    public void Whole_response_buffering_exposes_shorter_client_watchdog()
+    {
+        var claude = Write("settings.json", """
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "300000"
+            } }
+            """);
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(
+            Budgets(240, 600, 15),
+            log,
+            claude,
+            codexConfigPathOverride: Missing("config.toml"),
+            wholeResponseBuffering: true,
+            claudeVersionOverride: ClaudeCodeTimeoutPolicy.VerifiedClientVersion);
+
+        Assert.Single(events, e => e.Level == LogLevel.Warning);
+    }
+
+    [Fact]
+    public void Unreadable_clients_do_not_suppress_bridge_or_sibling_facts()
+    {
+        var codex = Write("config.toml", """
+            model_provider = "copilot-bridge"
+            [model_providers.copilot-bridge]
+            name = "copilot-bridge"
+            base_url = "http://localhost:8765/codex"
+            wire_api = "responses"
+            """);
+        var (events, log) = Recorder();
+
+        TimeoutBudgetReport.Emit(
+            Budgets(240, 240, 15),
+            log,
+            settingsPathOverride: Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json"),
+            codexConfigPathOverride: codex,
+            claudeVersionOverride: ClaudeCodeTimeoutPolicy.VerifiedClientVersion);
+
+        var inventory = Inventory(events);
+        Assert.Contains("Bridge — appsettings.json", inventory);
+        Assert.Contains($"Codex — {codex} (global only)", inventory);
+        Assert.Contains("SSE event idle             unset -> 5m*", inventory);
+        Assert.Contains("Claude Code —", inventory);
+        Assert.Contains("unknown", inventory);
+        Assert.Contains("settings file does not exist", inventory);
+    }
+
+    [Fact]
+    public void Disabled_bridge_values_are_not_replaced_by_finite_fallbacks()
+    {
+        var (events, log) = Recorder();
+        TimeoutBudgetReport.Emit(
+            Budgets(0, -1, 0),
+            log,
+            claudeVersionOverride: ClaudeCodeTimeoutPolicy.VerifiedClientVersion);
+
+        var inventory = Inventory(events);
+        Assert.Contains("upstream response headers  disabled (0s)", inventory);
+        Assert.Contains("upstream SSE event gap     disabled (-1s)", inventory);
+        Assert.Contains("downstream keepalive       disabled (0s)", inventory);
+    }
+
+    [Fact]
+    public void Startup_buffering_fact_matches_the_actual_active_detector_modes()
+    {
+        Assert.False(BridgeStartupHostedService.WholeResponseBufferingActive(
+            new ResponseLeakGuardOptions { Enabled = false, PreserveStream = false },
+            new ToolInputValidationOptions
+            {
+                Enabled = true,
+                PreserveStream = false,
+                MalformedJsonAction = ToolInputAction.Observe,
+                SchemaViolationAction = ToolInputAction.Observe,
+            }));
+
+        Assert.True(BridgeStartupHostedService.WholeResponseBufferingActive(
+            new ResponseLeakGuardOptions { Enabled = true, PreserveStream = false },
+            new ToolInputValidationOptions { Enabled = false }));
+
+        Assert.True(BridgeStartupHostedService.WholeResponseBufferingActive(
+            new ResponseLeakGuardOptions { Enabled = false },
+            new ToolInputValidationOptions
+            {
+                Enabled = true,
+                PreserveStream = false,
+                MalformedJsonAction = ToolInputAction.AbortOverloaded,
+                SchemaViolationAction = ToolInputAction.Observe,
+            }));
+
+        Assert.False(BridgeStartupHostedService.WholeResponseBufferingActive(
+            new ResponseLeakGuardOptions { Enabled = false },
+            new ToolInputValidationOptions
+            {
+                Enabled = true,
+                PreserveStream = true,
+                MalformedJsonAction = ToolInputAction.AbortOverloaded,
+            }));
+    }
+
+    [Theory]
+    [InlineData(15_000, "15s")]
+    [InlineData(300_000, "5m")]
+    [InlineData(1_500, "1.5s")]
+    [InlineData(long.MaxValue, "9223372036854775.807s")]
+    public void Human_duration_format_is_exact(long milliseconds, string expected) =>
+        Assert.Equal(expected, TimeoutBudgetReport.FormatDuration(milliseconds));
+
+    [Fact]
+    public void Human_duration_format_is_culture_invariant()
+    {
+        var original = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture =
+                System.Globalization.CultureInfo.GetCultureInfo("de-DE");
+            Assert.Equal("1.5s", TimeoutBudgetReport.FormatDuration(1_500));
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = original;
+        }
+    }
+
+    private static UpstreamTimeoutOptions Budgets(int headers, int idle, int keepalive) => new()
+    {
+        FirstByteTimeoutSeconds = headers,
+        StreamIdleTimeoutSeconds = idle,
+        KeepAliveIntervalSeconds = keepalive,
+    };
+
+    private static string Inventory(IEnumerable<RecordedEvent> events) =>
+        Assert.Single(events, e => e.Level == LogLevel.Information).Message;
 
     private static (List<RecordedEvent> Events, ILogger Log) Recorder()
     {
@@ -109,510 +370,15 @@ public class TimeoutBudgetReportTests
         return (provider.Events, provider.CreateLogger("test"));
     }
 
-    private static string WriteSettings(string json)
+    private static string Write(string fileName, string content)
     {
-        var dir = Path.Combine(Path.GetTempPath(), "cb-report-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        var path = Path.Combine(dir, "settings.json");
-        File.WriteAllText(path, json);
+        var directory = Path.Combine(Path.GetTempPath(), "cb-timeout-report-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, fileName);
+        File.WriteAllText(path, content);
         return path;
     }
 
-    private static string WriteCodexConfig(
-        long? streamIdleMs,
-        string provider = "copilot-bridge",
-        string baseUrl = "http://localhost:8765/codex",
-        string wireApi = "responses",
-        string? rawStreamIdle = null)
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "cb-codex-report-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        var path = Path.Combine(dir, "config.toml");
-        var timeout = rawStreamIdle is not null
-            ? $"stream_idle_timeout_ms = {rawStreamIdle}\n"
-            : streamIdleMs is { } value
-                ? $"stream_idle_timeout_ms = {value}\n"
-                : string.Empty;
-        File.WriteAllText(path,
-            $"model_provider = \"{provider}\"\n\n"
-            + "[model_providers.copilot-bridge]\n"
-            + "name = \"copilot-bridge\"\n"
-            + $"base_url = \"{baseUrl}\"\n"
-            + $"wire_api = \"{wireApi}\"\n"
-            + timeout);
-        return path;
-    }
-
-    private static string BridgePointedSettings(string? streamIdleMs, string? requestMs)
-    {
-        var keys = new List<string> { "\"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\"" };
-        if (streamIdleMs is not null)
-        {
-            keys.Add($"\"{ClaudeCodeTimeoutPolicy.StreamIdleKey}\": \"{streamIdleMs}\"");
-        }
-        if (requestMs is not null)
-        {
-            keys.Add($"\"{ClaudeCodeTimeoutPolicy.RequestTimeoutKey}\": \"{requestMs}\"");
-        }
-        return "{ \"env\": { " + string.Join(", ", keys) + " } }";
-    }
-
-    private static List<RecordedEvent> Warnings(List<RecordedEvent> events) =>
-        events.FindAll(e => e.Level == LogLevel.Warning);
-
-    /// <summary>The report is a single Information event holding the whole table.</summary>
-    private static string Table(List<RecordedEvent> events) =>
-        events.Find(e => e.Message.Contains("what ends a turn", StringComparison.OrdinalIgnoreCase))?.Message
-        ?? throw new Xunit.Sdk.XunitException(
-            "no timeout table was emitted; got: "
-            + string.Join(" | ", events.ConvertAll(e => e.Message)));
-
-    /// <summary>
-    /// One row of the table by its phase label. Assertions about a phase must be
-    /// scoped to its own row: the table repeats units across rows, so a
-    /// table-wide substring check can pass on a value that came from a different
-    /// phase entirely.
-    /// </summary>
-    private static string Row(string table, string phase) =>
-        Array.Find(
-            table.Split('\n'),
-            l => l.TrimStart().StartsWith(phase, StringComparison.Ordinal))
-        ?? throw new Xunit.Sdk.XunitException($"no '{phase}' row in table:\n{table}");
-
-    // ---- Requirement: Codex end-to-end idle timeout is reported at startup ----
-
-    [Fact]
-    public void Codex_explicit_provider_idle_timeout_is_reported()
-    {
-        var claude = WriteSettings(BridgePointedSettings("900000", "1200000"));
-        var codex = WriteCodexConfig(streamIdleMs: 420_000);
-        var (events, log) = Recorder();
-
-        TimeoutBudgetReport.Emit(
-            Budgets(firstByteSeconds: 900, streamIdleSeconds: 600),
-            log,
-            claude,
-            codexConfigPathOverride: codex);
-
-        var row = Row(Table(events), "Codex idle gap");
-        Assert.Contains("7m", row, StringComparison.Ordinal);
-        Assert.DoesNotContain("7m*", row, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Codex_missing_provider_key_reports_source_confirmed_five_minute_default()
-    {
-        var claude = WriteSettings(BridgePointedSettings("900000", "1200000"));
-        var codex = WriteCodexConfig(streamIdleMs: null);
-        var (events, log) = Recorder();
-
-        TimeoutBudgetReport.Emit(
-            Budgets(900, 600), log, claude, codexConfigPathOverride: codex);
-
-        var row = Row(Table(events), "Codex idle gap");
-        Assert.Contains("5m*", row, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Codex_unreadable_or_other_provider_is_nonfatal_and_reported_unknown()
-    {
-        var claude = WriteSettings(BridgePointedSettings("900000", "1200000"));
-        var codex = WriteCodexConfig(streamIdleMs: 60_000, provider: "some-other-provider");
-        var (events, log) = Recorder();
-
-        TimeoutBudgetReport.Emit(
-            Budgets(900, 600), log, claude, codexConfigPathOverride: codex);
-
-        Assert.Contains("unknown", Row(Table(events), "Codex idle gap"),
-            StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void Codex_present_timeout_with_wrong_type_is_unknown_not_default()
-    {
-        var claude = WriteSettings(BridgePointedSettings("900000", "1200000"));
-        var codex = WriteCodexConfig(streamIdleMs: null, rawStreamIdle: "\"3000\"");
-        var (events, log) = Recorder();
-
-        TimeoutBudgetReport.Emit(
-            Budgets(900, 600), log, claude, codexConfigPathOverride: codex);
-
-        var row = Row(Table(events), "Codex idle gap");
-        Assert.Contains("client unknown", row, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("-> unknown", row, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("5m*", row, StringComparison.Ordinal);
-    }
-
-    [Theory]
-    [InlineData("https://example.com/v1", "responses")]
-    [InlineData("http://localhost:8765/codex", "chat")]
-    public void Codex_provider_name_without_bridge_route_and_responses_wire_is_unknown(
-        string baseUrl,
-        string wireApi)
-    {
-        var claude = WriteSettings(BridgePointedSettings("900000", "1200000"));
-        var codex = WriteCodexConfig(60_000, baseUrl: baseUrl, wireApi: wireApi);
-        var (events, log) = Recorder();
-
-        TimeoutBudgetReport.Emit(
-            Budgets(900, 600), log, claude, codexConfigPathOverride: codex);
-
-        Assert.Contains("unknown", Row(Table(events), "Codex idle gap"),
-            StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void Active_keepalive_makes_bridge_the_Codex_idle_gap_terminator()
-    {
-        var claude = WriteSettings(BridgePointedSettings("900000", "1200000"));
-        var codex = WriteCodexConfig(streamIdleMs: 60_000);
-        var (events, log) = Recorder();
-        var budgets = Budgets(900, 600);
-        budgets.KeepAliveIntervalSeconds = 15;
-
-        TimeoutBudgetReport.Emit(budgets, log, claude, codexConfigPathOverride: codex);
-
-        var row = Row(Table(events), "Codex idle gap");
-        Assert.Contains("client 1m", row, StringComparison.Ordinal);
-        Assert.EndsWith("-> bridge 10m (keepalive)", row.TrimEnd(), StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Disabled_keepalive_exposes_the_shorter_Codex_watchdog()
-    {
-        var claude = WriteSettings(BridgePointedSettings("900000", "1200000"));
-        var codex = WriteCodexConfig(streamIdleMs: 60_000);
-        var (events, log) = Recorder();
-        var budgets = Budgets(900, 600);
-        budgets.KeepAliveIntervalSeconds = 0;
-
-        TimeoutBudgetReport.Emit(budgets, log, claude, codexConfigPathOverride: codex);
-
-        Assert.EndsWith("-> client 1m", Row(Table(events), "Codex idle gap").TrimEnd(),
-            StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Keepalive_slower_than_Codex_watchdog_does_not_claim_protection()
-    {
-        var claude = WriteSettings(BridgePointedSettings("900000", "1200000"));
-        var codex = WriteCodexConfig(streamIdleMs: 3_000);
-        var (events, log) = Recorder();
-        var budgets = Budgets(900, 600);
-        budgets.KeepAliveIntervalSeconds = 15;
-
-        TimeoutBudgetReport.Emit(budgets, log, claude, codexConfigPathOverride: codex);
-
-        Assert.EndsWith("-> client 3s", Row(Table(events), "Codex idle gap").TrimEnd(),
-            StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Keepalive_slower_than_Claude_watchdog_does_not_suppress_warning()
-    {
-        var claude = WriteSettings(BridgePointedSettings("3000", "1200000"));
-        var codex = WriteCodexConfig(streamIdleMs: null);
-        var (events, log) = Recorder();
-        var budgets = Budgets(900, 600);
-        budgets.KeepAliveIntervalSeconds = 15;
-
-        TimeoutBudgetReport.Emit(budgets, log, claude, codexConfigPathOverride: codex);
-
-        Assert.EndsWith("-> client 3s", Row(Table(events), "idle gap").TrimEnd(),
-            StringComparison.Ordinal);
-        Assert.Single(Warnings(events));
-    }
-
-    // ---- Requirement: effective end-to-end timeout is reported at startup ----
-
-    [Fact]
-    public void Client_outlasting_the_bridge_produces_a_report_and_no_warning()
-    {
-        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
-        var (events, log) = Recorder();
-
-        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
-        budgets.KeepAliveIntervalSeconds = 0;
-        TimeoutBudgetReport.Emit(budgets, log, path);
-
-        Assert.NotEmpty(events);
-        Assert.Empty(Warnings(events));
-    }
-
-    [Fact]
-    public void An_unreadable_client_file_still_reports_and_never_warns()
-    {
-        // A bridge is perfectly usable by a client configured some other way; that
-        // is unknown, not misconfigured, so it must not produce a warning.
-        var missing = Path.Combine(
-            Path.GetTempPath(), "cb-absent-" + Guid.NewGuid().ToString("N"), "settings.json");
-        var (events, log) = Recorder();
-
-        TimeoutBudgetReport.Emit(Budgets(900, 600), log, missing);
-
-        Assert.NotEmpty(events);
-        Assert.Empty(Warnings(events));
-        Assert.Contains(events, e => e.Message.Contains("unknown", StringComparison.OrdinalIgnoreCase));
-    }
-
-    [Fact]
-    public void An_unreadable_client_file_makes_the_effective_bound_unknown_not_the_bridge_budgets()
-    {
-        // Contract: with the client's bound unknown, the EFFECTIVE bound is unknown
-        // too. Claiming it equals the bridge's budgets would falsely reassure an
-        // operator whose separately-configured client holds a shorter watchdog —
-        // precisely the person this report exists to protect.
-        var missing = Path.Combine(
-            Path.GetTempPath(), "cb-absent-" + Guid.NewGuid().ToString("N"), "settings.json");
-        var (events, log) = Recorder();
-
-        TimeoutBudgetReport.Emit(Budgets(900, 600), log, missing);
-
-        var table = Table(events);
-        // The bridge's own budgets are still stated (900 s renders as 15m)...
-        Assert.Contains("15m", table, StringComparison.Ordinal);
-        // ...but the client side must read as unknown, never folded into a
-        // confident bound.
-        Assert.Contains("unknown", table, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void A_budget_larger_than_the_client_can_honor_warns_that_config_cannot_fix_it()
-    {
-        // Contract: above the client's ceiling the derived value is capped BELOW the
-        // budget, so the client fires first and re-running the config command writes
-        // the same insufficient value. The operator must be told to lower the budget
-        // rather than handed a remedy that provably cannot work.
-        var overCeilingSeconds = (ClaudeCodeTimeoutPolicy.StreamIdleMaxMs / 1000) + 600;
-        var path = WriteSettings(BridgePointedSettings(
-            ClaudeCodeTimeoutPolicy.StreamIdleMsFor(overCeilingSeconds).ToString(),
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMs().ToString()));
-        var (events, log) = Recorder();
-
-        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: overCeilingSeconds);
-        budgets.KeepAliveIntervalSeconds = 0;
-        TimeoutBudgetReport.Emit(budgets, log, path);
-
-        var warnings = Warnings(events);
-        Assert.NotEmpty(warnings);
-        var text = string.Join("\n", warnings.ConvertAll(w => w.Message));
-        Assert.Contains("lower the budget", text, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void An_unsatisfiable_budget_produces_one_actionable_warning_not_two()
-    {
-        // Above the client ceiling the undercut is unavoidable, so emitting the
-        // generic "raise the client value / re-run config" advice alongside the
-        // "lower the budget" advice would hand the operator two contradictory
-        // instructions — and the first one is impossible to carry out.
-        var overCeilingSeconds = (ClaudeCodeTimeoutPolicy.StreamIdleMaxMs / 1000) + 600;
-        var path = WriteSettings(BridgePointedSettings(
-            ClaudeCodeTimeoutPolicy.StreamIdleMsFor(overCeilingSeconds).ToString(),
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMs().ToString()));
-        var (events, log) = Recorder();
-
-        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: overCeilingSeconds);
-        budgets.KeepAliveIntervalSeconds = 0;
-        TimeoutBudgetReport.Emit(budgets, log, path);
-
-        var warning = Assert.Single(Warnings(events));
-        Assert.Contains("lower the budget", warning.Message, StringComparison.OrdinalIgnoreCase);
-    }
-    [Fact]
-    public void A_budget_within_the_client_ceiling_does_not_warn_about_the_ceiling()
-    {
-        var path = WriteSettings(BridgePointedSettings(
-            ClaudeCodeTimeoutPolicy.StreamIdleMsFor(600).ToString(),
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMs().ToString()));
-        var (events, log) = Recorder();
-
-        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
-
-        Assert.Empty(Warnings(events));
-    }
-
-    [Fact]
-    public void A_disabled_budget_is_reported_as_no_bound_and_is_not_the_minimum()
-    {
-        // Zero means "no bound", not "zero milliseconds" — reporting it as the
-        // shortest bound would be exactly backwards.
-        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
-        var (events, log) = Recorder();
-
-        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 0, streamIdleSeconds: 0), log, path);
-
-        // Runtime keepalives continue refreshing the client while no bridge idle
-        // deadline exists, so the honest end-to-end result is unbounded — not the
-        // client's numeric watchdog. The disabled bridge value must never become 0s.
-        var idle = Row(Table(events), "idle gap");
-        Assert.EndsWith("-> no bound (keepalive)", idle.TrimEnd(), StringComparison.Ordinal);
-        Assert.Contains("no bound", idle, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void Bounds_are_reported_per_phase_not_as_one_global_minimum()
-    {
-        // These bounds do not compete over the same interval: headers arriving
-        // disarm the first-byte timer, and the stream-idle budgets then govern each
-        // silent gap. A single minimum would report 60s here even though the real
-        // exposure after headers is 600s — confidently wrong.
-        var path = WriteSettings(BridgePointedSettings("900000", "3600000"));
-        var (events, log) = Recorder();
-
-        var budgets = Budgets(firstByteSeconds: 60, streamIdleSeconds: 600);
-        budgets.KeepAliveIntervalSeconds = 0;
-        TimeoutBudgetReport.Emit(budgets, log, path);
-
-        // Each phase keeps its own row, asserted on that row's WINNER: 1m ends the
-        // header wait, 10m ends a silent gap. Collapsing them would lose the 10m
-        // exposure. Scoped per row because "1m" is also a substring of "15m" and
-        // "10m", so a table-wide check would pass on values from other phases.
-        var table = Table(events);
-        Assert.EndsWith("-> 1m", Row(table, "first byte").TrimEnd(), StringComparison.Ordinal);
-        Assert.EndsWith("-> bridge 10m", Row(table, "idle gap").TrimEnd(), StringComparison.Ordinal);
-
-        // No line may present a single number as THE bound for the whole turn.
-        Assert.DoesNotContain(
-            events,
-            e => e.Message.Contains("effective end-to-end bound", StringComparison.OrdinalIgnoreCase)
-                 && !e.Message.Contains("UNKNOWN", StringComparison.OrdinalIgnoreCase));
-    }
-    [Fact]
-    public void A_disabled_budget_cannot_be_undercut()
-    {
-        // Nothing can fire "before" a bound that does not exist.
-        var path = WriteSettings(BridgePointedSettings("1000", "1000"));
-        var (events, log) = Recorder();
-
-        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 0, streamIdleSeconds: 0), log, path);
-
-        Assert.Empty(Warnings(events));
-    }
-
-    // ---- Requirement: a client watchdog that would fire first is warned about ----
-
-    [Fact]
-    public void A_client_stream_idle_shorter_than_the_bridge_budget_warns()
-    {
-        var path = WriteSettings(BridgePointedSettings("60000", "1200000"));
-        var (events, log) = Recorder();
-
-        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
-        budgets.KeepAliveIntervalSeconds = 0;
-        TimeoutBudgetReport.Emit(budgets, log, path);
-
-        var warning = Assert.Single(Warnings(events));
-        Assert.Contains(ClaudeCodeTimeoutPolicy.StreamIdleKey, warning.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void A_short_client_request_timeout_is_reported_as_a_residual_bound_not_a_warning()
-    {
-        // API_TIMEOUT_MS is a wall-clock cap while the bridge's budgets bound
-        // INACTIVITY, so it can always be crossed first — warning on that would fire
-        // on correct configurations and there is no value that would silence it.
-        // The honest surface is to state it as a residual bound the bridge cannot
-        // out-wait, which is what this asserts.
-        var path = WriteSettings(BridgePointedSettings("900000", "60000"));
-        var (events, log) = Recorder();
-
-        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
-        budgets.KeepAliveIntervalSeconds = 0;
-        TimeoutBudgetReport.Emit(budgets, log, path);
-
-        // No warning: it cannot be "fixed", so warning would be noise on a correct
-        // configuration. It still gets its own table row, so the operator can see
-        // the cap that will end the turn.
-        Assert.Empty(Warnings(events));
-
-        var table = Table(events);
-        Assert.Contains("whole request", table, StringComparison.Ordinal);
-        Assert.Contains("1m", table, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void A_missing_client_key_warns_rather_than_being_passed_over_as_unknown()
-    {
-        // The corrected design: absence is the DEFAULT state of every install
-        // configured before this feature, and the bridge's own 1M-context key is
-        // what selects the shorter client default. Staying quiet here would leave
-        // the common case unprotected.
-        var path = WriteSettings(BridgePointedSettings(streamIdleMs: null, requestMs: "1200000"));
-        var (events, log) = Recorder();
-
-        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
-        budgets.KeepAliveIntervalSeconds = 0;
-        TimeoutBudgetReport.Emit(budgets, log, path);
-
-        var warning = Assert.Single(Warnings(events));
-        Assert.Contains(ClaudeCodeTimeoutPolicy.StreamIdleKey, warning.Message, StringComparison.Ordinal);
-        // Names the bound that actually applies in the key's absence.
-        Assert.Contains(
-            ClaudeCodeTimeoutPolicy.AbsentStreamIdleDefaultMs.ToString(),
-            warning.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void The_warning_states_both_remedies()
-    {
-        // Some operators manage settings.json by other means (dotfiles, MDM, a
-        // shared team config), so naming only the bridge's own command is not
-        // enough — the env var and its minimum value must be actionable too.
-        var path = WriteSettings(BridgePointedSettings("60000", "1200000"));
-        var (events, log) = Recorder();
-
-        var budgets = Budgets(firstByteSeconds: 900, streamIdleSeconds: 600);
-        budgets.KeepAliveIntervalSeconds = 0;
-        TimeoutBudgetReport.Emit(budgets, log, path);
-
-        var warning = Assert.Single(Warnings(events));
-        Assert.Contains("config claude-code", warning.Message, StringComparison.Ordinal);
-        Assert.Contains(ClaudeCodeTimeoutPolicy.StreamIdleKey, warning.Message, StringComparison.Ordinal);
-        // The minimum the operator must set it to (the bridge budget, in ms).
-        Assert.Contains("600000", warning.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void An_equal_client_value_does_not_warn()
-    {
-        // Equal is not undercutting — it merely has no margin.
-        var path = WriteSettings(BridgePointedSettings("600000", "900000"));
-        var (events, log) = Recorder();
-
-        TimeoutBudgetReport.Emit(Budgets(firstByteSeconds: 900, streamIdleSeconds: 600), log, path);
-
-        Assert.Empty(Warnings(events));
-    }
-
-    [Fact]
-    public void The_report_states_that_client_values_apply_on_next_start()
-    {
-        // Claude Code reads env at process start, so a freshly-written value does
-        // nothing for the session already running. The report must not imply it did.
-        var path = WriteSettings(BridgePointedSettings("900000", "1200000"));
-        var (events, log) = Recorder();
-
-        TimeoutBudgetReport.Emit(Budgets(900, 600), log, path);
-
-        Assert.Contains("next restart", Table(events), StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void The_values_the_config_command_writes_never_trip_the_warning()
-    {
-        // End-to-end consistency between the two halves of the change: whatever the
-        // budgets are, what `config claude-code` writes must satisfy this report.
-        foreach (var (firstByte, streamIdle) in new[] { (240, 60), (900, 600), (60, 30), (3600, 1800) })
-        {
-            var path = WriteSettings(BridgePointedSettings(
-                ClaudeCodeTimeoutPolicy.StreamIdleMsFor(streamIdle).ToString(),
-                ClaudeCodeTimeoutPolicy.RequestTimeoutMs().ToString()));
-            var (events, log) = Recorder();
-
-            TimeoutBudgetReport.Emit(Budgets(firstByte, streamIdle), log, path);
-
-            Assert.Empty(Warnings(events));
-        }
-    }
+    private static string Missing(string fileName) =>
+        Path.Combine(Path.GetTempPath(), "cb-timeout-report-" + Guid.NewGuid().ToString("N"), fileName);
 }

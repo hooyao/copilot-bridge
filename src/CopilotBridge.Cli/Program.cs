@@ -3,6 +3,12 @@ using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Hosting.Logging;
 using Serilog;
 
+// Keep operator-facing labels byte-stable on Windows even when stderr is
+// redirected by a real-client harness. The legacy console code page transliterates
+// the approved em dash in source headings to '-', so the rendered startup contract
+// would differ from the text users reviewed.
+Console.OutputEncoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
 // Bootstrap a console-only Serilog logger so any early CLI / parser / option
 // errors land somewhere readable. SerilogReplacerHostedService later swaps
 // this for the full pipeline (console + rolling file + optional audit sink).

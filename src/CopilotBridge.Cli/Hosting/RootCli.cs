@@ -122,7 +122,7 @@ internal static class RootCli
         };
 
         var configClaudeCode = new Command("claude-code",
-            "Point Claude Code at the bridge (writes the ANTHROPIC_* env block)");
+            "Point Claude Code at the bridge; update connection/auth only and preserve all behavior settings");
         configClaudeCode.Options.Add(scopeOption);
         configClaudeCode.Options.Add(configPortOption);
         configClaudeCode.Options.Add(dryRunOption);
@@ -135,9 +135,11 @@ internal static class RootCli
                 parseResult.GetValue(dryRunOption),
                 parseResult.GetValue(showContentOption))));
 
-        // Codex honors global scope only — no --scope option is offered.
+        // This bridge command intentionally edits only the user/global baseline.
+        // Codex may apply higher-precedence project/profile/CLI layers later, so no
+        // --scope option is offered and the help text states that visibility limit.
         var configCodex = new Command("codex",
-            "Point Codex at the bridge (writes the provider block in config.toml)");
+            "Point global ~/.codex/config.toml at the bridge; preserve provider behavior fields (project/profile/CLI overrides may supersede it)");
         configCodex.Options.Add(configPortOption);
         configCodex.Options.Add(dryRunOption);
         configCodex.Options.Add(showContentOption);
@@ -150,12 +152,12 @@ internal static class RootCli
                 parseResult.GetValue(showContentOption))));
 
         var configStatus = new Command("status",
-            "Show where each client currently points and whether it has drifted from appsettings");
+            "Show connection/auth drift and observe client behavior values without rewriting them");
         configStatus.Options.Add(configPortOption);
         configStatus.SetAction((parseResult, _) => Task.FromResult(
             ConfigCommand.Status(parseResult.GetValue(configPortOption))));
 
-        var configCommand = new Command("config", "Auto-configure a client to use this bridge");
+        var configCommand = new Command("config", "Configure a client connection to use this bridge");
         configCommand.Subcommands.Add(configClaudeCode);
         configCommand.Subcommands.Add(configCodex);
         configCommand.Subcommands.Add(configStatus);

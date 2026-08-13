@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -29,54 +28,40 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
     /// this value entirely.</summary>
     private const string AuthTokenPlaceholder = "copilot-bridge";
 
-    /// <summary>The legacy env key that disables Claude Code's
-    /// streaming→non-streaming recovery. The bridge now removes it: cross-routed
-    /// buffered Responses bodies are translated at the Claude edge.</summary>
+    /// <summary>User-owned switch for Claude Code's streaming→non-streaming
+    /// recovery. The connection command observes it for status and never changes
+    /// it.</summary>
     private const string FallbackKey = "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK";
 
     /// <summary>
-    /// Makes Claude Code treat the bridge base URL as first-party. Claude Code
-    /// 2.1.216 decides the context window from a bundled model-capability table
-    /// (<c>context.native_1m</c>, true for opus-4.6/4.7/4.8, sonnet-4.6, sonnet-5)
-    /// gated on the request being first-party (<c>firstParty &amp;&amp; Wd()</c>);
-    /// a custom base URL fails <c>Wd()</c> (host ≠ <c>api.anthropic.com</c>) and
-    /// falls back to 200k — including after <c>--resume</c>. Asserting first-party
-    /// lets the native-1M capability apply. Client-side signal only: inference
-    /// traffic still targets the bridge base URL. See <c>docs/context-window.md</c>.
+    /// User-owned first-party assertion used by Claude Code's context-window
+    /// policy. The connection command observes and preserves it.
     /// </summary>
     private const string Assume1mKey = "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL";
 
     /// <summary>
-    /// Disables Claude Code's error-reporting (Datadog) telemetry. Written together
-    /// with <see cref="Assume1mKey"/> because asserting first-party also flips that
-    /// telemetry from off to on for a custom-base-URL user; keeping it off means
-    /// enabling the 1M window changes exactly one thing.
+    /// User-owned Claude Code error-reporting switch. The connection command does
+    /// not choose a telemetry policy.
     /// </summary>
     private const string DisableErrorReportingKey = "DISABLE_ERROR_REPORTING";
 
-    /// <summary>The managed value both 1M-context env keys are force-written to.</summary>
-    private const string ManagedFlagOn = "1";
-
     /// <summary>
-    /// Claude Code's streaming-idle env key. Force-written from the bridge's own
-    /// stream-idle budget so the client never aborts a healthy turn before the
-    /// bridge's budget applies — the bridge, not the client, decides when a
-    /// stalled turn ends. This is the ONLY knob that lifts both of Claude Code's
-    /// idle watchdogs (measured against 2.1.220): the byte-level watchdog derives
-    /// its budget from this value whenever its own key is unset, so setting the
-    /// byte-level key alone leaves the event-level one pinned at its floor. See
-    /// <c>docs/timeout-chain.md</c>.
+    /// User-owned Claude Code parsed-SSE-event idle setting, observed for status
+    /// but never derived from a bridge timeout.
     /// </summary>
     private const string StreamIdleTimeoutKey = ClaudeCodeTimeoutPolicy.StreamIdleKey;
 
+    private const string ByteIdleTimeoutKey = ClaudeCodeTimeoutPolicy.ByteIdleKey;
+
     /// <summary>
-    /// Claude Code's whole-request env key. Force-written from the bridge's
-    /// first-byte budget. It also bounds each attempt of the non-streaming
-    /// recovery request Claude Code issues after a streaming failure — the path
-    /// that yields no bytes until the model has finished, so a deep-thinking turn
-    /// needs it raised too.
+    /// User-owned Claude Code request-attempt timeout, observed for status but
+    /// never set by this connection command.
     /// </summary>
     private const string RequestTimeoutKey = ClaudeCodeTimeoutPolicy.RequestTimeoutKey;
+
+    private const string StreamWatchdogKey = ClaudeCodeTimeoutPolicy.StreamWatchdogKey;
+    private const string ByteWatchdogKey = ClaudeCodeTimeoutPolicy.ByteWatchdogKey;
+    private const string RetryKey = ClaudeCodeTimeoutPolicy.RetryKey;
 
     private static readonly JsonSerializerOptions WriteOptions = new()
     {
@@ -134,12 +119,6 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         {
             return new ConfigState(ClientId, scope, path, Exists: false,
                 ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
-                ExpectedFallback: null,
-                CurrentFallback: null,
-                ExpectedAssume1m: null, CurrentAssume1m: null,
-                ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
-                ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
-                ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
                 Details: ["not configured (file does not exist)"]);
         }
 
@@ -159,27 +138,12 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         {
             return new ConfigState(ClientId, scope, path, Exists: true,
                 ConfiguredForBridge: false, CurrentBaseUrl: null, ExpectedBaseUrl: expected,
-                ExpectedFallback: null,
-                CurrentFallback: null,
-                ExpectedAssume1m: null, CurrentAssume1m: null,
-                ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
-                ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
-                ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
-                Details: ["file is not a JSON object (cannot read — run the config command to rewrite)"]);
+                Details: ["file is not a JSON object (cannot read — fix or remove it, then re-run)"]);
         }
 
         var env = root["env"] as JsonObject;
         var current = AsStringOrNull(env?[BaseUrlKey]);
-        var fallback = AsStringOrNull(env?[FallbackKey]);
-        var assume1m = AsStringOrNull(env?[Assume1mKey]);
-        var disableErrorReporting = AsStringOrNull(env?[DisableErrorReportingKey]);
-        var streamIdleTimeout = AsStringOrNull(env?[StreamIdleTimeoutKey]);
-        var requestTimeout = AsStringOrNull(env?[RequestTimeoutKey]);
-        var expectedStreamIdle =
-            connection.ClaudeCodeStreamIdleTimeoutMs.ToString(CultureInfo.InvariantCulture);
-        var expectedRequestTimeout =
-            connection.ClaudeCodeRequestTimeoutMs.ToString(CultureInfo.InvariantCulture);
-
+        var authPresent = env?[AuthTokenKey] is not null;
         // "Configured for bridge" means the base URL points at THIS bridge's Claude Code
         // route (the `/cc` prefix), not merely that ANTHROPIC_BASE_URL is set — a config
         // aimed at some other Anthropic-compatible endpoint must read as "not pointed at
@@ -192,55 +156,42 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
         details.Add(current is null
             ? $"{BaseUrlKey}: (unset)"
             : $"{BaseUrlKey}: {current}");
-        details.Add(fallback is null
-            ? $"{FallbackKey}: (unset)"
-            : $"{FallbackKey}: {fallback}");
-        details.Add(assume1m is null
-            ? $"{Assume1mKey}: (unset)"
-            : $"{Assume1mKey}: {assume1m}");
-        details.Add(disableErrorReporting is null
-            ? $"{DisableErrorReportingKey}: (unset)"
-            : $"{DisableErrorReportingKey}: {disableErrorReporting}");
-        // Timeout keys show the EXPECTED value beside the current one whenever they
-        // differ: a drift report that only says "wrong" leaves the operator without
-        // the derived number they need to set. (The 1M keys above are always "1", so
-        // naming the expectation there would be noise.)
-        details.Add(DescribeTimeout(StreamIdleTimeoutKey, streamIdleTimeout, expectedStreamIdle));
-        details.Add(DescribeTimeout(RequestTimeoutKey, requestTimeout, expectedRequestTimeout));
+        details.Add($"{AuthTokenKey}: {(authPresent ? "present" : "(unset)")}");
+        details.Add(DescribeObserved(env, FallbackKey));
+        details.Add(DescribeObserved(env, Assume1mKey));
+        details.Add(DescribeObserved(env, DisableErrorReportingKey));
+        details.Add(DescribeObserved(env, StreamIdleTimeoutKey));
+        details.Add(DescribeObserved(env, ByteIdleTimeoutKey));
+        details.Add(DescribeObserved(env, RequestTimeoutKey));
+        details.Add(DescribeObserved(env, StreamWatchdogKey));
+        details.Add(DescribeObserved(env, ByteWatchdogKey));
+        details.Add(DescribeObserved(env, RetryKey));
+
+        var drift = pointsAtBridge && !authPresent
+            ? new[] { $"required {AuthTokenKey} is missing" }
+            : [];
 
         return new ConfigState(ClientId, scope, path, Exists: true,
             ConfiguredForBridge: pointsAtBridge, CurrentBaseUrl: pointsAtBridge ? current : null,
             ExpectedBaseUrl: expected,
-            ExpectedFallback: null,
-            CurrentFallback: pointsAtBridge ? fallback : null,
-            // The bridge force-writes both 1M-context keys to "1"; a bridge-pointed
-            // config missing either (or holding another value) is drift. Current values
-            // are only meaningful when pointed at the bridge — a non-bridge config passes
-            // null current so it never counts as drift.
-            ExpectedAssume1m: ManagedFlagOn,
-            CurrentAssume1m: pointsAtBridge ? assume1m : null,
-            ExpectedDisableErrorReporting: ManagedFlagOn,
-            CurrentDisableErrorReporting: pointsAtBridge ? disableErrorReporting : null,
-            // Same rule for the timeout keys, except the expected value is DERIVED from
-            // the current budgets — so raising a budget without re-running the config
-            // command reads as drift, which is exactly when the client has stopped
-            // outlasting the bridge.
-            ExpectedStreamIdleTimeout: expectedStreamIdle,
-            CurrentStreamIdleTimeout: pointsAtBridge ? streamIdleTimeout : null,
-            ExpectedRequestTimeout: expectedRequestTimeout,
-            CurrentRequestTimeout: pointsAtBridge ? requestTimeout : null,
-            Details: details);
+            Details: details,
+            AdditionalDriftFacts: drift);
     }
 
     /// <summary>
-    /// Render one managed timeout key for <c>config status</c>. Names the expected
-    /// value whenever it differs from what is stored (including when the key is
-    /// absent), so a <c>DRIFTED</c> report carries the number needed to fix it.
+    /// Render one client-owned timeout key for <c>config status</c> without
+    /// inventing a bridge-derived expected value.
     /// </summary>
-    private static string DescribeTimeout(string key, string? current, string expected) =>
-        current is null ? $"{key}: (unset) — expected {expected}"
-        : string.Equals(current, expected, StringComparison.Ordinal) ? $"{key}: {current}"
-        : $"{key}: {current} — expected {expected}";
+    private static string DescribeObserved(JsonObject? env, string key)
+    {
+        if (env is null || !env.TryGetPropertyValue(key, out var node))
+            return $"{key}: (unset)";
+
+        var display = node is JsonValue value && value.TryGetValue<string>(out var text)
+            ? text
+            : node?.ToJsonString() ?? "null";
+        return $"{key}: {display}";
+    }
 
     /// <summary>
     /// Read a JSON node as a string, or <c>null</c> if it is absent or not a string.
@@ -261,41 +212,26 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
     {
         var summary = new List<string>();
 
-        if (root["env"] is not JsonObject env)
+        JsonObject env;
+        if (!root.TryGetPropertyValue("env", out var envNode))
         {
             env = new JsonObject();
             root["env"] = env;
+        }
+        else if (envNode is JsonObject existingEnv)
+        {
+            env = existingEnv;
+        }
+        else
+        {
+            throw new ClientConfigException(
+                "Existing settings env value is not a JSON object. Refusing to replace it "
+                + "so unrelated client settings are not lost. Fix the env value, then re-run.");
         }
 
         // base_url — always force-written (this is the point of the command).
         env[BaseUrlKey] = connection.ClaudeCodeBaseUrl;
         summary.Add($"set env.{BaseUrlKey} = {connection.ClaudeCodeBaseUrl}");
-
-        // 1M-context unlock — force-written as a consistent pair (see the key docs).
-        // ASSUME_FIRST_PARTY makes Claude Code's native-1M capability gate fire for
-        // the bridge base URL; DISABLE_ERROR_REPORTING neutralizes the telemetry
-        // that first-party assertion would otherwise enable.
-        env[Assume1mKey] = ManagedFlagOn;
-        summary.Add($"set env.{Assume1mKey} = {ManagedFlagOn} (1M context on native-1M models, survives --resume)");
-        env[DisableErrorReportingKey] = ManagedFlagOn;
-        summary.Add($"set env.{DisableErrorReportingKey} = {ManagedFlagOn} (keep error-reporting telemetry off)");
-
-        // Long-thinking timeouts — force-written from the bridge's own budgets so the
-        // client outlasts them. Copilot sends no keepalive while a model thinks, so a
-        // deep-thinking turn is legitimately silent for minutes; without these the
-        // client aborts a healthy stream and the bridge's budget never applies.
-        // Takes effect on Claude Code's NEXT start (it reads env at process start).
-        var streamIdle = connection.ClaudeCodeStreamIdleTimeoutMs.ToString(CultureInfo.InvariantCulture);
-        env[StreamIdleTimeoutKey] = streamIdle;
-        summary.Add(
-            $"set env.{StreamIdleTimeoutKey} = {streamIdle} "
-            + "(outlasts the bridge stream-idle budget; effective on Claude Code's next start)");
-        var requestTimeout = connection.ClaudeCodeRequestTimeoutMs.ToString(CultureInfo.InvariantCulture);
-        env[RequestTimeoutKey] = requestTimeout;
-        summary.Add(
-            $"set env.{RequestTimeoutKey} = {requestTimeout} "
-            + "(fixed whole-request ceiling — a wall-clock cap the bridge cannot out-wait; "
-            + "raises the non-streaming recovery request's own limit)");
 
         // auth token — fill only if absent; preserve any existing value.
         if (env[AuthTokenKey] is null)
@@ -308,14 +244,8 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
             summary.Add($"kept env.{AuthTokenKey} (already set)");
         }
 
-        // Always remove the legacy disable switch. Claude Code's recovery from a
-        // mid-stream SSE error is a stream:false fallback request; disabling it
-        // turns the fault into a terminal API error instead of continuing the turn.
-        if (env.ContainsKey(FallbackKey))
-        {
-            env.Remove(FallbackKey);
-            summary.Add($"removed env.{FallbackKey} (bridge supports non-streaming recovery)");
-        }
+        summary.Add(
+            "preserved client-owned timeout, retry, watchdog, 1M/first-party, telemetry, and fallback settings");
 
         return summary;
     }
@@ -357,13 +287,22 @@ internal sealed class ClaudeCodeConfigurator : IClientConfigurator
     }
 
     /// <summary>Resolve the target settings file for a scope.</summary>
-    private static string ResolvePath(ConfigScope scope) => scope switch
+    private static string ResolvePath(ConfigScope scope)
     {
-        ConfigScope.Global => Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".claude", "settings.json"),
-        ConfigScope.Repo => Path.Combine(
-            Environment.CurrentDirectory, ".claude", "settings.local.json"),
-        _ => throw new System.ArgumentOutOfRangeException(nameof(scope), scope, "Unsupported scope."),
-    };
+#if DEBUG
+        if (scope == ConfigScope.Global
+            && Environment.GetEnvironmentVariable(
+                "COPILOT_BRIDGE_TEST_CLAUDE_SETTINGS_PATH") is { Length: > 0 } testPath)
+            return testPath;
+#endif
+        return scope switch
+        {
+            ConfigScope.Global => Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".claude", "settings.json"),
+            ConfigScope.Repo => Path.Combine(
+                Environment.CurrentDirectory, ".claude", "settings.local.json"),
+            _ => throw new System.ArgumentOutOfRangeException(nameof(scope), scope, "Unsupported scope."),
+        };
+    }
 }

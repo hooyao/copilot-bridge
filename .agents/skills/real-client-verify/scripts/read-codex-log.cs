@@ -169,7 +169,16 @@ try
     if (errCount == 0) Line("  (none)");
     Line();
 
-    // 3) A tail of recent rows for context (what the client was doing).
+    // 3) Retry rows. Timeout work needs the client's own record of which retry
+    // layer fired, not just the bridge's repeated request trace.
+    Line("## retry rows");
+    var retryCount = DumpRows(conn, sb, since, until,
+        where: "target LIKE '%retry%'",
+        limit: 80);
+    if (retryCount == 0) Line("  (none)");
+    Line();
+
+    // 4) A tail of recent rows for context (what the client was doing).
     Line("## recent rows (tail, any level)");
     DumpRows(conn, sb, since, until, where: "1=1", limit: 40, tail: true);
 
@@ -177,6 +186,7 @@ try
     Line("## summary");
     Line($"router/dispatch-fatal rows: {fatalCount}");
     Line($"ERROR rows:                 {errCount}");
+    Line($"retry rows:                 {retryCount}");
     Line($"verdict hint: a NON-ZERO fatal count means the client could NOT execute what the "
         + "bridge sent — FAIL regardless of the bridge's 200. Zero is necessary but not "
         + "sufficient; also confirm the tool actually ran (output present, not aborted).");

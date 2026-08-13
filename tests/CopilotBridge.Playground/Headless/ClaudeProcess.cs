@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 
 namespace CopilotBridge.Playground.Headless;
@@ -35,6 +36,9 @@ internal sealed record ClaudeInvocation(
     // FACTORY watchdog defaults. Required by any case whose whole point is that the
     // bridge — not a raised client bound — is what keeps a silent turn alive.
     bool ClearTimeoutEnv = false,
+    long? StreamIdleTimeoutMs = null,
+    long? ByteIdleTimeoutMs = null,
+    long? ApiTimeoutMs = null,
     // Compact-recovery cases need Claude Code's own persisted JSONL as the
     // semantic evidence. Ordinary behavior cases stay ephemeral by default.
     bool PersistSession = false,
@@ -125,6 +129,14 @@ internal static class ClaudeProcess
             psi.Environment.Remove("CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS");
             psi.Environment.Remove("API_TIMEOUT_MS");
         }
+        if (inv.StreamIdleTimeoutMs is { } streamIdleTimeoutMs)
+            psi.Environment["CLAUDE_STREAM_IDLE_TIMEOUT_MS"] =
+                streamIdleTimeoutMs.ToString(CultureInfo.InvariantCulture);
+        if (inv.ByteIdleTimeoutMs is { } byteIdleTimeoutMs)
+            psi.Environment["CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS"] =
+                byteIdleTimeoutMs.ToString(CultureInfo.InvariantCulture);
+        if (inv.ApiTimeoutMs is { } apiTimeoutMs)
+            psi.Environment["API_TIMEOUT_MS"] = apiTimeoutMs.ToString(CultureInfo.InvariantCulture);
 
         using var proc = new Process { StartInfo = psi };
         var sw = Stopwatch.StartNew();

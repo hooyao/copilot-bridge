@@ -2,8 +2,8 @@
 
 > Why the bridge can route Sonnet/Haiku correctly but **cannot** make Claude
 > Code "know" a model's context window from a *response*, what actually happens
-> when a user enables 1M on a model Copilot caps at 200k, and how the `config`
-> command restores 1M after `--resume` via two client env vars. Grounded in live
+> when a user enables 1M on a model Copilot caps at 200k, and how a user can
+> preserve 1M after `--resume` via two client env vars. Grounded in live
 > experiments against `claude.exe` 2.1.159 + Copilot Enterprise; the resume
 > mechanism (§5) is re-grounded against the **running 2.1.216 binary** — the
 > decompiled source (`Q:\MyProjects\claude-code-sourcemap`) is 2.1.88/2.1.159 and
@@ -13,9 +13,9 @@
 ## TL;DR
 
 - **The context window is decided 100% client-side**, before the request is
-  sent. No *response* the bridge returns changes it — but a *client-config* lever
-  does: the `config claude-code` command writes two env vars that make Claude
-  Code grant 1M and keep it across `--resume` (see §5).
+  sent. No *response* the bridge returns changes it — but two optional native
+  client env vars can make Claude Code grant 1M and keep it across `--resume`
+  (see §5). The connection command preserves rather than selects those values.
 - **Plain Sonnet/Haiku already works perfectly**: Claude Code uses 200k, Copilot
   base is 200k (4.5 / haiku) or 1M (sonnet-4.6, re-probed). No special handling
   needed for the plain path. (Once the fix env vars from §5 are installed, plain
@@ -50,10 +50,10 @@
   bundled table lacks `native_1m`.
 - **Resume now keeps 1M**: on 2.1.216 the window comes from a bundled
   `native_1m` capability gated on the request being first-party, so a bridge base
-  URL reverts to 200k after `--resume`. `config claude-code` fixes this by writing
-  `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` (+ `DISABLE_ERROR_REPORTING=1` and
-  the two timeout keys, to neutralize its side effects — see §5). No `[1m]` suffix
-  needed; the transcript model stays clean. See §5.
+  URL reverts to 200k after `--resume`. A user can opt in by setting
+  `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` and choose the companion telemetry
+  and timeout settings explicitly (see §5). `config claude-code` preserves that
+  choice. No `[1m]` suffix is needed; the transcript model stays clean. See §5.
 
 ## 1. Where the context window comes from — the client, not the server
 
@@ -256,10 +256,11 @@ gated off. **This is why the earlier idea of injecting `[1m]` into the response
 on persist** (verified — the injection left the transcript bare and resume still
 showed 200,000).
 
-**The fix — two client env vars, written by `config claude-code`.** The escape
+**The opt-in — two user-owned client env vars.** The escape
 hatch `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` makes `Wd()` true, so branch ③
-fires for a bridge base URL. `config claude-code` force-writes it (and its
-companion) into `settings.json` `env`, next to `ANTHROPIC_BASE_URL`:
+fires for a bridge base URL. An operator can put it and its companion in
+`settings.json` `env`, next to `ANTHROPIC_BASE_URL`; `config claude-code`
+preserves both values and leaves them absent when absent:
 
 | env key | value | why |
 | --- | --- | --- |
@@ -271,14 +272,11 @@ companion) into `settings.json` `env`, next to `ANTHROPIC_BASE_URL`:
 > (**180 s**) instead of the 300 s it uses otherwise — measured against 2.1.220 by
 > driving the real client against an upstream that goes silent on demand. Because
 > Copilot sends no keepalive while a model thinks, a deep-thinking turn is
-> legitimately silent for minutes, so enabling the 1M window makes a long turn
-> *more* likely to be aborted by the client. `config claude-code` compensates by
-> writing `CLAUDE_STREAM_IDLE_TIMEOUT_MS`, derived from the bridge's stream-idle
-> budget so the client's idle watchdog outlasts it — and the bridge warns at
-> startup if it would fire first. It also raises `API_TIMEOUT_MS`, but to a fixed
-> ceiling rather than a derived value (a wall-clock cap cannot be guaranteed to
-> outlast an inactivity budget), so that one is reported as a residual bound and
-> produces no warning. Full chain and measurements:
+> legitimately silent for minutes, so enabling the 1M window can make a long turn
+> *more* likely to be aborted by the client. The bridge does not compensate with a
+> hidden timeout rewrite. Startup shows the observed global client values beside
+> the exact bridge budgets; the operator chooses each native client timeout.
+> Full chain and measurements:
 > [`timeout-chain.md`](timeout-chain.md).
 
 Measured end-to-end against real `claude.exe` 2.1.216 (plain `claude-opus-4-8`, no

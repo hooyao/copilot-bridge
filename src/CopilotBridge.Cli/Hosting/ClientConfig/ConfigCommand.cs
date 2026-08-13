@@ -141,7 +141,11 @@ internal static class ConfigCommand
                         Console.WriteLine($"  drift: {fact}");
                     }
                 }
-                if (state.Drifted)
+                if (state.Drifted
+                    && !string.Equals(
+                        state.CurrentBaseUrl,
+                        state.ExpectedBaseUrl,
+                        StringComparison.Ordinal))
                 {
                     Console.WriteLine($"  expected base URL: {state.ExpectedBaseUrl}");
                 }

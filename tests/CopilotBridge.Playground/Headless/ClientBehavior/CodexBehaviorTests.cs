@@ -314,6 +314,111 @@ public class CodexBehaviorTests
     }
 
     /// <summary>
+    /// Real Codex retry scope: the bridge ends the first sampling stream after one
+    /// silent second and emits a retryable <c>response.failed</c>. With isolated
+    /// provider values (request retries 1, stream retries 2), Codex must begin a new
+    /// sampling attempt, execute the returned custom exec tool, echo its output, and
+    /// finish. Client-owned SQLite is the semantic verdict.
+    /// </summary>
+    [Fact]
+    public async Task Codex_RetryableBridgeStreamTimeout_UsesConfiguredStreamRetries_ForVerdict()
+    {
+        const string caseId = "codex-native-retryable-stream-timeout";
+        const string canary = "codex-stream-retry-canary-47291";
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        using var codexHome = ClientBehaviorSupport.NewWorkDir(caseId + "-home");
+        var observedCodexConfig = Path.Combine(codexHome.Path, "config.toml");
+        File.WriteAllText(observedCodexConfig, """
+            model_provider = "copilot-bridge"
+            [model_providers.copilot-bridge]
+            name = "copilot-bridge"
+            base_url = "http://localhost:8765/codex"
+            wire_api = "responses"
+            stream_idle_timeout_ms = 5000
+            request_max_retries = 1
+            stream_max_retries = 2
+            """);
+        await using var upstream = SilentResponsesUpstreamServer.Start(
+            work.Path,
+            canary,
+            silence: TimeSpan.Zero,
+            failFirstSampling: true,
+            failFirstHttpRequest: true,
+            firstFailureSilence: TimeSpan.FromSeconds(10));
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.PassthroughTestUpstream,
+            TestUpstreamBaseUrl: upstream.BaseUrl,
+            StreamIdleTimeoutSeconds: 1,
+            KeepAliveIntervalSeconds: 0,
+            ClaudeSettingsPath: Path.Combine(work.Path, "missing-claude-settings.json"),
+            CodexConfigPath: observedCodexConfig,
+            ClaudeVersion: "2.1.221"));
+
+        var prompt =
+            "Execute the requested multi-step tool task: write the supplied canary to a file, "
+            + "read it back with a separate nested operation, report the exact canary, and stop.";
+        var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: prompt,
+            Model: ClientBehaviorSupport.LatestGpt,
+            Timeout: TimeSpan.FromMinutes(3),
+            CodexHome: codexHome.Path,
+            WorkingDirectory: work.Path,
+            ExpectedCodexVersion: ClientBehaviorSupport.CodexVersion,
+            StreamIdleTimeoutMs: 5_000,
+            RequestMaxRetries: 1,
+            StreamMaxRetries: 2));
+
+        // Gate 1: this run must actually have crossed the retry boundary before its
+        // later custom-tool loop; otherwise clean client logs would be inconclusive.
+        Assert.Equal(1, upstream.HttpFailedRequests);
+        Assert.Equal(1, upstream.TimedOutSamplingRequests);
+        Assert.True(upstream.SamplingRequests >= 3,
+            $"Codex did not cross both retry boundaries (sampling={upstream.SamplingRequests}).");
+        Assert.True(upstream.ToolOutputRequests >= 1,
+            "Codex never echoed the custom exec output to the deterministic upstream.");
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "codex",
+                Route: "/codex",
+                Model: ClientBehaviorSupport.LatestGpt,
+                Scenario: ServeScenario.PassthroughTestUpstream,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: result.DispatchLogPath,
+                DispatchSinceUnix: result.StartedUnixSeconds,
+                DispatchUntilUnix: result.EndedUnixSeconds,
+                Prompt: prompt,
+                DispatchThreadId: result.ThreadId),
+            result.Stdout,
+            result.Stderr,
+            ClientBehaviorSupport.Stamp(),
+            out _,
+            out _);
+
+        _output.WriteLine(
+            $"retry upstream={upstream.BaseUrl} http-failed={upstream.HttpFailedRequests} "
+            + $"timed-out={upstream.TimedOutSamplingRequests} "
+            + $"sampling={upstream.SamplingRequests} tool-output={upstream.ToolOutputRequests}");
+        _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
+        _output.WriteLine(bridge.StderrAll);
+        _output.WriteLine(
+            $"dispatch log={result.DispatchLogPath} thread={result.ThreadId} "
+            + $"window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine(
+            "[verdict] require one bridge stream_idle failure followed by a new sampling request, "
+            + "custom_tool_call + matching output, final canary, no abort, and zero router fatals "
+            + "in Codex's own SQLite window (request retries=1, stream retries=2).");
+
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(
+            result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
+    /// <summary>
     /// Shared driver: boot a real bridge subprocess (passthrough), run real Codex
     /// app-server on the prompt at the latest gpt id, and write its isolated SQLite
     /// dispatch evidence to the run manifest. The xUnit layer asserts ONLY the harness
