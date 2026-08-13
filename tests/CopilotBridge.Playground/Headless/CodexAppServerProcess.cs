@@ -20,7 +20,9 @@ internal sealed record CodexAppServerInvocation(
     TimeSpan? Timeout = null,
     string? ModelReasoningEffort = null,
     string? ModelReasoningSummary = null,
-    long? StreamIdleTimeoutMs = null);
+    long? StreamIdleTimeoutMs = null,
+    int? RequestMaxRetries = null,
+    int? StreamMaxRetries = null);
 
 internal sealed record CodexAppServerResult(
     int ExitCode,
@@ -47,20 +49,30 @@ internal static class CodexAppServerProcess
         Directory.CreateDirectory(dispatchHome);
         var dispatchLog = Path.Combine(dispatchHome, "logs_2.sqlite");
 
-        var connection = new BridgeConnection(new Uri(invocation.BridgeBaseUrl).Port, false, 0, 0);
+        var connection = new BridgeConnection(new Uri(invocation.BridgeBaseUrl).Port);
         var (config, _) = CodexConfigurator.BuildContent(
             original: null,
             connection,
             CodexProviderAuthInvocation.ResolveCurrent());
-        if (invocation.StreamIdleTimeoutMs is { } streamIdleTimeoutMs)
+        if (invocation.StreamIdleTimeoutMs is not null
+            || invocation.RequestMaxRetries is not null
+            || invocation.StreamMaxRetries is not null)
         {
             const string wireLine = "wire_api = \"responses\"\n";
-            var withTimeout = wireLine
-                + $"stream_idle_timeout_ms = {streamIdleTimeoutMs}\n";
-            var rewritten = config.Replace(wireLine, withTimeout, StringComparison.Ordinal);
+            var providerValues = new StringBuilder(wireLine);
+            if (invocation.StreamIdleTimeoutMs is { } streamIdleTimeoutMs)
+                providerValues.Append("stream_idle_timeout_ms = ").Append(streamIdleTimeoutMs).Append('\n');
+            if (invocation.RequestMaxRetries is { } requestMaxRetries)
+                providerValues.Append("request_max_retries = ").Append(requestMaxRetries).Append('\n');
+            if (invocation.StreamMaxRetries is { } streamMaxRetries)
+                providerValues.Append("stream_max_retries = ").Append(streamMaxRetries).Append('\n');
+            var rewritten = config.Replace(
+                wireLine,
+                providerValues.ToString(),
+                StringComparison.Ordinal);
             if (ReferenceEquals(rewritten, config) || rewritten == config)
                 throw new InvalidOperationException(
-                    "Could not inject the isolated Codex provider stream idle timeout.");
+                    "Could not inject the isolated Codex provider timeout/retry values.");
             config = rewritten;
         }
         File.WriteAllText(Path.Combine(invocation.CodexHome, "config.toml"), config);

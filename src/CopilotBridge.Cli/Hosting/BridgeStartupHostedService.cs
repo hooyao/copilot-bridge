@@ -28,7 +28,9 @@ internal sealed class BridgeStartupHostedService : IHostedService
     private readonly IOptions<BridgeServerOptions> _server;
     private readonly IOptions<RoutesConfig> _routes;
     private readonly IOptions<UpstreamTimeoutOptions> _upstreamTimeout;
+    private readonly IOptions<UpstreamRetryOptions> _upstreamRetry;
     private readonly IOptions<ResponseLeakGuardOptions> _leakGuard;
+    private readonly IOptions<ToolInputValidationOptions> _toolInputValidation;
     private readonly ModelProfileCatalog _catalog;
     private readonly CodexModelProfileCatalog _codexCatalog;
     private readonly Logging.BridgeIoSink? _ioSink;
@@ -39,7 +41,9 @@ internal sealed class BridgeStartupHostedService : IHostedService
         IOptions<BridgeServerOptions> server,
         IOptions<RoutesConfig> routes,
         IOptions<UpstreamTimeoutOptions> upstreamTimeout,
+        IOptions<UpstreamRetryOptions> upstreamRetry,
         IOptions<ResponseLeakGuardOptions> leakGuard,
+        IOptions<ToolInputValidationOptions> toolInputValidation,
         ModelProfileCatalog catalog,
         CodexModelProfileCatalog codexCatalog,
         ILogger<BridgeStartupHostedService> log,
@@ -49,7 +53,9 @@ internal sealed class BridgeStartupHostedService : IHostedService
         _server = server;
         _routes = routes;
         _upstreamTimeout = upstreamTimeout;
+        _upstreamRetry = upstreamRetry;
         _leakGuard = leakGuard;
+        _toolInputValidation = toolInputValidation;
         _catalog = catalog;
         _codexCatalog = codexCatalog;
         _log = log;
@@ -127,8 +133,47 @@ internal sealed class BridgeStartupHostedService : IHostedService
         // PreserveStream=false drains the whole response before delivering it, so no
         // keepalive can reach the client mid-turn — the report must say so rather than
         // promise pings the configuration cannot deliver.
+        string? testClaudeSettingsPath = null;
+        string? testCodexConfigPath = null;
+        string? testClaudeVersion = null;
+#if DEBUG
+        // Real-subprocess verification can isolate the two observed GLOBAL files
+        // without changing the user's actual homes. Release builds expose no such
+        // override and always inspect the native global locations.
+        testClaudeSettingsPath = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_CLAUDE_SETTINGS_PATH");
+        testCodexConfigPath = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_CODEX_CONFIG_PATH");
+        testClaudeVersion = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_CLAUDE_VERSION");
+#endif
         TimeoutBudgetReport.Emit(
-            _upstreamTimeout.Value, _log, wholeResponseBuffering: !_leakGuard.Value.PreserveStream);
+            _upstreamTimeout.Value,
+            _log,
+            settingsPathOverride: testClaudeSettingsPath,
+            wholeResponseBuffering: WholeResponseBufferingActive(
+                _leakGuard.Value,
+                _toolInputValidation.Value),
+            codexConfigPathOverride: testCodexConfigPath,
+            retryOptions: _upstreamRetry.Value,
+            claudeVersionOverride: testClaudeVersion);
+    }
+
+    /// <summary>
+    /// Mirrors the active detectors' <c>RequiresBuffering</c> contract so startup
+    /// does not promise downstream keepalive on a path that drains the whole stream
+    /// first. Keep this predicate contract-tested beside the detector options.
+    /// </summary>
+    internal static bool WholeResponseBufferingActive(
+        ResponseLeakGuardOptions leak,
+        ToolInputValidationOptions toolInput)
+    {
+        var leakBuffers = leak.Enabled && !leak.PreserveStream;
+        var toolInputBuffers = toolInput.Enabled
+            && !toolInput.PreserveStream
+            && (toolInput.MalformedJsonAction != ToolInputAction.Observe
+                || toolInput.SchemaViolationAction != ToolInputAction.Observe);
+        return leakBuffers || toolInputBuffers;
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

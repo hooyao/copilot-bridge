@@ -130,8 +130,7 @@ internal static class CodexProcess
         psi.Environment.Remove("CODEX_INTERNAL_ORIGINATOR_OVERRIDE");
         if (inv.UseCommandAuth)
         {
-            var connection = new BridgeConnection(
-                new Uri(inv.BridgeBaseUrl).Port, false, 0, 0);
+            var connection = new BridgeConnection(new Uri(inv.BridgeBaseUrl).Port);
             var (content, _) = CodexConfigurator.BuildContent(
                 original: null,
                 connection,

@@ -2,23 +2,22 @@
 
 ## Purpose
 
-Keeps Claude Code and Codex from ending a healthy long-thinking turn by
+Keeps Claude Code and Codex active during a post-start upstream silence by
 synthesizing the keepalive GitHub Copilot omits. Zero `ping` events appeared
 across 137 captured upstream traces, and a measured `claude-opus-5` turn at
 `effort=xhigh` opened a thinking block and then put nothing on the wire for
-600 s. Claude Code expects Anthropic pings during such silence; Codex applies a
-300 s default timeout to each parsed Responses SSE event. Without bridge
-activity, either client can mistake healthy inference for a dead stream.
+600 s. Without downstream activity, either client can mistake healthy inference
+for a dead stream.
 
 This capability defines when the bridge injects a keepalive (only while upstream
-is silent, never before the stream's first upstream event), what it may not do
+is silent and only after the first genuine upstream event), what it may not do
 (reset the bridge's own stream-idle budget, alter usage, or open/close content
-blocks), who ends a stalled turn (the bridge, via that budget — never the client),
-and how an injected keepalive stays distinguishable from an upstream event so the
-diagnostic value of a silent upstream is preserved rather than masked. It covers
-both `/cc` and `/codex`: the wire event is an Anthropic `ping` for Claude Code and
-a complete, otherwise ignored Responses `ping` data event for Codex. Client-side
-timeout configuration remains a second line of defence — see
+blocks), and how an injected keepalive stays distinguishable from an upstream
+event. It covers both `/cc` and `/codex`: the wire event is an Anthropic `ping`
+for Claude Code and a complete, otherwise ignored Responses `ping` data event for
+Codex. Keepalive does not make the bridge universally authoritative: the
+pre-first-event wait, buffering, disabled/late pings, and a stalled bridge leave
+the user's client watchdog as an independent bound. See
 [`timeout-budget-report`](../timeout-budget-report/spec.md) and
 [`client-autoconfiguration`](../client-autoconfiguration/spec.md) — because a
 runtime keepalive and a static client bound cover different failure modes.
@@ -94,13 +93,19 @@ This is the load-bearing constraint of the capability: keepalives make the clien
 
 ### Requirement: The bridge decides when a stalled turn ends
 
-The bridge SHALL be the party that ends a stalled turn. When the stream-idle budget fires while keepalives are being injected, the downstream failure surface SHALL remain selected by client protocol: `/cc` receives its configured retryable Anthropic error (or configured truncation), while `/codex` receives exactly one `response.failed` terminal.
+During a post-first-event gap where complete keepalives reach the client before
+its watchdog, the bridge SHALL remain the party that ends a genuinely stalled
+upstream. When the stream-idle budget fires, `/cc` SHALL receive its configured
+retryable Anthropic error (or configured truncation), while `/codex` SHALL receive
+exactly one `response.failed` terminal.
 
-The client SHALL NOT be the party that ends a healthy long-thinking turn: for any upstream silence shorter than the bridge's stream-idle budget, the relayed stream SHALL contain enough activity to keep the applicable client's idle watchdog from firing, provided the keepalive interval is configured shorter than that watchdog.
+This authority is conditional. It SHALL NOT be extended to the first-event wait,
+whole-response buffering, disabled/late keepalive, or a bridge process that cannot
+deliver the ping; in those cases the client watchdog remains an independent bound.
 
 #### Scenario: Healthy deep-thinking turn outlives the client watchdog
 
-- **WHEN** a real Claude Code or Codex client is streaming a turn and upstream silence lasts longer than that client's idle watchdog but less than the bridge's stream-idle budget, then resumes and completes
+- **WHEN** a real Claude Code or Codex client has received the first upstream event, complete pings reach it before its watchdog, and upstream silence lasts longer than that watchdog but less than the bridge's stream-idle budget, then resumes and completes
 - **THEN** the client does not abort the stream
 - **AND** the client receives the complete turn, including every upstream event emitted after the silence.
 
@@ -133,27 +138,6 @@ When disabled, each streaming relay SHALL be identical to its behavior without t
 - **THEN** no keepalive is injected and no keepalive timer is allocated
 - **AND** the downstream event sequence is identical to the behavior with this capability absent.
 
-### Requirement: Client-side timeout configuration remains a second line of defence
-
-Introducing keepalive injection SHALL NOT remove or relax the timeout-governing
-values the bridge writes into Claude Code's configuration. The startup report SHALL
-also read Codex's active provider timeout without rewriting it.
-
-Keepalive injection is a *runtime* mitigation delivered per stream; the client
-configuration is a *static* one. They cover different failure modes — a keepalive
-that is never sent (injection disabled, an unconfigured intermediary, a bridge
-that itself stalls) leaves only the client's own bound between a healthy turn and
-an abort — so the two SHALL coexist. An undercut warning SHALL be emitted when the
-client would fire first and live keepalive injection is ineffective. When pings are
-reaching the client, the report SHALL identify the bridge as the runtime authority
-rather than falsely warning that the refreshed client watchdog fires first.
-
-#### Scenario: Client configuration is still written and still warned about
-
-- **WHEN** the operator runs the Claude Code configuration command, or the bridge starts with a client bound shorter than its stream-idle budget while keepalive is off or inactive
-- **THEN** Claude Code timeout values are written as before, and an unprotected undercut still produces the actionable warning
-- **AND** an active keepalive is reported as runtime protection rather than as a client-first timeout.
-
 ### Requirement: Synthetic keepalives do not participate in native Responses fidelity groups
 
 On a native `/codex` stream, a synthesized keepalive SHALL bypass the private semantic sequence used to authorize restoration of each original upstream Responses event. It SHALL be emitted between fidelity groups without consuming an upstream ordinal, altering an expected semantic sequence, or causing a clean stream to fail closed. Every genuine upstream event before and after it SHALL retain its original order and full JSON value fidelity.
@@ -170,3 +154,53 @@ On a native `/codex` stream, a synthesized keepalive SHALL bypass the private se
 - **WHEN** response inspection is withholding a scannable semantic block while a native Codex keepalive becomes due
 - **THEN** the keepalive is relayed immediately rather than buffered with the block
 - **AND** the withheld upstream semantics and their native carrier are later processed together under the existing fidelity decision.
+
+### Requirement: Client timeout policy remains independent from keepalive
+
+Keepalive injection SHALL coexist with whatever timeout configuration the user
+selected in each client, but introducing or configuring keepalive SHALL NOT
+authorize the bridge to add, derive, clamp, or overwrite a client timeout.
+
+Keepalive is a runtime downstream activity mechanism, not a timeout policy. It can
+refresh a client idle watchdog only after the first genuine upstream event and
+only while complete ping events reach the downstream socket. It SHALL never reset
+the bridge's upstream-event idle deadline. If injection is disabled, whole-response
+buffering prevents delivery, the ping interval cannot precede the client watchdog,
+or the bridge itself stalls, the user's client timeout remains the independent
+fallback.
+
+Startup SHALL report these conditions without changing either configuration. When
+keepalive is effective it SHALL say that the client idle watchdog is being
+refreshed for the post-start event-gap phase; it SHALL NOT say that the client
+timeout was removed or that the whole turn has a bridge-owned deadline. When it is
+ineffective, equal bridge/client deadlines SHALL be reported as a race.
+
+#### Scenario: Connection commands preserve static client defence
+
+- **WHEN** either client has an explicit idle timeout and the operator runs its bridge connection command
+- **THEN** the client timeout remains unchanged
+- **AND** runtime keepalive settings remain independent.
+
+#### Scenario: Active post-start keepalive refreshes the client only
+
+- **WHEN** a stream has emitted its first upstream event and the bridge sends pings during later upstream silence
+- **THEN** the client idle watchdog is refreshed
+- **AND** the bridge stream-idle deadline continues from the last genuine upstream event.
+
+#### Scenario: First-event wait is not described as keepalive-protected
+
+- **WHEN** upstream response headers arrived but no upstream SSE event has yet been parsed
+- **THEN** no synthetic ping is sent
+- **AND** startup documentation does not claim that keepalive protects that phase.
+
+#### Scenario: Buffering prevents runtime protection
+
+- **WHEN** the active detector set eagerly buffers the complete streaming response
+- **THEN** no ping reaches the client while the buffer is being filled
+- **AND** the report identifies client keepalive protection as inactive for that path.
+
+#### Scenario: Equal unprotected deadlines are a race
+
+- **WHEN** bridge and client idle values are equal and keepalive is ineffective
+- **THEN** the report says both deadlines race at that value
+- **AND** it does not select the bridge as the deterministic winner.

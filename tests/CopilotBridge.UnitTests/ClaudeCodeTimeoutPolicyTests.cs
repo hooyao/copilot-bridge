@@ -3,449 +3,391 @@ using Xunit;
 
 namespace CopilotBridge.UnitTests;
 
-/// <summary>
-/// Contract tests for the timeout-budget-report capability's derivation and
-/// reader seams. Asserted from the spec — "the client bound is not shorter than
-/// the bridge's", "a disabled budget yields the clamped maximum", "unknown
-/// applies only when the file could not be read or does not concern this
-/// bridge" — not read back from the implementation.
-/// </summary>
-/// <remarks>
-/// Joins the client-config collection because the scope-precedence test mutates
-/// the process-wide <see cref="System.Environment.CurrentDirectory"/> (repo-scoped
-/// settings resolve relative to it), which would redirect any test running in
-/// parallel that resolves a relative path.
-/// </remarks>
+/// <summary>Contract tests for read-only Claude timeout interpretation.</summary>
 [Collection(ClientConfigCollection.Name)]
 public class ClaudeCodeTimeoutPolicyTests
 {
-    // ---- Derivation (spec: Claude Code long-thinking timeout environment) ----
-
     [Fact]
-    public void Written_stream_idle_outlasts_the_bridge_stream_idle_budget()
+    public void Missing_keys_report_distinct_source_confirmed_defaults()
     {
-        // The whole point of writing the key: the client must not fire first.
-        foreach (var budgetSeconds in new[] { 1, 60, 240, 600, 900 })
-        {
-            var writtenMs = ClaudeCodeTimeoutPolicy.StreamIdleMsFor(budgetSeconds);
-            Assert.True(
-                writtenMs > budgetSeconds * 1000,
-                $"budget {budgetSeconds}s -> written {writtenMs}ms must exceed the budget");
-        }
-    }
-
-    [Fact]
-    public void Written_request_timeout_is_generous_relative_to_realistic_budgets()
-    {
-        // NOT a guarantee that it outlasts them — it cannot be (see the residual
-        // bound tests below). Just a sanity floor: the fixed ceiling must be large
-        // enough to be useful next to budgets an operator would plausibly set.
-        foreach (var budgetSeconds in new[] { 1, 60, 240, 900, 1800 })
-        {
-            var writtenMs = ClaudeCodeTimeoutPolicy.RequestTimeoutMs();
-            Assert.True(
-                writtenMs > budgetSeconds * 1000,
-                $"budget {budgetSeconds}s -> written {writtenMs}ms should comfortably exceed it");
-        }
-    }
-
-    [Fact]
-    public void Raising_a_budget_raises_the_written_value()
-    {
-        // Drives the drift contract: an operator who raises a budget and re-runs
-        // config must get a larger client value, otherwise the bridge silently
-        // stops being the binding bound. Only the stream-idle key is derived from a
-        // budget — API_TIMEOUT_MS is a fixed maximum by design, since no finite
-        // wall-clock value can outlast an inactivity budget.
-        Assert.True(
-            ClaudeCodeTimeoutPolicy.StreamIdleMsFor(600) > ClaudeCodeTimeoutPolicy.StreamIdleMsFor(300));
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(-1)]
-    [InlineData(int.MinValue)]
-    public void A_disabled_budget_yields_the_clamped_maximum(int disabledBudget)
-    {
-        // "No bound" cannot be outlasted by any finite client value, so the
-        // policy writes the largest value that actually takes effect.
-        Assert.Equal(
-            ClaudeCodeTimeoutPolicy.StreamIdleMaxMs,
-            ClaudeCodeTimeoutPolicy.StreamIdleMsFor(disabledBudget));
-        Assert.Equal(
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMaxMs,
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMs());
-    }
-
-    [Fact]
-    public void Written_stream_idle_never_exceeds_the_clients_hard_cap()
-    {
-        // Above the cap the client silently reduces the value, so what the bridge
-        // writes would not be what applies — and the report would compare against
-        // a number the client never honored.
-        foreach (var budgetSeconds in new[] { 1_500, 3_600, 86_400, int.MaxValue })
-        {
-            Assert.Equal(
-                ClaudeCodeTimeoutPolicy.StreamIdleMaxMs,
-                ClaudeCodeTimeoutPolicy.StreamIdleMsFor(budgetSeconds));
-        }
-    }
-
-    [Fact]
-    public void A_huge_budget_does_not_overflow_into_a_short_timeout()
-    {
-        // int arithmetic on (budget + margin) * 1000 would wrap negative and
-        // produce a *shorter* client bound than the bridge's — the exact failure
-        // this capability exists to prevent.
-        Assert.True(ClaudeCodeTimeoutPolicy.StreamIdleMsFor(int.MaxValue) > 0);
-        Assert.True(ClaudeCodeTimeoutPolicy.RequestTimeoutMs() > 0);
-        Assert.True(ClaudeCodeTimeoutPolicy.StreamIdleMsFor(int.MaxValue - 1) > 0);
-    }
-
-    // ---- Reader (spec: best-effort, non-fatal; "unknown" is narrow) ----
-
-    private static string WriteSettings(string json)
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "cb-timeout-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        var path = Path.Combine(dir, "settings.json");
-        File.WriteAllText(path, json);
-        return path;
-    }
-
-    [Fact]
-    public void Missing_settings_file_reads_as_unknown_and_does_not_throw()
-    {
-        var path = Path.Combine(Path.GetTempPath(), "cb-absent-" + Guid.NewGuid().ToString("N"), "settings.json");
-
-        var snap = ClaudeCodeTimeoutReader.Read(path);
-
-        Assert.False(snap.Readable);
-        Assert.True(snap.StreamIdle.IsUnknown);
-        Assert.True(snap.RequestTimeout.IsUnknown);
-        Assert.NotNull(snap.Reason);
-    }
-
-    [Fact]
-    public void Malformed_settings_file_reads_as_unknown_and_does_not_throw()
-    {
-        var path = WriteSettings("{ this is not json ");
-
-        var snap = ClaudeCodeTimeoutReader.Read(path);
-
-        Assert.False(snap.Readable);
-        Assert.True(snap.StreamIdle.IsUnknown);
-    }
-
-    [Fact]
-    public void Settings_not_pointed_at_this_bridge_read_as_unknown()
-    {
-        // A config aimed at some other Anthropic-compatible endpoint is unrelated,
-        // not a misconfigured bridge client — warning about it would be noise.
-        var path = WriteSettings("""
-            { "env": { "ANTHROPIC_BASE_URL": "https://api.anthropic.com" } }
-            """);
-
-        var snap = ClaudeCodeTimeoutReader.Read(path);
-
-        Assert.False(snap.Readable);
-        Assert.True(snap.StreamIdle.IsUnknown);
-    }
-
-    [Fact]
-    public void A_bridge_pointed_file_missing_a_key_is_known_bad_not_unknown()
-    {
-        // The heart of the corrected design: absence is NOT unknown — the bridge knows
-        // which default applies. This file has no first-party flag, so the 300 s
-        // non-first-party floor is the real bound (see the first-party test below).
-        var path = WriteSettings("""
+        var snapshot = Read("""
             { "env": { "ANTHROPIC_BASE_URL": "http://localhost:8765/cc" } }
             """);
 
-        var snap = ClaudeCodeTimeoutReader.Read(path);
-
-        Assert.True(snap.Readable);
-        Assert.False(snap.StreamIdle.IsUnknown);
-        Assert.False(snap.StreamIdle.IsExplicit);
-        Assert.Equal(ClaudeCodeTimeoutPolicy.AbsentStreamIdleDefaultMs, snap.StreamIdle.EffectiveMs);
-        Assert.False(snap.RequestTimeout.IsExplicit);
-        Assert.Equal(ClaudeCodeTimeoutPolicy.AbsentRequestTimeoutDefaultMs, snap.RequestTimeout.EffectiveMs);
+        Assert.Equal(300_000, snapshot.EventIdle.EffectiveMs);
+        Assert.Equal(300_000, snapshot.ByteIdle.EffectiveMs);
+        Assert.Equal(600_000, snapshot.NormalRequest.EffectiveMs);
+        Assert.Equal(300_000, snapshot.AfterStreamErrorRequest.EffectiveMs);
+        Assert.All(
+            new[] { snapshot.EventIdle, snapshot.ByteIdle, snapshot.NormalRequest, snapshot.AfterStreamErrorRequest },
+            value => Assert.Equal(ClientValueSource.BuiltIn, value.Source));
     }
 
     [Fact]
-    public void Stored_values_are_read_as_explicit()
+    public void First_party_assertion_changes_only_absent_byte_idle_default()
     {
-        var path = WriteSettings("""
-            {
-              "env": {
-                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
-                "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "900000",
-                "API_TIMEOUT_MS": "1200000"
-              }
-            }
+        var snapshot = Read("""
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1"
+            } }
             """);
 
-        var snap = ClaudeCodeTimeoutReader.Read(path);
+        Assert.Equal(300_000, snapshot.EventIdle.EffectiveMs);
+        Assert.Equal(180_000, snapshot.ByteIdle.EffectiveMs);
+    }
 
-        Assert.True(snap.Readable);
-        Assert.True(snap.StreamIdle.IsExplicit);
-        Assert.Equal(900_000, snap.StreamIdle.EffectiveMs);
-        Assert.True(snap.RequestTimeout.IsExplicit);
-        Assert.Equal(1_200_000, snap.RequestTimeout.EffectiveMs);
+    [Fact]
+    public void Explicit_stream_idle_is_not_derived_from_bridge_budget()
+    {
+        var snapshot = Read(Settings("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "900000"));
+
+        Assert.Equal(900_000, snapshot.EventIdle.ConfiguredMs);
+        Assert.Equal(900_000, snapshot.EventIdle.EffectiveMs);
+        Assert.Equal(ClientValueSource.Explicit, snapshot.EventIdle.Source);
+        Assert.Equal(900_000, snapshot.ByteIdle.EffectiveMs);
+        Assert.Equal(ClientValueSource.Inherited, snapshot.ByteIdle.Source);
+    }
+
+    [Fact]
+    public void Stream_idle_below_client_floor_reports_configured_and_effective()
+    {
+        var snapshot = Read(Settings("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "60000"));
+
+        Assert.Equal(60_000, snapshot.EventIdle.ConfiguredMs);
+        Assert.Equal(300_000, snapshot.EventIdle.EffectiveMs);
+        Assert.Equal("client floor", snapshot.EventIdle.Detail);
+        Assert.Equal(300_000, snapshot.ByteIdle.EffectiveMs);
     }
 
     [Theory]
-    [InlineData("\"not-a-number\"")]
-    [InlineData("\"\"")]
-    [InlineData("\"0\"")]
-    [InlineData("\"-5\"")]
-    [InlineData("true")]
-    [InlineData("null")]
-    public void An_unusable_stored_value_falls_back_to_the_clients_default(string literal)
+    [InlineData("1000", 10_000, "client floor")]
+    [InlineData("2400000", 1_800_000, "client cap")]
+    public void Explicit_byte_idle_applies_source_confirmed_floor_or_cap(
+        string raw, long expected, string adjustment)
     {
-        // Claude Code's own parse yields no usable number from these, so its
-        // built-in default is what actually applies — the report must say so
-        // rather than quoting a value that has no effect.
-        var path = WriteSettings($$"""
-            {
-              "env": {
-                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
-                "CLAUDE_STREAM_IDLE_TIMEOUT_MS": {{literal}}
-              }
-            }
-            """);
+        var snapshot = Read(Settings("CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS", raw));
 
-        var snap = ClaudeCodeTimeoutReader.Read(path);
-
-        Assert.True(snap.Readable);
-        Assert.False(snap.StreamIdle.IsExplicit);
-        Assert.Equal(ClaudeCodeTimeoutPolicy.AbsentStreamIdleDefaultMs, snap.StreamIdle.EffectiveMs);
+        Assert.Equal(long.Parse(raw), snapshot.ByteIdle.ConfiguredMs);
+        Assert.Equal(expected, snapshot.ByteIdle.EffectiveMs);
+        Assert.Equal(adjustment, snapshot.ByteIdle.Detail);
     }
 
     [Fact]
-    public void A_numeric_json_value_is_tolerated()
+    public void Explicit_request_timeout_applies_to_both_request_modes()
     {
-        // Hand-edited files sometimes hold a number where Claude Code expects a
-        // string; the reader must not crash or silently discard it.
-        var path = WriteSettings("""
-            {
-              "env": {
-                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
-                "CLAUDE_STREAM_IDLE_TIMEOUT_MS": 900000
-              }
-            }
+        var snapshot = Read(Settings("API_TIMEOUT_MS", "900000"));
+
+        Assert.Equal(900_000, snapshot.NormalRequest.EffectiveMs);
+        Assert.Equal(900_000, snapshot.AfterStreamErrorRequest.EffectiveMs);
+        Assert.Equal(ClientValueSource.Explicit, snapshot.NormalRequest.Source);
+    }
+
+    [Theory]
+    [InlineData("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "0")]
+    [InlineData("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "not-a-number")]
+    [InlineData("API_TIMEOUT_MS", "-1")]
+    public void Present_invalid_value_is_not_relabelled_as_absent_default(string key, string raw)
+    {
+        var snapshot = Read(Settings(key, raw));
+        var value = key == "API_TIMEOUT_MS" ? snapshot.NormalRequest : snapshot.EventIdle;
+
+        Assert.Equal(ClientValueSource.Invalid, value.Source);
+        Assert.Null(value.EffectiveMs);
+        Assert.Equal(raw, value.RawValue);
+    }
+
+    [Theory]
+    [InlineData("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "false")]
+    [InlineData("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "{}")]
+    [InlineData("API_TIMEOUT_MS", "false")]
+    [InlineData("API_TIMEOUT_MS", "[]")]
+    public void Present_non_integer_json_value_is_invalid_not_absent(string key, string literal)
+    {
+        var snapshot = Read($$"""
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "{{key}}": {{literal}}
+            } }
             """);
+        var value = key == ClaudeCodeTimeoutPolicy.RequestTimeoutKey
+            ? snapshot.NormalRequest
+            : snapshot.EventIdle;
 
-        var snap = ClaudeCodeTimeoutReader.Read(path);
-
-        Assert.True(snap.StreamIdle.IsExplicit);
-        Assert.Equal(900_000, snap.StreamIdle.EffectiveMs);
+        Assert.Equal(ClientValueSource.Invalid, value.Source);
+        Assert.Null(value.EffectiveMs);
+        Assert.Equal(literal, value.RawValue);
     }
 
     [Fact]
-    public void A_bridge_on_another_port_still_counts_as_this_bridges_client()
+    public void Numeric_json_durations_are_read_without_int_overflow_or_string_coercion()
     {
-        var path = WriteSettings("""
-            { "env": { "ANTHROPIC_BASE_URL": "http://localhost:18765/cc" } }
+        var snapshot = Read("""
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_STREAM_IDLE_TIMEOUT_MS": 21474836480,
+              "API_TIMEOUT_MS": 21474836480
+            } }
             """);
 
-        var snap = ClaudeCodeTimeoutReader.Read(path);
-
-        Assert.True(snap.Readable);
+        Assert.Equal(21_474_836_480L, snapshot.EventIdle.EffectiveMs);
+        Assert.Equal(1_800_000, snapshot.ByteIdle.EffectiveMs);
+        Assert.Equal(21_474_836_480L, snapshot.NormalRequest.EffectiveMs);
+        Assert.Equal(21_474_836_480L, snapshot.AfterStreamErrorRequest.EffectiveMs);
     }
 
     [Fact]
-    public void Repo_scoped_settings_are_reported_as_outside_what_the_bridge_can_see()
+    public void Explicit_watchdog_disable_is_preserved_as_disabled()
     {
-        // Contract: repo-scoped settings live in the CLAUDE SESSION's project dir,
-        // which the bridge cannot know — one long-running bridge serves sessions in
-        // many repos. Resolving "./.claude/settings.local.json" against the BRIDGE's
-        // own working directory would claim an unrelated file is authoritative, so
-        // the reader must NOT do it. It reads global only; the report discloses the
-        // gap.
-        var dir = Path.Combine(Path.GetTempPath(), "cb-scope-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
-        File.WriteAllText(
-            Path.Combine(dir, ".claude", "settings.local.json"),
-            """
-            {
-              "env": {
-                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
-                "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "1000"
-              }
-            }
+        var snapshot = Read("""
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_ENABLE_STREAM_WATCHDOG": "0",
+              "CLAUDE_ENABLE_BYTE_WATCHDOG": "false"
+            } }
             """);
 
-        var old = Environment.CurrentDirectory;
+        Assert.Equal(ClientValueSource.Disabled, snapshot.EventIdle.Source);
+        Assert.Equal(ClientValueSource.Disabled, snapshot.ByteIdle.Source);
+        Assert.Equal("0", snapshot.StreamWatchdog.RawValue);
+        Assert.Equal("false", snapshot.ByteWatchdog.RawValue);
+    }
+
+    [Fact]
+    public void Disabling_stream_watchdog_does_not_break_independent_byte_idle_inheritance()
+    {
+        var snapshot = Read("""
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "900000",
+              "CLAUDE_ENABLE_STREAM_WATCHDOG": "0"
+            } }
+            """);
+
+        Assert.Equal(ClientValueSource.Disabled, snapshot.EventIdle.Source);
+        Assert.Equal(ClientValueSource.Inherited, snapshot.ByteIdle.Source);
+        Assert.Equal(900_000, snapshot.ByteIdle.EffectiveMs);
+    }
+
+    [Fact]
+    public void Invalid_first_party_value_makes_absent_byte_idle_unknown_instead_of_enabling_first_party_mode()
+    {
+        var snapshot = Read("""
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": { "unexpected": true }
+            } }
+            """);
+
+        Assert.Equal(ClientValueSource.Unknown, snapshot.ByteIdle.Source);
+        Assert.Null(snapshot.ByteIdle.EffectiveMs);
+        Assert.Contains("invalid _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL", snapshot.ByteIdle.Detail);
+    }
+
+    [Fact]
+    public void Invalid_stream_idle_cannot_be_relabelled_as_an_absent_byte_idle_default()
+    {
+        var snapshot = Read(Settings("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "not-a-number"));
+
+        Assert.Equal(ClientValueSource.Invalid, snapshot.EventIdle.Source);
+        Assert.Equal(ClientValueSource.Unknown, snapshot.ByteIdle.Source);
+        Assert.Null(snapshot.ByteIdle.EffectiveMs);
+        Assert.Contains("cannot inherit invalid", snapshot.ByteIdle.Detail);
+    }
+
+    [Fact]
+    public void Invalid_watchdog_is_retained_and_makes_effective_idle_unknown()
+    {
+        var snapshot = Read("""
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "900000",
+              "CLAUDE_ENABLE_STREAM_WATCHDOG": { "unexpected": true }
+            } }
+            """);
+
+        Assert.Equal(ClientValueSource.Invalid, snapshot.StreamWatchdog.Source);
+        Assert.Equal("{\"unexpected\":true}", snapshot.StreamWatchdog.RawValue);
+        Assert.Equal(ClientValueSource.Unknown, snapshot.EventIdle.Source);
+        Assert.Contains("invalid CLAUDE_ENABLE_STREAM_WATCHDOG", snapshot.EventIdle.Detail);
+    }
+
+    [Fact]
+    public void Invalid_dependency_remains_the_reason_when_the_client_version_is_unverified()
+    {
+        var snapshot = Read("""
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_ENABLE_STREAM_WATCHDOG": { "unexpected": true }
+            } }
+            """, installedVersion: "2.1.999");
+
+        Assert.Equal(ClientValueSource.Unknown, snapshot.EventIdle.Source);
+        Assert.Contains("invalid CLAUDE_ENABLE_STREAM_WATCHDOG", snapshot.EventIdle.Detail);
+        Assert.DoesNotContain("version-dependent", snapshot.EventIdle.Detail);
+    }
+
+    [Fact]
+    public void Retry_value_is_retained_without_claiming_effective_precedence()
+    {
+        var snapshot = Read(Settings("CLAUDE_CODE_MAX_RETRIES", "7"));
+        Assert.Equal("7", snapshot.Retry.RawValue);
+        Assert.Equal(ClientValueSource.Explicit, snapshot.Retry.Source);
+    }
+
+    [Fact]
+    public void Invalid_retry_value_is_retained_instead_of_becoming_absent()
+    {
+        var snapshot = Read("""
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_CODE_MAX_RETRIES": { "value": 7 }
+            } }
+            """);
+
+        Assert.Equal(ClientValueSource.Invalid, snapshot.Retry.Source);
+        Assert.Equal("{\"value\":7}", snapshot.Retry.RawValue);
+    }
+
+    [Fact]
+    public void Non_bridge_global_file_is_unknown()
+    {
+        var snapshot = Read("""
+            { "env": { "ANTHROPIC_BASE_URL": "https://example.test" } }
+            """);
+
+        Assert.False(snapshot.Readable);
+        Assert.Equal(ClientValueSource.Unknown, snapshot.EventIdle.Source);
+    }
+
+    [Fact]
+    public void Missing_and_malformed_global_files_are_best_effort_unknowns()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "cb-claude-timeout-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
         try
         {
-            Environment.CurrentDirectory = dir;
+            var missing = ClaudeCodeTimeoutReader.Read(Path.Combine(directory, "missing.json"));
+            File.WriteAllText(Path.Combine(directory, "bad.json"), "{ not json");
+            var malformed = ClaudeCodeTimeoutReader.Read(Path.Combine(directory, "bad.json"));
 
-            var snap = ClaudeCodeTimeoutReader.Read();
-
-            // Whatever it read, it must not be the CWD-relative repo file.
-            Assert.NotEqual(
-                Path.Combine(dir, ".claude", "settings.local.json"),
-                snap.SettingsPath);
-            Assert.Equal(ClaudeCodeTimeoutReader.DefaultSettingsPath, snap.SettingsPath);
+            Assert.False(missing.Readable);
+            Assert.False(malformed.Readable);
+            Assert.Equal(ClientValueSource.Unknown, missing.EventIdle.Source);
+            Assert.Equal(ClientValueSource.Unknown, malformed.EventIdle.Source);
         }
         finally
         {
-            Environment.CurrentDirectory = old;
-            try { Directory.Delete(dir, true); } catch { }
+            Directory.Delete(directory, recursive: true);
         }
     }
 
-    // ---- Absent-key default depends on the first-party flag ----
-
     [Fact]
-    public void Absent_key_uses_the_first_party_default_only_when_that_flag_is_set()
+    public void Bridge_route_on_another_port_is_still_a_readable_global_baseline()
     {
-        // The 180 s bound is selected BY _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL,
-        // which the bridge writes for the 1M window. Applying it unconditionally
-        // would report a bound that does not exist for a hand-managed config.
-        var firstParty = WriteSettings("""
-            {
-              "env": {
-                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
-                "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1"
-              }
-            }
+        var snapshot = Read("""
+            { "env": { "ANTHROPIC_BASE_URL": "http://localhost:9999/cc" } }
             """);
 
-        var snap = ClaudeCodeTimeoutReader.Read(firstParty);
-
-        Assert.True(snap.Readable);
-        Assert.False(snap.StreamIdle.IsExplicit);
-        Assert.Equal(
-            ClaudeCodeTimeoutPolicy.AbsentStreamIdleFirstPartyDefaultMs,
-            snap.StreamIdle.EffectiveMs);
+        Assert.True(snapshot.Readable);
+        Assert.Equal(ClientValueSource.BuiltIn, snapshot.EventIdle.Source);
     }
 
     [Fact]
-    public void Absent_key_without_the_first_party_flag_uses_the_longer_default()
+    public void Unverified_client_version_keeps_configured_duration_but_does_not_guess_effective_rules()
     {
-        var handManaged = WriteSettings("""
-            { "env": { "ANTHROPIC_BASE_URL": "http://localhost:8765/cc" } }
-            """);
+        var snapshot = Read(
+            Settings("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "60000"),
+            installedVersion: "2.1.999");
 
-        var snap = ClaudeCodeTimeoutReader.Read(handManaged);
-
-        Assert.True(snap.Readable);
-        Assert.False(snap.StreamIdle.IsExplicit);
-        Assert.Equal(
-            ClaudeCodeTimeoutPolicy.AbsentStreamIdleDefaultMs, snap.StreamIdle.EffectiveMs);
-        Assert.True(
-            ClaudeCodeTimeoutPolicy.AbsentStreamIdleDefaultMs
-            > ClaudeCodeTimeoutPolicy.AbsentStreamIdleFirstPartyDefaultMs);
+        Assert.Equal(60_000, snapshot.EventIdle.ConfiguredMs);
+        Assert.Null(snapshot.EventIdle.EffectiveMs);
+        Assert.Equal(ClientValueSource.Explicit, snapshot.EventIdle.Source);
+        Assert.Contains("has not been verified", snapshot.EventIdle.Detail);
+        Assert.Equal(ClientValueSource.Unknown, snapshot.ByteIdle.Source);
+        Assert.Equal(ClientValueSource.Unknown, snapshot.NormalRequest.Source);
     }
 
     [Fact]
-    public void An_explicit_value_above_the_clients_cap_is_reported_as_the_capped_value()
+    public void Version_probe_path_resolution_ignores_relative_and_current_directory_launchers()
     {
-        // EffectiveMs means "what the client actually applies". Claude Code silently
-        // caps this key, so echoing a larger stored number would overstate the real
-        // bound — and with the bridge budget disabled it would also imply a falsely
-        // long one.
-        var path = WriteSettings("""
-            {
-              "env": {
-                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
-                "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "9999999"
-              }
-            }
-            """);
+        var root = Path.Combine(Path.GetTempPath(), "cb-version-probe-" + Guid.NewGuid().ToString("N"));
+        var current = Path.Combine(root, "untrusted-checkout");
+        var trusted = Path.Combine(root, "explicit-path-entry");
+        Directory.CreateDirectory(current);
+        Directory.CreateDirectory(trusted);
+        File.WriteAllText(Path.Combine(current, "claude.cmd"), "malicious");
+        var expected = Path.Combine(trusted, "claude.cmd");
+        File.WriteAllText(expected, "trusted");
 
-        var snap = ClaudeCodeTimeoutReader.Read(path);
+        try
+        {
+            var path = string.Join(Path.PathSeparator, new[] { ".", current, trusted });
 
-        Assert.True(snap.StreamIdle.IsExplicit);
-        Assert.Equal(ClaudeCodeTimeoutPolicy.StreamIdleMaxMs, snap.StreamIdle.EffectiveMs);
+            var actual = ClaudeCodeVersionProbe.FindExecutableOnPath(
+                "claude", path, [".cmd"], current);
+
+            Assert.Equal(expected, actual);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
-    public void A_stored_value_beyond_int_range_is_still_read_and_capped()
+    public void Windows_version_probe_preserves_path_directory_precedence_across_shim_and_exe_layouts()
     {
-        // int.TryParse would reject this outright and fall back to the built-in
-        // default, reporting a bound the client is not using.
-        var path = WriteSettings("""
-            {
-              "env": {
-                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
-                "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "99999999999"
-              }
-            }
-            """);
+        var root = Path.Combine(Path.GetTempPath(), "cb-version-order-" + Guid.NewGuid().ToString("N"));
+        var current = Path.Combine(root, "current");
+        var first = Path.Combine(root, "first-npm-bin");
+        var second = Path.Combine(root, "later-direct-bin");
+        Directory.CreateDirectory(current);
+        Directory.CreateDirectory(first);
+        Directory.CreateDirectory(second);
+        File.WriteAllText(Path.Combine(first, "claude.cmd"), "shim");
+        var expected = Path.Combine(
+            first, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(expected)!);
+        File.WriteAllText(expected, "first installation");
+        File.WriteAllText(Path.Combine(second, "claude.exe"), "later installation");
 
-        var snap = ClaudeCodeTimeoutReader.Read(path);
+        try
+        {
+            var path = string.Join(Path.PathSeparator, new[] { first, second });
 
-        Assert.True(snap.StreamIdle.IsExplicit);
-        Assert.Equal(ClaudeCodeTimeoutPolicy.StreamIdleMaxMs, snap.StreamIdle.EffectiveMs);
-    }
-    [Fact]
-    public void A_request_timeout_beyond_int_range_does_not_wrap_into_a_short_bound()
-    {
-        // API_TIMEOUT_MS has no documented client cap, so a huge stored value reaches
-        // the narrowing conversion. An unchecked cast would wrap it into an unrelated
-        // (possibly negative) number and report THAT as the client's bound.
-        var path = WriteSettings("""
-            {
-              "env": {
-                "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
-                "API_TIMEOUT_MS": "99999999999"
-              }
-            }
-            """);
+            var actual = ClaudeCodeVersionProbe.FindWindowsClaudeExecutable(path, current);
 
-        var snap = ClaudeCodeTimeoutReader.Read(path);
-
-        Assert.True(snap.RequestTimeout.IsExplicit);
-        Assert.NotNull(snap.RequestTimeout.EffectiveMs);
-        Assert.True(
-            snap.RequestTimeout.EffectiveMs > 0,
-            $"expected a positive bound, got {snap.RequestTimeout.EffectiveMs}");
-    }
-    // ---- API_TIMEOUT_MS is a residual wall-clock bound, not a derived one ----
-
-    [Fact]
-    public void Request_timeout_is_the_fixed_maximum_not_derived_from_budgets()
-    {
-        // No finite wall-clock value can outlast inactivity budgets: a healthy turn
-        // that keeps emitting has no total duration, and a stalled one can spend
-        // first-byte + stream-idle + ... before any bridge timer fires. Deriving it
-        // (from first-byte, or from Math.Max of both) only moved the threshold while
-        // still implying a guarantee that cannot exist — e.g. first-byte 900 +
-        // stream-idle 600 derived 1200 s while the bridge could legitimately take
-        // ~1500 s. So the policy writes its maximum and the report calls it residual.
-        Assert.Equal(ClaudeCodeTimeoutPolicy.RequestTimeoutMaxMs, ClaudeCodeTimeoutPolicy.RequestTimeoutMs());
+            Assert.Equal(expected, actual);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
-    [Fact]
-    public void Request_timeout_still_far_exceeds_the_clients_own_fallback_default()
-    {
-        // It is written for a real reason: it also bounds each attempt of Claude
-        // Code's non-streaming recovery request, whose 300 s client default was half
-        // of the original failure. That path IS a bounded single response, so raising
-        // the ceiling genuinely helps even though it guarantees nothing for a stream.
-        Assert.True(
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMs()
-            > ClaudeCodeTimeoutPolicy.AbsentFallbackRequestTimeoutDefaultMs);
-        // ...and the primary-request default too, which is the larger of the two.
-        Assert.True(
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMs()
-            > ClaudeCodeTimeoutPolicy.AbsentRequestTimeoutDefaultMs);
-    }
+    private static string Settings(string key, string value) => $$"""
+        { "env": {
+          "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+          "{{key}}": "{{value}}"
+        } }
+        """;
 
-    [Fact]
-    public void The_two_absent_request_defaults_are_mode_specific()
+    private static ClientTimeoutSnapshot Read(
+        string json,
+        string? installedVersion = ClaudeCodeTimeoutPolicy.VerifiedClientVersion)
     {
-        // Claude Code's SDK whole-request default (600 s) and its non-streaming
-        // fallback per-attempt default (300 s) are different bounds. Collapsing them
-        // to one number would label the primary request with a limit that only
-        // applies to the recovery attempt.
-        Assert.Equal(600_000, ClaudeCodeTimeoutPolicy.AbsentRequestTimeoutDefaultMs);
-        Assert.Equal(300_000, ClaudeCodeTimeoutPolicy.AbsentFallbackRequestTimeoutDefaultMs);
-        Assert.True(
-            ClaudeCodeTimeoutPolicy.AbsentRequestTimeoutDefaultMs
-            > ClaudeCodeTimeoutPolicy.AbsentFallbackRequestTimeoutDefaultMs);
+        var directory = Path.Combine(Path.GetTempPath(), "cb-claude-timeout-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "settings.json");
+        try
+        {
+            File.WriteAllText(path, json);
+            return ClaudeCodeTimeoutReader.Read(path, installedVersion: installedVersion);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 }

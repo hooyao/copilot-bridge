@@ -87,7 +87,10 @@ internal static class BridgeServiceCollectionExtensions
         services.Configure<OutboundBetaPolicyOptions>(config.GetSection("Pipeline:OutboundBeta"));
         services.Configure<ResponseModelRewriteOptions>(config.GetSection("Pipeline:Detectors:ModelRewrite"));
         services.Configure<UpstreamRetryOptions>(config.GetSection("Pipeline:UpstreamRetry"));
-        services.Configure<UpstreamTimeoutOptions>(config.GetSection("Pipeline:UpstreamTimeout"));
+        services.AddOptions<UpstreamTimeoutOptions>()
+            .Bind(config.GetSection("Pipeline:UpstreamTimeout"))
+            .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<UpstreamTimeoutOptions>, UpstreamTimeoutOptionsValidator>();
         services.Configure<ResponseLeakGuardOptions>(config.GetSection("Pipeline:Detectors:ResponseLeakGuard"));
         services.Configure<ToolInputValidationOptions>(config.GetSection("Pipeline:Detectors:ToolInputValidation"));
         services.Configure<RunawayGuardOptions>(config.GetSection("Pipeline:Detectors:RunawayGuard"));

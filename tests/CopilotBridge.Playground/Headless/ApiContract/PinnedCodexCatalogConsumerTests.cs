@@ -38,11 +38,7 @@ public sealed class PinnedCodexCatalogConsumerTests
         Assert.Contains($"codex-cli {PinnedVersion}", version.Stdout, StringComparison.Ordinal);
 
         var invocation = CodexProviderAuthInvocation.ResolveCurrent();
-        var connection = new BridgeConnection(
-            new Uri(bridge.BaseUrl).Port,
-            NeedNonStreamingFallbackDisabled: false,
-            ClaudeCodeStreamIdleTimeoutMs: 0,
-            ClaudeCodeRequestTimeoutMs: 0);
+        var connection = new BridgeConnection(new Uri(bridge.BaseUrl).Port);
         var (config, _) = CodexConfigurator.BuildContent(null, connection, invocation);
         File.WriteAllText(Path.Combine(home.Path, "config.toml"), config);
 

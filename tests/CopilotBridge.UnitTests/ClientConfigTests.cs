@@ -1,34 +1,544 @@
+using System.Text.Json.Nodes;
+using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Hosting.ClientConfig;
-using CopilotBridge.Cli.Hosting.Options;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace CopilotBridge.UnitTests;
 
-/// <summary>
-/// Serializes the client-config tests against the rest of the suite. Several of
-/// these tests mutate the process-wide <see cref="System.Environment.CurrentDirectory"/>
-/// (repo-scope config resolves paths relative to it), which would redirect any other
-/// test that resolves a relative path if it ran in parallel. xUnit runs different
-/// collections in parallel by default; <c>DisableParallelization</c> on this
-/// collection makes it the exclusive occupant while it runs, removing the race.
-/// </summary>
 [CollectionDefinition(ClientConfigCollection.Name, DisableParallelization = true)]
 public sealed class ClientConfigCollection
 {
-    public const string Name = "ClientConfig (mutates CWD)";
+    public const string Name = "ClientConfig (mutates process paths)";
 }
 
-/// <summary>
-/// Contract tests for the <c>config</c> command family. Each asserts a required
-/// behavior from the client-autoconfiguration spec — derived from the spec, not read
-/// back from the implementation.
-/// </summary>
+/// <summary>Contract tests for connection-only, behavior-preserving client configuration.</summary>
 [Collection(ClientConfigCollection.Name)]
 public class ClientConfigTests
 {
-    // ---- Connection derivation (spec: "Connection facts derived from appsettings") ----
+    [Fact]
+    public void Connection_uses_appsettings_port_and_cli_override()
+    {
+        var config = Config("""{ "Server": { "Port": 9000 } }""");
+        Assert.Equal(9000, BridgeConnectionFactory.Create(config).Port);
+        Assert.Equal("http://localhost:9000/cc", BridgeConnectionFactory.Create(config).ClaudeCodeBaseUrl);
+        Assert.Equal("http://localhost:18765/codex", BridgeConnectionFactory.Create(config, 18765).CodexBaseUrl);
+    }
+
+    [Fact]
+    public void Claude_new_config_writes_only_connection_and_required_placeholder()
+    {
+        var (content, summary) = ClaudeCodeConfigurator.BuildContent(null, Conn());
+        var env = JsonNode.Parse(content)!["env"]!;
+
+        Assert.Equal("http://localhost:8765/cc", (string?)env["ANTHROPIC_BASE_URL"]);
+        Assert.Equal("copilot-bridge", (string?)env["ANTHROPIC_AUTH_TOKEN"]);
+        Assert.Null(env[ClaudeCodeTimeoutPolicy.StreamIdleKey]);
+        Assert.Null(env[ClaudeCodeTimeoutPolicy.ByteIdleKey]);
+        Assert.Null(env[ClaudeCodeTimeoutPolicy.RequestTimeoutKey]);
+        Assert.Null(env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"]);
+        Assert.Null(env["DISABLE_ERROR_REPORTING"]);
+        Assert.Contains(summary, line => line.Contains("preserved client-owned", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Claude_preserves_every_behavioral_value_and_existing_token()
+    {
+        var original = """
+            {
+              "env": {
+                "ANTHROPIC_BASE_URL": "http://old.example/cc",
+                "ANTHROPIC_AUTH_TOKEN": "mine",
+                "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "123456",
+                "CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS": "654321",
+                "API_TIMEOUT_MS": "777777",
+                "CLAUDE_CODE_MAX_RETRIES": "0",
+                "CLAUDE_ENABLE_STREAM_WATCHDOG": "false",
+                "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "0",
+                "DISABLE_ERROR_REPORTING": "false",
+                "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": "1"
+              },
+              "statusLine": { "command": "echo a && b > c" },
+              "greeting": "你好世界"
+            }
+            """;
+
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn(9000));
+        var root = JsonNode.Parse(content)!;
+        var env = root["env"]!;
+
+        Assert.Equal("http://localhost:9000/cc", (string?)env["ANTHROPIC_BASE_URL"]);
+        Assert.Equal("mine", (string?)env["ANTHROPIC_AUTH_TOKEN"]);
+        Assert.Equal("123456", (string?)env[ClaudeCodeTimeoutPolicy.StreamIdleKey]);
+        Assert.Equal("654321", (string?)env[ClaudeCodeTimeoutPolicy.ByteIdleKey]);
+        Assert.Equal("777777", (string?)env[ClaudeCodeTimeoutPolicy.RequestTimeoutKey]);
+        Assert.Equal("0", (string?)env[ClaudeCodeTimeoutPolicy.RetryKey]);
+        Assert.Equal("false", (string?)env[ClaudeCodeTimeoutPolicy.StreamWatchdogKey]);
+        Assert.Equal("0", (string?)env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"]);
+        Assert.Equal("false", (string?)env["DISABLE_ERROR_REPORTING"]);
+        Assert.Equal("1", (string?)env["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"]);
+        Assert.Contains("echo a && b > c", content);
+        Assert.Contains("你好世界", content);
+        Assert.DoesNotContain("\\u4F60", content, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Claude_behavioral_absence_stays_absent_and_second_run_is_identical()
+    {
+        var original = """{ "env": { "ANTHROPIC_AUTH_TOKEN": "mine" } }""";
+        var (first, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
+        var (second, _) = ClaudeCodeConfigurator.BuildContent(first, Conn());
+
+        Assert.Equal(first, second);
+        var env = JsonNode.Parse(first)!["env"]!;
+        Assert.Null(env[ClaudeCodeTimeoutPolicy.StreamIdleKey]);
+        Assert.Null(env[ClaudeCodeTimeoutPolicy.RequestTimeoutKey]);
+        Assert.Null(env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"]);
+    }
+
+    [Theory]
+    [InlineData("// comment\n{}")]
+    [InlineData("[]")]
+    public void Claude_refuses_unmergeable_json(string original) =>
+        Assert.Throws<ClientConfigException>(() => ClaudeCodeConfigurator.BuildContent(original, Conn()));
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("\"not-an-object\"")]
+    public void Claude_refuses_non_object_env_instead_of_discarding_it(string envLiteral)
+    {
+        var original = $$"""{ "env": {{envLiteral}}, "unrelated": "keep" }""";
+
+        var error = Assert.Throws<ClientConfigException>(
+            () => ClaudeCodeConfigurator.BuildContent(original, Conn()));
+
+        Assert.Contains("env value is not a JSON object", error.Message);
+    }
+
+    [Fact]
+    public void Claude_preserves_values_written_by_an_older_bridge_instead_of_migrating_them()
+    {
+        var original = """
+            { "env": {
+              "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+              "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "540000",
+              "API_TIMEOUT_MS": "3600000",
+              "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "1",
+              "DISABLE_ERROR_REPORTING": "1",
+              "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": "1"
+            } }
+            """;
+
+        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn(9000));
+        var env = JsonNode.Parse(content)!["env"]!;
+
+        Assert.Equal("540000", (string?)env[ClaudeCodeTimeoutPolicy.StreamIdleKey]);
+        Assert.Equal("3600000", (string?)env[ClaudeCodeTimeoutPolicy.RequestTimeoutKey]);
+        Assert.Equal("1", (string?)env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"]);
+        Assert.Equal("1", (string?)env["DISABLE_ERROR_REPORTING"]);
+        Assert.Equal("1", (string?)env["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"]);
+    }
+
+    [Fact]
+    public void Claude_status_treats_behavioral_values_as_observations_not_drift()
+    {
+        var directory = TempDirectory();
+        var previous = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = directory;
+            Directory.CreateDirectory(Path.Combine(directory, ".claude"));
+            File.WriteAllText(
+                Path.Combine(directory, ".claude", "settings.local.json"),
+                """
+                { "env": {
+                  "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+                  "ANTHROPIC_AUTH_TOKEN": "mine",
+                  "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "1",
+                  "CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS": 2,
+                  "API_TIMEOUT_MS": "3",
+                  "CLAUDE_ENABLE_STREAM_WATCHDOG": false,
+                  "CLAUDE_ENABLE_BYTE_WATCHDOG": true,
+                  "CLAUDE_CODE_MAX_RETRIES": 4,
+                  "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": 0,
+                  "DISABLE_ERROR_REPORTING": false,
+                  "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": 1
+                } }
+                """);
+
+            var state = new ClaudeCodeConfigurator().Read(Conn(), ConfigScope.Repo);
+            Assert.True(state.ConfiguredForBridge);
+            Assert.False(state.Drifted);
+            Assert.Contains(state.Details, line => line.Contains("CLAUDE_STREAM_IDLE_TIMEOUT_MS: 1"));
+            Assert.Contains(state.Details, line => line == "CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS: 2");
+            Assert.Contains(state.Details, line => line == "API_TIMEOUT_MS: 3");
+            Assert.Contains(state.Details, line => line == "CLAUDE_ENABLE_STREAM_WATCHDOG: false");
+            Assert.Contains(state.Details, line => line == "CLAUDE_ENABLE_BYTE_WATCHDOG: true");
+            Assert.Contains(state.Details, line => line == "CLAUDE_CODE_MAX_RETRIES: 4");
+            Assert.Contains(state.Details, line => line == "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: 0");
+            Assert.Contains(state.Details, line => line == "DISABLE_ERROR_REPORTING: false");
+            Assert.Contains(state.Details, line => line == "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: 1");
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            TryDelete(directory);
+        }
+    }
+
+    [Fact]
+    public void Claude_status_marks_only_a_missing_required_token_as_auth_drift()
+    {
+        var directory = TempDirectory();
+        var previous = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = directory;
+            var claudeDirectory = Path.Combine(directory, ".claude");
+            Directory.CreateDirectory(claudeDirectory);
+            var path = Path.Combine(claudeDirectory, "settings.local.json");
+            File.WriteAllText(path, """
+                { "env": {
+                  "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+                  "API_TIMEOUT_MS": "1"
+                } }
+                """);
+
+            var missing = new ClaudeCodeConfigurator().Read(Conn(), ConfigScope.Repo);
+            Assert.True(missing.Drifted);
+            Assert.Contains(missing.AdditionalDriftFacts!, fact => fact.Contains("ANTHROPIC_AUTH_TOKEN"));
+
+            File.WriteAllText(path, """
+                { "env": {
+                  "ANTHROPIC_BASE_URL": "http://localhost:8765/cc",
+                  "ANTHROPIC_AUTH_TOKEN": "user-selected",
+                  "API_TIMEOUT_MS": "1"
+                } }
+                """);
+            var present = new ClaudeCodeConfigurator().Read(Conn(), ConfigScope.Repo);
+            Assert.False(present.Drifted);
+            Assert.Contains(present.Details, line => line == "ANTHROPIC_AUTH_TOKEN: present");
+            Assert.DoesNotContain(present.Details, line => line.Contains("user-selected"));
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            TryDelete(directory);
+        }
+    }
+
+    [Fact]
+    public void Claude_status_distinguishes_a_bridge_on_another_port_from_a_non_bridge_endpoint()
+    {
+        var directory = TempDirectory();
+        var previous = Environment.CurrentDirectory;
+        try
+        {
+            Environment.CurrentDirectory = directory;
+            var claudeDirectory = Path.Combine(directory, ".claude");
+            Directory.CreateDirectory(claudeDirectory);
+            var path = Path.Combine(claudeDirectory, "settings.local.json");
+            File.WriteAllText(path, """
+                { "env": {
+                  "ANTHROPIC_BASE_URL": "http://localhost:9999/cc",
+                  "ANTHROPIC_AUTH_TOKEN": "present"
+                } }
+                """);
+            var otherPort = new ClaudeCodeConfigurator().Read(Conn(), ConfigScope.Repo);
+            Assert.True(otherPort.ConfiguredForBridge);
+            Assert.True(otherPort.Drifted);
+
+            File.WriteAllText(path, """
+                { "env": {
+                  "ANTHROPIC_BASE_URL": "https://api.example.test",
+                  "ANTHROPIC_AUTH_TOKEN": "present"
+                } }
+                """);
+            var otherEndpoint = new ClaudeCodeConfigurator().Read(Conn(), ConfigScope.Repo);
+            Assert.False(otherEndpoint.ConfiguredForBridge);
+            Assert.False(otherEndpoint.Drifted);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            TryDelete(directory);
+        }
+    }
+
+    [Fact]
+    public void Codex_new_config_contains_connection_and_auth_without_timeout_policy()
+    {
+        var invocation = new CodexProviderAuthInvocation("bridge.exe", ["auth", "provider-token"]);
+        var (content, summary) = CodexConfigurator.BuildContent(null, Conn(), invocation);
+
+        Assert.Contains("model_provider = \"copilot-bridge\"", content);
+        Assert.Contains("[model_providers.copilot-bridge]", content);
+        Assert.Contains("base_url = \"http://localhost:8765/codex\"", content);
+        Assert.Contains("wire_api = \"responses\"", content);
+        Assert.Contains("[model_providers.copilot-bridge.auth]", content);
+        Assert.DoesNotContain("stream_idle_timeout_ms", content);
+        Assert.DoesNotContain("request_max_retries", content);
+        Assert.Contains(summary, line => line.Contains("preserved client-owned provider", StringComparison.Ordinal));
+        Assert.Contains(summary, line => line.Contains(".command = \"bridge.exe\"", StringComparison.Ordinal));
+        Assert.Contains(summary, line => line.Contains(".args = [ \"auth\", \"provider-token\" ]", StringComparison.Ordinal));
+        Assert.Contains(summary, line => line.EndsWith(".timeout_ms = 5000", StringComparison.Ordinal));
+        Assert.Contains(summary, line => line.EndsWith(".refresh_interval_ms = 0", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Codex_surgical_merge_preserves_behavioral_fields_comments_and_rival_tables()
+    {
+        var original = """
+            model_provider = "old"
+
+            [model_providers.copilot-bridge]
+            name = "old-name"
+            base_url = "http://old.example/codex"
+            wire_api = "chat"
+            stream_idle_timeout_ms = 0 # explicit immediate timeout
+            request_max_retries = 0
+            stream_max_retries = 7
+            websocket_connect_timeout_ms = 1234
+            supports_websockets = true
+            query_params = { region = "mine" }
+            http_headers = { X-Custom = "keep" }
+            env_http_headers = { Authorization = "KEEP_ENV" }
+
+            [model_providers.copilot-bridge.auth]
+            command = "old.exe"
+            args = [ "old" ]
+            timeout_ms = 1
+            refresh_interval_ms = 9
+
+            [model_providers.rival]
+            name = 'leave exactly'
+            base_url = 'https://rival.example'
+            """;
+        var invocation = new CodexProviderAuthInvocation("bridge.exe", ["auth", "provider-token"]);
+
+        var (content, _) = CodexConfigurator.BuildContent(original, Conn(9000), invocation);
+
+        Assert.Contains("base_url = \"http://localhost:9000/codex\"", content);
+        Assert.Contains("stream_idle_timeout_ms = 0 # explicit immediate timeout", content);
+        Assert.Contains("request_max_retries = 0", content);
+        Assert.Contains("stream_max_retries = 7", content);
+        Assert.Contains("websocket_connect_timeout_ms = 1234", content);
+        Assert.Contains("supports_websockets = true", content);
+        Assert.Contains("query_params = { region = \"mine\" }", content);
+        Assert.Contains("http_headers = { X-Custom = \"keep\" }", content);
+        Assert.Contains("env_http_headers = { Authorization = \"KEEP_ENV\" }", content);
+        Assert.Contains("[model_providers.rival]\nname = 'leave exactly'", content.ReplaceLineEndings("\n"));
+    }
+
+    [Fact]
+    public void Codex_surgical_merge_is_idempotent()
+    {
+        var invocation = new CodexProviderAuthInvocation("bridge.exe", ["auth", "provider-token"]);
+        var original = """
+            [model_providers.copilot-bridge]
+            stream_idle_timeout_ms = 300000
+            request_max_retries = 4
+            """;
+        var (first, _) = CodexConfigurator.BuildContent(original, Conn(), invocation);
+        var (second, _) = CodexConfigurator.BuildContent(first, Conn(), invocation);
+        Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public void Codex_appends_to_a_file_without_a_trailing_newline_and_preserves_unmanaged_bytes()
+    {
+        const string original = "model = 'gpt-custom' # keep quote and comment";
+        var invocation = new CodexProviderAuthInvocation("bridge.exe", ["auth", "provider-token"]);
+
+        var (content, _) = CodexConfigurator.BuildContent(original, Conn(), invocation);
+
+        Assert.StartsWith(original + "\n", content.ReplaceLineEndings("\n"));
+        Assert.Contains("[model_providers.copilot-bridge]", content);
+        Assert.EndsWith("\n", content);
+    }
+
+    [Fact]
+    public void Codex_connection_command_plan_becomes_a_true_noop_after_apply()
+    {
+        var directory = TempDirectory();
+        var oldHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        try
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", directory);
+            var configurator = new CodexConfigurator();
+            var first = configurator.Plan(Conn(), ConfigScope.Global);
+            Assert.False(first.IsNoOp);
+            configurator.Apply(first);
+
+            var second = configurator.Plan(Conn(), ConfigScope.Global);
+            Assert.True(second.IsNoOp);
+            Assert.Equal(first.NewContent, second.NewContent);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", oldHome);
+            TryDelete(directory);
+        }
+    }
+
+    [Fact]
+    public void Codex_refuses_malformed_toml() =>
+        Assert.Throws<ClientConfigException>(() =>
+            CodexConfigurator.BuildContent("[bad\nkey =", Conn()));
+
+    [Fact]
+    public void Codex_status_observes_timeout_and_retry_without_drift()
+    {
+        var directory = TempDirectory();
+        var oldHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        try
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", directory);
+            var invocation = CodexProviderAuthInvocation.ResolveCurrent();
+            var (content, _) = CodexConfigurator.BuildContent("""
+                [model_providers.copilot-bridge]
+                stream_idle_timeout_ms = 1
+                request_max_retries = 0
+                stream_max_retries = 0
+                """, Conn(), invocation);
+            File.WriteAllText(Path.Combine(directory, "config.toml"), content);
+
+            var state = new CodexConfigurator().Read(Conn(), ConfigScope.Global);
+            Assert.True(state.ConfiguredForBridge);
+            Assert.False(state.Drifted);
+            Assert.Contains(state.Details, line => line.EndsWith("stream_idle_timeout_ms = 1", StringComparison.Ordinal));
+            Assert.Contains(state.Details, line => line.EndsWith("request_max_retries = 0", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", oldHome);
+            TryDelete(directory);
+        }
+    }
+
+    [Fact]
+    public void Codex_status_retains_present_oddly_typed_behavior_values_instead_of_calling_them_unset()
+    {
+        var directory = TempDirectory();
+        var oldHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        try
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", directory);
+            var invocation = CodexProviderAuthInvocation.ResolveCurrent();
+            var (content, _) = CodexConfigurator.BuildContent("""
+                [model_providers.copilot-bridge]
+                stream_idle_timeout_ms = "five minutes"
+                request_max_retries = true
+                stream_max_retries = { count = 2 }
+                """, Conn(), invocation);
+            File.WriteAllText(Path.Combine(directory, "config.toml"), content);
+
+            var state = new CodexConfigurator().Read(Conn(), ConfigScope.Global);
+
+            Assert.False(state.Drifted);
+            Assert.Contains(state.Details, line => line.EndsWith(
+                "stream_idle_timeout_ms = \"five minutes\"", StringComparison.Ordinal));
+            Assert.Contains(state.Details, line => line.EndsWith(
+                "request_max_retries = true", StringComparison.Ordinal));
+            Assert.Contains(state.Details, line => line.Contains(
+                "stream_max_retries = { count = 2 }", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", oldHome);
+            TryDelete(directory);
+        }
+    }
+
+    [Fact]
+    public void Codex_status_reports_missing_managed_auth_but_not_behavioral_values_as_drift()
+    {
+        var directory = TempDirectory();
+        var oldHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        try
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", directory);
+            File.WriteAllText(Path.Combine(directory, "config.toml"), """
+                model_provider = "copilot-bridge"
+                [model_providers.copilot-bridge]
+                name = "copilot-bridge"
+                base_url = "http://localhost:8765/codex"
+                wire_api = "responses"
+                stream_idle_timeout_ms = 1
+                request_max_retries = 0
+                stream_max_retries = 0
+                """);
+
+            var state = new CodexConfigurator().Read(Conn(), ConfigScope.Global);
+
+            Assert.True(state.ConfiguredForBridge);
+            Assert.True(state.Drifted);
+            Assert.Contains(state.AdditionalDriftFacts!, fact => fact.Contains("discovery-auth"));
+            Assert.DoesNotContain(state.AdditionalDriftFacts!, fact => fact.Contains("retry", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(state.AdditionalDriftFacts!, fact => fact.Contains("idle", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", oldHome);
+            TryDelete(directory);
+        }
+    }
+
+    [Fact]
+    public void Config_state_has_no_behavioral_expected_values_and_drifts_only_on_owned_facts()
+    {
+        var baseline = new ConfigState(
+            "claude-code", ConfigScope.Global, "x", true, true,
+            "http://localhost:8765/cc", "http://localhost:8765/cc",
+            ["CLAUDE_STREAM_IDLE_TIMEOUT_MS: 1", "API_TIMEOUT_MS: 2"]);
+        Assert.False(baseline.Drifted);
+        Assert.True((baseline with { CurrentBaseUrl = "http://localhost:9999/cc" }).Drifted);
+        Assert.True((baseline with { AdditionalDriftFacts = ["required auth token is missing"] }).Drifted);
+        Assert.False((baseline with { Details = ["arbitrary user timeout: anything"] }).Drifted);
+    }
+
+    [Fact]
+    public void Config_file_writer_creates_backup_and_noops_identical_content()
+    {
+        var directory = TempDirectory();
+        var path = Path.Combine(directory, "settings.json");
+        File.WriteAllText(path, "old");
+        var changed = new ConfigPlan("x", ConfigScope.Global, path, "new", "old", []);
+        var backup = ConfigFileWriter.Write(changed);
+        Assert.NotNull(backup);
+        Assert.Equal("old", File.ReadAllText(backup!));
+        Assert.Equal("new", File.ReadAllText(path));
+
+        var noOp = new ConfigPlan("x", ConfigScope.Global, path, "new", "new", []);
+        Assert.Null(ConfigFileWriter.Write(noOp));
+        TryDelete(directory);
+    }
+
+    [Fact]
+    public void Config_composition_root_contains_only_configurators()
+    {
+        using var services = ClientConfigServices.Build();
+        var configurators = services.GetServices<IClientConfigurator>().Select(c => c.ClientId).ToArray();
+        Assert.Equal(["claude-code", "codex"], configurators);
+        Assert.Null(services.GetService<CopilotBridge.Cli.Copilot.ICopilotClient>());
+    }
+
+    [Fact]
+    public void Cli_help_states_connection_only_ownership_and_codex_global_visibility()
+    {
+        var config = RootCli.Build().Subcommands.Single(command => command.Name == "config");
+        var claude = config.Subcommands.Single(command => command.Name == "claude-code");
+        var codex = config.Subcommands.Single(command => command.Name == "codex");
+        var status = config.Subcommands.Single(command => command.Name == "status");
+
+        Assert.Contains("connection/auth only", claude.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("global", codex.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("project/profile/CLI", codex.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(codex.Options, option => option.Name == "--scope" || option.Name == "scope");
+        Assert.Contains("without rewriting", status.Description, StringComparison.OrdinalIgnoreCase);
+    }
 
     private static IConfiguration Config(string json)
     {
@@ -36,1250 +546,18 @@ public class ClientConfigTests
         return new ConfigurationBuilder().AddJsonStream(stream).Build();
     }
 
-    [Fact]
-    public void Port_defaults_to_appsettings_server_port()
-    {
-        var config = Config("""{ "Server": { "Port": 8765 } }""");
-        var conn = BridgeConnectionFactory.Create(config, cliPort: null);
-
-        Assert.Equal(8765, conn.Port);
-        Assert.Equal("http://localhost:8765/cc", conn.ClaudeCodeBaseUrl);
-        Assert.Equal("http://localhost:8765/codex", conn.CodexBaseUrl);
-    }
-
-    [Fact]
-    public void Cli_port_overrides_appsettings()
-    {
-        var config = Config("""{ "Server": { "Port": 8765 } }""");
-        var conn = BridgeConnectionFactory.Create(config, cliPort: 18765);
-
-        Assert.Equal(18765, conn.Port);
-        Assert.Equal("http://localhost:18765/cc", conn.ClaudeCodeBaseUrl);
-    }
-
-    [Fact]
-    public void Non_default_appsettings_port_is_honored()
-    {
-        var config = Config("""{ "Server": { "Port": 9000 } }""");
-        var conn = BridgeConnectionFactory.Create(config, cliPort: null);
-
-        Assert.Equal(9000, conn.Port);
-        Assert.Equal("http://localhost:9000/cc", conn.ClaudeCodeBaseUrl);
-    }
-
-    [Fact]
-    public void Missing_server_section_falls_back_to_default_8765()
-    {
-        var conn = BridgeConnectionFactory.Create(Config("{}"), cliPort: null);
-        Assert.Equal(8765, conn.Port);
-    }
-
-    // ---- Fallback env derivation (spec: "Non-streaming fallback env derived from detector options") ----
-
-    [Fact]
-    public void PreserveStream_on_leak_guard_requires_fallback_disabled()
-    {
-        var config = Config("""
-        { "Pipeline": { "Detectors": {
-            "ResponseLeakGuard": { "Enabled": true, "PreserveStream": true },
-            "ToolInputValidation": { "Enabled": false, "PreserveStream": false },
-            "RunawayGuard": { "Enabled": false }
-        } } }
-        """);
-        var conn = BridgeConnectionFactory.Create(config);
-        Assert.True(conn.NeedNonStreamingFallbackDisabled);
-    }
-
-    [Fact]
-    public void PreserveStream_on_tool_input_validation_requires_fallback_disabled()
-    {
-        var config = Config("""
-        { "Pipeline": { "Detectors": {
-            "ResponseLeakGuard": { "Enabled": false, "PreserveStream": false },
-            "ToolInputValidation": { "Enabled": true, "PreserveStream": true },
-            "RunawayGuard": { "Enabled": false }
-        } } }
-        """);
-        var conn = BridgeConnectionFactory.Create(config);
-        Assert.True(conn.NeedNonStreamingFallbackDisabled);
-    }
-
-    [Fact]
-    public void No_detector_preserving_stream_means_no_fallback()
-    {
-        var config = Config("""
-        { "Pipeline": { "Detectors": {
-            "ResponseLeakGuard": { "Enabled": true, "PreserveStream": false },
-            "ToolInputValidation": { "Enabled": false, "PreserveStream": true },
-            "RunawayGuard": { "Enabled": false }
-        } } }
-        """);
-        var conn = BridgeConnectionFactory.Create(config);
-        Assert.False(conn.NeedNonStreamingFallbackDisabled);
-    }
-
-    [Fact]
-    public void Detector_defaults_true_true_means_fallback_needed()
-    {
-        // The shipped appsettings has both detectors Enabled+PreserveStream=true by
-        // default; a bound-with-defaults config must reflect that.
-        var conn = BridgeConnectionFactory.Create(Config("{}"));
-        Assert.True(conn.NeedNonStreamingFallbackDisabled);
-    }
-
-    // ---- Claude Code JSON merge (spec: "Non-streaming fallback env", "Overwrite policy") ----
-
-    private static BridgeConnection Conn(int port = 8765, bool fallback = true) => new(
-        port, fallback,
-        ClaudeCodeTimeoutPolicy.StreamIdleMsFor(new UpstreamTimeoutOptions().StreamIdleTimeoutSeconds),
-        ClaudeCodeTimeoutPolicy.RequestTimeoutMs());
-
-    [Fact]
-    public void ClaudeCode_sets_base_url_and_leaves_recovery_fallback_enabled()
-    {
-        var (content, _) = ClaudeCodeConfigurator.BuildContent(null, Conn(fallback: true));
-        var root = System.Text.Json.Nodes.JsonNode.Parse(content)!;
-        var env = root["env"]!;
-
-        Assert.Equal("http://localhost:8765/cc", (string?)env["ANTHROPIC_BASE_URL"]);
-        Assert.Null((string?)env["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"]);
-    }
-
-    // ---- Long-thinking timeout env (spec: "Claude Code long-thinking timeout environment") ----
-
-    [Fact]
-    public void ClaudeCode_writes_both_long_thinking_timeout_keys()
-    {
-        var (content, _) = ClaudeCodeConfigurator.BuildContent(null, Conn());
-        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
-
-        Assert.NotNull((string?)env[ClaudeCodeTimeoutPolicy.StreamIdleKey]);
-        Assert.NotNull((string?)env[ClaudeCodeTimeoutPolicy.RequestTimeoutKey]);
-    }
-
-    [Fact]
-    public void Written_stream_idle_outlasts_its_budget_and_request_cap_is_the_fixed_maximum()
-    {
-        // The contract the capability exists for: whatever the operator configured,
-        // the client must not abort before the bridge's own budget applies.
-        var config = Config("""
-            { "Pipeline": { "UpstreamTimeout": {
-                "FirstByteTimeoutSeconds": 900, "StreamIdleTimeoutSeconds": 600 } } }
-            """);
-        var conn = BridgeConnectionFactory.Create(config);
-
-        var (content, _) = ClaudeCodeConfigurator.BuildContent(null, conn);
-        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
-
-        var streamIdleMs = int.Parse((string)env[ClaudeCodeTimeoutPolicy.StreamIdleKey]!);
-        Assert.True(streamIdleMs > 600 * 1000, $"{streamIdleMs}ms must outlast the 600s stream-idle budget");
-
-        // API_TIMEOUT_MS carries NO outlast guarantee — it is a fixed wall-clock
-        // ceiling and can legitimately be shorter than a configured budget (the old
-        // assertion only passed because this fixture's 900 s happens to sit under
-        // it). Assert what is actually contracted: it is the policy's fixed maximum.
-        var requestMs = int.Parse((string)env[ClaudeCodeTimeoutPolicy.RequestTimeoutKey]!);
-        Assert.Equal(ClaudeCodeTimeoutPolicy.RequestTimeoutMs(), requestMs);
-    }
-
-    [Fact]
-    public void Raising_a_bridge_budget_raises_the_written_client_value()
-    {
-        string Written(int streamIdleSeconds)
-        {
-            var conn = BridgeConnectionFactory.Create(Config(
-                $$"""{ "Pipeline": { "UpstreamTimeout": { "StreamIdleTimeoutSeconds": {{streamIdleSeconds}} } } }"""));
-            var (content, _) = ClaudeCodeConfigurator.BuildContent(null, conn);
-            return (string)System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]![
-                ClaudeCodeTimeoutPolicy.StreamIdleKey]!;
-        }
-
-        Assert.True(int.Parse(Written(600)) > int.Parse(Written(60)));
-    }
-
-    [Fact]
-    public void Pre_existing_timeout_values_are_force_overwritten()
-    {
-        var original = $$"""
-            {
-              "env": {
-                "{{ClaudeCodeTimeoutPolicy.StreamIdleKey}}": "5000",
-                "{{ClaudeCodeTimeoutPolicy.RequestTimeoutKey}}": "5000"
-              }
-            }
-            """;
-
-        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
-        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
-
-        // A stale short value is exactly the state that kills a deep-thinking turn,
-        // so these must be overwritten rather than preserved.
-        Assert.NotEqual("5000", (string?)env[ClaudeCodeTimeoutPolicy.StreamIdleKey]);
-        Assert.NotEqual("5000", (string?)env[ClaudeCodeTimeoutPolicy.RequestTimeoutKey]);
-    }
-
-    [Fact]
-    public void Unrelated_env_keys_survive_the_timeout_write()
-    {
-        var original = """
-            { "env": { "MY_OWN_KEY": "keep me", "ANTHROPIC_AUTH_TOKEN": "mine" } }
-            """;
-
-        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
-        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
-
-        Assert.Equal("keep me", (string?)env["MY_OWN_KEY"]);
-        Assert.Equal("mine", (string?)env["ANTHROPIC_AUTH_TOKEN"]);
-        Assert.NotNull((string?)env[ClaudeCodeTimeoutPolicy.StreamIdleKey]);
-    }
-
-    [Fact]
-    public void Writing_the_timeout_keys_is_idempotent()
-    {
-        var (first, _) = ClaudeCodeConfigurator.BuildContent(null, Conn());
-        var (second, _) = ClaudeCodeConfigurator.BuildContent(first, Conn());
-
-        Assert.Equal(first, second);
-    }
-
-    [Fact]
-    public void Codex_config_never_carries_the_timeout_keys()
-    {
-        var (content, _) = CodexConfigurator.BuildContent(null, Conn());
-
-        Assert.DoesNotContain(ClaudeCodeTimeoutPolicy.StreamIdleKey, content, System.StringComparison.Ordinal);
-        Assert.DoesNotContain(ClaudeCodeTimeoutPolicy.RequestTimeoutKey, content, System.StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Status_output_names_the_expected_timeout_beside_a_drifted_value()
-    {
-        // The spec requires a drift report to show BOTH values. Asserting the
-        // Drifted flag (as the other tests do) cannot catch a renderer that prints
-        // only the current one — which is exactly what shipped, leaving the operator
-        // told "wrong" without the number to set.
-        //
-        // Driven through ConfigCommand.Status with the console captured, not through
-        // Read: the requirement is about what `config status` PRINTS, and asserting
-        // the intermediate ConfigState.Details would stay green if the command
-        // stopped rendering details at all.
-        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
-        File.WriteAllText(
-            Path.Combine(dir, ".claude", "settings.local.json"),
-            "{ \"env\": { \"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\", "
-            + $"\"{ClaudeCodeTimeoutPolicy.StreamIdleKey}\": \"1000\" }} }}");
-
-        var old = Environment.CurrentDirectory;
-        var originalOut = Console.Out;
-        var captured = new StringWriter();
-        string output;
-        try
-        {
-            Environment.CurrentDirectory = dir;
-            Console.SetOut(captured);
-            var exit = ConfigCommand.Status(cliPort: 8765);
-            Assert.Equal(0, exit);
-        }
-        finally
-        {
-            Console.SetOut(originalOut);
-            Environment.CurrentDirectory = old;
-            output = captured.ToString();
-            try { Directory.Delete(dir, true); } catch { }
-        }
-
-        // Scoped to the repo-scope block's own key line: the same key also appears
-        // in the global-scope block (this machine's real settings.json), so a
-        // whole-output substring check could pass on a value from the wrong scope.
-        var line = Array.Find(
-            output.Split('\n'),
-            l => l.TrimStart().StartsWith(ClaudeCodeTimeoutPolicy.StreamIdleKey, StringComparison.Ordinal)
-                 && l.Contains("1000", StringComparison.Ordinal))
-            ?? throw new Xunit.Sdk.XunitException(
-                $"no drifted {ClaudeCodeTimeoutPolicy.StreamIdleKey} line in:\n{output}");
-
-        Assert.Contains("DRIFTED", output, StringComparison.Ordinal);
-        Assert.Contains(
-            Conn(port: 8765).ClaudeCodeStreamIdleTimeoutMs.ToString(), line, StringComparison.Ordinal);
-    }
-
-    [Theory]
-    // Filesystem-backed Read for the timeout axis: a bridge-pointed file holding the
-    // derived values is not drifted; missing or stale values are. Stale is the case
-    // that matters most — it means the operator raised a budget without re-running
-    // config, so the client silently stopped outlasting the bridge.
-    [InlineData(true, false, false)]   // both present and current  -> not drifted
-    [InlineData(false, false, true)]   // stream-idle missing       -> drift
-    [InlineData(true, true, true)]     // stream-idle stale         -> drift
-    public void ClaudeCode_read_detects_timeout_env_drift_from_disk(
-        bool writeStreamIdle, bool staleStreamIdle, bool expectDrift)
-    {
-        var conn = Conn(port: 8765);
-        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
-
-        var keys = new System.Collections.Generic.List<string>
-        {
-            "\"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\"",
-            "\"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL\": \"1\"",
-            "\"DISABLE_ERROR_REPORTING\": \"1\"",
-            $"\"{ClaudeCodeTimeoutPolicy.RequestTimeoutKey}\": \"{conn.ClaudeCodeRequestTimeoutMs}\"",
-        };
-        if (writeStreamIdle)
-        {
-            var value = staleStreamIdle ? "1000" : conn.ClaudeCodeStreamIdleTimeoutMs.ToString();
-            keys.Add($"\"{ClaudeCodeTimeoutPolicy.StreamIdleKey}\": \"{value}\"");
-        }
-        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
-            "{ \"env\": { " + string.Join(", ", keys) + " } }");
-
-        var old = Environment.CurrentDirectory;
-        try
-        {
-            Environment.CurrentDirectory = dir;
-            var state = new ClaudeCodeConfigurator().Read(conn, ConfigScope.Repo);
-            Assert.True(state.ConfiguredForBridge);
-            Assert.Equal(expectDrift, state.Drifted);
-        }
-        finally
-        {
-            Environment.CurrentDirectory = old;
-            try { Directory.Delete(dir, true); } catch { }
-        }
-    }
-
-    [Fact]
-    public void ClaudeCode_fills_auth_token_with_copilot_bridge_when_absent()
-    {
-        var (content, _) = ClaudeCodeConfigurator.BuildContent(null, Conn());
-        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
-
-        var token = (string?)env["ANTHROPIC_AUTH_TOKEN"];
-        Assert.Equal("copilot-bridge", token);
-        // No competitor branding.
-        Assert.DoesNotContain("Maestro", token, System.StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void ClaudeCode_preserves_existing_auth_token()
-    {
-        var original = """{ "env": { "ANTHROPIC_AUTH_TOKEN": "my-existing-token" } }""";
-        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
-        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
-
-        Assert.Equal("my-existing-token", (string?)env["ANTHROPIC_AUTH_TOKEN"]);
-    }
-
-    [Fact]
-    public void ClaudeCode_removes_legacy_fallback_disable_regardless_of_detector_state()
-    {
-        var original = """
-        { "env": { "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": "1", "ANTHROPIC_AUTH_TOKEN": "x" } }
-        """;
-        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn(fallback: false));
-        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!.AsObject();
-
-        Assert.False(env.ContainsKey("CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"));
-
-        var (withDetectors, _) = ClaudeCodeConfigurator.BuildContent(original, Conn(fallback: true));
-        var detectorEnv = System.Text.Json.Nodes.JsonNode.Parse(withDetectors)!["env"]!.AsObject();
-        Assert.False(detectorEnv.ContainsKey("CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"));
-    }
-
-    [Fact]
-    public void ClaudeCode_preserves_unrelated_settings()
-    {
-        var original = """
-        {
-          "statusLine": { "type": "command", "command": "x.sh" },
-          "enabledPlugins": { "foo": true },
-          "effortLevel": "xhigh",
-          "env": { "SOMETHING_ELSE": "keep-me" }
-        }
-        """;
-        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
-        var root = System.Text.Json.Nodes.JsonNode.Parse(content)!;
-
-        Assert.NotNull(root["statusLine"]);
-        Assert.Equal("command", (string?)root["statusLine"]!["type"]);
-        Assert.Equal("xhigh", (string?)root["effortLevel"]);
-        Assert.True((bool?)root["enabledPlugins"]!["foo"]);
-        Assert.Equal("keep-me", (string?)root["env"]!["SOMETHING_ELSE"]);
-    }
-
-    [Fact]
-    public void ClaudeCode_is_idempotent()
-    {
-        var (first, _) = ClaudeCodeConfigurator.BuildContent(null, Conn());
-        var (second, _) = ClaudeCodeConfigurator.BuildContent(first, Conn());
-        Assert.Equal(first, second);
-    }
-
-    // ---- 1M-context env keys (spec: "Claude Code 1M-context environment") ----
-
-    [Fact]
-    public void ClaudeCode_writes_the_1m_context_env_keys()
-    {
-        // A bridge base URL fails Claude Code's first-party host check, so its native-1M
-        // capability gate needs ASSUME_FIRST_PARTY asserted; DISABLE_ERROR_REPORTING
-        // neutralizes the telemetry that assertion would otherwise enable.
-        var (content, _) = ClaudeCodeConfigurator.BuildContent(null, Conn());
-        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
-
-        Assert.Equal("1", (string?)env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"]);
-        Assert.Equal("1", (string?)env["DISABLE_ERROR_REPORTING"]);
-    }
-
-    [Fact]
-    public void ClaudeCode_force_overwrites_stale_1m_context_env_values()
-    {
-        // Force-write normalizes both keys to the canonical managed value "1" regardless
-        // of any pre-existing value, so the bridge's managed state is consistent and
-        // drift-detectable. (Claude Code reads these as truthiness, so a non-"1" non-empty
-        // value like "0"/"false" would still be in effect — force-writing is about
-        // canonical managed state, not correcting a functional failure.)
-        var original = """
-        { "env": {
-            "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL": "0",
-            "DISABLE_ERROR_REPORTING": "false"
-        } }
-        """;
-        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
-        var env = System.Text.Json.Nodes.JsonNode.Parse(content)!["env"]!;
-
-        Assert.Equal("1", (string?)env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"]);
-        Assert.Equal("1", (string?)env["DISABLE_ERROR_REPORTING"]);
-    }
-
-    [Fact]
-    public void Codex_config_carries_no_1m_context_env_keys()
-    {
-        // The 1M-context env keys are Claude-Code-only; the Codex TOML must never carry them.
-        var (content, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn());
-
-        Assert.DoesNotContain("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL", content);
-        Assert.DoesNotContain("DISABLE_ERROR_REPORTING", content);
-    }
-
-    // ---- Codex TOML merge (spec: "Surgical merge preserves all unrelated content", "Overwrite policy") ----
-
-    private const string DenseCodexToml = """
-        model = "gpt-5.5"
-        model_provider = "agent-maestro"
-        model_context_window = 921793
-        model_auto_compact_token_limit = 812345
-        notify = [ "C:\\Users\\HuYao\\bin\\notify.exe", "turn-ended" ]
-        model_reasoning_effort = "xhigh"
-
-        [model_providers.agent-maestro]
-        name = "Agent Maestro"
-        base_url = "http://127.0.0.1:23333/api/openai/v1"
-        wire_api = "responses"
-
-        [mcp_servers.node_repl.env]
-        NODE_REPL_NODE_PATH = 'C:\Users\HuYao\bin\node.exe'
-        CODEX_HOME = 'C:\Users\HuYao\.codex'
-
-        [windows]
-        sandbox = "elevated"
-        """;
-
-    [Fact]
-    public void Codex_repoints_model_provider_to_copilot_bridge()
-    {
-        var (content, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn());
-
-        Assert.Contains("model_provider = \"copilot-bridge\"", content);
-        Assert.DoesNotContain("model_provider = \"agent-maestro\"", content);
-    }
-
-    [Fact]
-    public void Codex_writes_provider_block_with_base_url_and_wire_api()
-    {
-        var (content, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn(port: 8765));
-
-        Assert.Contains("[model_providers.copilot-bridge]", content);
-        Assert.Contains("http://localhost:8765/codex", content);
-        Assert.Contains("wire_api = \"responses\"", content);
-    }
-
-    [Fact]
-    public void Codex_writes_native_command_auth_for_model_discovery()
-    {
-        var invocation = CodexProviderAuthInvocation.Resolve(
-            @"C:\Program Files\copilot-bridge\copilot-bridge.exe", assemblyLocation: null);
-
-        var (content, _) = CodexConfigurator.BuildContent(
-            DenseCodexToml, Conn(), invocation);
-
-        Assert.Contains("[model_providers.copilot-bridge.auth]", content);
-        Assert.Contains("command = \"C:\\\\Program Files\\\\copilot-bridge\\\\copilot-bridge.exe\"", content);
-        Assert.Contains("args = [ \"auth\", \"provider-token\" ]", content);
-        Assert.Contains("timeout_ms = 5000", content);
-        Assert.Contains("refresh_interval_ms = 0", content);
-        Assert.DoesNotContain("github_pat", content, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("ghu_", content, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void Codex_writes_dotnet_dll_command_auth_for_jit_development()
-    {
-        var dll = Path.GetFullPath(@"C:\src\bridge\copilot-bridge.dll");
-        var invocation = CodexProviderAuthInvocation.Resolve(
-            processPath: @"C:\Program Files\dotnet\dotnet.exe", assemblyLocation: dll);
-
-        Assert.Equal("dotnet", invocation.Command);
-        Assert.Equal([dll, "auth", "provider-token"], invocation.Args);
-
-        var (content, _) = CodexConfigurator.BuildContent(null, Conn(), invocation);
-        Assert.Contains("command = \"dotnet\"", content);
-        Assert.Contains("copilot-bridge.dll\", \"auth\", \"provider-token\"", content);
-    }
-
-    [Fact]
-    public void Codex_upgrades_legacy_provider_block_with_nested_auth()
-    {
-        var legacy = """
-            model_provider = "copilot-bridge"
-
-            [model_providers.copilot-bridge]
-            name = "copilot-bridge"
-            base_url = "http://localhost:8765/codex"
-            wire_api = "responses"
-            """;
-        var invocation = new CodexProviderAuthInvocation("bridge.exe", ["auth", "provider-token"]);
-
-        var (content, _) = CodexConfigurator.BuildContent(legacy, Conn(), invocation);
-
-        Assert.Contains("[model_providers.copilot-bridge.auth]", content);
-        Assert.Equal(1, Count(content, "[model_providers.copilot-bridge]"));
-        Assert.Equal(1, Count(content, "[model_providers.copilot-bridge.auth]"));
-    }
-
-    [Fact]
-    public void Codex_replaces_stale_auth_without_touching_rival_nested_tables()
-    {
-        var original = """
-            model_provider = "copilot-bridge"
-            model_context_window = 900001 # user-owned
-            model_auto_compact_token_limit = 800001
-
-            [model_providers.rival]
-            name = "keep"
-
-            [model_providers.rival.auth]
-            command = 'rival-token --literal'
-            args = [ "--one", "two" ] # rival comment
-
-            [model_providers.copilot-bridge]
-            name = "old"
-            base_url = "http://localhost:1/codex"
-            wire_api = "responses"
-
-            [model_providers.copilot-bridge.auth]
-            command = "stale"
-            args = []
-            timeout_ms = 1
-            refresh_interval_ms = 1
-            """;
-        var invocation = new CodexProviderAuthInvocation(
-            @"C:\bridge\copilot-bridge.exe", ["auth", "provider-token"]);
-
-        var (content, _) = CodexConfigurator.BuildContent(original, Conn(), invocation);
-
-        var rivalStart = original.IndexOf("[model_providers.rival.auth]", StringComparison.Ordinal);
-        var bridgeStart = original.IndexOf("[model_providers.copilot-bridge]", rivalStart, StringComparison.Ordinal);
-        var rivalAuthBlock = original[rivalStart..bridgeStart].TrimEnd('\r', '\n');
-        Assert.Contains(rivalAuthBlock, content, StringComparison.Ordinal);
-        Assert.Contains("model_context_window = 900001 # user-owned", content);
-        Assert.Contains("model_auto_compact_token_limit = 800001", content);
-        Assert.DoesNotContain("command = \"stale\"", content);
-        Assert.Equal(1, Count(content, "[model_providers.copilot-bridge.auth]"));
-    }
-
-    [Fact]
-    public void Codex_auth_merge_is_byte_idempotent()
-    {
-        var invocation = new CodexProviderAuthInvocation(
-            @"C:\bridge path\copilot-bridge.exe", ["auth", "provider-token"]);
-        var (first, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn(), invocation);
-        var (second, _) = CodexConfigurator.BuildContent(first, Conn(), invocation);
-
-        Assert.Equal(first, second);
-    }
-
-    [Fact]
-    public void Codex_read_reports_discovery_auth_drift_without_values()
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        var configPath = Path.Combine(dir, "config.toml");
-        File.WriteAllText(configPath, """
-            model_provider = "copilot-bridge"
-
-            [model_providers.copilot-bridge]
-            name = "copilot-bridge"
-            base_url = "http://localhost:8765/codex"
-            wire_api = "responses"
-
-            [model_providers.copilot-bridge.auth]
-            command = "DO-NOT-PRINT-THIS"
-            args = [ "SECRET-ARG" ]
-            timeout_ms = 1
-            refresh_interval_ms = 1
-            """);
-        var old = Environment.GetEnvironmentVariable("CODEX_HOME");
-        try
-        {
-            Environment.SetEnvironmentVariable("CODEX_HOME", dir);
-            var state = new CodexConfigurator().Read(Conn(), ConfigScope.Global);
-
-            Assert.True(state.ConfiguredForBridge);
-            Assert.True(state.Drifted);
-            Assert.Contains(state.AdditionalDriftFacts!, f => f.Contains("command", StringComparison.Ordinal));
-            Assert.Contains(state.AdditionalDriftFacts!, f => f.Contains("arguments", StringComparison.Ordinal));
-            Assert.DoesNotContain(state.Details, d => d.Contains("DO-NOT-PRINT-THIS", StringComparison.Ordinal));
-            Assert.DoesNotContain(state.Details, d => d.Contains("SECRET-ARG", StringComparison.Ordinal));
-            Assert.DoesNotContain(state.AdditionalDriftFacts!, d => d.Contains("DO-NOT-PRINT-THIS", StringComparison.Ordinal));
-            Assert.DoesNotContain(state.AdditionalDriftFacts!, d => d.Contains("SECRET-ARG", StringComparison.Ordinal));
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("CODEX_HOME", old);
-            try { Directory.Delete(dir, true); } catch { }
-        }
-    }
-
-    [Fact]
-    public void Codex_preserves_model_and_effort()
-    {
-        var (content, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn());
-
-        Assert.Contains("model = \"gpt-5.5\"", content);
-        Assert.Contains("model_reasoning_effort = \"xhigh\"", content);
-    }
-
-    [Fact]
-    public void Codex_keeps_prior_provider_block_for_switch_back()
-    {
-        var (content, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn());
-
-        Assert.Contains("[model_providers.agent-maestro]", content);
-        Assert.Contains("http://127.0.0.1:23333/api/openai/v1", content);
-    }
-
-    [Fact]
-    public void Codex_preserves_unrelated_tables_comments_and_literals()
-    {
-        var (content, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn());
-
-        // Unrelated tables intact.
-        Assert.Contains("[mcp_servers.node_repl.env]", content);
-        Assert.Contains("[windows]", content);
-        Assert.Contains("sandbox = \"elevated\"", content);
-        // Single-quoted (literal) Windows paths preserved verbatim — a model-DOM
-        // round-trip would rewrite these.
-        Assert.Contains("""NODE_REPL_NODE_PATH = 'C:\Users\HuYao\bin\node.exe'""", content);
-        Assert.Contains("""CODEX_HOME = 'C:\Users\HuYao\.codex'""", content);
-        // The multi-line notify array and its double-backslash escapes preserved.
-        Assert.Contains("""notify = [ "C:\\Users\\HuYao\\bin\\notify.exe", "turn-ended" ]""", content);
-        Assert.Contains("model_context_window = 921793", content);
-        Assert.Contains("model_auto_compact_token_limit = 812345", content);
-    }
-
-    [Fact]
-    public void Codex_output_parses_back_cleanly()
-    {
-        var (content, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn());
-        var doc = Tomlyn.Parsing.SyntaxParser.Parse(content, "roundtrip.toml");
-        Assert.False(doc.HasErrors);
-    }
-
-    [Fact]
-    public void Codex_is_idempotent()
-    {
-        var (first, _) = CodexConfigurator.BuildContent(DenseCodexToml, Conn());
-        var (second, _) = CodexConfigurator.BuildContent(first, Conn());
-        Assert.Equal(first, second);
-    }
-
-    [Fact]
-    public void Codex_creates_valid_file_from_empty()
-    {
-        var (content, _) = CodexConfigurator.BuildContent(null, Conn());
-        var doc = Tomlyn.Parsing.SyntaxParser.Parse(content, "new.toml");
-
-        Assert.False(doc.HasErrors);
-        Assert.Contains("model_provider = \"copilot-bridge\"", content);
-        Assert.Contains("[model_providers.copilot-bridge]", content);
-        Assert.Contains("[model_providers.copilot-bridge.auth]", content);
-    }
-
-    private static int Count(string text, string value)
-    {
-        var count = 0;
-        var index = 0;
-        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
-        {
-            count++;
-            index += value.Length;
-        }
-        return count;
-    }
-
-    // ---- Refuse-on-unparseable (PR review #1: surgical merge must not silently
-    //      discard content it cannot parse) ----
-
-    [Fact]
-    public void ClaudeCode_refuses_to_merge_invalid_json_rather_than_discard()
-    {
-        // A JSONC-style comment makes System.Text.Json reject the file. The merge must
-        // throw (so the caller aborts) rather than return an env-only file that has
-        // dropped statusLine/enabledPlugins/etc.
-        var withComment = "{\n  // my settings\n  \"statusLine\": { \"type\": \"command\" }\n}";
-
-        Assert.Throws<ClientConfigException>(
-            () => ClaudeCodeConfigurator.BuildContent(withComment, Conn()));
-    }
-
-    [Fact]
-    public void ClaudeCode_refuses_non_object_json()
-    {
-        // Valid JSON, but an array — merging would discard it. Must throw.
-        Assert.Throws<ClientConfigException>(
-            () => ClaudeCodeConfigurator.BuildContent("[1, 2, 3]", Conn()));
-    }
-
-    [Fact]
-    public void Codex_refuses_to_merge_malformed_toml_rather_than_corrupt()
-    {
-        // A syntactically broken TOML line. Editing an error-laden tree could drop or
-        // corrupt unrelated content, so the merge must throw.
-        var broken = "model = \"gpt-5.5\"\n[unclosed_table\nkey = 1\n";
-
-        Assert.Throws<ClientConfigException>(
-            () => CodexConfigurator.BuildContent(broken, Conn()));
-    }
-
-    // ---- Fallback-env drift (PR review #3: status must detect fallback drift, not
-    //      only base-URL drift) ----
-
-    [Fact]
-    public void Status_reports_fallback_drift_even_when_base_url_matches()
-    {
-        // A ConfigState whose base URL matches but which still carries the legacy
-        // fallback-disable env must be reported as drifted.
-        var drifted = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
-            ConfiguredForBridge: true,
-            CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
-            ExpectedFallback: null, CurrentFallback: "1",
-            ExpectedAssume1m: "1", CurrentAssume1m: "1",
-            ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
-            ExpectedStreamIdleTimeout: "900000", CurrentStreamIdleTimeout: "900000",
-            ExpectedRequestTimeout: "1200000", CurrentRequestTimeout: "1200000",
-            Details: []);
-        Assert.True(drifted.Drifted);
-    }
-
-    [Fact]
-    public void Status_not_drifted_when_base_url_and_fallback_both_match()
-    {
-        var ok = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
-            ConfiguredForBridge: true,
-            CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
-            ExpectedFallback: "1", CurrentFallback: "1",
-            ExpectedAssume1m: "1", CurrentAssume1m: "1",
-            ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
-            ExpectedStreamIdleTimeout: "900000", CurrentStreamIdleTimeout: "900000",
-            ExpectedRequestTimeout: "1200000", CurrentRequestTimeout: "1200000",
-            Details: []);
-        Assert.False(ok.Drifted);
-    }
-
-    [Fact]
-    public void Status_fallback_null_null_is_not_drift()
-    {
-        // Codex (no fallback concept) passes null for both — must never count as drift.
-        var codexLike = new ConfigState("codex", ConfigScope.Global, "x", Exists: true,
-            ConfiguredForBridge: true,
-            CurrentBaseUrl: "http://localhost:8765/codex", ExpectedBaseUrl: "http://localhost:8765/codex",
-            ExpectedFallback: null, CurrentFallback: null,
-            ExpectedAssume1m: null, CurrentAssume1m: null,
-            ExpectedDisableErrorReporting: null, CurrentDisableErrorReporting: null,
-            ExpectedStreamIdleTimeout: null, CurrentStreamIdleTimeout: null,
-            ExpectedRequestTimeout: null, CurrentRequestTimeout: null,
-            Details: []);
-        Assert.False(codexLike.Drifted);
-    }
-
-    [Fact]
-    public void Status_reports_1m_context_env_drift_when_key_missing()
-    {
-        // Base URL and fallback match, but a 1M-context key the bridge force-writes is
-        // absent (null current vs expected "1") → drift.
-        var missingAssume = new ConfigState("claude-code", ConfigScope.Global, "x", Exists: true,
-            ConfiguredForBridge: true,
-            CurrentBaseUrl: "http://localhost:8765/cc", ExpectedBaseUrl: "http://localhost:8765/cc",
-            ExpectedFallback: null, CurrentFallback: null,
-            ExpectedAssume1m: "1", CurrentAssume1m: null,
-            ExpectedDisableErrorReporting: "1", CurrentDisableErrorReporting: "1",
-            ExpectedStreamIdleTimeout: "900000", CurrentStreamIdleTimeout: "900000",
-            ExpectedRequestTimeout: "1200000", CurrentRequestTimeout: "1200000",
-            Details: []);
-        Assert.True(missingAssume.Drifted);
-
-        var missingDisable = missingAssume with
-        {
-            CurrentAssume1m = "1",
-            CurrentDisableErrorReporting = null,
-        };
-        Assert.True(missingDisable.Drifted);
-    }
-
-    // ---- Review round 2: RunawayGuard contributes to fallback need ----
-
-    [Fact]
-    public void RunawayGuard_enabled_alone_requires_fallback_disabled()
-    {
-        // RunawayGuard has no PreserveStream toggle — it always aborts mid-stream when
-        // enabled. With the other two detectors off, its Enabled flag alone must still
-        // drive the fallback env, or a runaway abort gets swallowed by Claude Code's
-        // silent non-streaming re-request.
-        var config = Config("""
-        { "Pipeline": { "Detectors": {
-            "ResponseLeakGuard": { "Enabled": false, "PreserveStream": false },
-            "ToolInputValidation": { "Enabled": false, "PreserveStream": false },
-            "RunawayGuard": { "Enabled": true }
-        } } }
-        """);
-        var conn = BridgeConnectionFactory.Create(config);
-        Assert.True(conn.NeedNonStreamingFallbackDisabled);
-    }
-
-    [Fact]
-    public void All_detectors_off_means_no_fallback()
-    {
-        var config = Config("""
-        { "Pipeline": { "Detectors": {
-            "ResponseLeakGuard": { "Enabled": false, "PreserveStream": true },
-            "ToolInputValidation": { "Enabled": false, "PreserveStream": true },
-            "RunawayGuard": { "Enabled": false }
-        } } }
-        """);
-        var conn = BridgeConnectionFactory.Create(config);
-        Assert.False(conn.NeedNonStreamingFallbackDisabled);
-    }
-
-    // ---- Review round 2: byte-preservation of &<>+ and non-ASCII in unrelated keys ----
-
-    [Fact]
-    public void ClaudeCode_preserves_ampersands_and_non_ascii_verbatim()
-    {
-        // The default JSON encoder escapes &, <, >, +, and all non-ASCII to \uXXXX,
-        // which would silently mangle preserved user values. They must survive verbatim.
-        var original = """
-        {
-          "statusLine": { "command": "echo a && b > c" },
-          "greeting": "你好世界"
-        }
-        """;
-        var (content, _) = ClaudeCodeConfigurator.BuildContent(original, Conn());
-
-        Assert.Contains("echo a && b > c", content);
-        Assert.Contains("你好世界", content);
-        Assert.DoesNotContain("\\u0026", content);
-        Assert.DoesNotContain("\\u4F60", content);
-    }
-
-    [Fact]
-    public void ClaudeCode_read_tolerates_non_string_env_value()
-    {
-        // A hand-edited file with a numeric fallback value (1 instead of "1") must not
-        // crash Read — GetValue<string> on a JSON number throws; AsStringOrNull tolerates.
-        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
-        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
-            "{ \"env\": { \"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\", " +
-            "\"CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK\": 1 } }");
-        var old = Environment.CurrentDirectory;
-        try
-        {
-            Environment.CurrentDirectory = dir;
-            var state = new ClaudeCodeConfigurator().Read(Conn(), ConfigScope.Repo);
-            // Does not throw; base URL still read, numeric fallback reported as unset.
-            Assert.Equal("http://localhost:8765/cc", state.CurrentBaseUrl);
-            Assert.Null(state.CurrentFallback);
-        }
-        finally
-        {
-            Environment.CurrentDirectory = old;
-            try { Directory.Delete(dir, true); } catch { }
-        }
-    }
-
-    [Theory]
-    // Filesystem-backed Read: guards the actual Read wiring (env lookups + current-field
-    // assignment), which the direct-ConfigState drift tests do not exercise. A real
-    // bridge-pointed file with both 1M keys = "1" must read as NOT drifted; missing or
-    // non-"1" values must read as drifted — so a swapped/omitted lookup is caught.
-    [InlineData("\"1\"", "\"1\"", false)]     // both present and "1" → not drifted
-    [InlineData(null, "\"1\"", true)]          // assume-1m missing → drift
-    [InlineData("\"1\"", null, true)]          // disable-error-reporting missing → drift
-    [InlineData("\"0\"", "\"1\"", true)]       // assume-1m non-"1" → drift
-    [InlineData("\"1\"", "\"false\"", true)]   // disable-error-reporting non-"1" → drift
-    public void ClaudeCode_read_detects_1m_env_drift_from_disk(string? assume1m, string? disableEr, bool expectDrift)
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
-        var keys = new System.Collections.Generic.List<string>
-        {
-            "\"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\"",
-            // The timeout keys are managed too, so a file without them is drifted on
-            // that axis alone. Write the values the current budgets derive, keeping
-            // this theory isolated to the 1M-context axis it is testing.
-            $"\"{ClaudeCodeTimeoutPolicy.StreamIdleKey}\": \"{Conn(port: 8765).ClaudeCodeStreamIdleTimeoutMs}\"",
-            $"\"{ClaudeCodeTimeoutPolicy.RequestTimeoutKey}\": \"{Conn(port: 8765).ClaudeCodeRequestTimeoutMs}\"",
-        };
-        if (assume1m is not null) keys.Add($"\"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL\": {assume1m}");
-        if (disableEr is not null) keys.Add($"\"DISABLE_ERROR_REPORTING\": {disableEr}");
-        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
-            "{ \"env\": { " + string.Join(", ", keys) + " } }");
-
-        var old = Environment.CurrentDirectory;
-        try
-        {
-            Environment.CurrentDirectory = dir;
-            var state = new ClaudeCodeConfigurator().Read(Conn(port: 8765), ConfigScope.Repo);
-            Assert.True(state.ConfiguredForBridge);   // base URL matches, so it's a bridge config
-            Assert.Equal(expectDrift, state.Drifted);
-        }
-        finally
-        {
-            Environment.CurrentDirectory = old;
-            try { Directory.Delete(dir, true); } catch { }
-        }
-    }
-
-    [Fact]
-    public void ClaudeCode_read_maps_each_1m_env_key_to_its_own_field()
-    {
-        // Guards against a swapped lookup in Read: give the two keys DISTINCT values so
-        // reading the wrong one is observable. (The drift-from-disk theory can't catch a
-        // swap when both are "1".) Each Current field must reflect ITS key's value.
-        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
-        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
-            "{ \"env\": { \"ANTHROPIC_BASE_URL\": \"http://localhost:8765/cc\", " +
-            "\"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL\": \"AAA\", " +
-            "\"DISABLE_ERROR_REPORTING\": \"BBB\" } }");
-
-        var old = Environment.CurrentDirectory;
-        try
-        {
-            Environment.CurrentDirectory = dir;
-            var state = new ClaudeCodeConfigurator().Read(Conn(port: 8765), ConfigScope.Repo);
-            Assert.Equal("AAA", state.CurrentAssume1m);
-            Assert.Equal("BBB", state.CurrentDisableErrorReporting);
-        }
-        finally
-        {
-            Environment.CurrentDirectory = old;
-            try { Directory.Delete(dir, true); } catch { }
-        }
-    }
-
-    // ---- Review round 2: TOML append never glues onto a file lacking a trailing newline ----
-    [Fact]
-    public void Codex_appends_cleanly_when_file_has_no_trailing_newline()
-    {
-        // Existing copilot-bridge block is NOT last and the file has no final newline.
-        // A naive append would glue `sandbox = "x"[model_providers.copilot-bridge]`.
-        var toml =
-            "model_provider = \"copilot-bridge\"\n\n" +
-            "[model_providers.copilot-bridge]\nbase_url = \"http://localhost:8765/codex\"\n\n" +
-            "[windows]\nsandbox = \"elevated\"";  // no trailing newline
-        var (content, _) = CodexConfigurator.BuildContent(toml, Conn());
-
-        var doc = Tomlyn.Parsing.SyntaxParser.Parse(content, "x");
-        Assert.False(doc.HasErrors);
-        Assert.DoesNotContain("\"elevated\"[model_providers", content);
-    }
-
-    [Fact]
-    public void Codex_appends_top_level_key_cleanly_without_trailing_newline()
-    {
-        // No model_provider yet, last top-level line has no trailing newline.
-        var toml = "model = \"gpt-5.5\"";  // no newline, no model_provider
-        var (content, _) = CodexConfigurator.BuildContent(toml, Conn());
-
-        var doc = Tomlyn.Parsing.SyntaxParser.Parse(content, "x");
-        Assert.False(doc.HasErrors);
-        Assert.Contains("model_provider = \"copilot-bridge\"", content);
-        Assert.DoesNotContain("\"gpt-5.5\"model_provider", content);
-    }
-
-    [Fact]
-    public void Codex_read_reports_malformed_file()
-    {
-        // Codex Read must flag a syntactically broken file, not misreport it as unconfigured.
-        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        var codexHome = Path.Combine(dir, "codex");
-        Directory.CreateDirectory(codexHome);
-        File.WriteAllText(Path.Combine(codexHome, "config.toml"), "model = \"x\"\n[unclosed\nkey = 1\n");
-        var old = Environment.GetEnvironmentVariable("CODEX_HOME");
-        try
-        {
-            Environment.SetEnvironmentVariable("CODEX_HOME", codexHome);
-            var state = new CodexConfigurator().Read(Conn(), ConfigScope.Global);
-            Assert.False(state.ConfiguredForBridge);
-            Assert.Contains(state.Details, d => d.Contains("syntax error", StringComparison.OrdinalIgnoreCase));
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("CODEX_HOME", old);
-            try { Directory.Delete(dir, true); } catch { }
-        }
-    }
-
-    // ---- Review round 3: a non-bridge base URL is "not pointed at bridge", not drift ----
-
-    [Fact]
-    public void ClaudeCode_read_non_bridge_url_is_not_configured_for_bridge()
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
-        // Points at some other Anthropic-compatible endpoint, not this bridge's /cc route.
-        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
-            "{ \"env\": { \"ANTHROPIC_BASE_URL\": \"https://api.anthropic.com\" } }");
-        var old = Environment.CurrentDirectory;
-        try
-        {
-            Environment.CurrentDirectory = dir;
-            var state = new ClaudeCodeConfigurator().Read(Conn(), ConfigScope.Repo);
-            Assert.False(state.ConfiguredForBridge);  // not "configured for bridge"
-            Assert.False(state.Drifted);              // and therefore not "DRIFTED"
-        }
-        finally
-        {
-            Environment.CurrentDirectory = old;
-            try { Directory.Delete(dir, true); } catch { }
-        }
-    }
-
-    [Fact]
-    public void ClaudeCode_read_bridge_url_on_other_port_is_drifted()
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(dir, ".claude"));
-        // A bridge endpoint (/cc) but a different port than the current appsettings → drift.
-        File.WriteAllText(Path.Combine(dir, ".claude", "settings.local.json"),
-            "{ \"env\": { \"ANTHROPIC_BASE_URL\": \"http://localhost:9999/cc\" } }");
-        var old = Environment.CurrentDirectory;
-        try
-        {
-            Environment.CurrentDirectory = dir;
-            var state = new ClaudeCodeConfigurator().Read(Conn(port: 8765), ConfigScope.Repo);
-            Assert.True(state.ConfiguredForBridge);
-            Assert.True(state.Drifted);
-        }
-        finally
-        {
-            Environment.CurrentDirectory = old;
-            try { Directory.Delete(dir, true); } catch { }
-        }
-    }
-}
-
-/// <summary>
-/// Effectful-edge contract tests: safe-write plumbing (backup, atomic write,
-/// idempotence on disk), the isolated composition root, and the writer's no-op path.
-/// </summary>
-[Collection(ClientConfigCollection.Name)]
-public class ClientConfigWriteTests : IDisposable
-{
-    private readonly string _dir;
-
-    public ClientConfigWriteTests()
-    {
-        _dir = Path.Combine(Path.GetTempPath(), "cbcfg-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_dir);
-    }
-
-    public void Dispose()
-    {
-        try { Directory.Delete(_dir, recursive: true); } catch { /* best effort */ }
-    }
-
-    private ConfigPlan PlanFor(string fileName, string newContent, string? original)
-    {
-        var path = Path.Combine(_dir, fileName);
-        if (original is not null)
-        {
-            File.WriteAllText(path, original);
-        }
-        return new ConfigPlan("test", ConfigScope.Global, path, newContent, original, ["change"]);
-    }
+    private static BridgeConnection Conn(int port = 8765) => new(port);
 
-    // ---- Safe write (spec: "Safe and idempotent writes") ----
-
-    [Fact]
-    public void Write_backs_up_existing_file_before_overwriting()
-    {
-        var plan = PlanFor("settings.json", "NEW", original: "OLD");
-        var backup = ConfigFileWriter.Write(plan);
-
-        Assert.NotNull(backup);
-        Assert.Equal("OLD", File.ReadAllText(backup!));
-        Assert.Equal("NEW", File.ReadAllText(plan.TargetPath));
-    }
-
-    [Fact]
-    public void Write_creates_new_file_without_backup()
-    {
-        var plan = PlanFor("settings.json", "NEW", original: null);
-        var backup = ConfigFileWriter.Write(plan);
-
-        Assert.Null(backup);
-        Assert.Equal("NEW", File.ReadAllText(plan.TargetPath));
-        Assert.False(File.Exists(plan.TargetPath + ".bak"));
-    }
-
-    [Fact]
-    public void Write_is_noop_when_content_identical()
-    {
-        var plan = PlanFor("settings.json", "SAME", original: "SAME");
-        // Pre-create a backup to prove a no-op does not touch anything.
-        var backup = ConfigFileWriter.Write(plan);
-
-        Assert.Null(backup);
-        Assert.False(File.Exists(plan.TargetPath + ".bak"));
-        Assert.Equal("SAME", File.ReadAllText(plan.TargetPath));
-    }
-
-    [Fact]
-    public void Write_twice_yields_identical_file()
-    {
-        var plan = PlanFor("settings.json", "CONTENT", original: "ORIGINAL");
-        ConfigFileWriter.Write(plan);
-        var afterFirst = File.ReadAllText(plan.TargetPath);
-
-        // A second application of the SAME plan (now a no-op vs disk) leaves the file
-        // byte-identical.
-        var plan2 = new ConfigPlan("test", ConfigScope.Global, plan.TargetPath, "CONTENT",
-            File.ReadAllText(plan.TargetPath), ["change"]);
-        ConfigFileWriter.Write(plan2);
-
-        Assert.Equal(afterFirst, File.ReadAllText(plan.TargetPath));
-    }
-
-    // ---- Apply seam (PR review #2: the write must go through IClientConfigurator.Apply) ----
-
-    [Fact]
-    public void Configurator_apply_writes_and_returns_backup_path()
+    private static string TempDirectory()
     {
-        // Drive the write through the seam (as the dispatcher does), not the static
-        // writer, so Apply is a live path and returns the backup on an overwrite.
-        IClientConfigurator configurator = new ClaudeCodeConfigurator();
-        var path = Path.Combine(_dir, "settings.json");
-        File.WriteAllText(path, "{ \"keep\": true }");
-
-        var plan = new ConfigPlan(configurator.ClientId, ConfigScope.Global, path,
-            "{\n  \"env\": {}\n}\n", "{ \"keep\": true }", ["change"]);
-        var backup = configurator.Apply(plan);
-
-        Assert.NotNull(backup);
-        Assert.Equal("{ \"keep\": true }", File.ReadAllText(backup!));
-        Assert.Equal("{\n  \"env\": {}\n}\n", File.ReadAllText(path));
-    }
-
-    // ---- Isolation (spec: "Isolation from the proxy server startup path") ----
-
-    [Fact]
-    public void Composition_root_resolves_configurators()
-    {
-        using var provider = ClientConfigServices.Build();
-        var configurators = provider.GetServices<IClientConfigurator>().ToList();
-
-        Assert.Contains(configurators, c => c.ClientId == "claude-code");
-        Assert.Contains(configurators, c => c.ClientId == "codex");
-    }
-
-    [Fact]
-    public void Composition_root_excludes_runtime_services()
-    {
-        using var provider = ClientConfigServices.Build();
-
-        // The config graph must not carry any proxy runtime service or hosted service.
-        Assert.Null(provider.GetService<CopilotBridge.Cli.Auth.AuthService>());
-        Assert.Null(provider.GetService<CopilotBridge.Cli.Copilot.ICopilotClient>());
-        Assert.Empty(provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>());
-    }
-
-    [Fact]
-    public void Codex_dry_run_plans_command_auth_without_writing()
-    {
-        var codexHome = Path.Combine(_dir, "codex-dry-run");
-        var old = Environment.GetEnvironmentVariable("CODEX_HOME");
-        var originalOut = Console.Out;
-        var stdout = new StringWriter();
-        try
-        {
-            Environment.SetEnvironmentVariable("CODEX_HOME", codexHome);
-            Console.SetOut(stdout);
-
-            var exit = ConfigCommand.Configure(
-                "codex", ConfigScope.Global, cliPort: 18765, dryRun: true, showContent: true);
-
-            Assert.Equal(0, exit);
-            Assert.False(File.Exists(Path.Combine(codexHome, "config.toml")));
-            Assert.Contains("[model_providers.copilot-bridge.auth]", stdout.ToString());
-            Assert.Contains("refresh_interval_ms = 0", stdout.ToString());
-        }
-        finally
-        {
-            Console.SetOut(originalOut);
-            Environment.SetEnvironmentVariable("CODEX_HOME", old);
-        }
+        var path = Path.Combine(Path.GetTempPath(), "cb-client-config-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(path);
+        return path;
     }
 
-    [Fact]
-    public void Codex_config_write_backs_up_legacy_file_before_auth_upgrade()
+    private static void TryDelete(string path)
     {
-        var codexHome = Path.Combine(_dir, "codex-upgrade");
-        Directory.CreateDirectory(codexHome);
-        var configPath = Path.Combine(codexHome, "config.toml");
-        const string legacy = """
-            model = "gpt-5.5"
-            model_provider = "copilot-bridge"
-
-            [model_providers.copilot-bridge]
-            name = "copilot-bridge"
-            base_url = "http://localhost:8765/codex"
-            wire_api = "responses"
-            """;
-        File.WriteAllText(configPath, legacy);
-        var old = Environment.GetEnvironmentVariable("CODEX_HOME");
-        var originalOut = Console.Out;
-        Console.SetOut(TextWriter.Null);
-        try
-        {
-            Environment.SetEnvironmentVariable("CODEX_HOME", codexHome);
-
-            var exit = ConfigCommand.Configure(
-                "codex", ConfigScope.Global, cliPort: 8765, dryRun: false);
-
-            Assert.Equal(0, exit);
-            Assert.Equal(legacy, File.ReadAllText(configPath + ".bak"));
-            var upgraded = File.ReadAllText(configPath);
-            Assert.Contains("model = \"gpt-5.5\"", upgraded);
-            Assert.Contains("[model_providers.copilot-bridge.auth]", upgraded);
-        }
-        finally
-        {
-            Console.SetOut(originalOut);
-            Environment.SetEnvironmentVariable("CODEX_HOME", old);
-        }
+        try { Directory.Delete(path, recursive: true); }
+        catch { }
     }
 }

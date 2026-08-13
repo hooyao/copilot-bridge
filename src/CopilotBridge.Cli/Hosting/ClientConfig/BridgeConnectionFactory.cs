@@ -9,14 +9,10 @@ namespace CopilotBridge.Cli.Hosting.ClientConfig;
 /// what <c>config</c> writes into a client matches how <c>serve</c> actually runs.
 /// </summary>
 /// <remarks>
-/// Binds the SAME strongly-typed options sections the server binds in
-/// <c>AddBridgeServer</c> (<see cref="BridgeServerOptions"/>,
-/// <see cref="ResponseLeakGuardOptions"/>, <see cref="ToolInputValidationOptions"/>,
-/// <see cref="RunawayGuardOptions"/>) rather than reading raw
-/// <c>GetValue&lt;&gt;("Pipeline:Detectors:…")</c> strings — so the two code paths
-/// cannot disagree on key names or defaults. Binding uses the source-generated
-/// configuration binder (<c>EnableConfigurationBindingGenerator</c>), so it is
-/// AOT-clean.
+/// Deliberately binds only <see cref="BridgeServerOptions"/>. Timeout, retry,
+/// detector, telemetry, 1M, and fallback policy are not connection facts and can
+/// never flow from appsettings into a client configurator through this type.
+/// Binding uses the source-generated configuration binder and remains AOT-clean.
 /// </remarks>
 internal static class BridgeConnectionFactory
 {
@@ -28,36 +24,7 @@ internal static class BridgeConnectionFactory
     public static BridgeConnection Create(IConfiguration config, int? cliPort = null)
     {
         var server = config.GetSection("Server").Get<BridgeServerOptions>() ?? new BridgeServerOptions();
-        var leak = config.GetSection("Pipeline:Detectors:ResponseLeakGuard").Get<ResponseLeakGuardOptions>()
-            ?? new ResponseLeakGuardOptions();
-        var toolInput = config.GetSection("Pipeline:Detectors:ToolInputValidation").Get<ToolInputValidationOptions>()
-            ?? new ToolInputValidationOptions();
-        var runaway = config.GetSection("Pipeline:Detectors:RunawayGuard").Get<RunawayGuardOptions>()
-            ?? new RunawayGuardOptions();
-        var upstreamTimeout = config.GetSection("Pipeline:UpstreamTimeout").Get<UpstreamTimeoutOptions>()
-            ?? new UpstreamTimeoutOptions();
-
         var port = cliPort ?? server.Port;
-
-        // The fallback env must be written whenever ANY response detector can inject an
-        // error mid-stream — that is the exact condition under which Claude Code's silent
-        // non-streaming re-request would otherwise swallow the abort instead of retrying
-        // the whole turn. ResponseLeakGuard and ToolInputValidation are mid-stream only
-        // when PreserveStream is set; RunawayGuard has no PreserveStream toggle — it
-        // always aborts mid-stream when enabled, so its Enabled flag alone counts.
-        var needFallback =
-            (leak.Enabled && leak.PreserveStream) ||
-            (toolInput.Enabled && toolInput.PreserveStream) ||
-            runaway.Enabled;
-
-        return new BridgeConnection(
-            port,
-            needFallback,
-            // Stream-idle is derived from the SAME budget the server enforces, so the
-            // client's idle watchdog outlasts it. The request timeout is NOT: it is a
-            // fixed wall-clock ceiling that cannot be guaranteed to outlast an
-            // inactivity-bounded call (see ClaudeCodeTimeoutPolicy.RequestTimeoutMs).
-            ClaudeCodeTimeoutPolicy.StreamIdleMsFor(upstreamTimeout.StreamIdleTimeoutSeconds),
-            ClaudeCodeTimeoutPolicy.RequestTimeoutMs());
+        return new BridgeConnection(port);
     }
 }

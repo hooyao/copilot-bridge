@@ -1,18 +1,4 @@
-# timeout-budget-report Specification
-
-## Purpose
-
-Expose a compact, source-labelled startup inventory of the independent bridge,
-Claude Code, and Codex timeout/retry settings that can affect a long-thinking
-turn. It distinguishes configured values, known client-effective defaults or
-floor/cap rules, phase/attempt scope, keepalive reachability, and the global-file
-visibility boundary without fabricating one end-to-end deadline.
-
-The inventory is observational: startup never rewrites a client value. It warns
-when an exposed global client watchdog can race or undercut the bridge event-gap
-budget and names the native settings to review. Retries can restart clocks, so the
-report explicitly declines to claim a fixed whole-turn limit.
-## Requirements
+## ADDED Requirements
 
 ### Requirement: Configured and effective durations are separate facts
 
@@ -265,3 +251,46 @@ bound.
 - **WHEN** any retry layer can restart a request/stream attempt
 - **THEN** the scope note says there is no fixed whole-turn limit
 - **AND** no minimum of unrelated phase values is presented as the turn deadline.
+
+## REMOVED Requirements
+
+### Requirement: Timeout bounds are reported per phase at startup
+
+**Reason**: The earlier table described derived client values and winner
+calculations as though they were authoritative turn bounds. The replacement is an
+observed, source-labelled configuration inventory.
+
+**Migration**: Use `Timeout configuration inventory is reported per phase at
+startup`; detailed phase composition remains in `docs/timeout-chain.md`.
+
+#### Scenario: Legacy winner table is retired
+
+- **WHEN** the bridge starts
+- **THEN** it prints the source-labelled inventory instead of a derived turn winner.
+
+### Requirement: A client watchdog that would fire first is warned about
+
+**Reason**: The earlier requirement assumed bridge-managed Claude values and did
+not cover Codex, byte idle, equality races, or the pre-first-event keepalive gap.
+
+**Migration**: Use `Observed client watchdog races and undercuts are reported`;
+review the named native client key and bridge setting rather than rerunning a
+connection command.
+
+#### Scenario: Legacy managed-timeout remediation is retired
+
+- **WHEN** an observed client watchdog can undercut a bridge phase
+- **THEN** the warning names the native settings rather than prescribing a connection command.
+
+### Requirement: The client's wall-clock cap is reported as a residual bound
+
+**Reason**: The earlier wording did not distinguish normal and after-stream-error
+request attempts or make retry resets explicit.
+
+**Migration**: Use `Client request caps are reported as attempt-scoped residual
+bounds`; no client cap is presented as a whole-turn guarantee.
+
+#### Scenario: Legacy whole-request interpretation is retired
+
+- **WHEN** retries can start a new request or stream attempt
+- **THEN** the report does not present one attempt cap as a whole-turn deadline.

@@ -16,37 +16,12 @@ namespace CopilotBridge.Cli.Hosting.ClientConfig;
 /// <c>null</c> if not configured for the bridge.</param>
 /// <param name="ExpectedBaseUrl">The base URL the current appsettings-derived
 /// connection would write.</param>
-/// <param name="ExpectedFallback">The fallback-env value the current bridge
-/// configuration would write, or <c>null</c> when it writes none. Claude Code now
-/// expects <c>null</c> because the bridge keeps non-streaming recovery enabled;
-/// clients without a fallback-env concept (e.g. Codex) pass <c>null</c> for both
-/// this and <paramref name="CurrentFallback"/>.</param>
-/// <param name="CurrentFallback">The fallback-env value currently stored in the
-/// client's file, or <c>null</c> if unset.</param>
-/// <param name="ExpectedAssume1m">The value the bridge would force-write for
-/// <c>_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL</c> (<c>"1"</c> for Claude Code, so
-/// its native-1M capability gate fires for a custom base URL), or <c>null</c> for a
-/// client that does not manage it (Codex).</param>
-/// <param name="CurrentAssume1m">The value currently stored for that key in the
-/// client's file, or <c>null</c> if unset / not pointed at the bridge.</param>
-/// <param name="ExpectedDisableErrorReporting">The value the bridge would
-/// force-write for <c>DISABLE_ERROR_REPORTING</c> (<c>"1"</c> for Claude Code, to
-/// neutralize the telemetry the first-party assertion would otherwise enable), or
-/// <c>null</c> for a client that does not manage it (Codex).</param>
-/// <param name="CurrentDisableErrorReporting">The value currently stored for that
-/// key, or <c>null</c> if unset / not pointed at the bridge.</param>
-/// <param name="ExpectedStreamIdleTimeout">The value the bridge would force-write
-/// for <c>CLAUDE_STREAM_IDLE_TIMEOUT_MS</c>, derived from its stream-idle budget,
-/// or <c>null</c> for a client that does not manage it (Codex).</param>
-/// <param name="CurrentStreamIdleTimeout">The value currently stored for that key,
-/// or <c>null</c> if unset / not pointed at the bridge.</param>
-/// <param name="ExpectedRequestTimeout">The value the bridge would force-write for
-/// <c>API_TIMEOUT_MS</c> — a fixed residual ceiling, independent of every budget —
-/// or <c>null</c> for a client that does not manage it (Codex).</param>
-/// <param name="CurrentRequestTimeout">The value currently stored for that key, or
-/// <c>null</c> if unset / not pointed at the bridge.</param>
-/// <param name="Details">Extra human-readable lines (e.g. the fallback-env state)
-/// shown under <c>config status</c>.</param>
+/// <param name="Details">Human-readable observations shown under
+/// <c>config status</c>. User-owned timeout, retry, watchdog, 1M, telemetry, and
+/// fallback values belong here; they never have a bridge-derived expected value.</param>
+/// <param name="AdditionalDriftFacts">Bridge-owned connection/authentication facts
+/// that are absent or stale. Values are descriptions only and never contain
+/// credentials.</param>
 internal sealed record ConfigState(
     string ClientId,
     ConfigScope Scope,
@@ -55,36 +30,15 @@ internal sealed record ConfigState(
     bool ConfiguredForBridge,
     string? CurrentBaseUrl,
     string ExpectedBaseUrl,
-    string? ExpectedFallback,
-    string? CurrentFallback,
-    string? ExpectedAssume1m,
-    string? CurrentAssume1m,
-    string? ExpectedDisableErrorReporting,
-    string? CurrentDisableErrorReporting,
-    string? ExpectedStreamIdleTimeout,
-    string? CurrentStreamIdleTimeout,
-    string? ExpectedRequestTimeout,
-    string? CurrentRequestTimeout,
     IReadOnlyList<string> Details,
     IReadOnlyList<string>? AdditionalDriftFacts = null)
 {
     /// <summary>
-    /// True when the client is configured for the bridge but its stored config no
-    /// longer matches what the current bridge configuration would produce — either
-    /// the base URL (e.g. the port changed), the fallback-env value (e.g. a legacy
-    /// <c>CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK</c> key remains in Claude Code's
-    /// settings even though the bridge now removes it), a missing / non-managed
-    /// value for either 1M-context env key the bridge force-writes, or a missing /
-    /// stale value for either long-thinking timeout key (stale meaning the operator
-    /// changed a <c>Pipeline:UpstreamTimeout</c> budget without re-running the
-    /// config command, so the client no longer outlasts the bridge).
+    /// True only when a bridge-owned connection/authentication fact differs from
+    /// what the connection command would write. Client behavior settings are not
+    /// represented in this calculation, so they cannot become drift accidentally.
     /// </summary>
     public bool Drifted => ConfiguredForBridge &&
         (!string.Equals(CurrentBaseUrl, ExpectedBaseUrl, System.StringComparison.Ordinal) ||
-         !string.Equals(CurrentFallback, ExpectedFallback, System.StringComparison.Ordinal) ||
-         !string.Equals(CurrentAssume1m, ExpectedAssume1m, System.StringComparison.Ordinal) ||
-         !string.Equals(CurrentDisableErrorReporting, ExpectedDisableErrorReporting, System.StringComparison.Ordinal) ||
-         !string.Equals(CurrentStreamIdleTimeout, ExpectedStreamIdleTimeout, System.StringComparison.Ordinal) ||
-         !string.Equals(CurrentRequestTimeout, ExpectedRequestTimeout, System.StringComparison.Ordinal) ||
          AdditionalDriftFacts is { Count: > 0 });
 }
