@@ -87,7 +87,9 @@ internal static class ClaudeCodeVersionProbe
             foreach (var extension in extensions)
             {
                 var candidate = Path.Combine(directory, command + extension);
-                if (File.Exists(candidate)) return candidate;
+                if (File.Exists(candidate)
+                    && IsCandidateOutsideWorkingDirectory(candidate, currentDirectory))
+                    return candidate;
             }
         }
 
@@ -115,7 +117,9 @@ internal static class ClaudeCodeVersionProbe
         foreach (var directory in SafePathDirectories(pathValue, currentDirectory))
         {
             var direct = Path.Combine(directory, "claude.exe");
-            if (File.Exists(direct)) return direct;
+            if (File.Exists(direct)
+                && IsCandidateOutsideWorkingDirectory(direct, currentDirectory))
+                return direct;
 
             if (!shimNames.Any(name => File.Exists(Path.Combine(directory, name))))
                 continue;
@@ -123,7 +127,9 @@ internal static class ClaudeCodeVersionProbe
             foreach (var relative in packageExecutables)
             {
                 var candidate = Path.Combine(directory, relative);
-                if (File.Exists(candidate)) return Path.GetFullPath(candidate);
+                if (File.Exists(candidate)
+                    && IsCandidateOutsideWorkingDirectory(candidate, currentDirectory))
+                    return Path.GetFullPath(candidate);
             }
 
             // This is the first PATH entry that would resolve `claude`, but its
@@ -140,10 +146,13 @@ internal static class ClaudeCodeVersionProbe
     {
         if (string.IsNullOrWhiteSpace(pathValue)) return [];
 
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(currentDirectory));
+        if (!TryResolveDirectoryAliases(
+                currentDirectory,
+                out var current,
+                out _,
+                recursionDepth: 0))
+            return [];
+
         var result = new List<string>();
         foreach (var rawDirectory in pathValue.Split(Path.PathSeparator))
         {
@@ -161,9 +170,123 @@ internal static class ClaudeCodeVersionProbe
             {
                 continue;
             }
-            if (string.Equals(directory, current, comparison)) continue;
-            result.Add(directory);
+            if (!TryResolveDirectoryAliases(
+                    directory,
+                    out var resolvedDirectory,
+                    out var traversedAlias,
+                    recursionDepth: 0)
+                || traversedAlias
+                || IsSameOrChildDirectory(resolvedDirectory, current))
+                continue;
+            result.Add(resolvedDirectory);
         }
         return result;
+    }
+
+    private static bool IsCandidateOutsideWorkingDirectory(
+        string candidate,
+        string currentDirectory)
+    {
+        try
+        {
+            if (!TryResolveDirectoryAliases(
+                    currentDirectory,
+                    out var current,
+                    out _,
+                    recursionDepth: 0))
+                return false;
+
+            var file = new FileInfo(candidate);
+            var target = file.LinkTarget is null
+                ? file
+                : file.ResolveLinkTarget(returnFinalTarget: true) as FileInfo;
+            if (target?.DirectoryName is not { } targetDirectory
+                || !TryResolveDirectoryAliases(
+                    targetDirectory,
+                    out var resolvedTargetDirectory,
+                    out _,
+                    recursionDepth: 0))
+                return false;
+
+            return !IsSameOrChildDirectory(resolvedTargetDirectory, current);
+        }
+        catch (Exception ex) when (
+            ex is ArgumentException or NotSupportedException or IOException
+                or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryResolveDirectoryAliases(
+        string path,
+        out string resolved,
+        out bool traversedAlias,
+        int recursionDepth)
+    {
+        resolved = string.Empty;
+        traversedAlias = false;
+        if (recursionDepth > 40) return false;
+
+        try
+        {
+            var fullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+            if (!Directory.Exists(fullPath)) return false;
+            var root = Path.GetPathRoot(fullPath);
+            if (string.IsNullOrEmpty(root)) return false;
+
+            var current = Path.TrimEndingDirectorySeparator(root);
+            var relative = Path.GetRelativePath(root, fullPath);
+            var segments = relative.Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var segment in segments)
+            {
+                if (segment == ".") continue;
+                var next = Path.Combine(current, segment);
+                var info = new DirectoryInfo(next);
+                if (!info.Exists) return false;
+
+                if (info.LinkTarget is null
+                    && (info.Attributes & FileAttributes.ReparsePoint) == 0)
+                {
+                    current = next;
+                    continue;
+                }
+
+                var target = info.ResolveLinkTarget(returnFinalTarget: true);
+                if (target is not DirectoryInfo targetDirectory
+                    || !TryResolveDirectoryAliases(
+                        targetDirectory.FullName,
+                        out current,
+                        out _,
+                        recursionDepth + 1))
+                    return false;
+                traversedAlias = true;
+            }
+
+            resolved = Path.TrimEndingDirectorySeparator(current);
+            return true;
+        }
+        catch (Exception ex) when (
+            ex is ArgumentException or NotSupportedException or IOException
+                or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsSameOrChildDirectory(string candidate, string parent)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if (string.Equals(candidate, parent, comparison)) return true;
+
+        var prefix = parent.EndsWith(Path.DirectorySeparatorChar)
+            || parent.EndsWith(Path.AltDirectorySeparatorChar)
+                ? parent
+                : parent + Path.DirectorySeparatorChar;
+        return candidate.StartsWith(prefix, comparison);
     }
 }

@@ -311,6 +311,7 @@ public class ClientConfigTests
             args = [ "old" ]
             timeout_ms = 1
             refresh_interval_ms = 9
+            custom_auth_field = "preserve-auth"
 
             [model_providers.rival]
             name = 'leave exactly'
@@ -329,7 +330,61 @@ public class ClientConfigTests
         Assert.Contains("query_params = { region = \"mine\" }", content);
         Assert.Contains("http_headers = { X-Custom = \"keep\" }", content);
         Assert.Contains("env_http_headers = { Authorization = \"KEEP_ENV\" }", content);
+        Assert.Contains("custom_auth_field = \"preserve-auth\"", content);
         Assert.Contains("[model_providers.rival]\nname = 'leave exactly'", content.ReplaceLineEndings("\n"));
+    }
+
+    [Theory]
+    [InlineData("auth = { command = \"old.exe\", custom = \"keep\" }")]
+    [InlineData("auth.command = \"old.exe\"")]
+    [InlineData("\"auth\".command = \"old.exe\"")]
+    [InlineData("\"au\\u0074h\".command = \"old.exe\"")]
+    public void Codex_refuses_inline_or_dotted_auth_before_an_explicit_table_can_redefine_it(
+        string authSyntax)
+    {
+        var original = $$"""
+            [model_providers.copilot-bridge]
+            name = "copilot-bridge"
+            base_url = "http://localhost:8765/codex"
+            wire_api = "responses"
+            {{authSyntax}}
+            """;
+        var invocation = new CodexProviderAuthInvocation("bridge.exe", ["auth", "provider-token"]);
+
+        var error = Assert.Throws<ClientConfigException>(() =>
+            CodexConfigurator.BuildContent(original, Conn(), invocation));
+
+        Assert.Contains("Refusing to append [model_providers.copilot-bridge.auth]", error.Message);
+        Assert.Contains("Convert the auth value to the explicit table form", error.Message);
+    }
+
+    [Fact]
+    public void Codex_recognizes_quoted_provider_and_explicit_auth_table_segments_without_appending_duplicates()
+    {
+        var original = """
+            model_provider = "copilot-bridge"
+            [model_providers."copilot-bridge"]
+            name = "old"
+            base_url = "http://old.example/codex"
+            wire_api = "chat"
+
+            [model_providers."copilot-bridge".auth]
+            command = "old.exe"
+            args = [ "old" ]
+            timeout_ms = 1
+            refresh_interval_ms = 9
+            custom_auth_field = "keep"
+            """;
+        var invocation = new CodexProviderAuthInvocation("bridge.exe", ["auth", "provider-token"]);
+
+        var (content, _) = CodexConfigurator.BuildContent(original, Conn(9000), invocation);
+
+        Assert.Contains("[model_providers.\"copilot-bridge\"]", content);
+        Assert.Contains("[model_providers.\"copilot-bridge\".auth]", content);
+        Assert.Contains("base_url = \"http://localhost:9000/codex\"", content);
+        Assert.Contains("command = \"bridge.exe\"", content);
+        Assert.Contains("custom_auth_field = \"keep\"", content);
+        Assert.DoesNotContain("[model_providers.copilot-bridge]\n", content.ReplaceLineEndings("\n"));
     }
 
     [Fact]

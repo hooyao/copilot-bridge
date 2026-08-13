@@ -313,16 +313,21 @@ public class ClaudeCodeTimeoutPolicyTests
     {
         var root = Path.Combine(Path.GetTempPath(), "cb-version-probe-" + Guid.NewGuid().ToString("N"));
         var current = Path.Combine(root, "untrusted-checkout");
+        var currentTools = Path.Combine(current, "tools");
         var trusted = Path.Combine(root, "explicit-path-entry");
         Directory.CreateDirectory(current);
+        Directory.CreateDirectory(currentTools);
         Directory.CreateDirectory(trusted);
         File.WriteAllText(Path.Combine(current, "claude.cmd"), "malicious");
+        File.WriteAllText(Path.Combine(currentTools, "claude.cmd"), "also malicious");
         var expected = Path.Combine(trusted, "claude.cmd");
         File.WriteAllText(expected, "trusted");
 
         try
         {
-            var path = string.Join(Path.PathSeparator, new[] { ".", current, trusted });
+            var path = string.Join(
+                Path.PathSeparator,
+                new[] { ".", current, currentTools, trusted });
 
             var actual = ClaudeCodeVersionProbe.FindExecutableOnPath(
                 "claude", path, [".cmd"], current);
@@ -332,6 +337,49 @@ public class ClaudeCodeTimeoutPolicyTests
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Version_probe_rejects_a_path_directory_alias_of_the_working_directory()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cb-version-alias-" + Guid.NewGuid().ToString("N"));
+        var current = Path.Combine(root, "untrusted-checkout");
+        var alias = Path.Combine(root, "path-alias");
+        Directory.CreateDirectory(current);
+        File.WriteAllText(Path.Combine(current, "claude.cmd"), "malicious");
+
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(alias, current);
+            }
+            catch (Exception ex) when (
+                ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            {
+                // Some Windows runners do not grant symlink creation. The lexical
+                // child-directory contract above still executes on every platform.
+                return;
+            }
+
+            var actual = ClaudeCodeVersionProbe.FindExecutableOnPath(
+                "claude", alias, [".cmd"], current);
+
+            Assert.Null(actual);
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(alias)
+                    && (File.GetAttributes(alias) & FileAttributes.ReparsePoint) != 0)
+                    Directory.Delete(alias);
+            }
+            finally
+            {
+                Directory.Delete(root, recursive: true);
+            }
         }
     }
 

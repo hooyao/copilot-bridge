@@ -59,3 +59,9 @@
 - [x] 8.3 Fix the non-8765 port assertion and reconcile the approved canonical wording across OpenSpec and durable documentation.
 - [x] 8.4 Repeat contract tests, real startup, real Claude/Codex client verdicts, and defect-first review until the final review reports `No findings`.
 - [x] 8.5 Reconcile every archived delta operation with the synced main specs, remove duplicate operation sections, retain all modified scenarios, and validate the complete OpenSpec set strictly.
+
+## 9. PR Review Follow-ups
+
+- [x] 9.1 Resolve filesystem aliases and reject linked PATH entries/candidates so a symlink or junction cannot route the Claude version probe back into the bridge working tree.
+- [x] 9.2 Detect inline/dotted Codex auth representations before mutation, refuse the conflicting rewrite with actionable guidance, and reparse every rendered plan before returning it.
+- [x] 9.3 Add mutation-sensitive contract tests, update the synced/archived spec and operator docs, then rerun real startup/config/client verification before the next Copilot round.

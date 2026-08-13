@@ -83,8 +83,20 @@ internal sealed class CodexConfigurator : IClientConfigurator
             doc = Tomlyn.Parsing.SyntaxParser.Parse(original + "\n", sourcePath);
         }
 
+        RejectConflictingAuthRepresentations(doc);
         var summary = MergeInto(doc, connection, authInvocation);
-        return (doc.ToString(), summary);
+        var content = doc.ToString();
+        var reparsed = Tomlyn.Parsing.SyntaxParser.Parse(content, sourcePath);
+        if (reparsed.HasErrors)
+        {
+            var first = reparsed.Diagnostics.Count > 0
+                ? reparsed.Diagnostics[0].ToString()
+                : "unknown error";
+            throw new ClientConfigException(
+                "The planned Codex config is not valid TOML. Refusing to write it; "
+                + $"parser said: {first}");
+        }
+        return (content, summary);
     }
 
     public string? Apply(ConfigPlan plan) => ConfigFileWriter.Write(plan);
@@ -244,6 +256,35 @@ internal sealed class CodexConfigurator : IClientConfigurator
         UpsertTableValue(authTable, "refresh_interval_ms", CodexProviderAuthInvocation.RefreshIntervalMs.ToString(CultureInfo.InvariantCulture));
     }
 
+    /// <summary>
+    /// TOML permits the nested auth object to be written as an inline table or as
+    /// dotted keys inside the provider table. Appending an explicit auth table on
+    /// top of either representation would redefine the same key and corrupt an
+    /// otherwise valid user config. Refuse that ambiguous rewrite before changing
+    /// any syntax node; the operator can convert it to the explicit table shape the
+    /// bridge manages without losing unrelated auth fields.
+    /// </summary>
+    private static void RejectConflictingAuthRepresentations(DocumentSyntax doc)
+    {
+        var providerTable = FindTable(doc, ProviderTableName);
+        if (providerTable is null) return;
+
+        foreach (var item in providerTable.Items)
+        {
+            if (item is not KeyValueSyntax pair || !IsAuthKey(pair.Key)) continue;
+            throw new ClientConfigException(
+                $"Existing [{ProviderTableName}] expresses auth as '{KeyName(pair.Key)}'. "
+                + $"Refusing to append [{ProviderAuthTableName}] because that would redefine "
+                + "the same TOML object. Convert the auth value to the explicit table form "
+                + $"[{ProviderAuthTableName}], preserving any custom fields, then re-run.");
+        }
+    }
+
+    private static bool IsAuthKey(KeySyntax? key)
+    {
+        return string.Equals(KeyPart(key?.Key), "auth", StringComparison.Ordinal);
+    }
+
     private static TableSyntax AppendTable(DocumentSyntax doc, string tableName)
     {
         var fragment = Tomlyn.Parsing.SyntaxParser.Parse($"\n[{tableName}]\n", "fragment");
@@ -383,11 +424,24 @@ internal sealed class CodexConfigurator : IClientConfigurator
     }
 
     /// <summary>The dotted-key name of a key-value's key, e.g. <c>model_provider</c>.</summary>
-    private static string KeyName(KeySyntax? key) => key?.ToString().Trim() ?? string.Empty;
+    private static string KeyName(KeySyntax? key)
+    {
+        if (key is null) return string.Empty;
+        var parts = new List<string> { KeyPart(key.Key) };
+        foreach (var dotted in key.DotKeys) parts.Add(KeyPart(dotted.Key));
+        return string.Join('.', parts);
+    }
+
+    private static string KeyPart(BareKeyOrStringValueSyntax? key) => key switch
+    {
+        BareKeySyntax bare => bare.Key?.Text ?? string.Empty,
+        StringValueSyntax quoted => quoted.Value ?? string.Empty,
+        _ => key?.ToString().Trim() ?? string.Empty,
+    };
 
     /// <summary>The dotted-key name of a table header, e.g.
     /// <c>model_providers.copilot-bridge</c>.</summary>
-    private static string TableName(TableSyntax table) => table.Name?.ToString().Trim() ?? string.Empty;
+    private static string TableName(TableSyntax table) => KeyName(table.Name);
 
     /// <summary>
     /// Resolve <c>$CODEX_HOME/config.toml</c>, falling back to <c>~/.codex/config.toml</c>.

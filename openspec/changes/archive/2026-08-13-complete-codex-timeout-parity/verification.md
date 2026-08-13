@@ -8,7 +8,7 @@ port 8765 was never bound or terminated.
 
 - Targeted config/reader/report/version-probe suites passed after the final
   contract and release-review additions.
-- Full unit suite: 1621 tests passed.
+- Full unit suite: 1627 tests passed after Copilot review round 1.
 - Full solution build: succeeded with 0 warnings and 0 errors.
 - Release CLI build: succeeded with 0 warnings and 0 errors.
 - `AgentRepositoryCompatibilityTests`: 4 tests passed after updating both
@@ -29,6 +29,14 @@ port 8765 was never bound or terminated.
   against dropping, removed repeated operation headers, and left no requirement
   without a migration scenario. `openspec validate --all --strict` passed all
   31 active changes/specs.
+- Copilot review round 1 found two valid edge cases. The version probe now resolves
+  the real working directory, rejects aliased/child PATH directories and linked
+  executable targets, and remains best-effort when identity cannot be established.
+  The Codex merge now refuses inline/dotted auth representations before mutation,
+  preserves unmanaged fields in the supported explicit auth table, and reparses
+  every planned document before it can be written. Focused contract tests cover
+  both regressions. The real startup/config subprocess tests and both real-client
+  behavior legs were repeated on the review-fix build.
 
 ### Real startup and real config commands
 
@@ -54,7 +62,7 @@ port 8765 was never bound or terminated.
 ### Real Claude Code
 
 Manifest:
-`tests/behavior-runs/manifests/cc-to-gpt-stream-fault-recovery-20260813-084330-980.json`
+`tests/behavior-runs/manifests/cc-to-gpt-stream-fault-recovery-20260813-091340-907.json`
 
 - Startup observed event idle `11s -> effective 5m`, byte idle `13s`, and absent
   request timeout as normal `10m` / after-stream-error `5m`.
@@ -72,14 +80,14 @@ Verdict: PASS from the real Claude transcript plus per-run bridge trace.
 ### Real Codex
 
 Final manifest:
-`tests/behavior-runs/manifests/codex-native-retryable-stream-timeout-20260813-084407-244.json`
+`tests/behavior-runs/manifests/codex-native-retryable-stream-timeout-20260813-091950-716.json`
 
 - Startup observed Codex idle `5s`, request retries `1`, and stream retries `2`.
 - Per-run response sequence was HTTP `500`, then one bridge-generated retryable
   `response.failed` after the exact 1s stream-idle budget, then a completed
   `custom_tool_call`, then final output. This exercised both request retry and
   sampling-stream retry.
-- Client-owned SQLite window `[1786610631,1786610647]` contained 184 rows,
+- Client-owned SQLite window `[1786612774,1786612790]` contained 150 rows,
   `codex_core::responses_retry` recorded `1/2`, router/dispatch fatal rows were 0,
   and ERROR rows were 0.
 - Real app-server stdout recorded two completed command executions, matching

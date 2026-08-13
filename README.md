@@ -142,6 +142,10 @@ WebSocket, query, and header fields remain untouched, as do rival providers and
 explicit context/auto-compact overrides.
 The auth command emits a stable public sentinel only; your GitHub/Copilot token
 stays inside the bridge's `AuthService` and is never written to Codex config.
+If an existing provider expresses `auth` as an inline table or dotted keys, the
+command refuses to append a conflicting explicit auth table and names the
+`[model_providers.copilot-bridge.auth]` shape to convert to; it never writes an
+invalid TOML merge.
 This bridge command intentionally targets the global file, so it has no `--scope`;
 Codex project/profile/CLI layers can still affect a particular future process.
 `--dry-run` and `--port` work the same as above.

@@ -249,6 +249,12 @@ command does change.
 - **THEN** the summary identifies the connection/auth fields that would change
 - **AND** states that provider timeout and retry fields will be preserved.
 
+#### Scenario: Conflicting auth representation is refused safely
+
+- **WHEN** the existing provider expresses `auth` as an inline table or dotted keys
+- **THEN** the connection command fails before writing instead of appending a conflicting explicit table
+- **AND** the error identifies `[model_providers.copilot-bridge.auth]` as the supported conversion target.
+
 ### Requirement: Connection commands preserve unmanaged values
 
 The connection commands SHALL own connection/authentication facts only.
