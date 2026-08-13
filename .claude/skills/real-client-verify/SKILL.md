@@ -19,7 +19,11 @@ compatibility: >-
   dev fallback). Needs the built bridge (dotnet build src/CopilotBridge.Cli) and the
   real client exe: codex.exe (auto-found under %LOCALAPPDATA%\OpenAI\Codex\bin or
   CODEX_EXE) and/or claude.exe (PATH or CLAUDE_EXE). The codex log reader is a .NET 10
-  file-based app (dotnet run scripts/read-codex-log.cs).
+  file-based app (dotnet run scripts/read-codex-log.cs). If the encrypted credential
+  exists only beside an installed bridge, set
+  COPILOT_BRIDGE_TEST_CREDENTIAL_SOURCE_DIRECTORY to that directory; ServeProcess
+  stages only a disposable DPAPI-encrypted legacy access-token mirror (never the
+  single-use-refresh-token v2 record) and never modifies the source files.
 metadata:
   author: cc-copilot-bridge
   version: "1.0"
@@ -91,6 +95,13 @@ Map your change to a case that reaches it. `echo/cat` is fine for a plain-tool
 regression but proves nothing about namespaced tools, multi-agent `agent_message`, or
 custom `exec`. See `references/test-cases.md` for the taxonomy and which case hits
 which path.
+
+For CAPI lease-recovery changes, ordinary successful traffic does not hit the path.
+Run the Debug-only forced-first-403 cases B6 (Codex `/responses`) and A6 (Claude
+`/v1/messages`). The seam synthesizes exactly one pre-upstream 403 inside the real
+authenticated-send loop; the replay must refresh/reuse a lease and go to live Copilot.
+Apply the client-owned tool verdict as usual, plus the recovery evidence in
+`references/evidence.md`.
 
 ### Gate 2 — the verdict comes from the CLIENT's own evidence
 - **Codex** → PASS requires (a) a real tool round-trip on THIS run's **bridge trace** — a
@@ -174,6 +185,8 @@ guard (step 5). See `references/flywheel.md`.
 - **Never bind 8765** — `ServeProcess` picks a free high port; the user's real bridge
   owns 8765.
 - **A green bridge audit is INCONCLUSIVE, not PASS.**
+- **Auth recovery needs a forced rejection** — successful traffic alone never proves
+  the 403 refresh/replay path ran.
 - **If you can't run the real client, STOP and mark it UNVERIFIED** — don't reflexively
   claim a path "can't be tested." Most paths are headless-reproducible via `codex exec` /
   `claude.exe`. The exceptions are the desktop-only multi-agent shapes (`agent_message`,

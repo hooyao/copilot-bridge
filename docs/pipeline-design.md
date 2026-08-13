@@ -747,11 +747,17 @@ Ownership is strict:
   retired/baseline-only models are hidden, and review overrides are retained
   only when their target remains routable.
 
-`CodexCatalogOverlayService` is a singleton, single-flight, five-minute
-process-local cache. A refresh failure serves its last known good overlay; a
-cold failure returns the compatible baseline without uplift, so metadata
-degradation never prevents otherwise healthy inference. Its policy is independent
-from the official-source cache: the latter defaults to a 24-hour source-check TTL,
+`CodexCatalogOverlayService` is a singleton, single-flight, five-minute successful-
+overlay cache. A refresh failure serves its stale last known good overlay; a cold
+failure returns the compatible baseline without uplift, so metadata degradation
+never prevents otherwise healthy inference. That failure also establishes one
+process-local retry deadline using the exact
+`Codex.ModelCatalog.LiveOverlayFailureCooldownSeconds` value (default 300, valid
+range 1..3600). Polls before the deadline perform no upstream `/models` I/O and
+emit no duplicate warning; callers arriving at or after the deadline share one
+retry. Success clears the failure state, and restart never restores it. This policy
+is independent from inference and from the official-source cache: the latter
+defaults to a 24-hour source-check TTL,
 uses ETag revalidation, and persists a self-validating record in the OS per-user
 cache. TTL controls when GitHub is checked, not when validated bytes expire. A
 timeout, transport failure, 429/5xx, exact-tag 404, or invalid replacement serves
@@ -791,7 +797,7 @@ The command-auth token is only the stable public sentinel emitted by
 upstream credential: both metadata and inference obtain the real Copilot token
 only through `IAuthService`.
 
-### 4.10 Authentication leases and bounded 401 recovery
+### 4.10 Authentication leases and bounded 401/403 CAPI recovery
 
 Authentication has two separately managed tiers behind the sealed
 `AuthService` facade:
@@ -821,13 +827,22 @@ Authentication has two separately managed tiers behind the sealed
    minutes early); callers never read a token and endpoint from separate snapshots.
 
 Every authenticated CAPI send (`/v1/messages`, `/responses`, `/models`, and
-`/v1/messages/count_tokens`) is built from one lease. A first HTTP 401 disposes
-the rejected response/request, rejects exactly that generation, obtains the
-already-newer or freshly minted lease, rebuilds the single-use request with the
-same body bytes and business headers, and replays once. A second 401 is terminal.
-400/402/403/429 and all other statuses never enter auth replay. Connection-layer
-retries retain one shared budget across the auth replay, while each actual send
-retains its configured first-byte inactivity budget.
+`/v1/messages/count_tokens`) is built from one lease. A first HTTP 401 or 403
+disposes the rejected response/request, rejects exactly that generation with a
+closed status-specific reason, obtains the already-newer or freshly minted lease,
+rebuilds the single-use request with the same body bytes and business headers,
+and replays once. If another caller has already published generation N+1, a late
+rejection of N reuses N+1 without another token exchange.
+
+The first 403 is deliberately ambiguous: it can be a stale short-lived bearer or
+a real policy/entitlement refusal, so it is not terminally classified before the
+fresh/newer-lease replay. A replayed 403 is terminal
+`policy_or_entitlement_after_auth_replay`; a replayed 401 is terminal Copilot
+authentication failure. One shared replay flag bounds mixed `401 -> 403` and
+`403 -> 401` sequences at two authenticated sends total. 400/402/429 and all
+other statuses never enter auth replay. Connection-layer retries retain one
+shared budget across the auth replay, while each actual send retains its configured
+first-byte inactivity budget.
 
 GitHub `401 Bad credentials` during `/user` or Copilot-token exchange similarly
 uses at most one refresh-token rotation and one replay. If refresh metadata is

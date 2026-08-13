@@ -197,6 +197,7 @@ public sealed class CodexCatalogSourceContractTests
         config.GetSection("Codex:ModelCatalog").Bind(options);
 
         Assert.True(options.Enabled);
+        Assert.Equal(300, options.LiveOverlayFailureCooldownSeconds);
         Assert.Equal(24, options.SourceTtlHours);
         Assert.Equal(10, options.SourceTimeoutSeconds);
         Assert.Equal(4 * 1024 * 1024, options.MaxSourceBytes);

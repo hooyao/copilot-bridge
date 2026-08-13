@@ -899,7 +899,7 @@ public class UpstreamTimeoutContractTests
         public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default) =>
             ValueTask.FromResult("gh-token");
         public ValueTask<CopilotBridge.Cli.Auth.CopilotAuthLease> GetCopilotTokenAsync(
-            CopilotBridge.Cli.Auth.CopilotAuthLease? rejectedLease = null,
+            CopilotBridge.Cli.Auth.CopilotLeaseRejection? rejection = null,
             CancellationToken ct = default) =>
             ValueTask.FromResult(new CopilotBridge.Cli.Auth.CopilotAuthLease
             {

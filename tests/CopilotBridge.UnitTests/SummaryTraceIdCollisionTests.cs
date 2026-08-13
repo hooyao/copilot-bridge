@@ -184,7 +184,7 @@ public class SummaryTraceIdCollisionTests
         public ValueTask<string> EnsureGitHubTokenAsync(System.Threading.CancellationToken ct = default) =>
             ValueTask.FromResult("gh-token");
         public ValueTask<CopilotBridge.Cli.Auth.CopilotAuthLease> GetCopilotTokenAsync(
-            CopilotBridge.Cli.Auth.CopilotAuthLease? rejectedLease = null,
+            CopilotBridge.Cli.Auth.CopilotLeaseRejection? rejection = null,
             System.Threading.CancellationToken ct = default) =>
             ValueTask.FromResult(new CopilotBridge.Cli.Auth.CopilotAuthLease
             {

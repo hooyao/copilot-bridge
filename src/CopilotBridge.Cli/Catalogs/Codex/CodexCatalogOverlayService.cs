@@ -1,6 +1,8 @@
 using CopilotBridge.Cli.Copilot;
+using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Models.Copilot;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Catalogs.Codex;
 
@@ -19,27 +21,42 @@ internal sealed class CodexCatalogOverlayService
     private readonly ILogger<CodexCatalogOverlayService> _log;
     private readonly TimeSpan _ttl;
     private readonly TimeSpan _refreshTimeout;
+    private readonly TimeSpan _failureCooldown;
     private readonly Func<DateTimeOffset> _utcNow;
     private readonly object _gate = new();
     private CacheEntry? _lastKnownGood;
     private Task<CodexCatalogOverlaySnapshot>? _refresh;
+    private DateTimeOffset? _retryAfter;
 
-    public CodexCatalogOverlayService(ICopilotClient copilot, ILogger<CodexCatalogOverlayService> log)
-        : this(copilot, log, DefaultTtl, DefaultRefreshTimeout, () => DateTimeOffset.UtcNow) { }
+    public CodexCatalogOverlayService(
+        ICopilotClient copilot,
+        ILogger<CodexCatalogOverlayService> log,
+        IOptions<CodexModelCatalogOptions> options)
+        : this(
+            copilot,
+            log,
+            DefaultTtl,
+            DefaultRefreshTimeout,
+            TimeSpan.FromSeconds(options.Value.LiveOverlayFailureCooldownSeconds),
+            () => DateTimeOffset.UtcNow) { }
 
     internal CodexCatalogOverlayService(
         ICopilotClient copilot,
         ILogger<CodexCatalogOverlayService> log,
         TimeSpan ttl,
         TimeSpan refreshTimeout,
+        TimeSpan failureCooldown,
         Func<DateTimeOffset> utcNow)
     {
         if (ttl <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(ttl));
         if (refreshTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(refreshTimeout));
+        if (failureCooldown <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(failureCooldown));
         _copilot = copilot;
         _log = log;
         _ttl = ttl;
         _refreshTimeout = refreshTimeout;
+        _failureCooldown = failureCooldown;
         _utcNow = utcNow;
     }
 
@@ -48,9 +65,21 @@ internal sealed class CodexCatalogOverlayService
         Task<CodexCatalogOverlaySnapshot> refresh;
         lock (_gate)
         {
-            if (_lastKnownGood is { } cached && _utcNow() - cached.RefreshedAt < _ttl)
+            var now = _utcNow();
+            if (_lastKnownGood is { } cached && now - cached.RefreshedAt < _ttl)
                 return ValueTask.FromResult(Snapshot(cached.Models, validated: true, stale: false));
-            refresh = _refresh ??= RefreshAsync();
+            if (_refresh is not null)
+            {
+                refresh = _refresh;
+            }
+            else if (_retryAfter is { } retryAfter && now < retryAfter)
+            {
+                return ValueTask.FromResult(FallbackSnapshot(_lastKnownGood));
+            }
+            else
+            {
+                refresh = _refresh = RefreshAsync();
+            }
         }
         return new ValueTask<CodexCatalogOverlaySnapshot>(refresh.WaitAsync(ct));
     }
@@ -72,19 +101,27 @@ internal sealed class CodexCatalogOverlayService
                 .AsTask()
                 .WaitAsync(refreshCts.Token);
             var models = response.Data.ToArray();
-            lock (_gate) _lastKnownGood = new CacheEntry(models, _utcNow());
+            lock (_gate)
+            {
+                _lastKnownGood = new CacheEntry(models, _utcNow());
+                _retryAfter = null;
+            }
             return Snapshot(models, validated: true, stale: false);
         }
         catch (Exception ex)
         {
             CacheEntry? stale;
-            lock (_gate) stale = _lastKnownGood;
+            lock (_gate)
+            {
+                stale = _lastKnownGood;
+                _retryAfter = _utcNow() + _failureCooldown;
+            }
             _log.LogWarning(
-                "Copilot model metadata refresh failed ({ErrorType}); Codex catalog capacity is degraded.",
-                ex.GetType().Name);
-            return stale is null
-                ? Snapshot([], validated: false, stale: false)
-                : Snapshot(stale.Models, validated: true, stale: true);
+                "Copilot model metadata refresh failed ({ErrorType}); Codex catalog capacity "
+                + "is degraded; retry_in_seconds={RetryInSeconds}.",
+                ex.GetType().Name,
+                (long)_failureCooldown.TotalSeconds);
+            return FallbackSnapshot(stale);
         }
         finally
         {
@@ -94,6 +131,11 @@ internal sealed class CodexCatalogOverlayService
 
     private static CodexCatalogOverlaySnapshot Snapshot(IReadOnlyList<CopilotModel> models, bool validated, bool stale) =>
         new() { Models = models, IsValidated = validated, IsStale = stale };
+
+    private static CodexCatalogOverlaySnapshot FallbackSnapshot(CacheEntry? stale) =>
+        stale is null
+            ? Snapshot([], validated: false, stale: false)
+            : Snapshot(stale.Models, validated: true, stale: true);
 
     private sealed record CacheEntry(IReadOnlyList<CopilotModel> Models, DateTimeOffset RefreshedAt);
 }

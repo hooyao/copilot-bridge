@@ -235,10 +235,10 @@ In other words, the base URL **comes from the Copilot token's `endpoints.api` fi
 
 **Conclusion**: our implementation should **not** stitch URLs based on an `accountType` string — use whatever the Copilot token returns. caozhiyuan/copilot-api's if/else is a reverse-engineering simplification; the official approach is cleaner.
 
-#### 3.0.2a OAuth/Copilot token lifetimes and 401 recovery (verified 2026-08)
+#### 3.0.2a OAuth/Copilot token lifetimes and 401/403 recovery (verified 2026-08)
 
-There are two distinct credentials and a 401 must be attributed to the correct
-hop:
+There are two distinct credentials; a rejection must be attributed to the correct
+hop rather than inferred from the client-visible model request:
 
 | Credential | Obtained from | Lifetime / refresh source |
 | --- | --- | --- |
@@ -268,8 +268,8 @@ the absolute epoch as its only clock: after receipt it sets the effective local
 expiry to `now + refresh_in + 60`, and considers the token stale five minutes
 before that. Its CAPI error handler clears the cached Copilot token after HTTP
 401/403 so a later request mints a replacement. The bridge follows the same
-receipt-relative safety shape and additionally replays one current request on
-401 because it retains the exact request bytes.
+receipt-relative safety shape and additionally replays one current request on the
+first CAPI 401 or 403 because it retains the exact request bytes.
 
 The GitHub token exchange uses `Authorization: token <github-token>` and
 `X-GitHub-Api-Version: 2025-04-01`; chat CAPI calls still use §3.0.4's newer
@@ -287,6 +287,15 @@ same rejected GitHub token; deleting it and completing device login did. This is
 not a gpt-5.6 request-shape failure—once GitHub auth is rejected, every model and
 endpoint fails before inference.
 
+A separate 2026-08-13 incident established the CAPI-403 case. A native Codex
+`/responses` send received HTTP 403 with plain `forbidden\n` and Copilot
+Kubernetes/request-id headers; Codex exhausted five visible provider attempts,
+and later live `/models` overlay refreshes received the same 403 every three
+minutes. A scheduled Copilot bearer refresh eventually succeeded, while restarting
+the bridge recovered immediately by discarding its process-local lease. Unlike the
+GitHub-401 incident above, restart helping is evidence that the short-lived Copilot
+lease—not the persisted GitHub credential or request shape—was the stale state.
+
 The approximately one-hour observation does not establish a one-hour GitHub
 token lifetime. A previously minted Copilot bearer can mask an already-revoked
 GitHub credential until its next in-memory refresh. GitHub documents revocation
@@ -299,11 +308,12 @@ Bridge recovery contract:
 
 - GitHub 401: rotate once when refresh metadata exists, replay once; otherwise
   require logout/login. Never loop and never destroy the last committed record.
-- Copilot CAPI 401: reject only the token/endpoint lease generation used,
-  obtain the already-newer or freshly minted lease, rebuild the request, replay
-  once. A second 401 is terminal.
-- 400/402/403/429 are not same-request auth replays; they retain validation,
-  billing/quota, policy/entitlement, and rate-limit meaning.
+- Copilot CAPI 401/403: reject only the token/endpoint lease generation used,
+  obtain the already-newer or freshly minted lease, rebuild the request, and
+  replay once. A first 403 is ambiguous; only a replayed 403 is terminal
+  policy/entitlement. A replayed 401 is terminal authentication failure.
+- One shared replay flag bounds `401 -> 403`, `403 -> 401`, and same-status pairs
+  at two sends. 400/402/429 and every other status retain their existing meaning.
 - No token, prefix, hash, Authorization value, or error body containing credential
   material is written to logs or CLI diagnostics.
 
@@ -1009,7 +1019,7 @@ I lean **probe**: it's cheap (~50 lines of C#) and eliminates the routing-layer'
 ```
 1. CopilotTokenClient + AuthService.GetCopilotTokenAsync()
    - GET /copilot_internal/v2/token
-   - Atomic token/endpoint lease + receipt-relative refresh + bounded 401 recovery
+   - Atomic token/endpoint lease + receipt-relative refresh + bounded 401/403 CAPI recovery
    Acceptance: `copilot-bridge auth copilot-status` prints expiry, refresh time,
    and API base URL without any token bytes
 

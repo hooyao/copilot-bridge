@@ -13,7 +13,7 @@ namespace CopilotBridge.Cli.Copilot;
 /// <summary>
 /// Talks to Copilot's authenticated CAPI surfaces. Every send is built from one
 /// immutable auth lease. Connection failures before headers use the configured
-/// transient budget; an HTTP 401 uses a separate, single authentication replay.
+/// transient budget; a first HTTP 401 or 403 uses one shared authentication replay.
 /// </summary>
 internal sealed class CopilotClient(
     IHttpClientFactory httpClientFactory,
@@ -36,7 +36,10 @@ internal sealed class CopilotClient(
                 Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_FAIL_MODELS"),
                 "1",
                 StringComparison.Ordinal))
+        {
+            log.LogWarning("TEST ONLY: forced Copilot /models failure attempt");
             throw new HttpRequestException("Forced Copilot /models failure for behavior testing.");
+        }
 #endif
 
         using var response = await SendAuthenticatedAsync(
@@ -143,15 +146,25 @@ internal sealed class CopilotClient(
         {
             var request = createRequest(lease);
 #if DEBUG
-            MaybeInjectOneShotRejectedBearer(request, operation, lease.Generation);
+            var injectedResponse = TryInjectOneShotForbidden(
+                operation, lease.Generation);
 #endif
             HttpResponseMessage response;
             try
             {
-                var http = httpClientFactory.CreateClient(clientName);
-                response = useFirstByteBudget
-                    ? await SendWithFirstByteBudgetAsync(request, http, ct)
-                    : await http.SendAsync(request, completionOption, ct);
+#if DEBUG
+                if (injectedResponse is not null)
+                {
+                    response = injectedResponse;
+                }
+                else
+#endif
+                {
+                    var http = httpClientFactory.CreateClient(clientName);
+                    response = useFirstByteBudget
+                        ? await SendWithFirstByteBudgetAsync(request, http, ct)
+                        : await http.SendAsync(request, completionOption, ct);
+                }
             }
             catch (Exception ex) when (
                 allowTransientRetries
@@ -180,24 +193,34 @@ internal sealed class CopilotClient(
                 throw;
             }
 
-            if (response.StatusCode != HttpStatusCode.Unauthorized || authReplayUsed)
+            if (!TryGetLeaseRejectionReason(response.StatusCode, out var rejectionReason)
+                || authReplayUsed)
             {
                 LogTerminalClassification(operation, response.StatusCode, authReplayUsed);
+                if (authReplayUsed && response.IsSuccessStatusCode)
+                {
+                    log.LogInformation(
+                        "upstream {Operation} authentication replay outcome=success status={Status}",
+                        operation, (int)response.StatusCode);
+                }
                 return response;
             }
 
-            // 401 is an authentication rejection: no model work was accepted.
-            // Dispose the response and single-use request, reject only the lease
-            // used, and replay once with a fresh request object and exact body bytes.
+            // A first 401/403 rejects the lease before model work is accepted.
+            // Dispose both single-use objects, reject only the generation used,
+            // and replay once with a fresh request and the exact business bytes.
+            var rejectedStatus = response.StatusCode;
             response.Dispose();
             request.Dispose();
             authReplayUsed = true;
             log.LogWarning(
-                "upstream {Operation} rejected Copilot bearer generation={Generation}; "
-                + "refreshing and replaying once",
+                "upstream {Operation} rejected Copilot bearer status={Status} "
+                + "generation={Generation}; refreshing and replaying once",
                 operation,
+                (int)rejectedStatus,
                 lease.Generation);
-            lease = await auth.GetCopilotTokenAsync(lease, ct);
+            lease = await auth.GetCopilotTokenAsync(
+                new CopilotLeaseRejection(lease, rejectionReason), ct);
         }
     }
 
@@ -254,7 +277,8 @@ internal sealed class CopilotClient(
         {
             HttpStatusCode.Unauthorized when authReplayUsed => "copilot_auth_terminal",
             HttpStatusCode.PaymentRequired => "quota_or_billing",
-            HttpStatusCode.Forbidden => "policy_or_entitlement",
+            HttpStatusCode.Forbidden when authReplayUsed =>
+                "policy_or_entitlement_after_auth_replay",
             HttpStatusCode.TooManyRequests => "rate_limit",
             _ => null,
         };
@@ -263,6 +287,24 @@ internal sealed class CopilotClient(
             log.LogWarning(
                 "upstream {Operation} terminal status={Status} classification={Classification}",
                 operation, (int)status, classification);
+        }
+    }
+
+    private static bool TryGetLeaseRejectionReason(
+        HttpStatusCode status,
+        out CopilotLeaseRejectionReason reason)
+    {
+        switch (status)
+        {
+            case HttpStatusCode.Unauthorized:
+                reason = CopilotLeaseRejectionReason.Unauthorized;
+                return true;
+            case HttpStatusCode.Forbidden:
+                reason = CopilotLeaseRejectionReason.Forbidden;
+                return true;
+            default:
+                reason = default;
+                return false;
         }
     }
 
@@ -277,36 +319,30 @@ internal sealed class CopilotClient(
     };
 
 #if DEBUG
-    private void MaybeInjectOneShotRejectedBearer(
-        HttpRequestMessage request,
+    private HttpResponseMessage? TryInjectOneShotForbidden(
         string operation,
         long generation)
     {
-        if (!string.Equals(operation, "POST /responses", StringComparison.Ordinal)
-            || !string.Equals(
-                Environment.GetEnvironmentVariable(
-                    "COPILOT_BRIDGE_TEST_REJECT_COPILOT_AUTH_ONCE"),
-                "1",
-                StringComparison.Ordinal)
+        var configuredOperation = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_FORCE_CAPI_403_ONCE");
+        var expectedOperation = configuredOperation switch
+        {
+            "responses" => "POST /responses",
+            "messages" => "POST /v1/messages",
+            _ => null,
+        };
+        if (!string.Equals(operation, expectedOperation, StringComparison.Ordinal)
             || Interlocked.CompareExchange(
                 ref _testAuthRejectionInjected, 1, 0) != 0)
-            return;
+            return null;
 
-        request.Headers.Authorization = new AuthenticationHeaderValue(
-            "Bearer", CorruptBearerSignature(request.Headers.Authorization?.Parameter));
         log.LogWarning(
-            "TEST ONLY: injected one-shot rejected Copilot bearer for {Operation} "
-            + "generation={Generation}",
+            "TEST ONLY: injected one-shot CAPI 403 for {Operation} generation={Generation}",
             operation, generation);
-    }
-
-    private static string CorruptBearerSignature(string? token)
-    {
-        if (string.IsNullOrEmpty(token))
-            throw new InvalidOperationException(
-                "TEST ONLY auth rejection seam found no bearer to corrupt.");
-        var replacement = token[^1] == '0' ? '1' : '0';
-        return token[..^1] + replacement;
+        return new HttpResponseMessage(HttpStatusCode.Forbidden)
+        {
+            Content = new StringContent("forbidden\n"),
+        };
     }
 #endif
 }

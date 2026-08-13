@@ -191,6 +191,7 @@ only touch it to tune. Each detector row is toggled by its own `Enabled` flag
 | --- | --- | --- |
 | **`Server.Port`** | `8765` | Listen port. Change it and update `base_url` in your CLI config to match. |
 | **`Codex.ModelCatalog.Enabled`** | `true` | Map Codex-native `GET /codex/models` discovery so command-auth Codex can learn reviewed live Copilot context limits. Set `false` to remove only the metadata route and fall back to Codex's bundled catalog; `/codex/responses` inference remains available. |
+| **`Codex.ModelCatalog.LiveOverlayFailureCooldownSeconds`** | `300` | Exact process-local delay after a failed live Copilot `/models` overlay refresh. During it, catalog polls serve the reviewed baseline or stale last-known-good overlay without another upstream call or warning; at expiry one shared retry is allowed. Range 1–3600. This metadata control never delays or disables `/codex/responses` inference, and restart permits an immediate retry. |
 | **`Codex.ModelCatalog.SourceTtlHours`** | `24` | How often an exact-version official Codex catalog is checked for source changes. Microsoft `HybridCache` supplies the process-memory level and per-version request coalescing; the validated file remains available stale when GitHub is unavailable. Range 1–168. |
 | **`Codex.ModelCatalog.CacheDirectory`** | OS per-user cache | Optional absolute persistent-cache override. Records are keyed by the complete stable/prerelease client version, bounded by `RetentionDays` (90) and `MaxRetainedVersions` (32). |
 | **`Codex.ModelCatalog.SourceTimeoutSeconds` / `MaxSourceBytes`** | `10` / `4194304` | Bound anonymous exact-tag GitHub raw downloads. A cold failure affects only `/codex/models`; inference remains available and Codex keeps its bundled catalog. |
@@ -463,6 +464,15 @@ not a failed token exchange. The Copilot OAuth client currently returns no
 refresh metadata for some accounts, so the bridge can reuse that GitHub token but
 cannot silently replace it if GitHub later revokes it. The separately minted
 Copilot bearer is still short-lived and refreshes in memory.
+
+A first CAPI 403 is not treated as definitive account policy. The bridge rejects
+only the bearer/endpoint generation used, obtains an already-newer or fresh lease,
+and replays the same request once. Only a second 403 is classified as terminal
+policy/entitlement; mixed 401/403 sequences still get one replay total. This is why
+restarting could repair the reported `forbidden` incident: restart discarded the
+stale process-local bearer. A catalog warning saying capacity is degraded refers
+to `/codex/models` metadata only; the endpoint serves a safe baseline/stale overlay
+during its configured cooldown, and inference remains independent.
 
 If `whoami` and the token exchange both report GitHub `401 Bad credentials`, the
 failure occurs before model inference and therefore is not specific to gpt-5.6

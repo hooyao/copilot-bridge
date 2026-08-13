@@ -130,7 +130,10 @@ public sealed class CodexModelsEndpointContractTests
         await CodexModelsEndpoint.HandleAsync(
             http,
             source,
-            new CodexCatalogOverlayService(client, NullLogger<CodexCatalogOverlayService>.Instance),
+            new CodexCatalogOverlayService(
+                client,
+                NullLogger<CodexCatalogOverlayService>.Instance,
+                Options.Create(new CodexModelCatalogOptions())),
             new CodexCatalogProjector(
                 new CodexModelProfileCatalog(),
                 new CopilotModelRegistry(),

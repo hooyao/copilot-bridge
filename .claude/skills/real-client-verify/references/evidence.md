@@ -25,6 +25,9 @@ how to read each source and what signatures decide PASS / FAIL.
   is only the router-fatal check within it (see the note below the rubric).
 - `stdoutPath` / `stderrPath` — the saved client stdout/stderr (claude transcript /
   codex JSONL)
+- `forcedCapiForbiddenOperation` / `bridgeLogPath` — forced-403 cases only: the
+  intended Responses/Messages seam and the persisted bridge lifecycle log used to
+  verify generation refresh/replay.
 
 Read the manifest first; it tells you exactly which files to open.
 
@@ -118,6 +121,25 @@ transcript. Cross-check against the bridge trace for wire confirmation.
 
 A streamed 200 with no `tool_result` consumed = the tool did not close the loop = not a
 pass.
+
+## Forced first-403 lease recovery
+
+The A6/B6 behavior cases add the manifest's `bridgeLogPath` lifecycle evidence to
+the normal client-owned verdict. PASS requires all of the ordinary Codex or Claude
+criteria above, plus:
+
+- exactly one `TEST ONLY: injected one-shot CAPI 403` for the intended operation;
+- one recovery log naming `status=403` and the rejected lease generation;
+- a status-specific `Copilot bearer refresh trigger=copilot_403 outcome=success`
+  publishing a newer generation (or an explicit already-newer-generation reuse);
+- one `authentication replay outcome=success`, with the replay reaching live Copilot;
+- no `policy_or_entitlement_after_auth_replay`, no second auth replay, and no visible
+  client retry exhaustion.
+
+The seam is Debug-only and synthesizes the first response before upstream I/O. That
+does not replace the live leg: only the replay is supposed to reach Copilot, and the
+real client's tool result/log still decides whether the recovered request completed.
+Successful traffic without the injection is INCONCLUSIVE for lease recovery.
 
 ## The bridge trace (four-file audit)
 

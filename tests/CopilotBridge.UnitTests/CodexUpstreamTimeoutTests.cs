@@ -330,7 +330,7 @@ public class CodexUpstreamTimeoutTests
         public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default) =>
             ValueTask.FromResult("gh-token");
         public ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
-            CopilotAuthLease? rejectedLease = null, CancellationToken ct = default) =>
+            CopilotLeaseRejection? rejection = null, CancellationToken ct = default) =>
             ValueTask.FromResult(new CopilotAuthLease
             {
                 Token = "test-token", ApiBaseUrl = CopilotApiBaseUrl!,

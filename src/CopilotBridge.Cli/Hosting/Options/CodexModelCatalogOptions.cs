@@ -26,6 +26,12 @@ internal sealed record class CodexModelCatalogOptions
     public bool BuiltinFallbackEnabled { get; set; } = true;
 
     /// <summary>
+    /// Exact process-local delay before a failed live Copilot /models overlay
+    /// may be attempted again. Separate from successful-overlay freshness.
+    /// </summary>
+    public int LiveOverlayFailureCooldownSeconds { get; set; } = 300;
+
+    /// <summary>
     /// How long a definitive upstream 404 for one exact version is trusted.
     /// Deliberately separate from <see cref="SourceTtlHours"/>: that TTL asks
     /// whether validated content changed, where staleness is harmless, while
@@ -67,6 +73,12 @@ internal sealed class CodexModelCatalogOptionsValidator : Microsoft.Extensions.O
         // installation that lowered SourceTtlHours before this key existed.
         if (options.AbsenceTtlHours is < 1 or > 168)
             errors.Add("Codex.ModelCatalog.AbsenceTtlHours must be between 1 and 168.");
+        if (options.LiveOverlayFailureCooldownSeconds is < 1 or > 3600)
+        {
+            errors.Add(
+                "Codex.ModelCatalog.LiveOverlayFailureCooldownSeconds value "
+                + $"{options.LiveOverlayFailureCooldownSeconds} is outside the supported range 1..3600.");
+        }
         if (options.SourceTimeoutSeconds is < 1 or > 60)
             errors.Add("Codex.ModelCatalog.SourceTimeoutSeconds must be between 1 and 60.");
         if (options.MaxSourceBytes is < 65_536 or > 16_777_216)

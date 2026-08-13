@@ -51,12 +51,14 @@ internal sealed record ServeInvocation(
     int? KeepAliveIntervalSeconds = null,
     bool ForceModelsFailure = false,
     string? CodexCatalogCacheDirectory = null,
+    int? LiveOverlayFailureCooldownSeconds = null,
     bool ForceCodexCatalogSourceFailure = false,
     bool ForceCodexCatalogSourceAbsent = false,
-    bool ForceCopilotAuthRejectionOnce = false,
+    ForcedCapiForbiddenOperation? ForceCapiForbiddenOnce = null,
     string? ClaudeSettingsPath = null,
     string? CodexConfigPath = null,
     string? ClaudeVersion = null,
+    string? CredentialSourceDirectory = null,
     string? WorkingDirectory = null);
 
 /// <summary>
@@ -86,6 +88,12 @@ internal enum ServeScenario
     /// deterministic test upstream supplied by the caller. Used by keepalive and
     /// client protocol probes that need an exact upstream wire shape.</summary>
     PassthroughTestUpstream,
+}
+
+internal enum ForcedCapiForbiddenOperation
+{
+    Responses,
+    Messages,
 }
 
 /// <summary>
@@ -252,6 +260,14 @@ internal static class ServeProcess
         try
         {
             CopyDirectory(buildOutputDir, scratchDir);
+            var credentialSourceDirectory = inv.CredentialSourceDirectory
+                ?? Environment.GetEnvironmentVariable(
+                    "COPILOT_BRIDGE_TEST_CREDENTIAL_SOURCE_DIRECTORY");
+            if (!string.IsNullOrWhiteSpace(credentialSourceDirectory))
+            {
+                StageEncryptedAccessTokenMirror(
+                    credentialSourceDirectory, scratchDir);
+            }
             Directory.CreateDirectory(traceDir);
             PatchAppSettings(
                 Path.Combine(scratchDir, "appsettings.json"),
@@ -260,7 +276,8 @@ internal static class ServeProcess
                 inv.StreamIdleTimeoutSeconds,
                 inv.WholeResponseBuffering,
                 inv.KeepAliveIntervalSeconds,
-                inv.CodexCatalogCacheDirectory);
+                inv.CodexCatalogCacheDirectory,
+                inv.LiveOverlayFailureCooldownSeconds);
 
             var scratchExe = Path.Combine(scratchDir, "copilot-bridge.exe");
             var port = GetFreeLoopbackPort();
@@ -328,14 +345,20 @@ internal static class ServeProcess
                         + $"selected '{selectedConfiguration ?? "unknown"}' output.");
                 psi.Environment["COPILOT_BRIDGE_TEST_ABSENT_CODEX_CATALOG_SOURCE"] = "1";
             }
-            if (inv.ForceCopilotAuthRejectionOnce)
+            if (inv.ForceCapiForbiddenOnce is { } forbiddenOperation)
             {
                 var selectedConfiguration = Directory.GetParent(buildOutputDir)?.Name;
                 if (!string.Equals(selectedConfiguration, "Debug", StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException(
-                        "Forced one-shot Copilot auth rejection requires a Debug bridge build; "
+                        "Forced one-shot CAPI 403 requires a Debug bridge build; "
                         + $"selected '{selectedConfiguration ?? "unknown"}' output.");
-                psi.Environment["COPILOT_BRIDGE_TEST_REJECT_COPILOT_AUTH_ONCE"] = "1";
+                psi.Environment["COPILOT_BRIDGE_TEST_FORCE_CAPI_403_ONCE"] =
+                    forbiddenOperation switch
+                    {
+                        ForcedCapiForbiddenOperation.Responses => "responses",
+                        ForcedCapiForbiddenOperation.Messages => "messages",
+                        _ => throw new ArgumentOutOfRangeException(nameof(forbiddenOperation)),
+                    };
             }
 
             proc = new Process { StartInfo = psi };
@@ -442,7 +465,8 @@ internal static class ServeProcess
         int? streamIdleTimeoutSeconds,
         bool wholeResponseBuffering,
         int? keepAliveIntervalSeconds,
-        string? codexCatalogCacheDirectory)
+        string? codexCatalogCacheDirectory,
+        int? liveOverlayFailureCooldownSeconds)
     {
         var root = JsonNode.Parse(File.ReadAllText(path))?.AsObject()
             ?? throw new ServeStartupException($"appsettings.json at {path} is not a JSON object.");
@@ -455,11 +479,18 @@ internal static class ServeProcess
         tracing["Enabled"] = true;
         tracing["Directory"] = traceDir;
 
-        if (codexCatalogCacheDirectory is not null)
+        if (codexCatalogCacheDirectory is not null
+            || liveOverlayFailureCooldownSeconds is not null)
         {
             var catalog = root["Codex"]?["ModelCatalog"]?.AsObject()
                 ?? throw new ServeStartupException("appsettings.json has no Codex.ModelCatalog section.");
-            catalog["CacheDirectory"] = Path.GetFullPath(codexCatalogCacheDirectory);
+            if (codexCatalogCacheDirectory is not null)
+                catalog["CacheDirectory"] = Path.GetFullPath(codexCatalogCacheDirectory);
+            if (liveOverlayFailureCooldownSeconds is not null)
+            {
+                catalog["LiveOverlayFailureCooldownSeconds"] =
+                    liveOverlayFailureCooldownSeconds.Value;
+            }
         }
 
         var routing = root["Routing"]?.AsObject()
@@ -516,11 +547,10 @@ internal static class ServeProcess
         {
             var rel = Path.GetRelativePath(source, file);
 
-            // Never copy the encrypted GitHub credential into the scratch tree:
-            // TokenStore.FilePath is next to the exe, so a prior JIT login can leave a
-            // github_token.dat in the build output. The subprocess bridge is meant to use
-            // the ~/github_token.dat HOME fallback, and best-effort scratch cleanup could
-            // leave the copied blob behind — so exclude it outright.
+            // Never copy a credential implicitly from build output. An explicit
+            // CredentialSourceDirectory stages only the legacy access-token mirror
+            // separately after this copy. Never stage v2: its rotating refresh token is
+            // single-use, and refreshing an independent copy would invalidate the source.
             var name = Path.GetFileName(file);
             if (GitHubCredentialStore.IsCredentialArtifactName(name))
                 continue;
@@ -572,6 +602,26 @@ internal static class ServeProcess
         throw new DirectoryNotFoundException(
             "Could not locate src/CopilotBridge.Cli/bin/<Config>/net10.0/copilot-bridge.exe. "
             + "Build the CLI project first.");
+    }
+
+    private static void StageEncryptedAccessTokenMirror(
+        string sourceDirectory,
+        string scratchDir)
+    {
+        var sourceRoot = Path.GetFullPath(sourceDirectory);
+        if (!Directory.Exists(sourceRoot))
+        {
+            throw new DirectoryNotFoundException(
+                $"Credential source directory does not exist: {sourceRoot}");
+        }
+
+        const string mirrorName = "github_token.dat";
+        var source = Path.Combine(sourceRoot, mirrorName);
+        if (!File.Exists(source))
+            throw new FileNotFoundException(
+                "Credential source directory has no encrypted legacy access-token mirror.",
+                source);
+        File.Copy(source, Path.Combine(scratchDir, mirrorName), overwrite: false);
     }
 
     internal static string LocateBridgeExecutable() =>

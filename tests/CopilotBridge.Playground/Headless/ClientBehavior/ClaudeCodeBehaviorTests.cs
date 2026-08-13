@@ -45,6 +45,18 @@ public class ClaudeCodeBehaviorTests
             canary: "cc-native-canary-88213");
     }
 
+    [Fact]
+    public async Task ClaudeCode_NativeCc_OneShotCopilot403_RefreshesAndCompletesToolChain()
+    {
+        await RunMultiToolCaseAsync(
+            "cc-native-one-shot-auth-403-recovery",
+            scenario: ServeScenario.Passthrough,
+            model: ClientBehaviorSupport.LatestClaude,
+            route: "/cc/auth-403-recovery",
+            canary: "cc-auth-replay-canary-49271",
+            forceCapiForbiddenOnce: ForcedCapiForbiddenOperation.Messages);
+    }
+
     /// <summary>
     /// CC→gpt: the client still speaks <c>claude-opus-5</c>; the cc-to-gpt scenario's
     /// routing sends it to <c>gpt-5.6-sol</c>. The verdict agent additionally checks
@@ -662,7 +674,12 @@ public class ClaudeCodeBehaviorTests
     }
 
     private async Task RunMultiToolCaseAsync(
-        string caseId, ServeScenario scenario, string model, string route, string canary)
+        string caseId,
+        ServeScenario scenario,
+        string model,
+        string route,
+        string canary,
+        ForcedCapiForbiddenOperation? forceCapiForbiddenOnce = null)
     {
         var prompt =
             "Do the following in order, actually calling the tools — do not fabricate any output. "
@@ -671,7 +688,9 @@ public class ClaudeCodeBehaviorTests
             + $"2. Use the Bash tool to run `echo {canary} >> cbridge_probe.txt`.\n"
             + "3. Use the Read tool to read cbridge_probe.txt and tell me the exact second line, verbatim.";
 
-        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(scenario));
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            scenario,
+            ForceCapiForbiddenOnce: forceCapiForbiddenOnce));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} scenario={scenario} (trace: {bridge.TraceDir})");
 
         // Disposable work dir so claude's Bash/Read tools mutate a throwaway dir, never
@@ -708,13 +727,47 @@ public class ClaudeCodeBehaviorTests
                 DispatchLogPath: null,
                 DispatchSinceUnix: 0,
                 DispatchUntilUnix: 0,
-                Prompt: prompt),
+                Prompt: prompt,
+                ForcedCapiForbiddenOperation: forceCapiForbiddenOnce),
             result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
-            out _, out _);
+            out _, out _,
+            bridgeLog: forceCapiForbiddenOnce is null ? null : bridge.StderrAll);
 
         _output.WriteLine($"[manifest] {manifestPath}");
         _output.WriteLine("[verdict] run `/real-client-verify` — it reads the claude transcript + bridge trace.");
 
+        if (forceCapiForbiddenOnce is not null)
+        {
+            Assert.Equal(1, CountOccurrences(
+                bridge.StderrAll,
+                "TEST ONLY: injected one-shot CAPI 403"));
+            Assert.Equal(1, CountOccurrences(
+                bridge.StderrAll,
+                "rejected Copilot bearer status=403"));
+            Assert.Equal(1, CountOccurrences(
+                bridge.StderrAll,
+                "Copilot bearer refresh trigger=copilot_403 outcome=success"));
+            Assert.Equal(1, CountOccurrences(
+                bridge.StderrAll,
+                "authentication replay outcome=success"));
+            Assert.DoesNotContain(
+                "classification=policy_or_entitlement_after_auth_replay",
+                bridge.StderrAll,
+                StringComparison.Ordinal);
+        }
+
         ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        var start = 0;
+        while ((start = text.IndexOf(value, start, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            start += value.Length;
+        }
+        return count;
     }
 }
