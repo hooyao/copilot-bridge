@@ -137,7 +137,7 @@ public class CodexWebSearchRoundTripTests
     }
 
     [Fact]
-    public void CcToGpt_Buffered_Markers_ScrubbedBeforeReachingClaude()
+    public async Task CcToGpt_Buffered_Markers_ScrubbedBeforeReachingClaude()
     {
         // The BUFFERED CC-edge (ClaudeCodeOutboundAdapter.AdaptBufferedAsync) also scrubs
         // the web-search marker — but the streaming test above only exercises
@@ -157,7 +157,7 @@ public class CodexWebSearchRoundTripTests
         Assert.Contains(StartMarker, System.Text.Encoding.UTF8.GetString(bufferedIr!), StringComparison.Ordinal);
 
         var adapter = NewClaudeAdapter();
-        var scrubbed = adapter.AdaptBufferedAsync(bufferedIr!, default).AsTask().GetAwaiter().GetResult();
+        var scrubbed = await adapter.AdaptBufferedAsync(bufferedIr!, default);
         var scrubbedText = System.Text.Encoding.UTF8.GetString(scrubbed);
         Assert.DoesNotContain(StartMarker, scrubbedText, StringComparison.Ordinal);
         Assert.DoesNotContain(ResultMarker, scrubbedText, StringComparison.Ordinal);

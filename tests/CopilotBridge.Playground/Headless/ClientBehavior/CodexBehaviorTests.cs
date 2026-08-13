@@ -71,19 +71,22 @@ public class CodexBehaviorTests
     }
 
     [Fact]
-    public async Task Codex_OneShotCopilot401_RefreshesAndCompletesToolChain_ForVerdict()
+    public async Task Codex_OneShotCopilot403_RefreshesAndCompletesComplexToolChain_ForVerdict()
     {
         const string canary = "codex-auth-replay-canary-64017";
         var prompt =
-            "Perform these steps with separate real shell tool calls, in order; do not fabricate output:\n"
-            + "1. Run `echo auth-first-line > auth_replay_probe.txt`.\n"
-            + $"2. Run `echo {canary} >> auth_replay_probe.txt`.\n"
-            + "3. Run `cat auth_replay_probe.txt`, report the exact second line, and stop.";
+            "Perform these steps with real tools, in order; do not fabricate output:\n"
+            + "1. Use your code-execution tool (actual code, not mental arithmetic or shell echo) "
+            + "to compute the sum of integers 1 through 100.\n"
+            + "2. Run a shell command that writes that numeric result as the first line of "
+            + "auth_replay_probe.txt.\n"
+            + $"3. Run a separate shell command that appends {canary} as the second line.\n"
+            + "4. Run a third shell command that reads the file, report its exact two lines, and stop.";
 
         await DriveAndRecordAsync(
-            "codex-one-shot-auth-401-recovery",
+            "codex-one-shot-auth-403-recovery",
             prompt,
-            forceCopilotAuthRejectionOnce: true);
+            forceCapiForbiddenOnce: ForcedCapiForbiddenOperation.Responses);
     }
 
     /// <summary>
@@ -430,11 +433,11 @@ public class CodexBehaviorTests
         string? modelReasoningEffort = null,
         string? modelReasoningSummary = null,
         string expectedCodexVersion = ClientBehaviorSupport.CodexVersion,
-        bool forceCopilotAuthRejectionOnce = false)
+        ForcedCapiForbiddenOperation? forceCapiForbiddenOnce = null)
     {
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
             ServeScenario.Passthrough,
-            ForceCopilotAuthRejectionOnce: forceCopilotAuthRejectionOnce));
+            ForceCapiForbiddenOnce: forceCapiForbiddenOnce));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
 
         // Disposable work dir so codex's file-writing tools mutate a throwaway dir, never
@@ -470,21 +473,33 @@ public class CodexBehaviorTests
                 DispatchSinceUnix: result.StartedUnixSeconds,
                 DispatchUntilUnix: result.EndedUnixSeconds,
                 Prompt: prompt,
-                DispatchThreadId: result.ThreadId),
+                DispatchThreadId: result.ThreadId,
+                ForcedCapiForbiddenOperation: forceCapiForbiddenOnce),
             result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
-            out _, out _);
+            out _, out _,
+            bridgeLog: forceCapiForbiddenOnce is null ? null : bridge.StderrAll);
 
         _output.WriteLine($"[manifest] {manifestPath}");
         _output.WriteLine("[verdict] run `/real-client-verify`; it reads the isolated SQLite log for this exact thread.");
 
-        if (forceCopilotAuthRejectionOnce)
+        if (forceCapiForbiddenOnce is not null)
         {
             Assert.Equal(1, CountOccurrences(
                 bridge.StderrAll,
-                "TEST ONLY: injected one-shot rejected Copilot bearer"));
+                "TEST ONLY: injected one-shot CAPI 403"));
             Assert.Equal(1, CountOccurrences(
                 bridge.StderrAll,
-                "rejected Copilot bearer generation="));
+                "rejected Copilot bearer status=403"));
+            Assert.Equal(1, CountOccurrences(
+                bridge.StderrAll,
+                "Copilot bearer refresh trigger=copilot_403 outcome=success"));
+            Assert.Equal(1, CountOccurrences(
+                bridge.StderrAll,
+                "authentication replay outcome=success"));
+            Assert.DoesNotContain(
+                "classification=policy_or_entitlement_after_auth_replay",
+                bridge.StderrAll,
+                StringComparison.Ordinal);
         }
 
         // Harness contract only. The skill owns the semantic SQLite verdict.

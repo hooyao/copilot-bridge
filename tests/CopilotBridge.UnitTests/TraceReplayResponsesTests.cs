@@ -346,7 +346,7 @@ public class TraceReplayResponsesTests
             var o = it!.AsObject();
             if (o["type"]!.GetValue<string>() == "message")
             {
-                Assert.NotEqual(0, o["content"]!.AsArray().Count);
+                Assert.NotEmpty(o["content"]!.AsArray());
                 Assert.Equal("user", o["role"]!.GetValue<string>());
             }
         }

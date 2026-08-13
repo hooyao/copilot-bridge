@@ -93,6 +93,16 @@ bounded timer/request policy may retry later.
 Logout removes both formats at primary and fallback locations plus in-memory
 Copilot leases.
 
+The short-lived Copilot bearer is a separate, memory-only lease. A first CAPI 401
+or 403 rejects only the exact bearer/endpoint generation used, not the encrypted
+GitHub credential. The bridge reuses an already-published newer generation or
+mints one replacement, then replays the exact request once. A second 401 is
+terminal authentication failure; a second 403 is terminal policy/entitlement.
+One shared replay bound covers mixed status sequences. This explains why restart
+could previously appear to repair a stale-bearer 403: it discarded the rejected
+process-local lease and forced a new exchange. Restart cannot bypass a genuine
+policy refusal, which remains 403 after the bounded replay.
+
 ### Windows — DPAPI
 
 `WindowsDpapiTokenProtector` calls `ProtectedData.Protect/Unprotect` with

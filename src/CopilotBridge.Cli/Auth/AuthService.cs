@@ -159,7 +159,7 @@ public sealed class AuthService : IAuthService, IDisposable
     }
 
     public async ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
-        CopilotAuthLease? rejectedLease = null,
+        CopilotLeaseRejection? rejection = null,
         CancellationToken ct = default)
     {
 #if DEBUG
@@ -183,17 +183,17 @@ public sealed class AuthService : IAuthService, IDisposable
 #endif
 
         var snapshot = Volatile.Read(ref _copilotCache);
-        if (CanReuse(snapshot, rejectedLease)) return snapshot!;
+        if (CanReuse(snapshot, rejection)) return snapshot!;
 
         await _copilotFetchLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             snapshot = Volatile.Read(ref _copilotCache);
-            if (CanReuse(snapshot, rejectedLease)) return snapshot!;
+            if (CanReuse(snapshot, rejection)) return snapshot!;
 
-            var rejectingCurrent = rejectedLease is not null
+            var rejectingCurrent = rejection is not null
                 && snapshot is not null
-                && snapshot.Generation == rejectedLease.Generation;
+                && snapshot.Generation == rejection.Value.Lease.Generation;
             if (rejectingCurrent)
             {
                 Volatile.Write(ref _copilotCache, null);
@@ -201,7 +201,7 @@ public sealed class AuthService : IAuthService, IDisposable
             }
 
             return await FetchAndCacheAsync(
-                rejectingCurrent ? "copilot_401" : "deadline",
+                rejectingCurrent ? TriggerFor(rejection!.Value.Reason) : "deadline",
                 ct).ConfigureAwait(false);
         }
         finally
@@ -262,12 +262,19 @@ public sealed class AuthService : IAuthService, IDisposable
 
     private bool CanReuse(
         CopilotAuthLease? snapshot,
-        CopilotAuthLease? rejectedLease)
+        CopilotLeaseRejection? rejection)
     {
         if (snapshot is null || snapshot.RefreshAt <= _timeProvider.GetUtcNow())
             return false;
-        return rejectedLease is null || snapshot.Generation != rejectedLease.Generation;
+        return rejection is null || snapshot.Generation != rejection.Value.Lease.Generation;
     }
+
+    private static string TriggerFor(CopilotLeaseRejectionReason reason) => reason switch
+    {
+        CopilotLeaseRejectionReason.Unauthorized => "copilot_401",
+        CopilotLeaseRejectionReason.Forbidden => "copilot_403",
+        _ => throw new ArgumentOutOfRangeException(nameof(reason)),
+    };
 
     private async Task<CopilotAuthLease> FetchAndCacheAsync(
         string trigger,

@@ -11,8 +11,9 @@ namespace CopilotBridge.Playground.Headless;
 /// a path-exercising task and records, in one predictable JSON file, WHERE the
 /// evidence is: the bridge's four-file trace dir, the client's own dispatch log when
 /// that surface exposes one (codex app-server's per-run <c>logs_2.sqlite</c>, isolated
-/// through <c>CODEX_SQLITE_HOME</c>; claude stdout transcript), the client exit code, and which
-/// case/route this was. The <c>real-client-verify</c> skill reads these manifests,
+/// through <c>CODEX_SQLITE_HOME</c>; claude stdout transcript), an optional bridge
+/// lifecycle log for forced-fault cases, the client exit code, and which case/route
+/// this was. The <c>real-client-verify</c> skill reads these manifests,
 /// opens each client's OWN log, and renders PASS/FAIL — because a bridge 200 says
 /// nothing about whether the client could parse and execute what the bridge sent back.
 /// </summary>
@@ -35,7 +36,8 @@ internal sealed record BehaviorManifest(
     long DispatchSinceUnix,  // codex: lower bound within the per-run log (0 for claude)
     long DispatchUntilUnix,  // codex: upper bound (0 for claude → treated as no upper bound)
     string Prompt,
-    string? DispatchThreadId = null); // app-server: exact thread id for log filtering
+    string? DispatchThreadId = null, // app-server: exact thread id for log filtering
+    ForcedCapiForbiddenOperation? ForcedCapiForbiddenOperation = null);
     // NOTE: the saved-stdout/stderr file paths are NOT fields here — they are DERIVED by
     // BehaviorRun.Write from CaseId + utcStamp (the code that owns the write), and
     // returned to the caller via its out params. Putting them on the record invited a
@@ -53,7 +55,7 @@ internal static class BehaviorRun
     /// </summary>
     public static string Write(
         BehaviorManifest manifest, string stdout, string stderr, string utcStamp,
-        out string stdoutPath, out string stderrPath)
+        out string stdoutPath, out string stderrPath, string? bridgeLog = null)
     {
         var root = ServeProcess.EvidenceRoot();
         var runsDir = Path.Combine(root, "manifests");
@@ -65,6 +67,13 @@ internal static class BehaviorRun
         stderrPath = Path.Combine(ioDir, $"{manifest.CaseId}-{utcStamp}.stderr.txt");
         File.WriteAllText(stdoutPath, stdout);
         File.WriteAllText(stderrPath, stderr);
+        string? bridgeLogPath = null;
+        if (bridgeLog is not null)
+        {
+            bridgeLogPath = Path.Combine(
+                ioDir, $"{manifest.CaseId}-{utcStamp}.bridge.log");
+            File.WriteAllText(bridgeLogPath, bridgeLog);
+        }
 
         // Hand-built JsonObject (not source-gen) — this is test-only tooling, AOT rules
         // don't apply, and a plain object keeps the manifest human-readable/diffable.
@@ -82,8 +91,11 @@ internal static class BehaviorRun
             ["dispatchSinceUnix"] = manifest.DispatchSinceUnix == 0 ? null : manifest.DispatchSinceUnix,
             ["dispatchUntilUnix"] = manifest.DispatchUntilUnix == 0 ? null : manifest.DispatchUntilUnix,
             ["dispatchThreadId"] = manifest.DispatchThreadId,
+            ["forcedCapiForbiddenOperation"] =
+                manifest.ForcedCapiForbiddenOperation?.ToString(),
             ["stdoutPath"] = stdoutPath,
             ["stderrPath"] = stderrPath,
+            ["bridgeLogPath"] = bridgeLogPath,
             ["prompt"] = manifest.Prompt,
             ["utcStamp"] = utcStamp,
         };

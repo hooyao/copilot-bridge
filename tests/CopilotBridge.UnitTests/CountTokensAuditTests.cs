@@ -71,7 +71,7 @@ public class CountTokensAuditTests
         public DateTimeOffset? CopilotTokenExpiry => DateTimeOffset.MaxValue;
         public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default) => ValueTask.FromResult("gh");
         public ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
-            CopilotAuthLease? rejectedLease = null, CancellationToken ct = default) =>
+            CopilotLeaseRejection? rejection = null, CancellationToken ct = default) =>
             ValueTask.FromResult(new CopilotAuthLease
             {
                 Token = "tok", ApiBaseUrl = CopilotApiBaseUrl!,

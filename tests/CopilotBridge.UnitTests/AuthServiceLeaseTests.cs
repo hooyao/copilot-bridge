@@ -3,6 +3,7 @@ using System.Net;
 using System.Text;
 using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Copilot;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -37,8 +38,11 @@ public sealed class AuthServiceLeaseTests : IDisposable
         Assert.Equal(1, lease.Generation);
     }
 
-    [Fact]
-    public async Task Rejected_current_lease_refreshes_token_and_endpoint_as_one_generation()
+    [Theory]
+    [InlineData(CopilotLeaseRejectionReason.Unauthorized)]
+    [InlineData(CopilotLeaseRejectionReason.Forbidden)]
+    public async Task Rejected_current_lease_refreshes_token_and_endpoint_as_one_generation(
+        CopilotLeaseRejectionReason reason)
     {
         var handler = new SequenceHandler(new Queue<HttpResponseMessage>([
             CopilotToken("copilot-one", "https://api.one.test", 2_000_000_000, 1500),
@@ -48,7 +52,7 @@ public sealed class AuthServiceLeaseTests : IDisposable
         var first = await auth.GetCopilotTokenAsync(ct: CancellationToken.None);
 
         var second = await auth.GetCopilotTokenAsync(
-            rejectedLease: first,
+            rejection: new CopilotLeaseRejection(first, reason),
             ct: CancellationToken.None);
 
         Assert.Equal("copilot-two", second.Token);
@@ -57,8 +61,11 @@ public sealed class AuthServiceLeaseTests : IDisposable
         Assert.Equal(2, handler.Requests.Count);
     }
 
-    [Fact]
-    public async Task Rejected_stale_lease_reuses_already_published_generation()
+    [Theory]
+    [InlineData(CopilotLeaseRejectionReason.Unauthorized)]
+    [InlineData(CopilotLeaseRejectionReason.Forbidden)]
+    public async Task Rejected_stale_lease_reuses_already_published_generation(
+        CopilotLeaseRejectionReason reason)
     {
         var handler = new SequenceHandler(new Queue<HttpResponseMessage>([
             CopilotToken("copilot-one", "https://api.one.test", 2_000_000_000, 1500),
@@ -66,9 +73,11 @@ public sealed class AuthServiceLeaseTests : IDisposable
         ]));
         using var auth = CreateAuth(handler);
         var first = await auth.GetCopilotTokenAsync(ct: CancellationToken.None);
-        var second = await auth.GetCopilotTokenAsync(first, CancellationToken.None);
+        var second = await auth.GetCopilotTokenAsync(
+            new CopilotLeaseRejection(first, reason), CancellationToken.None);
 
-        var reused = await auth.GetCopilotTokenAsync(first, CancellationToken.None);
+        var reused = await auth.GetCopilotTokenAsync(
+            new CopilotLeaseRejection(first, reason), CancellationToken.None);
 
         Assert.Same(second, reused);
         Assert.Equal(2, handler.Requests.Count);
@@ -85,7 +94,10 @@ public sealed class AuthServiceLeaseTests : IDisposable
         var first = await auth.GetCopilotTokenAsync(ct: CancellationToken.None);
 
         var leases = await Task.WhenAll(Enumerable.Range(0, 16).Select(_ =>
-            auth.GetCopilotTokenAsync(first, CancellationToken.None).AsTask()));
+            auth.GetCopilotTokenAsync(
+                new CopilotLeaseRejection(
+                    first, CopilotLeaseRejectionReason.Unauthorized),
+                CancellationToken.None).AsTask()));
 
         Assert.All(leases, lease =>
         {
@@ -96,12 +108,40 @@ public sealed class AuthServiceLeaseTests : IDisposable
         Assert.Equal(2, handler.Requests.Count);
     }
 
+    [Theory]
+    [InlineData(CopilotLeaseRejectionReason.Unauthorized, "copilot_401")]
+    [InlineData(CopilotLeaseRejectionReason.Forbidden, "copilot_403")]
+    public async Task RejectionRefresh_LogsStatusSpecificTriggerWithoutCredentialBytes(
+        CopilotLeaseRejectionReason reason,
+        string expectedTrigger)
+    {
+        var handler = new SequenceHandler(new Queue<HttpResponseMessage>([
+            CopilotToken("first-secret-token", "https://api.one.test", 2_000_000_000, 1500),
+            CopilotToken("second-secret-token", "https://api.two.test", 2_000_000_100, 1500),
+        ]));
+        var provider = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(provider));
+        using var auth = CreateAuth(handler, loggerFactory);
+        var first = await auth.GetCopilotTokenAsync(ct: CancellationToken.None);
+
+        _ = await auth.GetCopilotTokenAsync(
+            new CopilotLeaseRejection(first, reason), CancellationToken.None);
+
+        var refresh = Assert.Single(provider.Events, entry =>
+            Equals(entry.Properties.GetValueOrDefault("Trigger"), expectedTrigger));
+        Assert.Equal(2L, refresh.Properties["Generation"]);
+        Assert.DoesNotContain("first-secret-token", refresh.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("second-secret-token", refresh.Message, StringComparison.Ordinal);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
     }
 
-    private AuthService CreateAuth(HttpMessageHandler handler)
+    private AuthService CreateAuth(
+        HttpMessageHandler handler,
+        ILoggerFactory? loggerFactory = null)
     {
         var primary = Path.Combine(_root, Guid.NewGuid().ToString("N"), "primary");
         var fallback = Path.Combine(_root, Guid.NewGuid().ToString("N"), "fallback");
@@ -111,7 +151,7 @@ public sealed class AuthServiceLeaseTests : IDisposable
             new SingleClientHttpClientFactory(new HttpClient(handler)),
             store,
             _time,
-            NullLoggerFactory.Instance,
+            loggerFactory ?? NullLoggerFactory.Instance,
             onDeviceCodeIssued: null,
             enableBackgroundRefresh: false);
     }

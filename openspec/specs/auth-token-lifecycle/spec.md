@@ -115,43 +115,47 @@ The system SHALL publish each Copilot bearer together with its API base URL, loc
 - **WHEN** the token response contains `refresh_in` and an absolute `expires_at` that disagrees with the local clock
 - **THEN** refresh scheduling uses a receipt-time-relative deadline derived from `refresh_in` with a safety margin while retaining the server expiry only for diagnostics
 
-### Requirement: Copilot inference 401 triggers one safe authentication replay
-The system SHALL handle a 401 from an authenticated Copilot endpoint by rejecting only the lease used for that request, obtaining the current or newly refreshed lease, and replaying the request at most once. The replay SHALL preserve the original request body bytes and non-authentication request semantics.
-
-#### Scenario: Current Copilot bearer is rejected
-- **WHEN** `/v1/messages`, `/responses`, `/models`, or `/v1/messages/count_tokens` returns 401 for the current lease
-- **THEN** the system disposes that response, refreshes the rejected lease, rebuilds the request with the new bearer and paired endpoint, and sends one replay
-
-#### Scenario: Another caller already refreshed the rejected lease
-- **WHEN** a request reports 401 for generation N after generation N+1 has already been published
-- **THEN** the system reuses generation N+1 without issuing a redundant token exchange
-
-#### Scenario: Copilot replay is also unauthorized
-- **WHEN** the single replay with the replacement lease also returns 401
-- **THEN** the system returns the second 401 without another authentication replay
-
-#### Scenario: Upstream returns a non-authentication status
-- **WHEN** Copilot returns a status other than 401
-- **THEN** the authentication replay mechanism does not resend the request or reinterpret policy, quota, validation, or rate-limit errors as token expiry
-
 ### Requirement: Authentication observability never reveals credentials
-The system SHALL record secret-free authentication lifecycle events sufficient to distinguish GitHub credential failure, GitHub refresh failure, Copilot bearer refresh, Copilot inference rejection, and terminal policy or quota errors. CLI diagnostics and logs SHALL NOT emit an access token, refresh token, Authorization header, or token prefix.
+
+The system SHALL record secret-free authentication lifecycle events sufficient to
+distinguish GitHub credential failure, GitHub refresh failure, Copilot bearer
+refresh, a recoverable first CAPI 401/403 rejection, a successful authentication
+replay, and terminal authentication, policy, quota, or rate-limit outcomes. A
+first 403 SHALL NOT be labelled definitive policy/entitlement before the bounded
+fresh-lease replay completes. CLI diagnostics and logs SHALL NOT emit an access
+token, refresh token, Authorization header, token prefix, response body containing
+credential material, or token-derived identifier.
 
 #### Scenario: Authentication refresh succeeds
+
 - **WHEN** a GitHub or Copilot token refresh completes
-- **THEN** logs identify the credential layer, trigger, outcome, expiry timing, and API host without any credential bytes
+- **THEN** logs identify the credential layer, trigger, outcome, expiry timing, and API host without any credential bytes.
+
+#### Scenario: First CAPI 403 begins bounded recovery
+
+- **WHEN** CAPI returns the first 403 for lease generation N
+- **THEN** logs identify status 403, generation N, and the one replay attempt
+- **AND** do not yet label the account definitively policy-ineligible.
+
+#### Scenario: CAPI 403 persists after replay
+
+- **WHEN** the refreshed/reused lease replay also returns 403
+- **THEN** logs classify the second response as terminal policy/entitlement after authentication replay without exposing either lease.
 
 #### Scenario: Copilot status is requested
+
 - **WHEN** the operator runs `auth copilot-status`
-- **THEN** the command reports status, expiry, and API base URL without printing any portion of the Copilot bearer
+- **THEN** the command reports status, expiry, and API base URL without printing any portion of the Copilot bearer.
 
 #### Scenario: Authentication fails terminally
+
 - **WHEN** refresh or token exchange cannot recover
-- **THEN** the operator-facing error identifies whether GitHub login, Copilot bearer acquisition, account policy, or quota requires action without embedding secrets
+- **THEN** the operator-facing error identifies whether GitHub login, Copilot bearer acquisition, account policy, or quota requires action without embedding secrets.
 
 #### Scenario: Hosted authentication lifecycle is logged
+
 - **WHEN** the bridge constructs hosted services and performs startup authentication
-- **THEN** startup and authentication lifecycle events reach the full rolling log rather than a disposed bootstrap logger
+- **THEN** startup and authentication lifecycle events reach the full rolling log rather than a disposed bootstrap logger.
 
 ### Requirement: Authentication changes remain Native AOT and cross-platform compatible
 The credential records, OAuth requests, and responses SHALL use source-generated JSON metadata and the existing runtime OS dispatch for token protection. The change SHALL add no reflection-based serialization, runtime-loaded assembly, or unprotected platform-specific credential path.
@@ -159,3 +163,55 @@ The credential records, OAuth requests, and responses SHALL use source-generated
 #### Scenario: Native AOT build reads a versioned credential
 - **WHEN** a published Native AOT binary loads, refreshes, and persists the credential on a supported OS
 - **THEN** serialization succeeds through registered JSON metadata and the record remains protected by DPAPI on Windows or the derived-key protector with owner-only file permissions on Linux and macOS
+
+### Requirement: Copilot CAPI authentication rejection triggers one safe replay
+
+The system SHALL treat the first 401 or 403 from an authenticated Copilot CAPI
+endpoint as rejection of the exact bearer/endpoint lease generation used for that
+request. It SHALL obtain the already-newer or freshly minted immutable lease,
+rebuild the request, and replay it at most once. The replay SHALL preserve the
+original request body bytes, non-authentication headers and semantics, shared
+transient-retry accounting, and per-send timeout behavior.
+
+One authentication replay SHALL be the total bound even when the two sends return
+different rejection statuses. A replayed 401 SHALL be terminal authentication
+failure; a replayed 403 SHALL retain terminal policy/entitlement meaning. Statuses
+other than 401/403 SHALL NOT enter this lease-rejection replay.
+
+#### Scenario: Current Copilot bearer receives 401
+
+- **WHEN** `/v1/messages`, `/responses`, `/models`, or `/v1/messages/count_tokens` returns 401 for the current lease
+- **THEN** the system disposes that response, rejects the used generation, obtains its replacement, and sends one exact replay.
+
+#### Scenario: Current Copilot bearer receives ambiguous 403
+
+- **WHEN** an authenticated CAPI endpoint returns 403 for the current lease
+- **THEN** the system treats the first refusal as ambiguous bearer-or-policy state
+- **AND** rejects the used generation, obtains its replacement, and sends one exact replay without requiring a bridge restart.
+
+#### Scenario: Another caller already refreshed the rejected generation
+
+- **WHEN** a request reports 401 or 403 for generation N after generation N+1 has already been published
+- **THEN** the system reuses generation N+1 for the one replay without issuing a redundant token exchange.
+
+#### Scenario: Refreshed request remains forbidden
+
+- **WHEN** the one replay after a first 403 also returns 403
+- **THEN** the system returns that second response as terminal policy/entitlement
+- **AND** performs no further refresh or replay.
+
+#### Scenario: Rejection statuses change across sends
+
+- **WHEN** the first and replayed responses are any sequence of 401 and 403
+- **THEN** the system performs no more than one lease refresh/reuse and two authenticated sends total.
+
+#### Scenario: Non-authentication status is unchanged
+
+- **WHEN** Copilot returns 400, 402, 429, a validation response, or another status outside 401/403
+- **THEN** the authentication replay mechanism does not resend the request or reinterpret that status as token rejection.
+
+#### Scenario: Replay preserves the request contract
+
+- **WHEN** a POST request carrying body bytes, vision/beta/header overrides, and a consumed transient-retry budget crosses a 401 or 403 replay
+- **THEN** both sends carry identical business bytes and headers while each uses its own lease-paired bearer/endpoint and per-send header timer
+- **AND** the authentication replay does not reset the transient-retry budget.

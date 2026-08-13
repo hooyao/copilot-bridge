@@ -15,10 +15,14 @@ namespace CopilotBridge.Playground.ApiContract;
 /// </summary>
 [Trait("Category", "Integration")]
 [Trait("Kind", "ApiContract")]
-public sealed class Auth401ReplayContractTests
+public sealed class AuthRejectionReplayContractTests
 {
-    [Fact]
-    public async Task CapturedCodexRequest_First401_ReplaysOnceWithExactBytesAndNoSecretLog()
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, CopilotLeaseRejectionReason.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden, CopilotLeaseRejectionReason.Forbidden)]
+    public async Task CapturedCodexRequest_FirstAuthRejection_ReplaysExactBytesWithoutSecretLog(
+        HttpStatusCode status,
+        CopilotLeaseRejectionReason expectedReason)
     {
         var path = Path.Combine(
             AppContext.BaseDirectory,
@@ -26,7 +30,7 @@ public sealed class Auth401ReplayContractTests
             "Auth401",
             "codex-request-multiturn-8.json");
         var body = await File.ReadAllBytesAsync(path);
-        var handler = new Capture401ThenOkHandler();
+        var handler = new CaptureRejectionThenOkHandler(status);
         var auth = new RotatingAuth();
         var logger = new CaptureLogger();
         var client = new CopilotClient(
@@ -51,12 +55,13 @@ public sealed class Auth401ReplayContractTests
         Assert.Equal("Bearer contract-old-secret", requests[0].Authorization);
         Assert.Equal("Bearer contract-new-secret", requests[1].Authorization);
         Assert.Equal(1, auth.Rejections);
+        Assert.Equal(expectedReason, auth.RejectionReason);
         var logs = string.Join('\n', logger.Messages);
         Assert.DoesNotContain("contract-old-secret", logs, StringComparison.Ordinal);
         Assert.DoesNotContain("contract-new-secret", logs, StringComparison.Ordinal);
     }
 
-    private sealed class Capture401ThenOkHandler : HttpMessageHandler
+    private sealed class CaptureRejectionThenOkHandler(HttpStatusCode status) : HttpMessageHandler
     {
         private int _count;
         public System.Collections.Concurrent.ConcurrentQueue<Captured> Requests { get; } = new();
@@ -72,7 +77,7 @@ public sealed class Auth401ReplayContractTests
                 bytes,
                 request.Headers.Authorization?.ToString() ?? ""));
             return Interlocked.Increment(ref _count) == 1
-                ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                ? new HttpResponseMessage(status)
                 : new HttpResponseMessage(HttpStatusCode.OK);
         }
     }
@@ -84,6 +89,7 @@ public sealed class Auth401ReplayContractTests
         private CopilotAuthLease _lease = NewLease(
             "contract-old-secret", "https://old.test", 1);
         public int Rejections { get; private set; }
+        public CopilotLeaseRejectionReason? RejectionReason { get; private set; }
         public bool IsAuthenticated => true;
         public string TokenLocation => "(test)";
         public string? CopilotApiBaseUrl => _lease.ApiBaseUrl;
@@ -91,12 +97,13 @@ public sealed class Auth401ReplayContractTests
         public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default) =>
             ValueTask.FromResult("github-contract-secret");
         public ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
-            CopilotAuthLease? rejectedLease = null,
+            CopilotLeaseRejection? rejection = null,
             CancellationToken ct = default)
         {
-            if (rejectedLease?.Generation == _lease.Generation)
+            if (rejection?.Lease.Generation == _lease.Generation)
             {
                 Rejections++;
+                RejectionReason = rejection.Value.Reason;
                 _lease = NewLease("contract-new-secret", "https://new.test", 2);
             }
             return ValueTask.FromResult(_lease);

@@ -29,7 +29,7 @@ public sealed class CountTokensResponsesEndpointTests
         public DateTimeOffset? CopilotTokenExpiry => DateTimeOffset.MaxValue;
         public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default) => new("gh");
         public ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
-            CopilotAuthLease? rejectedLease = null, CancellationToken ct = default) =>
+            CopilotLeaseRejection? rejection = null, CancellationToken ct = default) =>
             new(new CopilotAuthLease
             {
                 Token = "copilot", ApiBaseUrl = CopilotApiBaseUrl!,

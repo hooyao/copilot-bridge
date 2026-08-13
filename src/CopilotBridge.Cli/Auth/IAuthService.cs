@@ -32,13 +32,13 @@ public interface IAuthService
     /// <summary>
     /// Returns one atomic Copilot token/endpoint lease. Fetches and caches on first call;
     /// subsequent calls return the cached lease until its receipt-relative refresh deadline.
-    /// Pass the lease that received a 401 to reject exactly that generation; a newer
-    /// concurrent generation is reused rather than refreshed again. Throws if the GitHub
-    /// token is missing — call
+    /// Pass the lease and closed 401/403 reason that rejected it to discard exactly
+    /// that generation; a newer concurrent generation is reused rather than refreshed
+    /// again. Throws if the GitHub token is missing — call
     /// <see cref="EnsureGitHubTokenAsync"/> first to run the device-code flow.
     /// </summary>
     ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
-        CopilotAuthLease? rejectedLease = null,
+        CopilotLeaseRejection? rejection = null,
         CancellationToken ct = default);
 
     /// <summary>Deletes every persisted credential representation and clears in-memory leases.</summary>

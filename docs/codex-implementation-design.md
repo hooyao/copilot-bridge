@@ -298,9 +298,13 @@ verified during implementation (was Q5).
   metadata on 304 and validates/atomically promotes changed bytes on 200. If
   GitHub is unavailable or a replacement is invalid, an exact-version validated
   memory/disk LKG is served stale. A cold miss returns a metadata error unless
-  the source confirmed a 404 and the bundled fallback is enabled. The live
-  Copilot overlay keeps its separate five-minute policy. Neither path turns a
-  metadata outage into an inference outage.
+  the source confirmed a 404 and the bundled fallback is enabled. The live Copilot
+  overlay keeps a separate five-minute successful-result TTL. A failed live
+  refresh establishes the exact process-local
+  `Codex.ModelCatalog.LiveOverlayFailureCooldownSeconds` deadline (default 300):
+  polls before it serve the stale overlay or reviewed baseline without another
+  upstream call/warning, and callers at expiry share one retry. Neither path turns
+  a metadata outage into an inference outage.
 - **Refresh the bundled snapshot at release time.** It lives at
   `src/CopilotBridge.Cli/Catalogs/Codex/Bundled/` with a `capture.json`
   recording the version, source URL, upstream ETag, and SHA-256; the loader
