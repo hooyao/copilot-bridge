@@ -39,7 +39,7 @@ are suppressed for the exact configured cooldown while the Codex catalog stays s
 ## Real Codex verdict
 
 - Manifest:
-  `tests/behavior-runs/manifests/codex-one-shot-auth-403-recovery-20260813-171117-664.json`
+  `tests/behavior-runs/manifests/codex-one-shot-auth-403-recovery-20260813-173346-991.json`
 - Client/model/route: real Codex app-server 0.147.0-alpha.6.6,
   `gpt-5.6-sol`, native `/codex` Responses route.
 - Lifecycle log from the manifest's `bridgeLogPath`, all on request sequence 1:
@@ -53,14 +53,14 @@ are suppressed for the exact configured cooldown while the Codex catalog stays s
   - the computation returned 5050, three separate file commands completed, and the
     final answer contained `5050` plus `codex-auth-replay-canary-64017`;
   - stdout contained no abort.
-- Codex-owned SQLite window: 680 rows, 0 router/dispatch fatals, 0 ERROR rows,
+- Codex-owned SQLite window: 739 rows, 0 router/dispatch fatals, 0 ERROR rows,
   0 retry rows.
 - Verdict: PASS by the real-client rubric, not by bridge status alone.
 
 ## Real Claude Code verdict
 
 - Manifest:
-  `tests/behavior-runs/manifests/cc-native-one-shot-auth-403-recovery-20260813-171224-168.json`
+  `tests/behavior-runs/manifests/cc-native-one-shot-auth-403-recovery-20260813-173434-048.json`
 - Client/model/route: real `claude.exe`, `claude-opus-5`, native `/cc` Messages
   passthrough.
 - Lifecycle log from the manifest's `bridgeLogPath`, all on request sequence 1:
@@ -73,6 +73,11 @@ are suppressed for the exact configured cooldown while the Codex catalog stays s
 - The per-run trace accumulated all three tool-use/result pairs on subsequent
   Messages requests.
 - Verdict: PASS from the real Claude transcript plus trace.
+
+Both acceptance runs were repeated after PR review using only a disposable copy of
+the DPAPI-encrypted legacy access-token mirror. The harness never stages the v2
+record, so a scratch process cannot consume and remotely invalidate the installed
+credential's single-use refresh token.
 
 ## Catalog cooldown real-process verification
 

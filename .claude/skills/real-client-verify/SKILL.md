@@ -22,7 +22,8 @@ compatibility: >-
   file-based app (dotnet run scripts/read-codex-log.cs). If the encrypted credential
   exists only beside an installed bridge, set
   COPILOT_BRIDGE_TEST_CREDENTIAL_SOURCE_DIRECTORY to that directory; ServeProcess
-  stages a disposable DPAPI-encrypted copy and never modifies the source files.
+  stages only a disposable DPAPI-encrypted legacy access-token mirror (never the
+  single-use-refresh-token v2 record) and never modifies the source files.
 metadata:
   author: cc-copilot-bridge
   version: "1.0"

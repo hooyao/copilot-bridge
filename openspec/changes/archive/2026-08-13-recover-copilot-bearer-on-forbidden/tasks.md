@@ -42,3 +42,9 @@
 - [x] 6.3 Drive real Claude Code through the shared Messages recovery path on a multi-tool task and confirm transcript tool-use/result completion with no visible 403 retry exhaustion.
 - [x] 6.4 Add a real-process catalog test proving repeated polls during a persistent `/models` failure produce one upstream attempt/warning per cooldown while every downstream catalog response remains safe.
 - [x] 6.5 Record final manifests, client-owned verdicts, test/build/AOT results, and the production incident evidence in `verification.md`; finish all artifacts before the archive/PR workflow.
+
+## PR Review Follow-ups
+
+- [x] Round 1: stage only the encrypted legacy access-token mirror for real-client
+  scratch bridges; never copy the v2 record whose single-use refresh token could
+  invalidate the installed source credential remotely.
