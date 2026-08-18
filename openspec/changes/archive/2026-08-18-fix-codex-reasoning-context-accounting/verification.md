@@ -45,12 +45,12 @@ The positive 556-token input delta independently guards the backend fact that ju
 
 Manifest:
 
-`tests/behavior-runs/manifests/codex-reasoning-included-accounting-20260818-111900-314.json`
+`tests/behavior-runs/manifests/codex-reasoning-included-accounting-20260818-144925-568.json`
 
 Evidence:
 
 - bridge subprocess used a random non-8765 port;
-- deterministic upstream observed two user-turn sampling requests, one actual custom-tool output, and zero `request_kind=compaction` requests;
+- deterministic upstream observed two user-turn sampling requests, one byte-complete replay of the first turn's reasoning id/encrypted content/summary, one actual custom-tool output, and zero `request_kind=compaction` requests;
 - all three raw `upstream-resp` artifacts omitted the header;
 - all three client-facing `inbound-resp` artifacts carried `X-Reasoning-Included: true`;
 - trace request 2 received `custom_tool_call(call_reasoning_accounting_exec)` and request 3 contained the matching `custom_tool_call_output`;
@@ -81,8 +81,8 @@ Verdict: PASS for ordinary live Copilot tool execution with the synthesized head
 ## Offline validation
 
 - Focused header/audit contract: 5/5 PASS.
-- Full unit suite: 1659/1659 PASS.
-- Solution tests with `Category!=Integration`: 1659/1659 PASS; Playground correctly had no matching non-Integration tests.
+- Full unit suite before review: 1659/1659 PASS; after review follow-ups: 1660/1660 PASS.
+- Solution tests with `Category!=Integration`: 1659/1659 PASS before review; Playground correctly had no matching non-Integration tests.
 - `AgentRepositoryCompatibilityTests`: 4/4 PASS after updating both real-client skill mirrors.
 - `git diff --check`: PASS.
 
@@ -91,8 +91,13 @@ Verdict: PASS for ordinary live Copilot tool execution with the synthesized head
 Windows `win-x64` publication used `build-aot.bat` for the bridge and the same verified VS developer environment plus explicit VS Installer PATH for the updater.
 
 - warnings: 0
-- `publish/copilot-bridge.exe`: 14,755,328 bytes
+- `publish/copilot-bridge.exe`: 14,755,840 bytes after review follow-ups
 - `publish/copilot-updater.exe`: 5,019,136 bytes
+
+## PR review follow-ups
+
+- The second-turn deterministic upstream now refuses to serve the tool call unless Codex replayed the exact first-turn reasoning id, the complete 3,000-character encrypted blob, and the exact summary entry. The rerun recorded `reasoning-replay=1`, tool output 1, and compactions 0.
+- Reasoning-accounting synthesis is deferred until a buffered translation succeeds or the first SSE event is ready. Every pre-start error path removes the signal from the ASP.NET and audit header sets before emitting a non-2xx response. A red-before-green synthetic pre-start failure contract guards the 502 boundary.
 
 ## Known external client limitation
 

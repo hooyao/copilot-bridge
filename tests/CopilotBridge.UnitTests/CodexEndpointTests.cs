@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
 using CopilotBridge.Cli.Endpoints.Codex;
+using CopilotBridge.Cli.Hosting.Logging;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline;
@@ -60,18 +61,27 @@ public class CodexEndpointTests
     private sealed record EndpointResult(
         DefaultHttpContext Http,
         StartTrackingResponseFeature ResponseFeature,
-        string Body);
+        string Body,
+        IReadOnlyList<BridgeIoPayload> Audits);
 
     private static async Task<EndpointResult> InvokeDetailed(
         string requestJson,
-        Action<BridgeContext<MessagesRequest>> pipelineBehavior)
+        Action<BridgeContext<MessagesRequest>> pipelineBehavior,
+        Action<StartTrackingResponseFeature>? configureResponseFeature = null,
+        bool tracingEnabled = false)
     {
+        var recorder = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(recorder));
+        var audit = TestAudit.Create(
+            tracingEnabled,
+            loggerFactory.CreateLogger<MessagesRequest>());
         var http = new DefaultHttpContext();
         http.Request.Method = "POST";
         http.Request.Path = "/codex/responses";
         http.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(requestJson));
         var respStream = new MemoryStream();
         var responseFeature = new StartTrackingResponseFeature();
+        configureResponseFeature?.Invoke(responseFeature);
         http.Features.Set<IHttpResponseFeature>(responseFeature);
         http.Response.Body = new StartTrackingStream(respStream, responseFeature);
 
@@ -85,10 +95,21 @@ public class CodexEndpointTests
             new ResponsesToIrInboundAdapter(NullLogger<ResponsesToIrInboundAdapter>.Instance),
             new IrToResponsesOutboundAdapter(bridgeCtx, NullLogger<IrToResponsesOutboundAdapter>.Instance),
             new RequestSummaryLogger(NullLogger<RequestSummaryLogger>.Instance),
-            TestAudit.Create(false),
+            audit,
             NullLogger<CodexResponsesEndpointTag>.Instance);
 
-        return new EndpointResult(http, responseFeature, Encoding.UTF8.GetString(respStream.ToArray()));
+        var audits = recorder.Events
+            .Select(e => e.Properties.TryGetValue("Payload", out var payload)
+                ? payload as BridgeIoPayload
+                : null)
+            .Where(payload => payload is not null)
+            .Select(payload => payload!)
+            .ToList();
+        return new EndpointResult(
+            http,
+            responseFeature,
+            Encoding.UTF8.GetString(respStream.ToArray()),
+            audits);
     }
 
     private static async Task<(int Status, string Body)> Invoke(
@@ -354,6 +375,32 @@ public class CodexEndpointTests
         Assert.False(result.ResponseFeature.ReasoningIncludedPresentAtStart);
     }
 
+    /// <summary>
+    /// Contract: an upstream 2xx is not enough if T4 fails before the first
+    /// downstream byte. The endpoint converts that still-unstarted response to 502,
+    /// so neither the actual response nor its audit-facing header set may retain the
+    /// successful reasoning-accounting assertion.
+    /// </summary>
+    [Fact]
+    public async Task PreStartFailureAfterUpstreamSuccess_DoesNotSetReasoningIncluded()
+    {
+        var result = await InvokeDetailed(ValidRequest, ctx =>
+        {
+            ctx.Target = new RouteTarget(BackendVendor.CopilotResponses, "/responses", "gpt-5.3-codex");
+            ctx.Response.Status = StatusCodes.Status200OK;
+            ctx.Response.Mode = ResponseMode.Buffered;
+            ctx.Response.BufferedBody =
+                """{"type":"response","id":"r","status":"completed"}"""u8.ToArray();
+            ctx.Response.Headers["Content-Type"] = "application/json";
+        }, feature => feature.ThrowOnNextStatusSet = true, tracingEnabled: true);
+
+        Assert.Equal(StatusCodes.Status502BadGateway, result.Http.Response.StatusCode);
+        Assert.False(result.Http.Response.Headers.ContainsKey(ReasoningIncludedHeader));
+        Assert.False(result.ResponseFeature.ReasoningIncludedPresentAtStart);
+        var inbound = result.Audits.Single(audit => audit.Kind == "inbound-resp");
+        Assert.False(inbound.Headers.ContainsKey(ReasoningIncludedHeader));
+    }
+
     [Fact]
     public async Task BufferedSuccess_WritesBodyThrough_WithStatus()
     {
@@ -554,7 +601,21 @@ public class CodexEndpointTests
 
     private sealed class StartTrackingResponseFeature : IHttpResponseFeature
     {
-        public int StatusCode { get; set; } = StatusCodes.Status200OK;
+        private int _statusCode = StatusCodes.Status200OK;
+        public bool ThrowOnNextStatusSet { get; set; }
+        public int StatusCode
+        {
+            get => _statusCode;
+            set
+            {
+                if (ThrowOnNextStatusSet)
+                {
+                    ThrowOnNextStatusSet = false;
+                    throw new InvalidOperationException("synthetic failure before response start");
+                }
+                _statusCode = value;
+            }
+        }
         public string? ReasonPhrase { get; set; }
         public IHeaderDictionary Headers { get; set; } = new HeaderDictionary();
         public Stream Body { get; set; } = Stream.Null;

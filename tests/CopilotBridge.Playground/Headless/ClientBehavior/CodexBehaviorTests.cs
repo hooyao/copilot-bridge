@@ -291,6 +291,8 @@ public class CodexBehaviorTests
         // client's router log stayed clean.
         Assert.True(upstream.TurnRequests >= 2,
             $"Codex did not reach both turn samplings (turns={upstream.TurnRequests}).");
+        Assert.True(upstream.CompleteReasoningReplayRequests >= 1,
+            "Codex never replayed the complete first-turn reasoning item on turn two.");
         Assert.True(upstream.ToolOutputRequests >= 1,
             "Codex never echoed the custom exec output to the deterministic upstream.");
 
@@ -318,7 +320,8 @@ public class CodexBehaviorTests
 
         _output.WriteLine(
             $"reasoning accounting upstream={upstream.BaseUrl} "
-            + $"turns={upstream.TurnRequests} tool-output={upstream.ToolOutputRequests} "
+            + $"turns={upstream.TurnRequests} reasoning-replay={upstream.CompleteReasoningReplayRequests} "
+            + $"tool-output={upstream.ToolOutputRequests} "
             + $"compactions={upstream.CompactionRequests}");
         _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
         _output.WriteLine(

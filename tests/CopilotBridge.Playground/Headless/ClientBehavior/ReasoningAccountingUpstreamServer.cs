@@ -27,11 +27,14 @@ internal sealed class ReasoningAccountingUpstreamServer : IAsyncDisposable
     private int _turnRequests;
     private int _toolOutputRequests;
     private int _compactionRequests;
+    private int _completeReasoningReplayRequests;
 
     public string BaseUrl { get; }
     public int TurnRequests => Volatile.Read(ref _turnRequests);
     public int ToolOutputRequests => Volatile.Read(ref _toolOutputRequests);
     public int CompactionRequests => Volatile.Read(ref _compactionRequests);
+    public int CompleteReasoningReplayRequests =>
+        Volatile.Read(ref _completeReasoningReplayRequests);
 
     private ReasoningAccountingUpstreamServer(
         string baseUrl,
@@ -134,6 +137,10 @@ internal sealed class ReasoningAccountingUpstreamServer : IAsyncDisposable
 
             if (turnNumber == 2)
             {
+                if (!HasCompleteFirstReasoning(root))
+                    throw new InvalidDataException(
+                        "Codex second-turn request did not replay the complete first-turn reasoning item.");
+                Interlocked.Increment(ref _completeReasoningReplayRequests);
                 if (!HasCustomExecTool(root))
                     throw new InvalidDataException(
                         "Codex second-turn request did not advertise the custom exec tool.");
@@ -459,6 +466,33 @@ internal sealed class ReasoningAccountingUpstreamServer : IAsyncDisposable
                 && id.ValueKind == JsonValueKind.String
                 && id.GetString() == callId)
                 return true;
+        }
+        return false;
+    }
+
+    private static bool HasCompleteFirstReasoning(JsonElement root)
+    {
+        if (!root.TryGetProperty("input", out var input) || input.ValueKind != JsonValueKind.Array)
+            return false;
+        foreach (var item in input.EnumerateArray())
+        {
+            if (!item.TryGetProperty("type", out var type)
+                || type.GetString() != "reasoning"
+                || !item.TryGetProperty("id", out var id)
+                || id.GetString() != FirstReasoningId
+                || !item.TryGetProperty("encrypted_content", out var encrypted)
+                || encrypted.ValueKind != JsonValueKind.String
+                || encrypted.GetString() is not { Length: 3000 } content
+                || content.Any(ch => ch != 'A')
+                || !item.TryGetProperty("summary", out var summary)
+                || summary.ValueKind != JsonValueKind.Array
+                || summary.GetArrayLength() != 1)
+                continue;
+            var entry = summary[0];
+            return entry.TryGetProperty("type", out var summaryType)
+                && summaryType.GetString() == "summary_text"
+                && entry.TryGetProperty("text", out var text)
+                && text.GetString() == "Prepared the first-turn state.";
         }
         return false;
     }

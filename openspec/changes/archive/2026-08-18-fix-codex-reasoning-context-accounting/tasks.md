@@ -27,3 +27,9 @@
 - [x] 5.1 Run focused and full unit tests, solution tests excluding Integration, and `AgentRepositoryCompatibilityTests`.
 - [x] 5.2 Publish win-x64 Native AOT via the repository-supported Windows recipe, confirm zero warnings, and record the bridge/updater binary sizes.
 - [x] 5.3 Write `verification.md` with contract, mutation, backend, real-client, log, trace, AOT, and known-client-limitation evidence; leave the change ready for archive rather than silently patching Codex.
+
+## 6. PR Review Follow-ups
+
+- [x] 6.1 Require the second-turn actuator input to replay the complete first-turn reasoning id, encrypted content, and summary before serving the tool call.
+- [x] 6.2 Defer client-edge header synthesis until response output is ready and remove both actual/audit headers on every pre-start non-2xx failure path.
+- [x] 6.3 Re-run focused contracts, full unit tests, the real-Codex accounting verdict, and win-x64 Native AOT after review fixes.
