@@ -244,6 +244,101 @@ public class CodexBehaviorTests
     }
 
     /// <summary>
+    /// Real-client accounting leg. Turn one creates a large encrypted reasoning
+    /// item at low authoritative usage. Turn two remains below the isolated limit
+    /// at pre-turn, then receives a tool-bearing response whose reported usage is
+    /// still below the limit while Codex's fallback estimate would push it over.
+    /// The bridge-owned header must keep Codex on the normal tool follow-up instead
+    /// of issuing a mid-turn compaction request.
+    /// </summary>
+    [Fact]
+    public async Task Codex_ReasoningIncluded_PreventsFalsePostSamplingCompact_ForVerdict()
+    {
+        const string caseId = "codex-reasoning-included-accounting";
+        const string canary = "codex-reasoning-accounting-canary-91827";
+        const string firstPrompt =
+            "Prepare the requested private reasoning state, reply that the first turn is ready, and stop.";
+        const string secondPrompt =
+            "Now execute the requested real tool task: write the supplied canary to a file, "
+            + "read it back with a separate nested operation, report the exact canary, and stop.";
+
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        using var codexHome = ClientBehaviorSupport.NewWorkDir(caseId + "-home");
+        await using var upstream = ReasoningAccountingUpstreamServer.Start(work.Path, canary);
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.PassthroughTestUpstream,
+            TestUpstreamBaseUrl: upstream.BaseUrl,
+            StreamIdleTimeoutSeconds: 30,
+            KeepAliveIntervalSeconds: 0));
+
+        var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: firstPrompt,
+            FollowUpPrompt: secondPrompt,
+            Model: ClientBehaviorSupport.LatestGpt,
+            Timeout: TimeSpan.FromMinutes(3),
+            CodexHome: codexHome.Path,
+            WorkingDirectory: work.Path,
+            ExpectedCodexVersion: ClientBehaviorSupport.CodexVersion,
+            ModelReasoningEffort: "max",
+            ModelReasoningSummary: "detailed",
+            ModelContextWindow: 1_000,
+            ModelAutoCompactTokenLimit: 900));
+
+        // Harness/Gate-1 assertions only: the real client reached both user turns
+        // and echoed the actual custom-tool output. The verifier—not xUnit—judges
+        // whether a compaction appeared, the header boundary was truthful, and the
+        // client's router log stayed clean.
+        Assert.True(upstream.TurnRequests >= 2,
+            $"Codex did not reach both turn samplings (turns={upstream.TurnRequests}).");
+        Assert.True(upstream.CompleteReasoningReplayRequests >= 1,
+            "Codex never replayed the complete first-turn reasoning item on turn two.");
+        Assert.True(upstream.ToolOutputRequests >= 1,
+            "Codex never echoed the custom exec output to the deterministic upstream.");
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "codex",
+                Route: "/codex",
+                Model: ClientBehaviorSupport.LatestGpt,
+                Scenario: ServeScenario.PassthroughTestUpstream,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: result.DispatchLogPath,
+                DispatchSinceUnix: result.StartedUnixSeconds,
+                DispatchUntilUnix: result.EndedUnixSeconds,
+                Prompt: $"turn1={firstPrompt} turn2={secondPrompt} "
+                    + $"limit=900 context=1000 canary={canary}",
+                DispatchThreadId: result.ThreadId),
+            result.Stdout,
+            result.Stderr,
+            ClientBehaviorSupport.Stamp(),
+            out _,
+            out _);
+
+        _output.WriteLine(
+            $"reasoning accounting upstream={upstream.BaseUrl} "
+            + $"turns={upstream.TurnRequests} reasoning-replay={upstream.CompleteReasoningReplayRequests} "
+            + $"tool-output={upstream.ToolOutputRequests} "
+            + $"compactions={upstream.CompactionRequests}");
+        _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
+        _output.WriteLine(
+            $"dispatch log={result.DispatchLogPath} thread={result.ThreadId} "
+            + $"window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine(
+            "[verdict] require zero request_kind=compaction, raw upstream-resp header absent, "
+            + "inbound-resp X-Reasoning-Included=true before every successful stream, a native "
+            + "custom_tool_call plus matching output, the exact canary, no abort, and zero "
+            + "router/dispatch fatals in Codex's own SQLite log.");
+
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(
+            result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
+    /// <summary>
     /// Native Codex keepalive behavior: the deterministic Responses upstream emits
     /// <c>response.created</c>, stays byte-silent for longer than this run's isolated
     /// Codex parsed-event watchdog, then resumes with a custom <c>exec</c> call. The

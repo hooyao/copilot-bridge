@@ -1,5 +1,7 @@
 using System.Runtime.Versioning;
+using System.Text;
 using System.Text.Json.Nodes;
+using CopilotBridge.Playground.Headless;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -114,6 +116,107 @@ public class ReasoningReplayRequirementsProbe
         // reader sees WHY summary is preserved.
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, results["blob-only"]);
         Assert.Equal(System.Net.HttpStatusCode.OK, results["blob+summary"]);
+    }
+
+    /// <summary>
+    /// Backend fact behind the bridge's Codex response-header synthesis: Copilot's
+    /// reported input usage already charges replayed encrypted reasoning even though
+    /// the Copilot HTTP response omits <c>X-Reasoning-Included</c>. The bridge-behavior
+    /// unit test cannot guard this fact; paired live requests must go red if it drifts.
+    /// </summary>
+    [Fact]
+    public async Task Gpt56Sol_InputUsageAlreadyChargesReplayedReasoning()
+    {
+        const string firstUserText =
+            "Compute (987654321 * 1234567) + (7654321 * 98765). "
+            + "Verify the result carefully and return only the final integer.";
+        var firstRequest = new JsonObject
+        {
+            ["model"] = "gpt-5.6-sol",
+            ["input"] = new JsonArray(Message("user", "input_text", firstUserText)),
+            ["reasoning"] = new JsonObject
+            {
+                ["effort"] = "max",
+                ["summary"] = "detailed",
+                ["context"] = "all_turns",
+            },
+            ["include"] = new JsonArray("reasoning.encrypted_content"),
+            ["stream"] = false,
+        };
+
+        await using var bridge = await ServeProcess.StartAsync(
+            new ServeInvocation(ServeScenario.Passthrough));
+        using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
+
+        async Task<(System.Net.HttpStatusCode Status, string Body)> Post(JsonObject body)
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post, $"{bridge.BaseUrl}/codex/responses");
+            request.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "probe-local");
+            request.Content = new StringContent(
+                body.ToJsonString(), Encoding.UTF8, "application/json");
+            using var response = await client.SendAsync(request);
+            return (response.StatusCode, await response.Content.ReadAsStringAsync());
+        }
+
+        var (firstStatus, firstBody) = await Post(firstRequest);
+        Assert.Equal(System.Net.HttpStatusCode.OK, firstStatus);
+        var firstOutput = JsonNode.Parse(firstBody)!["output"]!.AsArray();
+        var reasoningItems = firstOutput
+            .Where(item => item!["type"]!.GetValue<string>() == "reasoning")
+            .Select(item => item!.AsObject())
+            .ToList();
+        Assert.NotEmpty(reasoningItems);
+        Assert.All(reasoningItems, item =>
+        {
+            Assert.False(string.IsNullOrEmpty(item["encrypted_content"]?.GetValue<string>()));
+            Assert.NotNull(item["summary"]);
+        });
+
+        JsonObject FollowUp(bool includeReasoning)
+        {
+            var input = new JsonArray(Message("user", "input_text", firstUserText));
+            foreach (var item in firstOutput)
+            {
+                if (!includeReasoning && item!["type"]!.GetValue<string>() == "reasoning")
+                    continue;
+                input.Add(item!.DeepClone());
+            }
+            input.Add(Message("user", "input_text", "Return exactly BETA."));
+            return new JsonObject
+            {
+                ["model"] = "gpt-5.6-sol",
+                ["input"] = input,
+                ["reasoning"] = new JsonObject
+                {
+                    ["effort"] = "low",
+                    ["summary"] = "auto",
+                    ["context"] = "all_turns",
+                },
+                ["include"] = new JsonArray("reasoning.encrypted_content"),
+                ["stream"] = false,
+            };
+        }
+
+        var (withStatus, withBody) = await Post(FollowUp(true));
+        var (withoutStatus, withoutBody) = await Post(FollowUp(false));
+        Assert.Equal(System.Net.HttpStatusCode.OK, withStatus);
+        Assert.Equal(System.Net.HttpStatusCode.OK, withoutStatus);
+
+        static long InputTokens(string body) =>
+            JsonNode.Parse(body)!["usage"]!["input_tokens"]!.GetValue<long>();
+        var withReasoning = InputTokens(withBody);
+        var withoutReasoning = InputTokens(withoutBody);
+        var delta = withReasoning - withoutReasoning;
+
+        _output.WriteLine(
+            $"reasoning_items={reasoningItems.Count} with={withReasoning} "
+            + $"without={withoutReasoning} delta={delta}");
+        Assert.True(delta > 0,
+            $"Copilot input usage no longer charges replayed reasoning: "
+            + $"with={withReasoning}, without={withoutReasoning}. Re-evaluate "
+            + "X-Reasoning-Included synthesis before changing this contract.");
     }
 
     private static JsonObject ReasoningVariant(JsonObject original, string variant)

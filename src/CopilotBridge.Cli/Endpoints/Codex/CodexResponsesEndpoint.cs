@@ -31,6 +31,9 @@ namespace CopilotBridge.Cli.Endpoints.Codex;
 /// </summary>
 internal static class CodexResponsesEndpoint
 {
+    private const string ReasoningIncludedHeader = "X-Reasoning-Included";
+    private const string ReasoningIncludedValue = "true";
+
     public static IEndpointRouteBuilder MapCodexResponses(this IEndpointRouteBuilder app)
     {
         app.MapPost("/codex/responses", HandleAsync);
@@ -186,6 +189,8 @@ internal static class CodexResponsesEndpoint
             responseStatus = bridgeCtx.Response.Status;
             foreach (var (k, v) in bridgeCtx.Response.Headers)
                 responseHeaders[k] = v;
+            var shouldSignalReasoningIncluded = ShouldSignalReasoningIncluded(bridgeCtx);
+            var reasoningIncludedSignaled = false;
 
             httpCtx.Response.StatusCode = responseStatus;
             // The wire content type back to Codex is event-stream (streaming) or
@@ -201,6 +206,11 @@ internal static class CodexResponsesEndpoint
                 var clientStream = outboundAdapter.AdaptStreamAsync(bridgeCtx.Response.EventStream, ct);
                 await foreach (var evt in clientStream.WithCancellation(ct))
                 {
+                    if (shouldSignalReasoningIncluded && !reasoningIncludedSignaled)
+                    {
+                        SignalReasoningIncluded(httpCtx.Response, responseHeaders);
+                        reasoningIncludedSignaled = true;
+                    }
                     capturedEvents?.Add(new CapturedSseEvent(
                         evt.EventType,
                         evt.Data,
@@ -212,6 +222,11 @@ internal static class CodexResponsesEndpoint
             else if (bridgeCtx.Response.BufferedBody is not null)
             {
                 var outBody = await outboundAdapter.AdaptBufferedAsync(bridgeCtx.Response.BufferedBody, ct);
+                if (shouldSignalReasoningIncluded)
+                {
+                    SignalReasoningIncluded(httpCtx.Response, responseHeaders);
+                    reasoningIncludedSignaled = true;
+                }
                 responseBody = outBody;
                 responseBodyLen = outBody.Length;
                 if (responseHeaders.TryGetValue("Content-Type", out var ctype))
@@ -219,6 +234,13 @@ internal static class CodexResponsesEndpoint
                 httpCtx.Response.ContentLength = outBody.Length;
                 await httpCtx.Response.Body.WriteAsync(outBody, ct);
             }
+
+            // A valid but bodyless 2xx still carries the accounting contract. This
+            // runs only after all response translation completed successfully; any
+            // pre-start exception skips here and enters a catch that removes a
+            // partially-added signal before writing its non-2xx body.
+            if (shouldSignalReasoningIncluded && !reasoningIncludedSignaled)
+                SignalReasoningIncluded(httpCtx.Response, responseHeaders);
 
             // Copy the response-side detector flags off the context AFTER the stream
             // has drained (streaming sets them mid-relay) so the summary line reports
@@ -237,6 +259,7 @@ internal static class CodexResponsesEndpoint
         }
         catch (UpstreamTimeoutException ex)
         {
+            RemoveReasoningIncludedIfUnstarted(httpCtx.Response, responseHeaders);
             // First-byte timeouts arrive before any downstream bytes. Stream-idle
             // faults arrive here only after T4 emitted response.failed and rethrew;
             // the response-start check preserves the already-sent 200.
@@ -260,6 +283,7 @@ internal static class CodexResponsesEndpoint
         }
         catch (UpstreamResponseFailedException ex)
         {
+            RemoveReasoningIncludedIfUnstarted(httpCtx.Response, responseHeaders);
             // T4 already wrote the single Responses-native response.failed before
             // rethrowing this bounded fault. Only account for it here.
             endpointError = ex.Message;
@@ -285,6 +309,7 @@ internal static class CodexResponsesEndpoint
         }
         catch (UnknownModelException ex)
         {
+            RemoveReasoningIncludedIfUnstarted(httpCtx.Response, responseHeaders);
             endpointError = ex.Message;
             summary.Error = ex.Message;
             if (!httpCtx.Response.HasStarted)
@@ -301,6 +326,7 @@ internal static class CodexResponsesEndpoint
         }
         catch (CodexBadRequestException ex)
         {
+            RemoveReasoningIncludedIfUnstarted(httpCtx.Response, responseHeaders);
             // A client-side fault in the Codex request (e.g. malformed tool
             // arguments the model echoed back, surfaced by T1) — surface as 400
             // with an Anthropic-shape error envelope, NOT a 502. Mirrors the
@@ -321,6 +347,7 @@ internal static class CodexResponsesEndpoint
         }
         catch (Exception ex) when (Copilot.TransientUpstreamError.Is(ex))
         {
+            RemoveReasoningIncludedIfUnstarted(httpCtx.Response, responseHeaders);
             endpointError = ex.Message;
             summary.Error = $"{ex.GetType().Name}: {ex.Message}";
             endpointLog.LogWarning("endpoint upstream-disconnect: {Type}: {Message}", ex.GetType().Name, ex.Message);
@@ -334,6 +361,7 @@ internal static class CodexResponsesEndpoint
         }
         catch (Exception ex)
         {
+            RemoveReasoningIncludedIfUnstarted(httpCtx.Response, responseHeaders);
             endpointError = ex.Message;
             summary.Error = $"{ex.GetType().Name}: {ex.Message}";
             endpointLog.LogError(ex, "endpoint exception: {Type}: {Message}", ex.GetType().Name, ex.Message);
@@ -390,6 +418,27 @@ internal static class CodexResponsesEndpoint
         var bytes = Encoding.UTF8.GetBytes(sb.ToString());
         await downstream.Body.WriteAsync(bytes, ct);
         await downstream.Body.FlushAsync(ct);
+    }
+
+    private static bool ShouldSignalReasoningIncluded(BridgeContext<MessagesRequest> ctx) =>
+        ctx.Target?.Vendor == BackendVendor.CopilotResponses
+        && ctx.Response.Status is >= StatusCodes.Status200OK and < StatusCodes.Status300MultipleChoices;
+
+    private static void SignalReasoningIncluded(
+        HttpResponse response,
+        IDictionary<string, string> auditHeaders)
+    {
+        response.Headers[ReasoningIncludedHeader] = ReasoningIncludedValue;
+        auditHeaders[ReasoningIncludedHeader] = ReasoningIncludedValue;
+    }
+
+    private static void RemoveReasoningIncludedIfUnstarted(
+        HttpResponse response,
+        IDictionary<string, string> auditHeaders)
+    {
+        if (response.HasStarted) return;
+        response.Headers.Remove(ReasoningIncludedHeader);
+        auditHeaders.Remove(ReasoningIncludedHeader);
     }
 }
 

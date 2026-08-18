@@ -20,6 +20,9 @@ internal sealed record CodexAppServerInvocation(
     TimeSpan? Timeout = null,
     string? ModelReasoningEffort = null,
     string? ModelReasoningSummary = null,
+    string? FollowUpPrompt = null,
+    long? ModelContextWindow = null,
+    long? ModelAutoCompactTokenLimit = null,
     long? StreamIdleTimeoutMs = null,
     int? RequestMaxRetries = null,
     int? StreamMaxRetries = null);
@@ -156,6 +159,16 @@ internal static class CodexAppServerProcess
                 configOverrides ??= [];
                 configOverrides["model_reasoning_summary"] = reasoningSummary;
             }
+            if (invocation.ModelContextWindow is { } contextWindow)
+            {
+                configOverrides ??= [];
+                configOverrides["model_context_window"] = contextWindow;
+            }
+            if (invocation.ModelAutoCompactTokenLimit is { } autoCompactTokenLimit)
+            {
+                configOverrides ??= [];
+                configOverrides["model_auto_compact_token_limit"] = autoCompactTokenLimit;
+            }
             if (configOverrides is not null)
                 threadStartParams["config"] = configOverrides;
             await SendAsync(process, new JsonObject
@@ -176,27 +189,35 @@ internal static class CodexAppServerProcess
                         $"Codex thread/start reasoningEffort was '{actualEffort ?? "<null>"}', expected '{expectedEffort}'.");
             }
 
-            await SendAsync(process, new JsonObject
+            async Task<string> RunTurnAsync(int id, string prompt)
             {
-                ["method"] = "turn/start",
-                ["id"] = 3,
-                ["params"] = new JsonObject
+                await SendAsync(process, new JsonObject
                 {
-                    ["threadId"] = threadId,
-                    ["input"] = new JsonArray
+                    ["method"] = "turn/start",
+                    ["id"] = id,
+                    ["params"] = new JsonObject
                     {
-                        new JsonObject { ["type"] = "text", ["text"] = invocation.Prompt },
+                        ["threadId"] = threadId,
+                        ["input"] = new JsonArray
+                        {
+                            new JsonObject { ["type"] = "text", ["text"] = prompt },
+                        },
                     },
-                },
-            }, token);
-            _ = await ReadUntilAsync(process, stdout,
-                message => ResponseId(message) == 3, token);
-            var completed = await ReadUntilAsync(process, stdout,
-                message => message["method"]?.GetValue<string>() == "turn/completed" &&
-                    message["params"]?["threadId"]?.GetValue<string>() == threadId,
-                token);
-            var turnStatus = completed["params"]?["turn"]?["status"]?.GetValue<string>()
-                ?? throw new InvalidDataException("Codex turn/completed notification did not include status.");
+                }, token);
+                _ = await ReadUntilAsync(process, stdout,
+                    message => ResponseId(message) == id, token);
+                var completed = await ReadUntilAsync(process, stdout,
+                    message => message["method"]?.GetValue<string>() == "turn/completed" &&
+                        message["params"]?["threadId"]?.GetValue<string>() == threadId,
+                    token);
+                return completed["params"]?["turn"]?["status"]?.GetValue<string>()
+                    ?? throw new InvalidDataException(
+                        "Codex turn/completed notification did not include status.");
+            }
+
+            var turnStatus = await RunTurnAsync(3, invocation.Prompt);
+            if (invocation.FollowUpPrompt is { Length: > 0 } followUpPrompt)
+                turnStatus = await RunTurnAsync(4, followUpPrompt);
 
             process.StandardInput.Close();
             var remaining = await process.StandardOutput.ReadToEndAsync(token);

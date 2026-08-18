@@ -162,6 +162,25 @@ full set:
 > drops any carrier defensively on `/cc→Responses`, so raw Responses data never
 > crosses the Anthropic client edge.
 
+> **2026-08-18 — native Codex reasoning-usage accounting.** HTTP response
+> accounting is a separate client-edge contract from the SSE-event fidelity
+> ledger above. Copilot `/responses` reports input usage that already charges
+> replayed encrypted reasoning, but its raw HTTP response omits Codex's
+> `X-Reasoning-Included` signal. Codex 0.147/0.148 interprets absence as
+> “historical reasoning was not counted” and adds its own encrypted-reasoning
+> estimate on top, so a Copilot-reported approximately 0.5–0.7M context can reach
+> the client's approximately 0.9M auto-compact threshold. For a native
+> `/codex/responses` request resolved to `CopilotResponses`, the endpoint therefore
+> adds `X-Reasoning-Included: true` to a 2xx downstream HTTP response before any
+> body/SSE bytes. This happens only AFTER the raw upstream header snapshot:
+> `upstream-resp` continues to prove Copilot omitted the header, while
+> `inbound-resp` and the actual ASP.NET response prove the compatibility signal
+> reached Codex. The header is never sent upstream, synthesized on `/cc`, or added
+> to a non-2xx response. Current Codex releases also clear their remembered flag
+> before a later pre-turn compact check (`openai/codex#32483`); the bridge cannot
+> reorder that client code, so real-client acceptance guards the bridge-owned
+> continuous-turn leg and records the remaining client limitation explicitly.
+
 > **2026-08 — native Codex request fidelity.** The request remains a real
 > `Responses → T1 → IR → T2 → Responses` traversal; it does not bypass the IR.
 > T1 pushes provider-native fields, source positions, and unmodeled siblings into
