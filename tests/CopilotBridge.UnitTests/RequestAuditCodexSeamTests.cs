@@ -249,6 +249,38 @@ public class RequestAuditCodexSeamTests
     }
 
     /// <summary>
+    /// Contract: Copilot omits the reasoning-accounting header, so raw upstream
+    /// evidence must remain absent while the native Codex client edge records the
+    /// compatibility signal it actually delivered. This prevents implementing the
+    /// fix inside the shared upstream header dictionary and falsifying the trace.
+    /// </summary>
+    [Fact]
+    public async Task Codex_ReasoningIncludedHeader_IsDownstreamOnlyInAudit()
+    {
+        const string header = "X-Reasoning-Included";
+        const string streamingRequest =
+            """{"model":"gpt-5.3-codex","instructions":"sys","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"codex-probe"}]}],"reasoning":{"effort":"high"},"stream":true}""";
+        var upstreamBytes = Encoding.UTF8.GetBytes(
+            "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":1,"
+            + "\"response\":{\"id\":\"resp_header\",\"model\":\"gpt-5.3-codex\"}}\n\n"
+            + "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,"
+            + "\"response\":{\"id\":\"resp_header\",\"status\":\"completed\",\"output\":[],"
+            + "\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},"
+            + "\"output_tokens\":0,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":1}}}\n\n");
+        var result = await RunCodex(
+            streamingRequest,
+            tracingEnabled: true,
+            StreamingResponse(new MemoryStream(upstreamBytes)));
+
+        var upstream = result.Audits.Single(a => a.Kind == "upstream-resp");
+        var inbound = result.Audits.Single(a => a.Kind == "inbound-resp");
+
+        Assert.False(upstream.Headers.ContainsKey(header));
+        Assert.True(inbound.Headers.TryGetValue(header, out var value));
+        Assert.Equal("true", value);
+    }
+
+    /// <summary>
     /// Contract: the native Codex edge records a bridge keepalive as injected while
     /// the raw upstream artifact stays byte-faithful. This drives the real endpoint,
     /// T1/T2/T3, response inspection seam, T4, writer flush, and audit capture.

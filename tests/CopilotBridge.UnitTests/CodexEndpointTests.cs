@@ -57,7 +57,12 @@ public class CodexEndpointTests
         Strategies = new StrategyRegistry<MessagesRequest>([]),
     };
 
-    private static async Task<(int Status, string Body)> Invoke(
+    private sealed record EndpointResult(
+        DefaultHttpContext Http,
+        StartTrackingResponseFeature ResponseFeature,
+        string Body);
+
+    private static async Task<EndpointResult> InvokeDetailed(
         string requestJson,
         Action<BridgeContext<MessagesRequest>> pipelineBehavior)
     {
@@ -83,7 +88,15 @@ public class CodexEndpointTests
             TestAudit.Create(false),
             NullLogger<CodexResponsesEndpointTag>.Instance);
 
-        return (http.Response.StatusCode, Encoding.UTF8.GetString(respStream.ToArray()));
+        return new EndpointResult(http, responseFeature, Encoding.UTF8.GetString(respStream.ToArray()));
+    }
+
+    private static async Task<(int Status, string Body)> Invoke(
+        string requestJson,
+        Action<BridgeContext<MessagesRequest>> pipelineBehavior)
+    {
+        var result = await InvokeDetailed(requestJson, pipelineBehavior);
+        return (result.Http.Response.StatusCode, result.Body);
     }
 
     private const string ValidRequest = """
@@ -91,6 +104,8 @@ public class CodexEndpointTests
        "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],
        "stream":false,"store":false}
       """;
+
+    private const string ReasoningIncludedHeader = "X-Reasoning-Included";
 
     // ── deserialize failures → 400 ───────────────────────────────────────────
 
@@ -257,6 +272,87 @@ public class CodexEndpointTests
     }
 
     // ── happy buffered path writes the upstream body through ─────────────────
+
+    /// <summary>
+    /// Contract: a successful native Codex request resolved to Copilot Responses
+    /// carries the server-accounted-reasoning signal on the actual ASP.NET response
+    /// before the first buffered byte is written. Copilot usage already charges
+    /// replayed reasoning; without this header Codex adds its fallback estimate again.
+    /// </summary>
+    [Fact]
+    public async Task BufferedResponsesSuccess_SetsReasoningIncludedBeforeBody()
+    {
+        var result = await InvokeDetailed(ValidRequest, ctx =>
+        {
+            ctx.Target = new RouteTarget(BackendVendor.CopilotResponses, "/responses", "gpt-5.3-codex");
+            ctx.Response.Status = StatusCodes.Status200OK;
+            ctx.Response.Mode = ResponseMode.Buffered;
+            ctx.Response.BufferedBody = Encoding.UTF8.GetBytes(
+                """{"type":"response","id":"r","status":"completed"}""");
+            ctx.Response.Headers["Content-Type"] = "application/json";
+        });
+
+        Assert.Equal(StatusCodes.Status200OK, result.Http.Response.StatusCode);
+        Assert.Equal("true", result.Http.Response.Headers[ReasoningIncludedHeader].ToString());
+        Assert.True(result.ResponseFeature.ReasoningIncludedPresentAtStart);
+    }
+
+    /// <summary>
+    /// Contract: the same signal precedes a native Responses event stream; setting
+    /// only an audit dictionary after the stream starts is not sufficient.
+    /// </summary>
+    [Fact]
+    public async Task StreamingResponsesSuccess_SetsReasoningIncludedBeforeFirstEvent()
+    {
+        var ir = RunT3OverCopilotSse(input: 20, cached: 0, output: 3, reasoning: 1);
+        var result = await InvokeDetailed(ValidRequest, ctx =>
+        {
+            ctx.Target = new RouteTarget(BackendVendor.CopilotResponses, "/responses", "gpt-5.6-sol");
+            ctx.Response.Status = StatusCodes.Status200OK;
+            ctx.Response.Mode = ResponseMode.Streaming;
+            ctx.Response.EventStream = ToAsync(ir);
+        });
+
+        Assert.Equal(StatusCodes.Status200OK, result.Http.Response.StatusCode);
+        Assert.Equal("true", result.Http.Response.Headers[ReasoningIncludedHeader].ToString());
+        Assert.True(result.ResponseFeature.ReasoningIncludedPresentAtStart);
+        Assert.Contains("event: response.completed", result.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task NonSuccessResponses_DoesNotSetReasoningIncluded()
+    {
+        var result = await InvokeDetailed(ValidRequest, ctx =>
+        {
+            ctx.Target = new RouteTarget(BackendVendor.CopilotResponses, "/responses", "gpt-5.3-codex");
+            ctx.Response.Status = StatusCodes.Status400BadRequest;
+            ctx.Response.Mode = ResponseMode.Buffered;
+            ctx.Response.BufferedBody = Encoding.UTF8.GetBytes("""{"error":{"message":"bad request"}}""");
+            ctx.Response.Headers["Content-Type"] = "application/json";
+        });
+
+        Assert.Equal(StatusCodes.Status400BadRequest, result.Http.Response.StatusCode);
+        Assert.False(result.Http.Response.Headers.ContainsKey(ReasoningIncludedHeader));
+        Assert.False(result.ResponseFeature.ReasoningIncludedPresentAtStart);
+    }
+
+    [Fact]
+    public async Task NonResponsesDestination_DoesNotSetReasoningIncluded()
+    {
+        var result = await InvokeDetailed(ValidRequest, ctx =>
+        {
+            ctx.Target = new RouteTarget(BackendVendor.CopilotAnthropic, "/v1/messages", "claude-sonnet-4.6");
+            ctx.Response.Status = StatusCodes.Status200OK;
+            ctx.Response.Mode = ResponseMode.Buffered;
+            ctx.Response.BufferedBody = Encoding.UTF8.GetBytes(
+                """{"type":"response","id":"r","status":"completed"}""");
+            ctx.Response.Headers["Content-Type"] = "application/json";
+        });
+
+        Assert.Equal(StatusCodes.Status200OK, result.Http.Response.StatusCode);
+        Assert.False(result.Http.Response.Headers.ContainsKey(ReasoningIncludedHeader));
+        Assert.False(result.ResponseFeature.ReasoningIncludedPresentAtStart);
+    }
 
     [Fact]
     public async Task BufferedSuccess_WritesBodyThrough_WithStatus()
@@ -463,7 +559,15 @@ public class CodexEndpointTests
         public IHeaderDictionary Headers { get; set; } = new HeaderDictionary();
         public Stream Body { get; set; } = Stream.Null;
         public bool HasStarted { get; private set; }
-        public void MarkStarted() => HasStarted = true;
+        public bool ReasoningIncludedPresentAtStart { get; private set; }
+        public void MarkStarted()
+        {
+            if (!HasStarted)
+                ReasoningIncludedPresentAtStart =
+                    Headers.TryGetValue(ReasoningIncludedHeader, out var value)
+                    && value.ToString() == "true";
+            HasStarted = true;
+        }
         public void OnStarting(Func<object, Task> callback, object state) { }
         public void OnCompleted(Func<object, Task> callback, object state) { }
     }

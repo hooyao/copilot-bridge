@@ -31,6 +31,9 @@ namespace CopilotBridge.Cli.Endpoints.Codex;
 /// </summary>
 internal static class CodexResponsesEndpoint
 {
+    private const string ReasoningIncludedHeader = "X-Reasoning-Included";
+    private const string ReasoningIncludedValue = "true";
+
     public static IEndpointRouteBuilder MapCodexResponses(this IEndpointRouteBuilder app)
     {
         app.MapPost("/codex/responses", HandleAsync);
@@ -186,6 +189,19 @@ internal static class CodexResponsesEndpoint
             responseStatus = bridgeCtx.Response.Status;
             foreach (var (k, v) in bridgeCtx.Response.Headers)
                 responseHeaders[k] = v;
+
+            // Copilot's Responses usage already charges replayed encrypted
+            // reasoning, but its gateway omits the response signal Codex uses to
+            // trust that accounting. Add the compatibility fact ONLY at the native
+            // Codex client edge, after upstreamResponseHeaders was snapshotted above:
+            // upstream-resp must continue to prove what Copilot actually sent while
+            // inbound-resp records what the bridge delivered. Setting the real
+            // ASP.NET header here also guarantees it precedes buffered/SSE bytes.
+            if (ShouldSignalReasoningIncluded(bridgeCtx))
+            {
+                httpCtx.Response.Headers[ReasoningIncludedHeader] = ReasoningIncludedValue;
+                responseHeaders[ReasoningIncludedHeader] = ReasoningIncludedValue;
+            }
 
             httpCtx.Response.StatusCode = responseStatus;
             // The wire content type back to Codex is event-stream (streaming) or
@@ -391,6 +407,10 @@ internal static class CodexResponsesEndpoint
         await downstream.Body.WriteAsync(bytes, ct);
         await downstream.Body.FlushAsync(ct);
     }
+
+    private static bool ShouldSignalReasoningIncluded(BridgeContext<MessagesRequest> ctx) =>
+        ctx.Target?.Vendor == BackendVendor.CopilotResponses
+        && ctx.Response.Status is >= StatusCodes.Status200OK and < StatusCodes.Status300MultipleChoices;
 }
 
 /// <summary>Marker type for the Codex endpoint's <c>ILogger</c> category.</summary>

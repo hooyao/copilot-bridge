@@ -550,6 +550,46 @@ completed a multi-tool loop. `/models` capability arrays remain unsuitable for
 request-shape rules such as effort/thinking; `CodexModelProfileCatalog` continues
 to come from active probes.
 
+#### 3.3.2 Codex reasoning-usage response signal (verified 2026-08-18)
+
+Copilot's raw `/responses` HTTP headers do **not** contain
+`X-Reasoning-Included`. This is an observed absence on the upstream wire, not a
+header the bridge previously stripped: `CopilotResponsesStrategy` snapshots all
+upstream response/content headers, and consecutive raw `upstream-resp` captures
+around real compactions recorded the header absent.
+
+The absence does not mean Copilot omitted replayed reasoning from usage. A paired
+live `gpt-5.6-sol` probe obtained two complete reasoning items from response A and
+sent otherwise equivalent follow-ups:
+
+| Follow-up input | Copilot `input_tokens` |
+| --- | ---: |
+| prior message + complete reasoning items + next user message | 891 |
+| same input with only the reasoning items removed | 65 |
+
+The positive 826-token delta proves Copilot usage already charges the replayed
+reasoning. Codex's fallback estimator assigned those encrypted blobs about 2,330
+tokens and, without the response signal, adds that estimate on top of the 891.
+The same mechanism explained persisted long-session compactions exactly; one
+turn reached `501,881` server-reported total plus `401,922` locally estimated
+historical reasoning = `903,803`, crossing the configured 900k limit while the
+server-reported input was about 500k.
+
+Codex 0.147.0-alpha.6.6 and 0.148.0-alpha.9 use HTTP-header **presence** as the
+contract: `X-Reasoning-Included` means server input usage is authoritative, while
+absence enables the fallback estimate. The bridge therefore synthesizes the
+canonical `X-Reasoning-Included: true` only on a 2xx native
+`/codex/responses` response resolved to Copilot Responses. It is a downstream
+compatibility fact: raw `upstream-resp` remains header-absent, `inbound-resp`
+records it, and no request or Claude Code path gains it.
+
+Those Codex versions separately clear the remembered flag before the next
+pre-turn compact check (`openai/codex#32483`). That client ordering bug can still
+cause an early compact at a new user-turn boundary even after the bridge sends the
+correct signal; it must not be “fixed” by falsifying usage or inflating Copilot's
+live-probed context limits. The bridge-owned regression path is a continuous
+multi-tool turn, plus an ordinary live-client execution check.
+
 ### 3.4 Request headers Copilot expects (for `/v1/messages`)
 
 > ⚠ **This section is reverse-engineered observation. The authoritative header list is [§3.0.4](#304-auto-injected-http-headers-_mixinheaders).** What's listed below is caozhiyuan/copilot-api's "feature-rich" simulation (official + several non-required extras), useful as reference, but M1 should try sending only the official 7 first and add extras if needed.
