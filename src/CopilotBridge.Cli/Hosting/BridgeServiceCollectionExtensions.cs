@@ -534,7 +534,17 @@ internal sealed class KestrelOptionsConfigurator : IConfigureOptions<KestrelServ
             throw new BridgeStartupException(
                 $"Invalid port {port}. Must be in 1..65535. Set Server:Port in appsettings.json or pass --port.");
         }
+
+        var maxRequestBodySize = _server.Value.MaxRequestBodySizeBytes;
+        if (maxRequestBodySize < 1)
+        {
+            throw new BridgeStartupException(
+                $"Invalid MaxRequestBodySizeBytes {maxRequestBodySize}. Must be greater than zero. "
+                + "Set Server:MaxRequestBodySizeBytes in appsettings.json.");
+        }
+
         options.ListenLocalhost(port);
+        options.Limits.MaxRequestBodySize = maxRequestBodySize;
         options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(15);
         options.Limits.RequestHeadersTimeout = TimeSpan.FromMinutes(2);
     }

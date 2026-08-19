@@ -1945,6 +1945,13 @@ Endpoints read inbound bodies into a pooled buffer (a
 `Microsoft.IO.RecyclableMemoryStream`, pooled chunks) to avoid per-request LOH
 allocation churn on conversation-sized payloads, via the shared
 `InboundBody.ReadPooledAsync` helper which returns a disposable `PooledBody`.
+Kestrel enforces the bridge-wide ceiling bound from
+`Server.MaxRequestBodySizeBytes` before this reader can consume the body. The
+default is 104,857,600 bytes (100 MiB); `KestrelOptionsConfigurator` rejects
+non-positive values at startup and assigns the configured value to
+`KestrelServerOptions.Limits.MaxRequestBodySize`. Raising the ceiling permits
+larger image-bearing histories but does not compact them and increases the
+maximum memory attributable to one accepted request.
 The endpoint consumes the body **synchronously** (deserialize + the audit
 capture) inside a `using`, so the pooled storage is returned to the manager within
 the endpoint's synchronous section — it does **not** cross `await` into the

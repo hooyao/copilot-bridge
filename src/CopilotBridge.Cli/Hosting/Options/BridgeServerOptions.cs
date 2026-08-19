@@ -11,4 +11,9 @@ internal sealed class BridgeServerOptions
 {
     /// <summary>TCP port Kestrel listens on. 1-65535.</summary>
     public int Port { get; set; } = 8765;
+
+    /// <summary>
+    /// Maximum inbound HTTP request-body size in bytes. Applies bridge-wide.
+    /// </summary>
+    public long MaxRequestBodySizeBytes { get; set; } = 100L * 1024 * 1024;
 }
