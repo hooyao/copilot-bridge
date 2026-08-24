@@ -154,7 +154,7 @@ internal sealed class CredentialService : IDisposable
 
             await using var rotationLock = await _store.AcquireLockAsync(
                 RotationLockTimeout, ct).ConfigureAwait(false);
-            current = LoadOrThrow();
+            current = LoadCurrentOrThrow();
             ThrowIfTerminal(current);
             if (IdentityOf(current) != observed) return ToLease(current);
             if (!force && !NeedsRefresh(current, _timeProvider.GetUtcNow()))
@@ -206,6 +206,10 @@ internal sealed class CredentialService : IDisposable
 
     private CredentialFileRecord LoadOrThrow() =>
         _store.LoadOrMigrate() ?? throw new GitHubReauthenticationRequiredException(
+            "no decryptable credential is stored");
+
+    private CredentialFileRecord LoadCurrentOrThrow() =>
+        _store.TryLoad() ?? throw new GitHubReauthenticationRequiredException(
             "no decryptable credential is stored");
 
     private async ValueTask<CredentialLease> LoginCoreAsync(CancellationToken ct)

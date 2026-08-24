@@ -1054,8 +1054,9 @@ The two identities are not interchangeable at the token-exchange endpoint. A
 GitHub CLI `gho_` receives 403 there but authenticates successfully when sent
 directly to CAPI. The single `github_credentials.dat` therefore uses semantic
 version 1 for the Copilot Plugin exchange shape and version 2 for the GitHub CLI
-direct shape. Runtime dispatch reads only that version; token-prefix inspection is
-limited to one-time migration of the old raw file.
+direct shape. Runtime dispatch reads only that version. The old raw file's token bytes
+remain opaque and always migrate to version 1; migration never infers semantics from a
+token prefix.
 
 ---
 

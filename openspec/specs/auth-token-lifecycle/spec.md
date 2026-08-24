@@ -226,6 +226,14 @@ locks SHALL remain at stable filesystem identities after release and credential 
 - **WHEN** two processes attempt to refresh the same credential generation
 - **THEN** only one consumes that refresh token and the other reloads and uses the newly committed generation instead of treating the spent token as a login failure
 
+#### Scenario: A legacy file reappears while refresh waits for the unified lock
+
+- **WHEN** an older bridge recreates a legacy credential file after refresh has loaded
+  the unified authority but before it acquires the unified mutation lock
+- **THEN** refresh reloads only `github_credentials.dat` while holding that lock and
+  does not re-enter migration or self-deadlock
+- **AND** a later unlocked load removes the residual legacy file.
+
 #### Scenario: Process stops during rotation
 - **WHEN** writing or replacing the refreshed credential fails before commit
 - **THEN** the previously committed credential file remains readable and no partially written record becomes authoritative

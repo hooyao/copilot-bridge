@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -64,7 +65,8 @@ public sealed class CredentialServiceMigrationTests : IDisposable
         };
         WriteLegacyVersioned(directory, source);
         WriteLegacyRaw(directory, source.AccessToken);
-        var store = new CredentialStore(directory, _protector);
+        var diagnostics = new List<string>();
+        var store = new CredentialStore(directory, _protector, diagnostics.Add);
 
         var migrated = store.LoadOrMigrate();
 
@@ -81,6 +83,9 @@ public sealed class CredentialServiceMigrationTests : IDisposable
         Assert.True(File.Exists(store.FilePath));
         Assert.False(File.Exists(store.LegacyVersionedPath));
         Assert.False(File.Exists(store.LegacyRawPath));
+        Assert.Contains(
+            diagnostics,
+            message => message.Contains("source=legacy_v2", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -90,7 +95,8 @@ public sealed class CredentialServiceMigrationTests : IDisposable
         WriteLegacyRaw(directory, "ghu_raw_fallback");
         Directory.CreateDirectory(directory);
         File.WriteAllBytes(Path.Combine(directory, "github_credentials.v2.dat"), [0x01, 0x02, 0x03]);
-        var store = new CredentialStore(directory, _protector);
+        var diagnostics = new List<string>();
+        var store = new CredentialStore(directory, _protector, diagnostics.Add);
 
         var migrated = store.LoadOrMigrate();
 
@@ -101,6 +107,9 @@ public sealed class CredentialServiceMigrationTests : IDisposable
         Assert.Null(migrated.AccessTokenExpiresAt);
         Assert.False(File.Exists(store.LegacyVersionedPath));
         Assert.False(File.Exists(store.LegacyRawPath));
+        Assert.Contains(
+            diagnostics,
+            message => message.Contains("source=legacy_raw", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -249,6 +258,45 @@ public sealed class CredentialServiceMigrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Refresh_does_not_reenter_migration_when_legacy_file_reappears_while_locked()
+    {
+        var directory = Path.Combine(_root, "refresh-with-recreated-legacy");
+        var store = new CredentialStore(directory, _protector);
+        var original = LegacyRecord(generation: 7);
+        store.Save(original);
+        var handler = new RefreshHandler();
+        var factory = new SingleClientHttpClientFactory(new HttpClient(handler));
+        using var service = new CredentialService(
+            factory,
+            store,
+            TimeProvider.System,
+            NullLogger<CredentialService>.Instance);
+        var rejected = await service.GetUsableAsync(CancellationToken.None);
+        IAsyncDisposable? heldLock = await store.AcquireLockAsync(
+            TimeSpan.FromSeconds(1), CancellationToken.None);
+        try
+        {
+            var recovery = service.RecoverAfterRejectionAsync(
+                rejected, CancellationToken.None).AsTask();
+            WriteLegacyRaw(directory, original.AccessToken);
+            await heldLock.DisposeAsync();
+            heldLock = null;
+
+            var refreshed = await recovery;
+
+            Assert.Equal(8, refreshed.Generation);
+            Assert.Equal(1, handler.RequestCount);
+            Assert.True(File.Exists(store.LegacyRawPath));
+            Assert.NotNull(service.GetStatus());
+            Assert.False(File.Exists(store.LegacyRawPath));
+        }
+        finally
+        {
+            if (heldLock is not null) await heldLock.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public void DeleteAll_removes_new_and_both_legacy_files_but_keeps_lock()
     {
         var directory = Path.Combine(_root, "delete-all");
@@ -384,6 +432,27 @@ public sealed class CredentialServiceMigrationTests : IDisposable
             if (blob.Length == 0 || blob[0] != 0xE1)
                 throw new CryptographicException();
             return blob[1..].Select(value => (byte)(value ^ 0x51)).ToArray();
+        }
+    }
+
+    private sealed class RefreshHandler : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"access_token\":\"ghu_refreshed\",\"refresh_token\":\"ghr_rotated\","
+                    + "\"expires_in\":28800,\"refresh_token_expires_in\":15552000,"
+                    + "\"token_type\":\"bearer\",\"scope\":\"read:user\"}",
+                    Encoding.UTF8,
+                    "application/json"),
+            });
         }
     }
 }

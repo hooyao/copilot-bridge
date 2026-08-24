@@ -92,11 +92,18 @@ internal sealed class CredentialStore
         {
             DeleteLegacyFiles();
             _diagnostic?.Invoke(
-                $"credential migration cleanup outcome=success version={current.Version}");
+                $"credential migration cleanup outcome=success version={current.Version} "
+                + "source=residual_legacy_files");
             return current;
         }
 
-        var source = TryReadLegacyVersioned() ?? TryReadLegacyRaw();
+        var source = TryReadLegacyVersioned();
+        var sourceFormat = "legacy_v2";
+        if (source is null)
+        {
+            source = TryReadLegacyRaw();
+            sourceFormat = "legacy_raw";
+        }
         if (source is null) return null;
 
         var wroteNew = false;
@@ -113,7 +120,9 @@ internal sealed class CredentialStore
             verifiedCommit = true;
 
             DeleteLegacyFiles();
-            _diagnostic?.Invoke($"credential migration outcome=success version={verified.Version}");
+            _diagnostic?.Invoke(
+                $"credential migration outcome=success version={verified.Version} "
+                + $"source={sourceFormat}");
             return verified;
         }
         catch

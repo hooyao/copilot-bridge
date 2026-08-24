@@ -47,3 +47,11 @@
 - [x] 5.3 Run a real-client version-2 direct case and read client-owned evidence.
 - [x] 5.4 Publish bridge/updater Native AOT, inspect warnings/size, and audit for secrets,
   stale credential artifacts, and unrelated changes.
+
+## 6. PR Review Follow-ups
+
+- [x] 6.1 Reload only the unified authority after acquiring its non-reentrant mutation
+  lock, and prove a recreated legacy file cannot self-deadlock refresh.
+- [x] 6.2 Include the selected legacy source format in successful migration telemetry.
+- [x] 6.3 Correct the API research note so raw migration remains explicitly
+  token-prefix-opaque.
