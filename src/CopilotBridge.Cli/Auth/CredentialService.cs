@@ -119,6 +119,15 @@ internal sealed class CredentialService : IDisposable
     public void MarkTerminal(int version, string credentialId, long generation) =>
         MarkTerminal(new CredentialIdentity(version, credentialId, generation));
 
+    public bool IsTerminal(int version, string credentialId, long generation)
+    {
+        var terminal = Volatile.Read(ref _terminalRejected);
+        return terminal is not null
+            && terminal.Version == version
+            && string.Equals(terminal.CredentialId, credentialId, StringComparison.Ordinal)
+            && terminal.Generation == generation;
+    }
+
     public void ClearTerminalRejection() =>
         Volatile.Write(ref _terminalRejected, null);
 

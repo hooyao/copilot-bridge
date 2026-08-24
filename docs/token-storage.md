@@ -83,8 +83,10 @@ For an exchanged version-1 lease, a first CAPI 401 or 403 rejects the exact
 bearer/endpoint generation, obtains its replacement, and replays the exact request once.
 A direct version-2 403 is likewise ambiguous and gets one bounded replay. A direct 401,
 however, rejects the persisted credential identity and requires `auth login`; replaying
-the same `gho_` would be meaningless. Credential identity, not only lease generation,
-prevents a late 401 from reusing the same bearer after a concurrent 403 republished it.
+the same `gho_` would be meaningless. The terminal transition removes every cached lease
+generation carrying that identity, and lock-free cache reuse checks terminal state before
+returning a direct bearer. Credential identity, not only lease generation, therefore
+prevents ordinary concurrent callers or a late 401 from reusing a terminal bearer.
 A replayed 401 is terminal authentication failure and a replayed 403 is terminal
 policy/entitlement. One shared replay bound covers mixed status sequences. This explains
 why restart could previously appear to repair a stale exchanged-bearer 403: it discarded

@@ -57,3 +57,5 @@
   token-prefix-opaque.
 - [x] 6.4 Split real-client credential staging into raw-legacy and validated
   non-refreshable version-2 modes so tests cannot copy a live rotating refresh token.
+- [x] 6.5 Invalidate direct lease caches by credential identity and make the lock-free
+  reuse path reject terminal direct credentials under concurrent/stale 401 races.

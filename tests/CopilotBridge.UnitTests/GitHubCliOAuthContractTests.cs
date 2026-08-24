@@ -285,6 +285,74 @@ public sealed class GitHubCliOAuthContractTests : IDisposable
     }
 
     [Fact]
+    public async Task Ordinary_caller_cannot_reuse_a_cached_terminal_direct_credential()
+    {
+        var handler = new CaptureHandler(new Queue<HttpResponseMessage>());
+        var store = new CredentialStore(
+            Path.Combine(_root, "terminal-direct-fast-path"), new TestProtector());
+        store.Save(DirectRecord(DirectToken));
+        var factory = new SingleClientHttpClientFactory(new HttpClient(handler));
+        var credentials = new CredentialService(
+            factory, store, _time, NullLogger<CredentialService>.Instance);
+        using var auth = new AuthService(
+            factory,
+            credentials,
+            _time,
+            NullLoggerFactory.Instance,
+            enableBackgroundRefresh: false,
+            ownsCredentialService: true);
+        var cached = await auth.GetCopilotTokenAsync(ct: CancellationToken.None);
+        credentials.MarkTerminal(
+            cached.CredentialVersion,
+            cached.CredentialId,
+            cached.CredentialGeneration);
+
+        await Assert.ThrowsAsync<GitHubReauthenticationRequiredException>(() =>
+            auth.GetCopilotTokenAsync(ct: CancellationToken.None).AsTask());
+
+        Assert.Null(auth.CopilotApiBaseUrl);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Late_old_401_cannot_reuse_a_cached_terminal_new_identity()
+    {
+        var handler = new CaptureHandler(new Queue<HttpResponseMessage>());
+        var store = new CredentialStore(
+            Path.Combine(_root, "stale-401-terminal-cache"), new TestProtector());
+        store.Save(DirectRecord(DirectToken));
+        var factory = new SingleClientHttpClientFactory(new HttpClient(handler));
+        var credentials = new CredentialService(
+            factory, store, _time, NullLogger<CredentialService>.Instance);
+        using var auth = new AuthService(
+            factory,
+            credentials,
+            _time,
+            NullLoggerFactory.Instance,
+            enableBackgroundRefresh: false,
+            ownsCredentialService: true);
+        var current = await auth.GetCopilotTokenAsync(ct: CancellationToken.None);
+        credentials.MarkTerminal(
+            current.CredentialVersion,
+            current.CredentialId,
+            current.CredentialGeneration);
+        var stale = current with
+        {
+            Token = "gho_stale_identity",
+            CredentialId = "stale-id",
+            Generation = 0,
+        };
+
+        await Assert.ThrowsAsync<GitHubReauthenticationRequiredException>(() =>
+            auth.GetCopilotTokenAsync(
+                new CopilotLeaseRejection(stale, CopilotLeaseRejectionReason.Unauthorized),
+                CancellationToken.None).AsTask());
+
+        Assert.Null(auth.CopilotApiBaseUrl);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
     public async Task Stale_rejection_cannot_clear_the_current_terminal_credential_identity()
     {
         var store = new CredentialStore(

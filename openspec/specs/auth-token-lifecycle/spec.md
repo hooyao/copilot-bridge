@@ -356,11 +356,20 @@ other than 401/403 SHALL NOT enter this lease-rejection replay.
   `auth login`
 - **AND** does not resend the request with the same rejected bearer.
 
+#### Scenario: Ordinary caller races a direct terminal transition
+
+- **WHEN** a direct 401 marks credential identity A terminal while any lease generation
+  for A remains in the process cache
+- **THEN** the transition invalidates every cached generation for A
+- **AND** the lock-free reuse path checks terminal identity before returning a direct
+  bearer.
+
 #### Scenario: Stale rejection follows a terminal current credential
 
 - **WHEN** current credential B has already been marked terminal and a rejection for
   older credential A arrives later
-- **THEN** A does not overwrite B's terminal identity or make B usable again.
+- **THEN** A does not overwrite B's terminal identity, return a cached lease for B, or
+  make B usable again.
 
 #### Scenario: Current Copilot bearer receives ambiguous 403
 

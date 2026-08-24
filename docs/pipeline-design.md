@@ -850,8 +850,10 @@ already-newer or freshly minted lease, rebuilds the single-use request with the 
 body bytes and business headers, and replays once. A direct version-2 403 follows the
 same bounded ambiguous replay, but a direct 401 rejects the persisted credential
 identity and requires `auth login`; resending the same `gho_` cannot recover. That
-identity check also catches a late 401 for lease N after a 403 republished the same
-credential as lease N+1. A truly newer credential identity remains usable.
+transition CAS-invalidates every cached lease generation for the terminal identity,
+and the lock-free cache fast path checks terminal identity before reuse. The same check
+also catches a late 401 for older credential A without returning already-terminal cached
+credential B. A truly newer non-terminal credential identity remains usable.
 
 The first 403 is deliberately ambiguous: it can be a stale short-lived bearer or
 a real policy/entitlement refusal, so it is not terminally classified before the

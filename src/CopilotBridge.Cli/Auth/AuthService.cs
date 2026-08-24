@@ -145,15 +145,16 @@ public sealed class AuthService : IAuthService, IDisposable
                 rejected.CredentialVersion,
                 rejected.CredentialId,
                 rejected.CredentialGeneration);
+            InvalidateCachedCredential(rejected);
         }
 
-        var snapshot = Volatile.Read(ref _copilotCache);
+        var snapshot = ReadCacheWithoutTerminalDirectCredential();
         if (CanReuse(snapshot, rejection)) return snapshot!;
 
         await _copilotFetchLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            snapshot = Volatile.Read(ref _copilotCache);
+            snapshot = ReadCacheWithoutTerminalDirectCredential();
             if (CanReuse(snapshot, rejection)) return snapshot!;
 
             var rejectingCurrent = rejection is not null
@@ -220,10 +221,43 @@ public sealed class AuthService : IAuthService, IDisposable
     private bool CanReuse(CopilotAuthLease? snapshot, CopilotLeaseRejection? rejection)
     {
         if (snapshot is null || snapshot.RefreshAt <= _timeProvider.GetUtcNow()) return false;
+        if (IsTerminalDirectCredential(snapshot)) return false;
         if (rejection is null) return true;
         return RejectsDirectCredential(rejection)
             ? !SameCredential(snapshot, rejection.Value.Lease)
             : snapshot.Generation != rejection.Value.Lease.Generation;
+    }
+
+    private CopilotAuthLease? ReadCacheWithoutTerminalDirectCredential()
+    {
+        while (true)
+        {
+            var snapshot = Volatile.Read(ref _copilotCache);
+            if (snapshot is null || !IsTerminalDirectCredential(snapshot)) return snapshot;
+            InvalidateCachedCredential(snapshot);
+        }
+    }
+
+    private bool IsTerminalDirectCredential(CopilotAuthLease lease) =>
+        lease.Kind == CopilotLeaseKind.Direct
+        && _credentials.IsTerminal(
+            lease.CredentialVersion,
+            lease.CredentialId,
+            lease.CredentialGeneration);
+
+    private void InvalidateCachedCredential(CopilotAuthLease credential)
+    {
+        while (true)
+        {
+            var snapshot = Volatile.Read(ref _copilotCache);
+            if (snapshot is null || !SameCredential(snapshot, credential)) return;
+            if (ReferenceEquals(
+                    Interlocked.CompareExchange(ref _copilotCache, null, snapshot),
+                    snapshot))
+            {
+                return;
+            }
+        }
     }
 
     private static bool RejectsDirectCredential(CopilotLeaseRejection? rejection) =>
