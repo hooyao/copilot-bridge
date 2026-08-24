@@ -873,7 +873,10 @@ transport failures remain transient and
 use bounded retry/backoff without marking the credential rejected. Lifecycle logs
 carry layer, trigger, status/classification, generation,
 timing and API host only—never access/refresh tokens, Authorization values, token
-prefixes, hashes, or response bodies. Production security-log evidence showed the
+prefixes, hashes, or response bodies. A rejection log records recovery evaluation;
+the bridge emits `replaying once` only after replacement lease acquisition succeeds,
+so terminal direct 401 never claims a replay that cannot occur. Production security-log
+evidence showed the
 old per-login Copilot Plugin tokens being evicted by `oauth_access.destroy` with
 `explanation=max_for_app`; the 86,100-second exchanged-bearer cache delayed
 observation of that revocation and was not the GitHub token lifetime. See

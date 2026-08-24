@@ -350,6 +350,28 @@ public class CopilotClientRetryTests
     }
 
     [Fact]
+    public async Task Terminal_direct_401_does_not_claim_refresh_or_replay()
+    {
+        var logger = new CaptureLogger();
+        var handler = new CapturingScriptedHandler([
+            _ => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+        ]);
+        var client = BuildClient(
+            handler, maxRetries: 0, auth: new TerminalDirectAuth(), logger: logger);
+
+        await Assert.ThrowsAsync<GitHubReauthenticationRequiredException>(() =>
+            client.PostResponsesAsync(SomeBody()).AsTask());
+
+        Assert.Single(handler.Requests);
+        Assert.Contains(logger.Messages, message =>
+            message.Contains("status=401 generation=1", StringComparison.Ordinal));
+        Assert.DoesNotContain(logger.Messages, message =>
+            message.Contains("refreshing", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("replaying once", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("authentication replay outcome", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Replayed403_LogsTerminalPolicyClassificationAfterAuthReplay()
     {
         var logger = new CaptureLogger();
@@ -630,6 +652,40 @@ public class CopilotClientRetryTests
             ServerExpiresAt = DateTimeOffset.MaxValue,
             Generation = generation,
         };
+    }
+
+    private sealed class TerminalDirectAuth : IAuthService
+    {
+        private readonly CopilotAuthLease _lease = new()
+        {
+            Token = "terminal-direct-token",
+            ApiBaseUrl = "https://api.githubcopilot.com",
+            RefreshAt = DateTimeOffset.MaxValue,
+            ServerExpiresAt = DateTimeOffset.MaxValue,
+            Generation = 1,
+            Kind = CopilotLeaseKind.Direct,
+            CredentialVersion = 2,
+            CredentialId = "terminal-direct-id",
+            CredentialGeneration = 1,
+        };
+
+        public bool IsAuthenticated => true;
+        public string TokenLocation => "(test)";
+        public string? CopilotApiBaseUrl => _lease.ApiBaseUrl;
+        public DateTimeOffset? CopilotTokenExpiry => _lease.ServerExpiresAt;
+        public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default) =>
+            ValueTask.FromResult(_lease.Token);
+
+        public ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
+            CopilotLeaseRejection? rejection = null,
+            CancellationToken ct = default)
+        {
+            if (rejection is not null)
+                throw new GitHubReauthenticationRequiredException("direct credential rejected");
+            return ValueTask.FromResult(_lease);
+        }
+
+        public void SignOut() { }
     }
 
     private sealed class RacingAuth : IAuthService

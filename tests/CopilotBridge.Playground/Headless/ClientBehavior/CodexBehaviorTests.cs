@@ -226,6 +226,7 @@ public class CodexBehaviorTests
     [Fact]
     public async Task Codex_OneShotCopilot403_RefreshesAndCompletesComplexToolChain_ForVerdict()
     {
+        using var stagedCredential = await StageDirectCredentialFromGitHubCliAsync();
         const string canary = "codex-auth-replay-canary-64017";
         var prompt =
             "Perform these steps with real tools, in order; do not fabricate output:\n"
@@ -239,7 +240,9 @@ public class CodexBehaviorTests
         await DriveAndRecordAsync(
             "codex-one-shot-auth-403-recovery",
             prompt,
-            forceCapiForbiddenOnce: ForcedCapiForbiddenOperation.Responses);
+            forceCapiForbiddenOnce: ForcedCapiForbiddenOperation.Responses,
+            credentialSourceDirectory: stagedCredential.Path,
+            credentialStagingMode: CredentialStagingMode.PurposeBuiltDirectVersionTwo);
     }
 
     /// <summary>
@@ -745,9 +748,14 @@ public class CodexBehaviorTests
             Assert.Equal(1, CountOccurrences(
                 bridge.StderrAll,
                 "rejected Copilot bearer status=403"));
-            Assert.Equal(1, CountOccurrences(
-                bridge.StderrAll,
-                "Copilot bearer refresh trigger=copilot_403 outcome=success"));
+            Assert.Equal(
+                1,
+                CountOccurrences(
+                    bridge.StderrAll,
+                    "Copilot bearer refresh trigger=copilot_403 outcome=success")
+                + CountOccurrences(
+                    bridge.StderrAll,
+                    "Copilot direct lease trigger=copilot_403 outcome=success"));
             Assert.Equal(1, CountOccurrences(
                 bridge.StderrAll,
                 "authentication replay outcome=success"));

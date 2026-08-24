@@ -130,8 +130,9 @@ criteria above, plus:
 
 - exactly one `TEST ONLY: injected one-shot CAPI 403` for the intended operation;
 - one recovery log naming `status=403` and the rejected lease generation;
-- a status-specific `Copilot bearer refresh trigger=copilot_403 outcome=success`
-  publishing a newer generation (or an explicit already-newer-generation reuse);
+- a status-specific `Copilot bearer refresh trigger=copilot_403 outcome=success` or
+  `Copilot direct lease trigger=copilot_403 outcome=success` publishing a newer lease
+  generation (or an explicit already-newer-generation reuse);
 - one `authentication replay outcome=success`, with the replay reaching live Copilot;
 - no `policy_or_entitlement_after_auth_replay`, no second auth replay, and no visible
   client retry exhaustion.

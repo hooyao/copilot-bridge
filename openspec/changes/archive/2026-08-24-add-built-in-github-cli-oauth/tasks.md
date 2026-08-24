@@ -59,3 +59,7 @@
   non-refreshable version-2 modes so tests cannot copy a live rotating refresh token.
 - [x] 6.5 Invalidate direct lease caches by credential identity and make the lock-free
   reuse path reject terminal direct credentials under concurrent/stale 401 races.
+- [x] 6.6 Log replay only after replacement lease acquisition so terminal direct 401
+  never falsely reports refresh or replay.
+- [x] 6.7 Drive the real Codex forced-403 case through version-2 direct staging and
+  confirm replacement acquisition precedes the one replay.

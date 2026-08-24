@@ -298,6 +298,13 @@ token-derived identifier, hash, or decrypted credential payload.
 - **THEN** logs identify status 403, generation N, and the one replay attempt
 - **AND** do not yet label the account definitively policy-ineligible.
 
+#### Scenario: Direct CAPI 401 requires login before replacement
+
+- **WHEN** a version-2 direct lease receives 401 and replacement acquisition terminates
+  with a login-required error
+- **THEN** logs record the rejection and terminal authentication outcome
+- **AND** do not claim that refresh, replacement, or replay occurred.
+
 #### Scenario: CAPI 403 persists after replay
 
 - **WHEN** the refreshed/reused lease replay also returns 403
