@@ -3,6 +3,7 @@ using System.Net;
 using System.Text;
 using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Copilot;
+using CopilotBridge.Cli.Models.GitHub;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -145,15 +146,30 @@ public sealed class AuthServiceLeaseTests : IDisposable
     {
         var primary = Path.Combine(_root, Guid.NewGuid().ToString("N"), "primary");
         var fallback = Path.Combine(_root, Guid.NewGuid().ToString("N"), "fallback");
-        var store = new GitHubCredentialStore(primary, fallback, new TestProtector());
-        store.SaveLegacy("ghu_valid");
-        return new AuthService(
-            new SingleClientHttpClientFactory(new HttpClient(handler)),
+        var protector = new TestProtector();
+        _ = fallback;
+        var store = new CredentialStore(primary, protector);
+        store.Save(new CredentialFileRecord
+        {
+            Version = CredentialFileRecord.CopilotPluginVersion,
+            AccessToken = "ghu_valid",
+            CredentialId = "lease-test",
+            Generation = 0,
+        });
+        var factory = new SingleClientHttpClientFactory(new HttpClient(handler));
+        var logs = loggerFactory ?? NullLoggerFactory.Instance;
+        var credentials = new CredentialService(
+            factory,
             store,
             _time,
-            loggerFactory ?? NullLoggerFactory.Instance,
-            onDeviceCodeIssued: null,
-            enableBackgroundRefresh: false);
+            logs.CreateLogger<CredentialService>());
+        return new AuthService(
+            factory,
+            credentials,
+            _time,
+            logs,
+            enableBackgroundRefresh: false,
+            ownsCredentialService: true);
     }
 
     private static HttpResponseMessage CopilotToken(

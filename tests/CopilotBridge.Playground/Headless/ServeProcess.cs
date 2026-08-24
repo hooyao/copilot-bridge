@@ -265,7 +265,7 @@ internal static class ServeProcess
                     "COPILOT_BRIDGE_TEST_CREDENTIAL_SOURCE_DIRECTORY");
             if (!string.IsNullOrWhiteSpace(credentialSourceDirectory))
             {
-                StageEncryptedAccessTokenMirror(
+                StageExplicitCredential(
                     credentialSourceDirectory, scratchDir);
             }
             Directory.CreateDirectory(traceDir);
@@ -548,11 +548,11 @@ internal static class ServeProcess
             var rel = Path.GetRelativePath(source, file);
 
             // Never copy a credential implicitly from build output. An explicit
-            // CredentialSourceDirectory stages only the legacy access-token mirror
-            // separately after this copy. Never stage v2: its rotating refresh token is
-            // single-use, and refreshing an independent copy would invalidate the source.
+            // CredentialSourceDirectory stages one selected credential separately after
+            // this copy. Never stage legacy v2: its rotating refresh token is single-use,
+            // and refreshing an independent copy would invalidate the source.
             var name = Path.GetFileName(file);
-            if (GitHubCredentialStore.IsCredentialArtifactName(name))
+            if (CredentialStore.IsCredentialArtifactName(name))
                 continue;
 
             // Skip the bridge's own runtime output subtrees if a prior JIT run left them
@@ -604,7 +604,7 @@ internal static class ServeProcess
             + "Build the CLI project first.");
     }
 
-    private static void StageEncryptedAccessTokenMirror(
+    private static void StageExplicitCredential(
         string sourceDirectory,
         string scratchDir)
     {
@@ -615,13 +615,20 @@ internal static class ServeProcess
                 $"Credential source directory does not exist: {sourceRoot}");
         }
 
-        const string mirrorName = "github_token.dat";
-        var source = Path.Combine(sourceRoot, mirrorName);
-        if (!File.Exists(source))
+        var staged = false;
+        foreach (var selectedName in new[] { "github_credentials.dat", "github_token.dat" })
+        {
+            var source = Path.Combine(sourceRoot, selectedName);
+            if (!File.Exists(source)) continue;
+            File.Copy(source, Path.Combine(scratchDir, selectedName), overwrite: false);
+            staged = true;
+        }
+
+        if (!staged)
             throw new FileNotFoundException(
-                "Credential source directory has no encrypted legacy access-token mirror.",
-                source);
-        File.Copy(source, Path.Combine(scratchDir, mirrorName), overwrite: false);
+                "Credential source directory has neither an encrypted legacy mirror nor "
+                + "the unified credential file.",
+                sourceRoot);
     }
 
     internal static string LocateBridgeExecutable() =>

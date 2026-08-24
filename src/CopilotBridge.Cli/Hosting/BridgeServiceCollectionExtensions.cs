@@ -167,12 +167,22 @@ internal static class BridgeServiceCollectionExtensions
         // container does its own activation — fewer moving pieces, same
         // AOT-safety (Microsoft.Extensions.DependencyInjection's two-param
         // AddSingleton<TService, TImpl> is trim-clean since .NET 8).
+        services.AddSingleton(sp =>
+        {
+            var logger = sp.GetRequiredService<ILogger<CredentialService>>();
+            return new CredentialService(
+                sp.GetRequiredService<IHttpClientFactory>(),
+                TokenStore.CreateUnifiedCredentialStore(
+                    message => logger.LogInformation("{CredentialEvent}", message)),
+                TimeProvider.System,
+                logger,
+                deviceCodePrinter);
+        });
         services.AddSingleton(sp => new AuthService(
             sp.GetRequiredService<IHttpClientFactory>(),
-            TokenStore.CredentialStore,
+            sp.GetRequiredService<CredentialService>(),
             TimeProvider.System,
             sp.GetRequiredService<ILoggerFactory>(),
-            deviceCodePrinter,
             enableBackgroundRefresh: true));
         // Forwarding singleton — same AuthService instance reachable through
         // both the concrete type and the IAuthService interface. Must stay

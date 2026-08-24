@@ -229,24 +229,28 @@ _getCAPIUrl(token) {
 }
 ```
 
-In other words, the base URL **comes from the Copilot token's `endpoints.api` field** (returned by `GET /copilot_internal/v2/token`).
+For an exchanged legacy lease, the base URL comes from the Copilot token's
+`endpoints.api` field (returned by `GET /copilot_internal/v2/token`).
 - Individual: token usually omits this field or sets it to `https://api.githubcopilot.com`
 - Business / Enterprise: the token returns the per-account domain
 
-**Conclusion**: our implementation should **not** stitch URLs based on an `accountType` string — use whatever the Copilot token returns. caozhiyuan/copilot-api's if/else is a reverse-engineering simplification; the official approach is cleaner.
+**Conclusion**: exchanged leases use whatever the Copilot token returns rather
+than stitching URLs from `accountType`. A direct GitHub CLI OAuth lease has no
+exchange response and uses the separately live-proven generic host.
 
 #### 3.0.2a OAuth/Copilot token lifetimes and 401/403 recovery (verified 2026-08)
 
 There are two distinct credentials; a rejection must be attributed to the correct
 hop rather than inferred from the client-visible model request:
 
-| Credential | Obtained from | Lifetime / refresh source |
+| Credential / lease | Obtained from | Lifetime / refresh source |
 | --- | --- | --- |
 | GitHub user access token | device flow at `github.com/login/oauth/access_token` | A valid OAuth response may omit all expiry/refresh fields; expiring GitHub App user tokens include `expires_in`, rotating `refresh_token`, and `refresh_token_expires_in` |
-| Copilot bearer | `GET api.github.com/copilot_internal/v2/token` | Always short-lived; response carries `expires_at`, `refresh_in`, and `endpoints.api` |
+| Direct Copilot lease (fresh default) | GitHub CLI OAuth App `gho_` sent directly to CAPI | Unknown token expiry; generic CAPI host is `https://api.githubcopilot.com`; no token-exchange timer |
+| Exchanged Copilot lease (legacy compatibility) | `GET api.github.com/copilot_internal/v2/token` with a Copilot Plugin `ghu_` | Short-lived; response carries `expires_at`, `refresh_in`, and `endpoints.api` |
 
-The affected account's fresh device login produced a v2 record with
-`refreshable=False`, unknown access expiry, and no refresh expiry. This is not an
+The affected account's Copilot Plugin device login produced a v2 record with
+`refreshable=False`, unknown access expiry, and no refresh expiry. This was not an
 exchange failure: the checked-in Copilot reference types a successful response
 for client id `Iv1.b507a08c87ecfe98` as only `access_token`, `token_type`, and
 `scope`, matching GitHub's documented OAuth App device-flow example. GitHub's
@@ -254,6 +258,18 @@ for client id `Iv1.b507a08c87ecfe98` as only `access_token`, `token_type`, and
 applies when a GitHub App enables expiring user access tokens (eight-hour access,
 six-month refresh). The bridge preserves those optional fields when present but
 must not invent them when absent.
+
+Fresh bridge login now follows GitHub CLI source revision
+`a255baf71d13fe5947a4eb7ad521ffd412d64cee`: OAuth App client ID
+`178c6fc778ccc68e1d6a`, exact minimum scopes `repo read:org gist`, and
+form-encoded RFC 8628 Device Flow. `github.com/cli/oauth` v1.2.2 confirms that
+device flow sends no client secret. The bridge implements these requests itself;
+it never installs or executes `gh` and never reads GitHub CLI's keyring.
+
+The resulting `gho_` is not accepted by `/copilot_internal/v2/token` (live 403),
+but it is accepted directly as the CAPI bearer. Live `/models` and `/responses`
+requests returned 200 on both the Enterprise host and generic
+`api.githubcopilot.com`; the latter is therefore the direct lease's default.
 
 For that expiring-token flow, GitHub states that using a refresh token invalidates
 both it and the old access token, and the response supplies newly rotated values.
@@ -271,7 +287,7 @@ before that. Its CAPI error handler clears the cached Copilot token after HTTP
 receipt-relative safety shape and additionally replays one current request on the
 first CAPI 401 or 403 because it retains the exact request bytes.
 
-The GitHub token exchange uses `Authorization: token <github-token>` and
+The legacy GitHub token exchange uses `Authorization: token <github-token>` and
 `X-GitHub-Api-Version: 2025-04-01`; chat CAPI calls still use §3.0.4's newer
 2026 API header. Do not copy the internal-token API version onto public
 `GET /user`—the live public endpoint rejects that version with HTTP 400.
@@ -279,7 +295,7 @@ Device/refresh responses must be preserved as a credential
 record—not reduced to `access_token`—or a refreshable `ghu_` token eventually
 becomes an unrecoverable `Bad credentials` failure.
 
-Production evidence that motivated the fix was unambiguous at the hop level:
+Production evidence that motivated the original lifecycle fix was unambiguous at the hop level:
 after the failure, `auth whoami`, `auth copilot-status`, and
 `debug list-models --all` all received GitHub REST 401 with
 `{"message":"Bad credentials"}`. Restarting did not help because it reloaded the
@@ -296,22 +312,28 @@ the bridge recovered immediately by discarding its process-local lease. Unlike t
 GitHub-401 incident above, restart helping is evidence that the short-lived Copilot
 lease—not the persisted GitHub credential or request shape—was the stale state.
 
-The approximately one-hour observation does not establish a one-hour GitHub
-token lifetime. A previously minted Copilot bearer can mask an already-revoked
-GitHub credential until its next in-memory refresh. GitHub documents revocation
-after credential exposure, user/app/third-party or enterprise action, and after
-exceeding ten tokens for one user/application/scope combination. Its
-[`oauth_authorization.destroy` security-log event](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/token-expiration-and-revocation)
-is the server-side evidence to check if `Bad credentials` recurs.
+The later exported security log resolved the cause. Every new Copilot Plugin
+device authorization emitted `oauth_access.create` and simultaneously destroyed
+another token from the same pool with `explanation=max_for_app`. Token identities
+showed one bridge's 11:15 credential being destroyed by another bridge login at
+12:23. The first process continued on its already-minted bearer and detected the
+revocation only at the next 86,100-second refresh boundary. The apparent 24-hour
+expiry was therefore a visibility delay, not a GitHub token lifetime. Search
+`oauth_access.destroy`, not only authorization-level events, when diagnosing a
+recurrence.
 
 Bridge recovery contract:
 
 - GitHub 401: rotate once when refresh metadata exists, replay once; otherwise
-  require logout/login. Never loop and never destroy the last committed record.
-- Copilot CAPI 401/403: reject only the token/endpoint lease generation used,
-  obtain the already-newer or freshly minted lease, rebuild the request, and
-  replay once. A first 403 is ambiguous; only a replayed 403 is terminal
-  policy/entitlement. A replayed 401 is terminal authentication failure.
+  require `auth login`. Never loop and never destroy the last committed record.
+- Direct `github-cli-oauth`: use the encrypted `gho_` as the CAPI bearer at the
+  generic host; never call `/copilot_internal/v2/token` or invent an expiry timer.
+  Its first 403 remains ambiguous and gets one replay; its first 401 terminally
+  rejects that persisted credential identity without resending the same bearer.
+- Exchanged Copilot CAPI 401/403: reject the token/endpoint lease generation used,
+  obtain the already-newer or freshly minted lease, rebuild the request, and replay
+  once. A first 403 is ambiguous; only a replayed 403 is terminal policy/entitlement.
+  A replayed 401 is terminal authentication failure.
 - One shared replay flag bounds `401 -> 403`, `403 -> 401`, and same-status pairs
   at two sends. 400/402/429 and every other status retain their existing meaning.
 - No token, prefix, hash, Authorization value, or error body containing credential
@@ -377,7 +399,7 @@ VScode-MachineId: <uuid>                 # mock VS Code machine id
 Editor-Device-Id: <uuid>                 # mock device id
 Editor-Plugin-Version: copilot-chat/<version>     # e.g. copilot-chat/0.46.0
 Editor-Version: vscode/<vscodeVersion>            # e.g. vscode/1.95.0
-Authorization: Bearer <copilot-token>             # added by the fetcher; token from /copilot_internal/v2/token
+Authorization: Bearer <lease-token>               # direct gho_ or exchanged Copilot token
 Content-Type: application/json                    # added by the fetcher
 ```
 
@@ -442,7 +464,10 @@ business     → https://api.business.githubcopilot.com
 enterprise   → https://api.enterprise.githubcopilot.com
 ```
 
-**Official approach**: read the `endpoints.api` field from the `GET /copilot_internal/v2/token` response; fall back to `https://api.githubcopilot.com` if missing. The token carries the field; business/enterprise tokens naturally return the right domain. No `accountType` config needed from the user.
+**Exchanged-lease approach**: read `endpoints.api` from the
+`GET /copilot_internal/v2/token` response and fall back to
+`https://api.githubcopilot.com`. **Direct-lease approach**: use the generic host,
+which live-served the Enterprise account without an `accountType` setting.
 
 ### 3.2 Endpoints Copilot offers
 
@@ -806,34 +831,22 @@ All five keys appear even when cache buckets are zero. `message_delta.usage` car
 
 ---
 
-## 5. Two-stage authentication chain
+## 5. Provider-compatible authentication chains
 
 ```
-┌──────────────────────────────────┐  device-code flow
-│ user does GitHub OAuth login     │ ──────────────────► GitHub
-│ once                             │ ◄────────── ghu_xxx (long-lived)
-└──────────────────────────────────┘
-                 │
-                 │ ghu_xxx + githubHeaders()
-                 ▼
-GET https://api.github.com/copilot_internal/v2/token
-                 │
-                 ▼
-┌──────────────────────────────────┐
-│ {token: "tid=...", expires_at,    │ Copilot token lifetime ~30 min
-│  refresh_in, ...}                │ Refresh before refresh_in - 60s
-└──────────────────────────────────┘
-                 │
-                 │ tid=... + copilotHeaders() as Authorization Bearer
-                 ▼
-POST https://api.<accountType>.githubcopilot.com/v1/messages
+Fresh login (default):
+  built-in GitHub CLI OAuth Device Flow -> encrypted gho_
+  gho_ as Authorization: Bearer -> https://api.githubcopilot.com/{CAPI route}
+
+Existing credential compatibility:
+  encrypted Copilot Plugin ghu_
+      -> GET api.github.com/copilot_internal/v2/token
+      -> { token: "tid=...", expires_at, refresh_in, endpoints.api }
+      -> tid=... as Authorization: Bearer -> endpoints.api/{CAPI route}
 ```
 
-The GitHub OAuth half is implemented (`Auth/GitHubAuthClient.cs` + `TokenStore.cs`). What's left:
-
-1. `CopilotTokenClient` — `GET /copilot_internal/v2/token` (with the GitHub token)
-2. `AuthService.GetCopilotTokenAsync()` — in-memory cache + background refresh timer; transparent to callers
-3. `accountType` configuration (individual / business / enterprise) drives the base URL (superseded by §3.0.2 — driven by token instead)
+Both chains are implemented behind `AuthService`; callers consume one immutable
+lease and do not know whether its bearer is direct or exchanged.
 
 ### 5.1 Headers for the GitHub→Copilot token exchange
 
@@ -1020,7 +1033,7 @@ Anthropic `prompt is too long` for reactive compact/retry.
 
 ---
 
-## 9. GitHub OAuth client ID for Copilot auth + model discovery
+## 9. GitHub OAuth provider identities for Copilot auth + model discovery
 
 From `references/copilot-api-anthropic/src/lib/api-config.ts:313`:
 
@@ -1029,7 +1042,20 @@ GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"   // VS Code Copilot's official OAuth 
 GITHUB_APP_SCOPES = "read:user"
 ```
 
-Don't change. This client_id is the official one used by the VS Code Copilot extension; substitute it and the Copilot backend rejects you.
+This identity remains required for exchanging existing `ghu_` credentials. Fresh
+login instead mirrors GitHub CLI's public OAuth App contract:
+
+```
+GITHUB_CLI_CLIENT_ID = "178c6fc778ccc68e1d6a"
+GITHUB_CLI_SCOPES = "repo read:org gist"
+```
+
+The two identities are not interchangeable at the token-exchange endpoint. A
+GitHub CLI `gho_` receives 403 there but authenticates successfully when sent
+directly to CAPI. The single `github_credentials.dat` therefore uses semantic
+version 1 for the Copilot Plugin exchange shape and version 2 for the GitHub CLI
+direct shape. Runtime dispatch reads only that version; token-prefix inspection is
+limited to one-time migration of the old raw file.
 
 ---
 
@@ -1057,10 +1083,10 @@ I lean **probe**: it's cheap (~50 lines of C#) and eliminates the routing-layer'
 ## 11. Recommended M1 implementation order
 
 ```
-1. CopilotTokenClient + AuthService.GetCopilotTokenAsync()
-   - GET /copilot_internal/v2/token
-   - Atomic token/endpoint lease + receipt-relative refresh + bounded 401/403 CAPI recovery
-   Acceptance: `copilot-bridge auth copilot-status` prints expiry, refresh time,
+1. AuthService.GetCopilotTokenAsync()
+   - direct GitHub CLI OAuth lease, or legacy GET /copilot_internal/v2/token exchange
+   - Atomic token/endpoint lease + credential-version-specific refresh + bounded 401/403 CAPI recovery
+   Acceptance: `copilot-bridge auth copilot-status` prints mode, known deadlines,
    and API base URL without any token bytes
 
 2. CopilotClient.GetModelsAsync() + temporary debug list-models subcommand

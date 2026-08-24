@@ -12,7 +12,7 @@ namespace CopilotBridge.Cli.Hosting;
 /// <list type="number">
 ///   <item>Validate the routing config (fail fast on misconfigured locations).</item>
 ///   <item>Ensure a GitHub OAuth token exists; run the device-code flow if not.</item>
-///   <item>Fetch a Copilot bearer token (populates
+///   <item>Resolve a direct or exchanged Copilot authentication lease (populates
 ///         <see cref="IAuthService.CopilotApiBaseUrl"/>).</item>
 ///   <item>Print the listening URL, upstream URL, trace directory, and route
 ///         counts so the operator can confirm the bridge is healthy.</item>
@@ -78,9 +78,9 @@ internal sealed class BridgeStartupHostedService : IHostedService
             throw new BridgeStartupException($"Invalid Routing config: {ex.Message}", ex);
         }
 
-        // 2-3. Auth: device-code flow if no token, then exchange for Copilot
-        //      token. Cancellation propagates back out as OperationCanceledException
-        //      (handled by host as a clean shutdown, not a fatal).
+        // 2-3. Auth: device-code flow if no credential, then resolve its direct or
+        //      exchanged Copilot lease. Cancellation propagates back out as
+        //      OperationCanceledException (handled by host as a clean shutdown, not a fatal).
         if (!_auth.IsAuthenticated)
         {
             _log.LogInformation(

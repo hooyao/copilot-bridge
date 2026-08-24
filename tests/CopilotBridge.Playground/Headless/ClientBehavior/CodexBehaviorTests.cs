@@ -1,6 +1,12 @@
 using System.Runtime.Versioning;
 using System.Buffers.Binary;
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using CopilotBridge.Cli.Models;
+using CopilotBridge.Cli.Models.GitHub;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -68,6 +74,114 @@ public class CodexBehaviorTests
             + "3. Run `cat codex_probe.txt` and tell me the exact second line, verbatim.";
 
         await DriveAndRecordAsync("codex-multistep-toolchain", prompt);
+    }
+
+    [Fact]
+    public async Task Codex_BuiltInGitHubCliOAuth_DirectLeaseCompletesToolChain_ForVerdict()
+    {
+        var credentialSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_DIRECT_CREDENTIAL_SOURCE_DIRECTORY");
+        using var stagedCredential = string.IsNullOrWhiteSpace(credentialSource)
+            ? await StageDirectCredentialFromGitHubCliAsync()
+            : null;
+        credentialSource ??= stagedCredential!.Path;
+
+        const string canary = "codex-direct-oauth-canary-82419";
+        var prompt =
+            "Do these steps in order with real shell tools; do not fabricate output:\n"
+            + "1. Run a command that writes first-direct-line to direct_oauth_probe.txt.\n"
+            + $"2. Run a separate command that appends {canary}.\n"
+            + "3. Run a third command that reads the file, report its exact second line, and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-built-in-github-cli-oauth",
+            prompt,
+            credentialSourceDirectory: credentialSource,
+            expectedBridgeLogs:
+            [
+                "credential migration cleanup outcome=success version=2",
+                "Copilot direct lease trigger=deadline outcome=success credential_version=2",
+            ]);
+    }
+
+    [Fact]
+    public async Task Codex_MigratedVersionOne_ExchangeLeaseCompletesToolChain_ForVerdict()
+    {
+        var credentialSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_CREDENTIAL_SOURCE_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(credentialSource))
+            throw new InvalidOperationException(
+                "Set COPILOT_BRIDGE_TEST_CREDENTIAL_SOURCE_DIRECTORY to an installed bridge "
+                + "directory containing a valid encrypted legacy github_token.dat mirror.");
+
+        const string canary = "codex-migrated-v1-canary-39174";
+        var prompt =
+            "Do these steps in order with real shell tools; do not fabricate output:\n"
+            + "1. Run a command that writes first-v1-line to migrated_v1_probe.txt.\n"
+            + $"2. Run a separate command that appends {canary}.\n"
+            + "3. Run a third command that reads the file, report its exact second line, and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-migrated-version-one",
+            prompt,
+            credentialSourceDirectory: credentialSource,
+            expectedBridgeLogs: ["credential_version=1"]);
+    }
+
+    private static async Task<ClientBehaviorSupport.ScratchDir> StageDirectCredentialFromGitHubCliAsync()
+    {
+        var startInfo = new ProcessStartInfo("gh", "auth token --hostname github.com")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Failed to start gh for test credential staging.");
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        var token = (await outputTask).Trim();
+        var error = await errorTask;
+        if (process.ExitCode != 0 || !token.StartsWith("gho_", StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "Direct-auth behavior setup needs a logged-in GitHub CLI gho_ token. "
+                + $"gh exited {process.ExitCode}: {error.Trim()}");
+
+        var source = ClientBehaviorSupport.NewWorkDir("direct-auth-credential");
+        var record = new CredentialFileRecord
+        {
+            Version = CredentialFileRecord.GitHubCliOAuthVersion,
+            AccessToken = token,
+            TokenType = "bearer",
+            Scope = "repo,read:org,gist",
+            CredentialId = Guid.NewGuid().ToString("N"),
+            Generation = 1,
+        };
+        var plaintext = JsonSerializer.SerializeToUtf8Bytes(
+            record, JsonContext.Default.CredentialFileRecord);
+        var residualLegacyPlaintext = Encoding.UTF8.GetBytes("ghu_disposable_residual");
+        try
+        {
+            var entropy = Encoding.UTF8.GetBytes("copilot-bridge.github_token.v1");
+            var encrypted = ProtectedData.Protect(
+                plaintext,
+                entropy,
+                DataProtectionScope.CurrentUser);
+            File.WriteAllBytes(Path.Combine(source.Path, "github_credentials.dat"), encrypted);
+            var encryptedResidual = ProtectedData.Protect(
+                residualLegacyPlaintext,
+                entropy,
+                DataProtectionScope.CurrentUser);
+            File.WriteAllBytes(Path.Combine(source.Path, "github_token.dat"), encryptedResidual);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plaintext);
+            CryptographicOperations.ZeroMemory(residualLegacyPlaintext);
+        }
+        return source;
     }
 
     [Fact]
@@ -528,11 +642,14 @@ public class CodexBehaviorTests
         string? modelReasoningEffort = null,
         string? modelReasoningSummary = null,
         string expectedCodexVersion = ClientBehaviorSupport.CodexVersion,
-        ForcedCapiForbiddenOperation? forceCapiForbiddenOnce = null)
+        ForcedCapiForbiddenOperation? forceCapiForbiddenOnce = null,
+        string? credentialSourceDirectory = null,
+        IReadOnlyList<string>? expectedBridgeLogs = null)
     {
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
             ServeScenario.Passthrough,
-            ForceCapiForbiddenOnce: forceCapiForbiddenOnce));
+            ForceCapiForbiddenOnce: forceCapiForbiddenOnce,
+            CredentialSourceDirectory: credentialSourceDirectory));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
 
         // Disposable work dir so codex's file-writing tools mutate a throwaway dir, never
@@ -572,7 +689,9 @@ public class CodexBehaviorTests
                 ForcedCapiForbiddenOperation: forceCapiForbiddenOnce),
             result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
             out _, out _,
-            bridgeLog: forceCapiForbiddenOnce is null ? null : bridge.StderrAll);
+            bridgeLog: forceCapiForbiddenOnce is null && expectedBridgeLogs is null
+                ? null
+                : bridge.StderrAll);
 
         _output.WriteLine($"[manifest] {manifestPath}");
         _output.WriteLine("[verdict] run `/real-client-verify`; it reads the isolated SQLite log for this exact thread.");
@@ -595,6 +714,12 @@ public class CodexBehaviorTests
                 "classification=policy_or_entitlement_after_auth_replay",
                 bridge.StderrAll,
                 StringComparison.Ordinal);
+        }
+
+        if (expectedBridgeLogs is not null)
+        {
+            foreach (var expectedBridgeLog in expectedBridgeLogs)
+                Assert.Contains(expectedBridgeLog, bridge.StderrAll, StringComparison.Ordinal);
         }
 
         // Harness contract only. The skill owns the semantic SQLite verdict.

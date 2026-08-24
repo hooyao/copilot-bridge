@@ -47,11 +47,18 @@ public sealed class AuthenticationSecretRedactionTests : IDisposable
     public async Task Success_and_refresh_logs_never_contain_credential_material()
     {
         var protector = new TestProtector();
-        var store = new GitHubCredentialStore(
-            Path.Combine(_root, "primary"),
-            Path.Combine(_root, "fallback"),
-            protector);
-        store.SaveNew(Credential());
+        var store = new CredentialStore(Path.Combine(_root, "primary"), protector);
+        var source = Credential();
+        store.Save(new CredentialFileRecord
+        {
+            Version = CredentialFileRecord.CopilotPluginVersion,
+            AccessToken = source.AccessToken,
+            AccessTokenExpiresAt = source.AccessTokenExpiresAt,
+            RefreshToken = source.RefreshToken,
+            RefreshTokenExpiresAt = source.RefreshTokenExpiresAt,
+            CredentialId = "redaction-test",
+            Generation = source.Generation,
+        });
         var handler = new SequenceHandler(new Queue<HttpResponseMessage>([
             Json(HttpStatusCode.OK,
                 "{\"access_token\":\"" + NewAccess
@@ -64,13 +71,19 @@ public sealed class AuthenticationSecretRedactionTests : IDisposable
         ]));
         using var provider = new RecordingLoggerProvider();
         using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(provider));
-        using var auth = new AuthService(
-            new SingleClientHttpClientFactory(new HttpClient(handler)),
+        var factory = new SingleClientHttpClientFactory(new HttpClient(handler));
+        var credentials = new CredentialService(
+            factory,
             store,
             new ManualTimeProvider(_now),
+            loggerFactory.CreateLogger<CredentialService>());
+        using var auth = new AuthService(
+            factory,
+            credentials,
+            new ManualTimeProvider(_now),
             loggerFactory,
-            onDeviceCodeIssued: null,
-            enableBackgroundRefresh: false);
+            enableBackgroundRefresh: false,
+            ownsCredentialService: true);
 
         _ = await auth.GetCopilotTokenAsync(ct: CancellationToken.None);
 

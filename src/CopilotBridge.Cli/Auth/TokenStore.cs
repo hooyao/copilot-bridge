@@ -15,12 +15,9 @@ namespace CopilotBridge.Cli.Auth;
 ///   identity (<see cref="DerivedKeyTokenProtector"/>), since DPAPI is Windows-only. Weaker than
 ///   DPAPI/Keychain but never plaintext; see <c>docs/token-storage.md</c>.</item>
 /// </list>
-/// <para>
-/// Lookup prefers the authoritative v2 primary/fallback records, then the raw
-/// <see cref="FilePath"/> / <see cref="FallbackPath"/> compatibility mirrors.
-/// New device logins save v2 next to the executable; refresh writes back to the
-/// loaded v2 path. Deletes clear every representation so logout is total.
-/// </para>
+/// <para>The sole runtime authority is the versioned, encrypted
+/// <c>github_credentials.dat</c> beside the executable. CredentialService owns
+/// migration, refresh, login, and cleanup.</para>
 /// <para>
 /// Platform dispatch lives entirely in <see cref="CreateProtector"/>: the DPAPI type is the only
 /// Windows-attributed surface in the assembly, constructed only under an
@@ -38,52 +35,15 @@ internal static class TokenStore
     // Lazily-created so the OS dispatch and any machine-id probing happen once, on first use.
     private static readonly ITokenProtector s_protector = CreateProtector();
 
-    private static readonly GitHubCredentialStore s_store = new(
-        AppContext.BaseDirectory,
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        s_protector);
-
-    /// <summary>Legacy-compatible raw access-token mirror next to the executable.</summary>
-    public static string FilePath => s_store.LegacyPrimaryPath;
-
-    /// <summary>Legacy raw access-token home fallback.</summary>
-    public static string FallbackPath => s_store.LegacyFallbackPath;
-
-    /// <summary>Authoritative v2 credential location next to the executable.</summary>
-    public static string CredentialFilePath => s_store.VersionedPrimaryPath;
-
-    /// <summary>Authoritative v2 home fallback, when one exists.</summary>
-    public static string CredentialFallbackPath => s_store.VersionedFallbackPath;
-
-    internal static GitHubCredentialStore CredentialStore => s_store;
-
-    public static string? TryLoad() => s_store.TryLoad()?.Record.AccessToken;
-
-    internal static StoredGitHubCredential? TryLoadCredential() => s_store.TryLoad();
-
-    public static void Save(string token)
-    {
-        s_store.SaveLegacy(token);
-    }
-
-    internal static void SaveCredential(GitHubCredentialRecord record) => s_store.SaveNew(record);
-
-    public static void Delete()
-    {
-        s_store.Delete();
-    }
+    internal static CredentialStore CreateUnifiedCredentialStore(
+        Action<string>? diagnostic = null) =>
+        new(AppContext.BaseDirectory, s_protector, diagnostic);
 
     private static ITokenProtector CreateProtector() =>
         OperatingSystem.IsWindows()
             ? new WindowsDpapiTokenProtector(s_entropy)
             : new DerivedKeyTokenProtector(new MachineKeyProvider());
 
-    /// <summary>
-    /// Write the encrypted blob to <paramref name="path"/>. On Unix, create the file with
-    /// <c>0600</c> permissions atomically (owner read/write only) — defense in depth even though the
-    /// contents are already ciphertext. On Windows, DPAPI already binds the blob to the user, and the
-    /// <see cref="FileStreamOptions.UnixCreateMode"/> setter is Windows-unsupported, so we use a plain write.
-    /// </summary>
     /// <summary>
     /// Non-destructive self-test of the active protector, for CI smoke on platforms we cannot build
     /// locally (Linux/macOS). Exercises the things only verifiable on the real OS — machine-id probing
@@ -109,7 +69,7 @@ internal static class TokenStore
             }
 
             // 2) Write via the real on-disk path (verifies UnixCreateMode 0600 doesn't throw).
-            GitHubCredentialStore.WriteBlobAtomic(tempPath, blob);
+            CredentialStore.WriteBlobAtomic(tempPath, blob);
 
             // 3) On unix, confirm the file really is 0600 (owner read/write only).
             if (!OperatingSystem.IsWindows())

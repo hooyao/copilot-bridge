@@ -38,7 +38,9 @@ internal static class RootCli
                 ct));
 
         // --- auth -----------------------------------------------------------
-        var authLogin = new Command("login", "Log in to GitHub via device-code flow");
+        var authLogin = new Command(
+            "login",
+            "Log in via the built-in GitHub CLI OAuth-compatible device flow (gh is not required)");
         authLogin.SetAction((_, _) => AuthCommand.LoginAsync());
 
         var authWhoami = new Command("whoami",
@@ -53,7 +55,7 @@ internal static class RootCli
         authLogout.SetAction((_, _) => Task.FromResult(AuthCommand.Logout()));
 
         var authCopilotStatus = new Command("copilot-status",
-            "Exchange/refresh auth and print Copilot expiry + base URL (never token bytes)");
+            "Resolve direct/exchanged auth and print Copilot mode + base URL (never token bytes)");
         authCopilotStatus.SetAction((_, _) => AuthCommand.CopilotStatusAsync());
 
         // Hidden command-auth helper for Codex model discovery. It prints a stable,

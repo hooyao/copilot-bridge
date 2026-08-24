@@ -100,8 +100,15 @@ node_modules/
 package.json
 package-lock.json
 
-# Encrypted GitHub token (DPAPI-protected, but never commit it anyway)
+# Encrypted GitHub credentials (protected, but never commit them anyway)
+github_credentials.dat
+github_credentials.dat.lock
+github_credentials.v2.dat
+github_credentials.v2.dat.lock
 github_token.dat
+.github_credentials.dat.*.tmp
+.github_credentials.v2.dat.*.tmp
+.github_token.dat.*.tmp
 
 # Bridge logs and harness scratch output. log/ = always-on text log;
 # request-traces/ = opt-in per-request JSON audit (Tracing.Enabled).

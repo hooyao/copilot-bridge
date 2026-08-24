@@ -238,9 +238,12 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
   under AOT — treat it as a build-time mistake, not a runtime one.
 - **ASP.NET minimal APIs must use strongly-typed delegate params** (no
   `[FromBody] dynamic`, no `object`) to stay AOT-friendly.
-- **`AuthService` is a sealed facade.** Callers only call
-  `GetCopilotTokenAsync()`; they never touch device-code flows, token files, or
-  refresh timers. Don't pierce the abstraction.
+- **Credential management stays behind the authentication facade.**
+  `CredentialService` exclusively owns device-code flows, credential paths,
+  encryption, migration, refresh, rejection state, status, and logout. Runtime
+  request callers obtain only immutable leases through `AuthService`; they never
+  inspect persisted records or choose credential versions. Don't pierce the
+  abstraction.
 - **Token storage dispatches on the OS at runtime, not at compile time.**
   `TokenStore` keeps one public surface and picks `WindowsDpapiTokenProtector`
   (DPAPI) on Windows vs `DerivedKeyTokenProtector` (machine-derived
@@ -286,7 +289,8 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
   accessibility modifiers).
 - PowerShell-shaped commands by default.
 - Keep local-only scratch out of commits (all gitignored already): `references/`,
-  `.mcp.json`, `.codex/config.toml`, `github_token.dat`, `log/`,
+  `.mcp.json`, `.codex/config.toml`, `github_credentials.dat`, legacy
+  `github_credentials.v2.dat` / `github_token.dat`, `log/`,
   `request-traces/`, session-handoff `.txt` dumps.
 - **New tests:** pure logic → `tests/CopilotBridge.UnitTests` (CI runs these —
   fast, no deps). Anything needing live Copilot or `claude.exe` →

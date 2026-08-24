@@ -26,6 +26,7 @@ namespace CopilotBridge.Cli.Models;
 [JsonSerializable(typeof(RefreshTokenRequest))]
 [JsonSerializable(typeof(AccessTokenResponse))]
 [JsonSerializable(typeof(GitHubCredentialRecord))]
+[JsonSerializable(typeof(CredentialFileRecord))]
 [JsonSerializable(typeof(GitHubUser))]
 // Public GitHub Releases REST surface — read anonymously by the startup
 // auto-update discovery client. A List<GitHubRelease> is the page shape; the

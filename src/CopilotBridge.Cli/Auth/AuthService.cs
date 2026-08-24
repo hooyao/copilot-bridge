@@ -10,9 +10,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace CopilotBridge.Cli.Auth;
 
 /// <summary>
-/// Sealed authentication facade. Owns device login, persisted GitHub OAuth
-/// refresh state, and in-memory Copilot bearer leases. Callers never read token
-/// files or invoke OAuth helpers directly.
+/// Authentication facade for Copilot leases. Credential files, migration, OAuth,
+/// refresh, and rejection state are exclusively owned by CredentialService.
 /// </summary>
 public sealed class AuthService : IAuthService, IDisposable
 {
@@ -23,13 +22,11 @@ public sealed class AuthService : IAuthService, IDisposable
     private static readonly TimeSpan RefreshFailureBackoff = TimeSpan.FromSeconds(30);
 
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly GitHubCredentialStore _credentialStore;
-    private readonly GitHubCredentialManager _githubCredentials;
+    private readonly CredentialService _credentials;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AuthService> _log;
-    private readonly Action<DeviceCodeChallenge> _onDeviceCodeIssued;
     private readonly bool _enableBackgroundRefresh;
-    private readonly SemaphoreSlim _githubLoginLock = new(1, 1);
+    private readonly bool _ownsCredentialService;
     private readonly SemaphoreSlim _copilotFetchLock = new(1, 1);
 
     private CopilotAuthLease? _copilotCache;
@@ -42,33 +39,28 @@ public sealed class AuthService : IAuthService, IDisposable
         Action<DeviceCodeChallenge>? onDeviceCodeIssued = null)
         : this(
             httpClientFactory,
-            TokenStore.CredentialStore,
+            CreateDefaultCredentialService(httpClientFactory, onDeviceCodeIssued),
             TimeProvider.System,
             NullLoggerFactory.Instance,
-            onDeviceCodeIssued,
-            enableBackgroundRefresh: true)
+            enableBackgroundRefresh: true,
+            ownsCredentialService: true)
     {
     }
 
     internal AuthService(
         IHttpClientFactory httpClientFactory,
-        GitHubCredentialStore credentialStore,
+        CredentialService credentials,
         TimeProvider timeProvider,
         ILoggerFactory loggerFactory,
-        Action<DeviceCodeChallenge>? onDeviceCodeIssued,
-        bool enableBackgroundRefresh)
+        bool enableBackgroundRefresh,
+        bool ownsCredentialService = false)
     {
         _httpClientFactory = httpClientFactory;
-        _credentialStore = credentialStore;
+        _credentials = credentials;
         _timeProvider = timeProvider;
         _log = loggerFactory.CreateLogger<AuthService>();
-        _onDeviceCodeIssued = onDeviceCodeIssued ?? (_ => { });
         _enableBackgroundRefresh = enableBackgroundRefresh;
-        _githubCredentials = new GitHubCredentialManager(
-            httpClientFactory,
-            credentialStore,
-            timeProvider,
-            loggerFactory.CreateLogger<GitHubCredentialManager>());
+        _ownsCredentialService = ownsCredentialService;
     }
 
     public bool IsAuthenticated
@@ -76,18 +68,15 @@ public sealed class AuthService : IAuthService, IDisposable
         get
         {
 #if DEBUG
-            // Deterministic behavior servers never contact GitHub or Copilot. Treat
-            // the Debug-only test upstream as authenticated so a real-client harness
-            // does not enter device flow merely to obtain a credential it cannot use.
             if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(
                     "COPILOT_BRIDGE_TEST_UPSTREAM_BASE_URL")))
                 return true;
 #endif
-            return _githubCredentials.IsAuthenticated;
+            return _credentials.IsAuthenticated;
         }
     }
 
-    public string TokenLocation => _githubCredentials.TokenLocation;
+    public string TokenLocation => _credentials.CredentialLocation;
 
     public string? CopilotApiBaseUrl
     {
@@ -105,6 +94,15 @@ public sealed class AuthService : IAuthService, IDisposable
     public DateTimeOffset? CopilotTokenExpiry =>
         Volatile.Read(ref _copilotCache)?.ServerExpiresAt;
 
+    internal CredentialStatus? GetCredentialStatus() => _credentials.GetStatus();
+
+    internal async ValueTask<CredentialLease> LoginAsync(CancellationToken ct = default)
+    {
+        StopRefreshTimer();
+        Volatile.Write(ref _copilotCache, null);
+        return await _credentials.LoginAsync(ct).ConfigureAwait(false);
+    }
+
     public async ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default)
     {
 #if DEBUG
@@ -112,50 +110,7 @@ public sealed class AuthService : IAuthService, IDisposable
                 "COPILOT_BRIDGE_TEST_UPSTREAM_BASE_URL")))
             return "behavior-test-github-token";
 #endif
-        if (_credentialStore.TryLoad() is not null)
-            return (await _githubCredentials.GetUsableAsync(ct).ConfigureAwait(false)).AccessToken;
-
-        await _githubLoginLock.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            if (_credentialStore.TryLoad() is not null)
-                return (await _githubCredentials.GetUsableAsync(ct).ConfigureAwait(false)).AccessToken;
-
-            var http = _httpClientFactory.CreateClient(UpstreamHttpClientNames.GitHubAuth);
-            var deviceCode = await GitHubAuthClient.RequestDeviceCodeAsync(http, ct)
-                .ConfigureAwait(false);
-            _onDeviceCodeIssued(new DeviceCodeChallenge(
-                deviceCode.UserCode,
-                deviceCode.VerificationUri,
-                TimeSpan.FromSeconds(deviceCode.ExpiresIn)));
-
-            var response = await GitHubAuthClient.PollAccessTokenAsync(http, deviceCode, ct)
-                .ConfigureAwait(false);
-            var credential = GitHubCredentialRecord.FromOAuthResponse(
-                response,
-                _timeProvider.GetUtcNow(),
-                generation: 1);
-            var mirrorSaved = _credentialStore.SaveNew(credential);
-            _githubCredentials.ClearTerminalRejection();
-            if (!mirrorSaved)
-            {
-                _log.LogWarning(
-                    "GitHub device login outcome=success legacy_mirror=failed generation={Generation}",
-                    credential.Generation);
-            }
-            _log.LogInformation(
-                "GitHub device login outcome=success credential_format=v2 refreshable={Refreshable} "
-                + "expires_in_seconds={ExpiresInSeconds} "
-                + "refresh_expires_in_seconds={RefreshExpiresInSeconds}",
-                credential.IsRefreshable,
-                RemainingSeconds(credential.AccessTokenExpiresAt),
-                RemainingSeconds(credential.RefreshTokenExpiresAt));
-            return credential.AccessToken;
-        }
-        finally
-        {
-            _githubLoginLock.Release();
-        }
+        return (await _credentials.EnsureUsableAsync(ct).ConfigureAwait(false)).AccessToken;
     }
 
     public async ValueTask<CopilotAuthLease> GetCopilotTokenAsync(
@@ -182,6 +137,16 @@ public sealed class AuthService : IAuthService, IDisposable
         }
 #endif
 
+        var rejectsDirectCredential = RejectsDirectCredential(rejection);
+        if (rejectsDirectCredential)
+        {
+            var rejected = rejection!.Value.Lease;
+            _credentials.MarkTerminal(
+                rejected.CredentialVersion,
+                rejected.CredentialId,
+                rejected.CredentialGeneration);
+        }
+
         var snapshot = Volatile.Read(ref _copilotCache);
         if (CanReuse(snapshot, rejection)) return snapshot!;
 
@@ -193,7 +158,9 @@ public sealed class AuthService : IAuthService, IDisposable
 
             var rejectingCurrent = rejection is not null
                 && snapshot is not null
-                && snapshot.Generation == rejection.Value.Lease.Generation;
+                && (rejectsDirectCredential
+                    ? SameCredential(snapshot, rejection.Value.Lease)
+                    : snapshot.Generation == rejection.Value.Lease.Generation);
             if (rejectingCurrent)
             {
                 Volatile.Write(ref _copilotCache, null);
@@ -201,7 +168,9 @@ public sealed class AuthService : IAuthService, IDisposable
             }
 
             return await FetchAndCacheAsync(
-                rejectingCurrent ? TriggerFor(rejection!.Value.Reason) : "deadline",
+                rejectingCurrent || rejectsDirectCredential
+                    ? TriggerFor(rejection!.Value.Reason)
+                    : "deadline",
                 ct).ConfigureAwait(false);
         }
         finally
@@ -210,33 +179,23 @@ public sealed class AuthService : IAuthService, IDisposable
         }
     }
 
-    internal async ValueTask<GitHubUser> GetGitHubUserAsync(
-        CancellationToken ct = default)
+    internal async ValueTask<GitHubUser> GetGitHubUserAsync(CancellationToken ct = default)
     {
-        var credential = await _githubCredentials.GetUsableAsync(ct).ConfigureAwait(false);
+        var credential = await _credentials.GetUsableAsync(ct).ConfigureAwait(false);
         using var first = await SendGitHubUserRequestAsync(credential.AccessToken, ct)
             .ConfigureAwait(false);
         if (first.StatusCode != HttpStatusCode.Unauthorized)
             return await ReadGitHubUserAsync(first, ct).ConfigureAwait(false);
 
-        GitHubCredentialRecord refreshed;
-        try
-        {
-            refreshed = await _githubCredentials.RefreshAfterRejectionAsync(
-                credential, ct).ConfigureAwait(false);
-        }
-        catch (GitHubReauthenticationRequiredException)
-        {
-            _githubCredentials.MarkTerminallyRejected(credential);
-            throw;
-        }
-        using var second = await SendGitHubUserRequestAsync(refreshed.AccessToken, ct)
+        var recovered = await _credentials.RecoverAfterRejectionAsync(credential, ct)
+            .ConfigureAwait(false);
+        using var second = await SendGitHubUserRequestAsync(recovered.AccessToken, ct)
             .ConfigureAwait(false);
         if (second.StatusCode == HttpStatusCode.Unauthorized)
         {
-            _githubCredentials.MarkTerminallyRejected(refreshed);
+            _credentials.MarkTerminal(recovered);
             throw new GitHubReauthenticationRequiredException(
-                "the refreshed GitHub access token was also rejected by user lookup",
+                "the recovered GitHub credential was also rejected by user lookup",
                 new GitHubApiRequestException("user lookup", second.StatusCode));
         }
         return await ReadGitHubUserAsync(second, ct).ConfigureAwait(false);
@@ -246,8 +205,7 @@ public sealed class AuthService : IAuthService, IDisposable
     {
         StopRefreshTimer();
         Volatile.Write(ref _copilotCache, null);
-        _credentialStore.Delete();
-        _githubCredentials.ClearTerminalRejection();
+        _credentials.SignOut();
     }
 
     public void Dispose()
@@ -255,19 +213,28 @@ public sealed class AuthService : IAuthService, IDisposable
         if (_disposed) return;
         _disposed = true;
         StopRefreshTimer();
-        _githubCredentials.Dispose();
-        _githubLoginLock.Dispose();
+        if (_ownsCredentialService) _credentials.Dispose();
         _copilotFetchLock.Dispose();
     }
 
-    private bool CanReuse(
-        CopilotAuthLease? snapshot,
-        CopilotLeaseRejection? rejection)
+    private bool CanReuse(CopilotAuthLease? snapshot, CopilotLeaseRejection? rejection)
     {
-        if (snapshot is null || snapshot.RefreshAt <= _timeProvider.GetUtcNow())
-            return false;
-        return rejection is null || snapshot.Generation != rejection.Value.Lease.Generation;
+        if (snapshot is null || snapshot.RefreshAt <= _timeProvider.GetUtcNow()) return false;
+        if (rejection is null) return true;
+        return RejectsDirectCredential(rejection)
+            ? !SameCredential(snapshot, rejection.Value.Lease)
+            : snapshot.Generation != rejection.Value.Lease.Generation;
     }
+
+    private static bool RejectsDirectCredential(CopilotLeaseRejection? rejection) =>
+        rejection is { } value
+        && value.Reason == CopilotLeaseRejectionReason.Unauthorized
+        && value.Lease.Kind == CopilotLeaseKind.Direct;
+
+    private static bool SameCredential(CopilotAuthLease left, CopilotAuthLease right) =>
+        left.CredentialVersion == right.CredentialVersion
+        && string.Equals(left.CredentialId, right.CredentialId, StringComparison.Ordinal)
+        && left.CredentialGeneration == right.CredentialGeneration;
 
     private static string TriggerFor(CopilotLeaseRejectionReason reason) => reason switch
     {
@@ -276,11 +243,11 @@ public sealed class AuthService : IAuthService, IDisposable
         _ => throw new ArgumentOutOfRangeException(nameof(reason)),
     };
 
-    private async Task<CopilotAuthLease> FetchAndCacheAsync(
-        string trigger,
-        CancellationToken ct)
+    private async Task<CopilotAuthLease> FetchAndCacheAsync(string trigger, CancellationToken ct)
     {
-        var credential = await _githubCredentials.GetUsableAsync(ct).ConfigureAwait(false);
+        var credential = await _credentials.GetUsableAsync(ct).ConfigureAwait(false);
+        if (credential.IsDirect) return PublishDirectLease(credential, trigger);
+
         CopilotTokenResponse response;
         try
         {
@@ -289,17 +256,8 @@ public sealed class AuthService : IAuthService, IDisposable
         }
         catch (GitHubApiRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized)
         {
-            try
-            {
-                credential = await _githubCredentials.RefreshAfterRejectionAsync(
-                    credential, ct).ConfigureAwait(false);
-            }
-            catch (GitHubReauthenticationRequiredException)
-            {
-                _githubCredentials.MarkTerminallyRejected(credential);
-                throw;
-            }
-
+            credential = await _credentials.RecoverAfterRejectionAsync(credential, ct)
+                .ConfigureAwait(false);
             try
             {
                 response = await FetchCopilotTokenAsync(credential.AccessToken, ct)
@@ -308,9 +266,9 @@ public sealed class AuthService : IAuthService, IDisposable
             catch (GitHubApiRequestException retryEx) when (
                 retryEx.StatusCode == HttpStatusCode.Unauthorized)
             {
-                _githubCredentials.MarkTerminallyRejected(credential);
+                _credentials.MarkTerminal(credential);
                 throw new GitHubReauthenticationRequiredException(
-                    "the refreshed GitHub access token was also rejected", retryEx);
+                    "the recovered GitHub credential was also rejected", retryEx);
             }
         }
 
@@ -318,8 +276,7 @@ public sealed class AuthService : IAuthService, IDisposable
         var effectiveExpiry = receivedAt.AddSeconds(Math.Max(1, response.RefreshIn))
             + CopilotReceiptBuffer;
         var refreshAt = effectiveExpiry - CopilotSafetyWindow;
-        if (refreshAt <= receivedAt)
-            refreshAt = receivedAt + MinRefreshDelay;
+        if (refreshAt <= receivedAt) refreshAt = receivedAt + MinRefreshDelay;
 
         DateTimeOffset serverExpiry;
         try { serverExpiry = DateTimeOffset.FromUnixTimeSeconds(response.ExpiresAt); }
@@ -332,16 +289,49 @@ public sealed class AuthService : IAuthService, IDisposable
             RefreshAt = refreshAt,
             ServerExpiresAt = serverExpiry,
             Generation = Interlocked.Increment(ref _copilotGeneration),
+            CredentialVersion = credential.Version,
+            CredentialId = credential.CredentialId,
+            CredentialGeneration = credential.Generation,
         };
         Volatile.Write(ref _copilotCache, lease);
         ScheduleRefresh(refreshAt - receivedAt);
         _log.LogInformation(
             "Copilot bearer refresh trigger={Trigger} outcome=success generation={Generation} "
-            + "api_host={ApiHost} refresh_in_seconds={RefreshInSeconds}",
+            + "credential_version={CredentialVersion} api_host={ApiHost} "
+            + "refresh_in_seconds={RefreshInSeconds}",
             trigger,
             lease.Generation,
+            credential.Version,
             SafeHost(lease.ApiBaseUrl),
             Math.Max(0, (long)(refreshAt - receivedAt).TotalSeconds));
+        return lease;
+    }
+
+    private CopilotAuthLease PublishDirectLease(CredentialLease credential, string trigger)
+    {
+        StopRefreshTimer();
+        var expiry = credential.AccessTokenExpiresAt ?? DateTimeOffset.MaxValue;
+        var lease = new CopilotAuthLease
+        {
+            Token = credential.AccessToken,
+            ApiBaseUrl = DefaultCopilotApiBaseUrl,
+            RefreshAt = expiry,
+            ServerExpiresAt = expiry,
+            Generation = Interlocked.Increment(ref _copilotGeneration),
+            Kind = CopilotLeaseKind.Direct,
+            CredentialVersion = credential.Version,
+            CredentialId = credential.CredentialId,
+            CredentialGeneration = credential.Generation,
+        };
+        Volatile.Write(ref _copilotCache, lease);
+        _log.LogInformation(
+            "Copilot direct lease trigger={Trigger} outcome=success credential_version={CredentialVersion} "
+            + "generation={Generation} api_host={ApiHost} expiry_known={ExpiryKnown}",
+            trigger,
+            credential.Version,
+            lease.Generation,
+            SafeHost(lease.ApiBaseUrl),
+            credential.AccessTokenExpiresAt is not null);
         return lease;
     }
 
@@ -350,8 +340,7 @@ public sealed class AuthService : IAuthService, IDisposable
         CancellationToken ct)
     {
         var http = _httpClientFactory.CreateClient(UpstreamHttpClientNames.GitHubAuth);
-        return await CopilotTokenClient.FetchAsync(http, githubToken, ct)
-            .ConfigureAwait(false);
+        return await CopilotTokenClient.FetchAsync(http, githubToken, ct).ConfigureAwait(false);
     }
 
     private async Task<HttpResponseMessage> SendGitHubUserRequestAsync(
@@ -405,10 +394,7 @@ public sealed class AuthService : IAuthService, IDisposable
                 if (_disposed) return;
                 await FetchAndCacheAsync("timer", CancellationToken.None).ConfigureAwait(false);
             }
-            finally
-            {
-                _copilotFetchLock.Release();
-            }
+            finally { _copilotFetchLock.Release(); }
         }
         catch (GitHubReauthenticationRequiredException ex)
         {
@@ -426,10 +412,14 @@ public sealed class AuthService : IAuthService, IDisposable
         }
     }
 
-    private long? RemainingSeconds(DateTimeOffset? expiry) =>
-        expiry is null
-            ? null
-            : Math.Max(0, (long)(expiry.Value - _timeProvider.GetUtcNow()).TotalSeconds);
+    private static CredentialService CreateDefaultCredentialService(
+        IHttpClientFactory factory,
+        Action<DeviceCodeChallenge>? onDeviceCodeIssued) => new(
+            factory,
+            TokenStore.CreateUnifiedCredentialStore(),
+            TimeProvider.System,
+            NullLogger<CredentialService>.Instance,
+            onDeviceCodeIssued);
 
     private static string SafeHost(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : "(invalid)";

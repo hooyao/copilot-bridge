@@ -53,7 +53,7 @@ internal static class UpstreamHttpClientNames
     public const string Metadata = "copilot-metadata";
 
     /// <summary>
-    /// GitHub OAuth device-code flow and Copilot token exchange/refresh. Targets
+    /// GitHub OAuth device-code/refresh, user lookup, and legacy Copilot token exchange. Targets
     /// <c>github.com</c> / <c>api.github.com</c> rather than the Copilot API origin,
     /// and is separated for its <b>timeout policy</b>: these are short requests on a
     /// background refresh timer, so unlike the model surfaces this client keeps a

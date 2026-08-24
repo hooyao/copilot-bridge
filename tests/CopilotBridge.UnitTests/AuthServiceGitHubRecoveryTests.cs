@@ -79,7 +79,7 @@ public sealed class AuthServiceGitHubRecoveryTests : IDisposable
         var error = await Assert.ThrowsAsync<GitHubReauthenticationRequiredException>(() =>
             auth.GetCopilotTokenAsync(ct: CancellationToken.None).AsTask());
 
-        Assert.Contains("auth logout", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("auth login", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Single(handler.Requests);
         Assert.Equal("ghu_legacy", store.TryLoad()!.Record.AccessToken);
 
@@ -243,13 +243,11 @@ public sealed class AuthServiceGitHubRecoveryTests : IDisposable
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
     }
 
-    private GitHubCredentialStore CreateStore(bool refreshable)
+    private TestCredentialStore CreateStore(bool refreshable)
     {
         var suffix = Guid.NewGuid().ToString("N");
-        var store = new GitHubCredentialStore(
-            Path.Combine(_root, suffix, "primary"),
-            Path.Combine(_root, suffix, "fallback"),
-            new TestProtector());
+        var store = new TestCredentialStore(
+            new CredentialStore(Path.Combine(_root, suffix, "primary"), new TestProtector()));
         if (!refreshable)
         {
             store.SaveLegacy("ghu_legacy");
@@ -267,13 +265,11 @@ public sealed class AuthServiceGitHubRecoveryTests : IDisposable
         return store;
     }
 
-    private GitHubCredentialStore CreateStoreWith(GitHubCredentialRecord credential)
+    private TestCredentialStore CreateStoreWith(GitHubCredentialRecord credential)
     {
         var suffix = Guid.NewGuid().ToString("N");
-        var store = new GitHubCredentialStore(
-            Path.Combine(_root, suffix, "primary"),
-            Path.Combine(_root, suffix, "fallback"),
-            new TestProtector());
+        var store = new TestCredentialStore(
+            new CredentialStore(Path.Combine(_root, suffix, "primary"), new TestProtector()));
         store.SaveNew(credential);
         return store;
     }
@@ -293,18 +289,28 @@ public sealed class AuthServiceGitHubRecoveryTests : IDisposable
         };
 
     private AuthService CreateAuth(
-        GitHubCredentialStore store,
+        TestCredentialStore store,
         HttpMessageHandler handler,
         TimeProvider? timeProvider = null,
         ILoggerFactory? loggerFactory = null,
-        bool enableBackgroundRefresh = false) =>
-        new(
-            new SingleClientHttpClientFactory(new HttpClient(handler)),
-            store,
-            timeProvider ?? new ManualTimeProvider(_now),
-            loggerFactory ?? NullLoggerFactory.Instance,
-            onDeviceCodeIssued: null,
-            enableBackgroundRefresh);
+        bool enableBackgroundRefresh = false)
+    {
+        var time = timeProvider ?? new ManualTimeProvider(_now);
+        var logs = loggerFactory ?? NullLoggerFactory.Instance;
+        var factory = new SingleClientHttpClientFactory(new HttpClient(handler));
+        var credentials = new CredentialService(
+            factory,
+            store.Store,
+            time,
+            logs.CreateLogger<CredentialService>());
+        return new AuthService(
+            factory,
+            credentials,
+            time,
+            logs,
+            enableBackgroundRefresh,
+            ownsCredentialService: true);
+    }
 
     private static async Task EventuallyAsync(Func<bool> predicate)
     {
@@ -515,4 +521,50 @@ public sealed class AuthServiceGitHubRecoveryTests : IDisposable
             return blob[1..].Select(x => (byte)(x ^ 0x33)).ToArray();
         }
     }
+
+    private sealed class TestCredentialStore(CredentialStore store)
+    {
+        public CredentialStore Store { get; } = store;
+
+        public void SaveLegacy(string accessToken) => Store.Save(new CredentialFileRecord
+        {
+            Version = CredentialFileRecord.CopilotPluginVersion,
+            AccessToken = accessToken,
+            CredentialId = Guid.NewGuid().ToString("N"),
+            Generation = 0,
+        });
+
+        public void SaveNew(GitHubCredentialRecord record) => Store.Save(new CredentialFileRecord
+        {
+            Version = CredentialFileRecord.CopilotPluginVersion,
+            AccessToken = record.AccessToken,
+            AccessTokenExpiresAt = record.AccessTokenExpiresAt,
+            RefreshToken = record.RefreshToken,
+            RefreshTokenExpiresAt = record.RefreshTokenExpiresAt,
+            TokenType = record.TokenType,
+            Scope = record.Scope,
+            CredentialId = record.CredentialId,
+            Generation = record.Generation,
+        });
+
+        public LoadedCredential? TryLoad()
+        {
+            var record = Store.TryLoad();
+            if (record is null) return null;
+            return new LoadedCredential(
+                new GitHubCredentialRecord
+                {
+                    AccessToken = record.AccessToken,
+                    AccessTokenExpiresAt = record.AccessTokenExpiresAt,
+                    RefreshToken = record.RefreshToken,
+                    RefreshTokenExpiresAt = record.RefreshTokenExpiresAt,
+                    TokenType = record.TokenType,
+                    Scope = record.Scope,
+                    CredentialId = record.CredentialId,
+                    Generation = record.Generation,
+                });
+        }
+    }
+
+    private sealed record LoadedCredential(GitHubCredentialRecord Record);
 }

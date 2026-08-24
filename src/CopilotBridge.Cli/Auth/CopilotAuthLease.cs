@@ -1,7 +1,8 @@
 namespace CopilotBridge.Cli.Auth;
 
 /// <summary>
-/// One immutable authentication generation for Copilot CAPI. Token and endpoint
+/// One immutable authentication generation for Copilot CAPI. Direct or exchanged
+/// bearer and endpoint
 /// must travel together; Generation lets a CAPI authentication rejection discard
 /// only the lease actually used instead of a newer concurrent refresh.
 /// </summary>
@@ -12,11 +13,21 @@ public sealed record CopilotAuthLease
     public required DateTimeOffset RefreshAt { get; init; }
     public required DateTimeOffset ServerExpiresAt { get; init; }
     public required long Generation { get; init; }
+    public CopilotLeaseKind Kind { get; init; }
+    internal int CredentialVersion { get; init; }
+    internal string CredentialId { get; init; } = "";
+    internal long CredentialGeneration { get; init; }
 
     public override string ToString() =>
         $"CopilotAuthLease {{ Token = (redacted), ApiBaseUrl = {ApiBaseUrl}, "
         + $"RefreshAt = {RefreshAt:O}, ServerExpiresAt = {ServerExpiresAt:O}, "
-        + $"Generation = {Generation} }}";
+        + $"Generation = {Generation}, Kind = {Kind} }}";
+}
+
+public enum CopilotLeaseKind
+{
+    Exchanged,
+    Direct,
 }
 
 /// <summary>

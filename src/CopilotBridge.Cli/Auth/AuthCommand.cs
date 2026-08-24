@@ -21,18 +21,12 @@ internal static class AuthCommand
     public static async Task<int> LoginAsync()
     {
         using var http = CreateHttpClient();
-        var auth = new AuthService(new SingleClientHttpClientFactory(http), OnDeviceCodeIssued);
-
-        if (auth.IsAuthenticated)
-        {
-            Console.WriteLine($"Already logged in. Token: {auth.TokenLocation}");
-            Console.WriteLine("Run `auth logout` to sign out, or `auth whoami` to verify.");
-            return 0;
-        }
+        using var auth = new AuthService(
+            new SingleClientHttpClientFactory(http), OnDeviceCodeIssued);
 
         try
         {
-            await auth.EnsureGitHubTokenAsync();
+            await auth.LoginAsync();
             Console.WriteLine();
             Console.WriteLine("Login complete. Encrypted token saved to:");
             Console.WriteLine($"  {auth.TokenLocation}");
@@ -75,54 +69,50 @@ internal static class AuthCommand
 
     public static int Logout()
     {
-        var primaryExisted = File.Exists(TokenStore.FilePath);
-        var fallbackExisted = File.Exists(TokenStore.FallbackPath);
-        var v2PrimaryExisted = File.Exists(TokenStore.CredentialFilePath);
-        var v2FallbackExisted = File.Exists(TokenStore.CredentialFallbackPath);
-        if (!primaryExisted && !fallbackExisted && !v2PrimaryExisted && !v2FallbackExisted)
-        {
-            Console.WriteLine("Not logged in.");
-            return 0;
-        }
-        TokenStore.Delete();
-        if (primaryExisted) Console.WriteLine($"Deleted: {TokenStore.FilePath}");
-        if (fallbackExisted) Console.WriteLine($"Deleted: {TokenStore.FallbackPath}");
-        if (v2PrimaryExisted) Console.WriteLine($"Deleted: {TokenStore.CredentialFilePath}");
-        if (v2FallbackExisted) Console.WriteLine($"Deleted: {TokenStore.CredentialFallbackPath}");
+        using var http = CreateHttpClient();
+        using var auth = new AuthService(new SingleClientHttpClientFactory(http));
+        return Logout(auth, Console.Out);
+    }
+
+    internal static int Logout(AuthService auth, TextWriter output)
+    {
+        var location = auth.TokenLocation;
+        auth.SignOut();
+        output.WriteLine($"Deleted stored credentials from: {location}");
         return 0;
     }
 
     public static int Status()
     {
-        var loaded = TokenStore.TryLoadCredential();
-        if (loaded is null)
+        using var http = CreateHttpClient();
+        using var auth = new AuthService(new SingleClientHttpClientFactory(http));
+        var status = auth.GetCredentialStatus();
+        if (status is null)
         {
             Console.WriteLine("Not logged in.");
-            Console.WriteLine($"  v2 primary:     {TokenStore.CredentialFilePath}  (exists: {File.Exists(TokenStore.CredentialFilePath)})");
-            Console.WriteLine($"  v2 fallback:    {TokenStore.CredentialFallbackPath}  (exists: {File.Exists(TokenStore.CredentialFallbackPath)})");
-            Console.WriteLine($"  legacy primary: {TokenStore.FilePath}  (exists: {File.Exists(TokenStore.FilePath)})");
-            Console.WriteLine($"  legacy fallback:{TokenStore.FallbackPath}  (exists: {File.Exists(TokenStore.FallbackPath)})");
+            Console.WriteLine($"  credential: {auth.TokenLocation}  (exists: False)");
             return 0;
         }
         Console.WriteLine("Logged in.");
-        Console.WriteLine($"  loaded from: {loaded.AuthoritativePath}");
-        Console.WriteLine($"  format:      {loaded.Format.ToString().ToLowerInvariant()}");
-        Console.WriteLine($"  refreshable: {loaded.Record.IsRefreshable}");
-        Console.WriteLine($"  access expires:  {loaded.Record.AccessTokenExpiresAt?.ToString("O") ?? "(unknown)"}");
-        Console.WriteLine($"  refresh expires: {loaded.Record.RefreshTokenExpiresAt?.ToString("O") ?? "(none)"}");
+        Console.WriteLine($"  loaded from: {status.Path}");
+        Console.WriteLine($"  version:     {status.Version}");
+        Console.WriteLine($"  mode:        {(status.IsDirect ? "direct" : "exchanged")}");
+        Console.WriteLine($"  refreshable: {status.IsRefreshable}");
+        Console.WriteLine($"  generation:  {status.Generation}");
+        Console.WriteLine($"  access expires:  {status.AccessTokenExpiresAt?.ToString("O") ?? "(unknown)"}");
+        Console.WriteLine($"  refresh expires: {status.RefreshTokenExpiresAt?.ToString("O") ?? "(none)"}");
         return 0;
     }
 
     public static async Task<int> CopilotStatusAsync()
     {
-        if (TokenStore.TryLoad() is null)
+        using var http = CreateHttpClient();
+        using var auth = new AuthService(new SingleClientHttpClientFactory(http));
+        if (!auth.IsAuthenticated)
         {
             Console.Error.WriteLine("Not logged in. Run `auth login` first.");
             return 1;
         }
-
-        using var http = CreateHttpClient();
-        using var auth = new AuthService(new SingleClientHttpClientFactory(http));
 
         try
         {
@@ -139,10 +129,14 @@ internal static class AuthCommand
 
     internal static void WriteCopilotStatus(TextWriter output, CopilotAuthLease lease)
     {
-        output.WriteLine($"Token expires at:      {lease.ServerExpiresAt:O}");
-        output.WriteLine($"Token refresh at:      {lease.RefreshAt:O}");
+        output.WriteLine($"Authentication mode:   {lease.Kind.ToString().ToLowerInvariant()}");
+        output.WriteLine($"Token expires at:      {FormatDeadline(lease.ServerExpiresAt)}");
+        output.WriteLine($"Token refresh at:      {FormatDeadline(lease.RefreshAt)}");
         output.WriteLine($"Copilot API base URL:  {lease.ApiBaseUrl}");
     }
+
+    private static string FormatDeadline(DateTimeOffset value) =>
+        value == DateTimeOffset.MaxValue ? "(unknown)" : value.ToString("O");
 
     private static HttpClient CreateHttpClient()
     {

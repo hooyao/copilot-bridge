@@ -179,7 +179,8 @@ directory** (no shell), so `copilot-bridge` stays `copilot-bridge` and
 `serve --port 18765` stays `serve --port 18765`. The recovery launch suppresses
 the update check for that one launch, so a failed release can never loop.
 
-Only the managed release files are ever touched. `github_token.dat`, `log/`,
+Only the managed release files are ever touched. `github_credentials.dat`, legacy
+`github_credentials.v2.dat` / `github_token.dat`, `log/`,
 request traces, unrelated `.bak` files, and any unknown user file in the
 install directory are preserved through both success and rollback.
 
