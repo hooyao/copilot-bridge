@@ -494,6 +494,89 @@ public class CodexBehaviorTests
             result.ExitCode, bridge.TraceDir, manifestPath);
     }
 
+    [Fact]
+    public async Task Codex_ContextWindow400_TrimsCompactionAndCompletesToolTurn_ForVerdict()
+    {
+        const string caseId = "codex-native-context-recovery";
+        const string canary = "codex-context-recovery-canary-64082";
+        const string firstPrompt =
+            "Seed the bounded first turn, report that it is ready, and stop.";
+        const string secondPrompt =
+            "After any required context recovery, execute the requested real tool task, "
+            + "report the exact canary, and stop.";
+
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        using var codexHome = ClientBehaviorSupport.NewWorkDir(caseId + "-home");
+        await using var upstream = CodexContextRecoveryUpstreamServer.Start(work.Path, canary);
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.PassthroughTestUpstream,
+            TestUpstreamBaseUrl: upstream.BaseUrl,
+            StreamIdleTimeoutSeconds: 30,
+            KeepAliveIntervalSeconds: 0));
+
+        var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: firstPrompt,
+            FollowUpPrompt: secondPrompt,
+            Model: ClientBehaviorSupport.LatestGpt,
+            Timeout: TimeSpan.FromMinutes(3),
+            CodexHome: codexHome.Path,
+            WorkingDirectory: work.Path,
+            ExpectedCodexVersion: ClientBehaviorSupport.CodexVersion,
+            ModelReasoningEffort: "max",
+            ModelReasoningSummary: "detailed",
+            ModelContextWindow: 1_000,
+            ModelAutoCompactTokenLimit: 850));
+
+        Assert.Equal(1, upstream.ContextRejections);
+        Assert.True(upstream.CompactionRequests >= 2,
+            $"Codex did not retry compaction (requests={upstream.CompactionRequests}).");
+        Assert.True(upstream.ReducedCompactionRequests >= 1,
+            "Codex never retried compaction with reduced retained history.");
+        Assert.True(upstream.ToolOutputRequests >= 1,
+            "Codex never echoed the post-compact custom exec output.");
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "codex",
+                Route: "/codex",
+                Model: ClientBehaviorSupport.LatestGpt,
+                Scenario: ServeScenario.PassthroughTestUpstream,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: result.DispatchLogPath,
+                DispatchSinceUnix: result.StartedUnixSeconds,
+                DispatchUntilUnix: result.EndedUnixSeconds,
+                Prompt: $"turn1={firstPrompt} turn2={secondPrompt} "
+                    + $"limit=850 context=1000 canary={canary}",
+                DispatchThreadId: result.ThreadId),
+            result.Stdout,
+            result.Stderr,
+            ClientBehaviorSupport.Stamp(),
+            out _,
+            out _);
+
+        _output.WriteLine(
+            $"context recovery upstream={upstream.BaseUrl} turns={upstream.TurnRequests} "
+            + $"compactions={upstream.CompactionRequests} rejected={upstream.ContextRejections} "
+            + $"reduced={upstream.ReducedCompactionRequests} tool-output={upstream.ToolOutputRequests}");
+        _output.WriteLine($"bridge={bridge.BaseUrl} trace={bridge.TraceDir}");
+        _output.WriteLine(
+            $"dispatch log={result.DispatchLogPath} thread={result.ThreadId} "
+            + $"window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine(
+            "[verdict] require raw upstream 400 plus client-facing response.failed/"
+            + "context_length_exceeded, a smaller compaction retry, successful compact summary, "
+            + "custom_tool_call plus matching output, final canary, no generic bad-request/abort, "
+            + "and zero router/dispatch fatals in Codex's own SQLite log.");
+
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(
+            result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
     /// <summary>
     /// Native Codex keepalive behavior: the deterministic Responses upstream emits
     /// <c>response.created</c>, stays byte-silent for longer than this run's isolated

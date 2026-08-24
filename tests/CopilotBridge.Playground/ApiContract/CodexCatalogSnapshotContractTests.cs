@@ -27,7 +27,7 @@ public sealed class CodexCatalogSnapshotContractTests
             var model = Find(projected.Models, slug);
             Assert.Equal(1_050_000, model.GetProperty("context_window").GetInt32());
             Assert.Equal(1_050_000, model.GetProperty("max_context_window").GetInt32());
-            Assert.Equal(898_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+            Assert.Equal(892_000, model.GetProperty("auto_compact_token_limit").GetInt32());
         }
 
         Assert.Equal(400_000, Find(projected.Models, "gpt-5.4-mini").GetProperty("context_window").GetInt32());

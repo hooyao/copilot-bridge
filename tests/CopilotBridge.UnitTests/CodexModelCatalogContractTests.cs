@@ -122,15 +122,25 @@ public sealed class CodexModelCatalogContractTests
     }
 
     [Fact]
-    public void OneMillionClassLimitsMapTotalAndCompactBelowPromptCeiling()
+    public void OneMillionClassLimitsMapTotalAndCompactAtEightyFivePercent()
     {
         var result = Project(LoadBaseline(), [Live("gpt-5.4", 1_050_000, 922_000, 128_000)]);
         var model = Find(result.Models, "gpt-5.4");
 
         Assert.Equal(1_050_000, model.GetProperty("context_window").GetInt32());
         Assert.Equal(1_050_000, model.GetProperty("max_context_window").GetInt32());
-        Assert.Equal(898_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+        Assert.Equal(892_000, model.GetProperty("auto_compact_token_limit").GetInt32());
         Assert.True(model.GetProperty("auto_compact_token_limit").GetInt32() < 922_000);
+    }
+
+    [Fact]
+    public void PromptDerivedGuardWinsWhenLowerThanEightyFivePercentOfTotal()
+    {
+        var result = Project(LoadBaseline(), [Live("gpt-5.4", 1_000_000, 800_000, 200_000)]);
+        var model = Find(result.Models, "gpt-5.4");
+
+        Assert.Equal(780_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+        Assert.True(model.GetProperty("auto_compact_token_limit").GetInt32() < 800_000);
     }
 
     [Theory]
