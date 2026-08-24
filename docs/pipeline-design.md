@@ -181,6 +181,22 @@ full set:
 > reorder that client code, so real-client acceptance guards the bridge-owned
 > continuous-turn leg and records the remaining client limitation explicitly.
 
+> **2026-08-24 — native Codex context recovery.** Copilot rejects an oversized
+> `/responses` request before streaming with HTTP 400,
+> `error.code=invalid_request_body`, and a confirmed context-window sentence.
+> Codex 0.147 and current upstream classify that HTTP shape as a generic bad
+> request; only a native `response.failed` event whose code is
+> `context_length_exceeded` enters Codex's context-recovery path. The native
+> `/codex/responses` client edge therefore adapts only the exact bounded Copilot
+> rejection for a streaming request into HTTP 200 `text/event-stream` with one
+> such failed terminal. The raw `upstream-resp` retains status 400 and the exact
+> body, while `inbound-resp` records the adapted status/event. Near-miss 400s,
+> non-streaming calls, other routes/vendors, malformed or oversized error bodies,
+> and the distinct Claude prompt-too-long translation remain unchanged. Because
+> the production failure occurred during pre-turn compaction, the catalog safety
+> policy also caps `auto_compact_token_limit` at 85% of total context (still
+> subject to the lower prompt-derived guard and whole-thousand rounding).
+
 > **2026-08 — native Codex request fidelity.** The request remains a real
 > `Responses → T1 → IR → T2 → Responses` traversal; it does not bypass the IR.
 > T1 pushes provider-native fields, source positions, and unmodeled siblings into
@@ -759,7 +775,7 @@ Ownership is strict:
 - **Copilot owns backend capacity.** Only exact bridge Responses profiles that
   are also advertised live with `/responses` remain API-supported. Valid live
   `max_context_window_tokens` raises `context_window` and
-  `max_context_window`; `auto_compact_token_limit` is the lower of 90% total
+  `max_context_window`; `auto_compact_token_limit` is the lower of 85% total
   and 97.5% maximum prompt, rounded down to 1,000. Invalid or missing limits do
   not raise the validated exact-version baseline.
 - **The bridge owns the safe join.** Live-only models are never synthesized,

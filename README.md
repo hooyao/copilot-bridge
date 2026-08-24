@@ -162,8 +162,9 @@ Codex project/profile/CLI layers can still affect a particular future process.
 For the current 1M-class gpt models (`gpt-5.4`, `gpt-5.5`, and the three
 `gpt-5.6` codenames), Copilot reports **1,050,000 total context**, **922,000
 maximum prompt**, and 128,000 maximum output. The bridge advertises the truthful
-1.05M total window but tells Codex to auto-compact at **898,000 tokens**. Think
-of it as a safe roughly 900k working threshold — not 1.05M tokens of prompt
+1.05M total window but tells Codex to auto-compact at **892,000 tokens** (85% of
+total context, rounded down to a whole thousand). Think of it as a safe roughly
+890k working threshold — not 1.05M tokens of prompt
 capacity. Explicit user context overrides are preserved and may intentionally
 select a smaller window.
 

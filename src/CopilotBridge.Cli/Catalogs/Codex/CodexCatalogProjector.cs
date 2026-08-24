@@ -116,7 +116,7 @@ internal sealed class CodexCatalogProjector
             (long)limits.MaxPromptTokens.Value + limits.MaxOutputTokens.Value > limits.MaxContextWindowTokens.Value)
             return false;
         total = limits.MaxContextWindowTokens.Value;
-        var totalPolicy = total * 9L / 10L;
+        var totalPolicy = total * 85L / 100L;
         var promptPolicy = limits.MaxPromptTokens.Value * 975L / 1000L;
         compact = checked((int)(Math.Min(totalPolicy, promptPolicy) / 1000L * 1000L));
         return compact > 0 && compact < limits.MaxPromptTokens.Value;

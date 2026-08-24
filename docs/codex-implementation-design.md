@@ -289,7 +289,8 @@ verified during implementation (was Q5).
   using that complete identity; contradictory recognized identity fails before I/O.
 - Copilot `/models` owns backend membership and limits. Current 1M-class entries
   report 1,050,000 total / 922,000 maximum prompt / 128,000 maximum output;
-  Codex receives 1,050,000 total and an explicit 898,000 auto-compact threshold.
+  Codex receives 1,050,000 total and an explicit 892,000 auto-compact threshold
+  (85% of total context, rounded down, while retaining the lower prompt guard).
 - `config codex` manages `[model_providers.copilot-bridge.auth]`. Its hidden
   `auth provider-token` command prints a stable public sentinel; the real
   GitHub/Copilot credential remains exclusively inside `AuthService`.

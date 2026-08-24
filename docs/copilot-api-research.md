@@ -556,15 +556,15 @@ Captured Copilot metadata for the current Responses models:
 
 | Models | Total context | Maximum prompt | Maximum output | Bridge auto-compact |
 | --- | ---: | ---: | ---: | ---: |
-| `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,terra}` | 1,050,000 | 922,000 | 128,000 | 898,000 |
+| `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,terra}` | 1,050,000 | 922,000 | 128,000 | 892,000 |
 | `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 | 265,000 |
 | `gpt-5-mini` | 264,000 | 128,000 | 64,000 | 124,000 |
 | `mai-code-1-flash-picker` | 256,000 | 128,000 | 128,000 | 124,000 |
 
 The projection publishes total context as `context_window` and
-`max_context_window`, then compacts at `min(90% total, 97.5% prompt)` rounded
+`max_context_window`, then compacts at `min(85% total, 97.5% prompt)` rounded
 down to 1,000. Thus 1,050,000 is not a claim of 1,050,000-token prompt capacity:
-the safe working threshold is 898,000, below Copilot's 922,000 prompt ceiling.
+the safe working threshold is 892,000, below Copilot's 922,000 prompt ceiling.
 Missing, non-positive, or inconsistent limits keep the reviewed Codex baseline.
 
 These limits are accepted as metadata only after live real-Codex-shaped requests
@@ -614,6 +614,39 @@ cause an early compact at a new user-turn boundary even after the bridge sends t
 correct signal; it must not be “fixed” by falsifying usage or inflating Copilot's
 live-probed context limits. The bridge-owned regression path is a continuous
 multi-tool turn, plus an ordinary live-client execution check.
+
+#### 3.3.3 Native Codex context-error recovery (verified 2026-08-24)
+
+A production `gpt-5.6-sol` parent thread reached automatic pre-turn compaction
+with 2,528 retained input items, including 850 encrypted reasoning items and 768
+tool call/output pairs. The compaction request itself was rejected before SSE
+started:
+
+```json
+{"error":{"message":"Your input exceeds the context window of this model. Please adjust your input and try again.","code":"invalid_request_body"}}
+```
+
+Copilot returns that exact body as HTTP 400. Codex 0.147 and current upstream do
+not classify this HTTP error as `ContextWindowExceeded`; they recognize the
+recoverable condition only from a native `response.failed` SSE event whose
+`error.code` is `context_length_exceeded`. Relaying the 400 therefore bypassed
+Codex's existing compact-recovery loop, and the next attempt retained the same
+history.
+
+For a streaming native `/codex/responses` request, the bridge now adapts only
+this exact bounded status/code/message tuple at the client edge: raw
+`upstream-resp` remains the original HTTP 400, while `inbound-resp` is HTTP 200
+`text/event-stream` with one bridge-owned `response.failed` terminal and no
+`X-Reasoning-Included`. Other 400s, malformed/oversized bodies, non-streaming
+calls, `/cc`, and non-Responses routes are unchanged.
+
+Real Codex app-server verification injected the production 400 on the first
+pre-turn compact attempt. Codex logged the expected removal of its oldest history
+item, retried with 8 items instead of 9, accepted the compact summary, executed a
+custom `exec` tool with two nested shell operations, echoed the matching output,
+and completed with zero router/dispatch fatals. The independent 85% catalog
+policy lowers the normal compaction trigger, while the exact adapter remains the
+recovery net when an oversized prompt still reaches Copilot.
 
 ### 3.4 Request headers Copilot expects (for `/v1/messages`)
 

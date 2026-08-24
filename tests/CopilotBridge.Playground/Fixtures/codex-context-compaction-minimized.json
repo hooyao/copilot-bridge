@@ -1,0 +1,89 @@
+{
+  "_meta": {
+    "source": "De-identified minimization of the 2026-08-24 native Codex pre-turn compaction failure",
+    "preserved_axes": [
+      "streaming native /codex request",
+      "request_kind=compaction",
+      "auto/context_limit/responses/pre_turn/memento metadata",
+      "reasoning plus tool history",
+      "exact Copilot context-window error"
+    ]
+  },
+  "request": {
+    "model": "gpt-5.6-sol",
+    "input": [
+      {
+        "type": "additional_tools",
+        "role": "developer",
+        "tools": []
+      },
+      {
+        "type": "message",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "De-identified project instructions."
+          }
+        ]
+      },
+      {
+        "type": "reasoning",
+        "encrypted_content": "DEIDENTIFIED_ENCRYPTED_REASONING",
+        "summary": [
+          {
+            "type": "summary_text",
+            "text": "Prepared the prior tool step."
+          }
+        ]
+      },
+      {
+        "type": "custom_tool_call",
+        "id": "ctc_minimized_exec",
+        "call_id": "call_minimized_exec",
+        "name": "exec",
+        "input": "text('ok');",
+        "status": "completed"
+      },
+      {
+        "type": "custom_tool_call_output",
+        "id": "out_minimized_exec",
+        "call_id": "call_minimized_exec",
+        "output": "ok"
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary."
+          }
+        ]
+      }
+    ],
+    "reasoning": {
+      "effort": "max",
+      "summary": "detailed",
+      "context": "all_turns"
+    },
+    "stream": true,
+    "store": false,
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "client_metadata": {
+      "x-codex-turn-metadata": "{\"request_kind\":\"compaction\",\"thread_source\":\"user\",\"compaction\":{\"trigger\":\"auto\",\"reason\":\"context_limit\",\"implementation\":\"responses\",\"phase\":\"pre_turn\",\"strategy\":\"memento\"}}"
+    }
+  },
+  "upstream_response": {
+    "status": 400,
+    "content_type": "text/plain; charset=utf-8",
+    "body": {
+      "error": {
+        "message": "Your input exceeds the context window of this model. Please adjust your input and try again.",
+        "code": "invalid_request_body"
+      }
+    }
+  }
+}

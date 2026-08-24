@@ -29,8 +29,12 @@ public sealed class PinnedCodexCatalogConsumerTests
     public async Task Endpoint_catalog_deserializes_in_real_pinned_Codex_with_instructions_intact()
     {
         var codexExe = ResolvePinnedCodexExe();
+        await using var upstream = new CodexCommandAuthCaptureServer(
+            await File.ReadAllTextAsync(CopilotSnapshotPath()));
         await using var bridge = await ServeProcess.StartAsync(
-            new ServeInvocation(ServeScenario.Passthrough));
+            new ServeInvocation(
+                ServeScenario.PassthroughTestUpstream,
+                TestUpstreamBaseUrl: upstream.BaseUrl));
         using var home = ClientBehaviorSupport.NewWorkDir("pinned-codex-catalog-consumer");
 
         var version = await RunCodexAsync(codexExe, home.Path, ["--version"]);
@@ -74,7 +78,7 @@ public sealed class PinnedCodexCatalogConsumerTests
 
         var expectedLatest = endpointModels[ClientBehaviorSupport.LatestGpt];
         Assert.Equal(1_050_000, expectedLatest.GetProperty("context_window").GetInt32());
-        Assert.Equal(898_000, expectedLatest.GetProperty("auto_compact_token_limit").GetInt32());
+        Assert.Equal(892_000, expectedLatest.GetProperty("auto_compact_token_limit").GetInt32());
 
         var cachePath = Path.Combine(home.Path, "models_cache.json");
         Assert.True(File.Exists(cachePath), "real Codex did not persist the remote catalog");
@@ -82,7 +86,7 @@ public sealed class PinnedCodexCatalogConsumerTests
         Assert.Equal(PinnedVersion, cache.RootElement.GetProperty("client_version").GetString());
         var cachedLatest = BySlug(cache.RootElement)[ClientBehaviorSupport.LatestGpt];
         Assert.Equal(1_050_000, cachedLatest.GetProperty("context_window").GetInt32());
-        Assert.Equal(898_000, cachedLatest.GetProperty("auto_compact_token_limit").GetInt32());
+        Assert.Equal(892_000, cachedLatest.GetProperty("auto_compact_token_limit").GetInt32());
 
         _output.WriteLine(
             $"Codex {PinnedVersion} consumed {renderedModels.Count} endpoint entries; " +
@@ -96,6 +100,22 @@ public sealed class PinnedCodexCatalogConsumerTests
                 model => model.GetProperty("slug").GetString()!,
                 model => model.Clone(),
                 StringComparer.Ordinal);
+
+    private static string CopilotSnapshotPath()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
+             directory is not null;
+             directory = directory.Parent)
+        {
+            var candidate = Path.Combine(
+                directory.FullName,
+                "docs",
+                "copilot-codex-model-capabilities-snapshot.json");
+            if (File.Exists(candidate)) return candidate;
+        }
+        throw new FileNotFoundException(
+            "Could not locate the committed Copilot model capability snapshot.");
+    }
 
     private static string ResolvePinnedCodexExe()
     {

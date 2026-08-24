@@ -126,6 +126,16 @@ public class CodexEndpointTests
        "stream":false,"store":false}
       """;
 
+    private const string StreamingRequest = """
+      {"model":"gpt-5.6-sol","instructions":"x",
+       "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}],
+       "stream":true,"store":false,
+       "client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"compaction\",\"compaction\":{\"trigger\":\"auto\",\"reason\":\"context_limit\",\"implementation\":\"responses\",\"phase\":\"pre_turn\",\"strategy\":\"memento\"}}"}}
+      """;
+
+    private const string ConfirmedContextError =
+        "{\"error\":{\"message\":\"Your input exceeds the context window of this model. Please adjust your input and try again.\",\"code\":\"invalid_request_body\"}}";
+
     private const string ReasoningIncludedHeader = "X-Reasoning-Included";
 
     // ── deserialize failures → 400 ───────────────────────────────────────────
@@ -355,6 +365,60 @@ public class CodexEndpointTests
         Assert.Equal(StatusCodes.Status400BadRequest, result.Http.Response.StatusCode);
         Assert.False(result.Http.Response.Headers.ContainsKey(ReasoningIncludedHeader));
         Assert.False(result.ResponseFeature.ReasoningIncludedPresentAtStart);
+    }
+
+    [Fact]
+    public async Task StreamingConfirmedContextError_BecomesOneRecoverableFailedTerminal()
+    {
+        var upstreamBytes = Encoding.UTF8.GetBytes(ConfirmedContextError);
+        var result = await InvokeDetailed(StreamingRequest, ctx =>
+        {
+            ctx.Target = new RouteTarget(BackendVendor.CopilotResponses, "/responses", "gpt-5.6-sol");
+            ctx.Response.Status = StatusCodes.Status400BadRequest;
+            ctx.Response.Mode = ResponseMode.Buffered;
+            ctx.Response.BufferedBody = upstreamBytes;
+            ctx.Response.RawUpstreamResponseBody = upstreamBytes;
+            ctx.Response.Headers["Content-Type"] = "text/plain; charset=utf-8";
+            ctx.Response.Headers["Content-Length"] = upstreamBytes.Length.ToString();
+        }, tracingEnabled: true);
+
+        Assert.Equal(StatusCodes.Status200OK, result.Http.Response.StatusCode);
+        Assert.Equal("text/event-stream", result.Http.Response.ContentType);
+        Assert.False(result.Http.Response.Headers.ContainsKey(ReasoningIncludedHeader));
+        Assert.Equal(1, result.Body.Split("event: response.failed", StringSplitOptions.None).Length - 1);
+        Assert.DoesNotContain("event: response.completed", result.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain("event: response.incomplete", result.Body, StringComparison.Ordinal);
+        Assert.Contains("\"code\":\"context_length_exceeded\"", result.Body, StringComparison.Ordinal);
+
+        var upstream = result.Audits.Single(audit => audit.Kind == "upstream-resp");
+        Assert.Equal(StatusCodes.Status400BadRequest, upstream.Status);
+        Assert.Equal(ConfirmedContextError, Encoding.UTF8.GetString(upstream.Body, 0, upstream.BodyLength));
+
+        var inbound = result.Audits.Single(audit => audit.Kind == "inbound-resp");
+        Assert.Equal(StatusCodes.Status200OK, inbound.Status);
+        Assert.Equal("text/event-stream", inbound.Headers["Content-Type"]);
+        Assert.False(inbound.Headers.ContainsKey("Content-Length"));
+        Assert.False(inbound.Headers.ContainsKey(ReasoningIncludedHeader));
+        var failed = Assert.Single(inbound.Events!);
+        Assert.Equal("response.failed", failed.EventType);
+        Assert.True(failed.Injected);
+        Assert.Contains("\"code\":\"context_length_exceeded\"", failed.Data, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task NonStreamingConfirmedContextError_RemainsOriginal400()
+    {
+        var (status, body) = await Invoke(ValidRequest, ctx =>
+        {
+            ctx.Target = new RouteTarget(BackendVendor.CopilotResponses, "/responses", "gpt-5.6-sol");
+            ctx.Response.Status = StatusCodes.Status400BadRequest;
+            ctx.Response.Mode = ResponseMode.Buffered;
+            ctx.Response.BufferedBody = Encoding.UTF8.GetBytes(ConfirmedContextError);
+            ctx.Response.Headers["Content-Type"] = "text/plain; charset=utf-8";
+        });
+
+        Assert.Equal(StatusCodes.Status400BadRequest, status);
+        Assert.Equal(ConfirmedContextError, body);
     }
 
     [Fact]

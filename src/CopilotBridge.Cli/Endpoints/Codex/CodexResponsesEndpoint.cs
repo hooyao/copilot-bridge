@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.ServerSentEvents;
 using System.Text;
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
@@ -12,6 +13,7 @@ using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Routing;
 using CopilotBridge.Cli.Pipeline.Strategies;
+using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -191,14 +193,45 @@ internal static class CodexResponsesEndpoint
                 responseHeaders[k] = v;
             var shouldSignalReasoningIncluded = ShouldSignalReasoningIncluded(bridgeCtx);
             var reasoningIncludedSignaled = false;
+            var contextFailure = default(SseItem<string>);
+            var adaptContextFailure = bridgeCtx.Target is { } responseTarget
+                && bridgeCtx.Response.BufferedBody is { } bufferedBody
+                && NativeCodexContextWindowErrorAdapter.TryCreate(
+                    bridgeCtx.Request.Path,
+                    responseTarget.Vendor,
+                    bridgeCtx.Response.Status,
+                    clientBody.Stream == true,
+                    bufferedBody,
+                    bridgeCtx.Request.Body.Model,
+                    out contextFailure);
 
-            httpCtx.Response.StatusCode = responseStatus;
             // The wire content type back to Codex is event-stream (streaming) or
             // json (buffered). Force event-stream on the streaming path.
-            summary.Streaming = bridgeCtx.Response.Mode == ResponseMode.Streaming;
+            summary.Streaming = adaptContextFailure
+                || bridgeCtx.Response.Mode == ResponseMode.Streaming;
 
-            if (bridgeCtx.Response.Mode == ResponseMode.Streaming && bridgeCtx.Response.EventStream is not null)
+            if (adaptContextFailure)
             {
+                responseStatus = StatusCodes.Status200OK;
+                responseHeaders.Remove("Content-Length");
+                responseHeaders["Content-Type"] = "text/event-stream";
+                httpCtx.Response.StatusCode = responseStatus;
+                httpCtx.Response.ContentType = "text/event-stream";
+                capturedEvents = audit.NewEventList();
+                capturedEvents?.Add(new CapturedSseEvent(
+                    contextFailure.EventType,
+                    contextFailure.Data,
+                    Filtered: false,
+                    Injected: true));
+                await WriteSseEventAsync(
+                    httpCtx.Response,
+                    contextFailure.EventType,
+                    contextFailure.Data,
+                    ct);
+            }
+            else if (bridgeCtx.Response.Mode == ResponseMode.Streaming && bridgeCtx.Response.EventStream is not null)
+            {
+                httpCtx.Response.StatusCode = responseStatus;
                 httpCtx.Response.ContentType = "text/event-stream";
                 // Only buffer per-event copies for the audit when tracing is on.
                 capturedEvents = audit.NewEventList();
@@ -221,6 +254,7 @@ internal static class CodexResponsesEndpoint
             }
             else if (bridgeCtx.Response.BufferedBody is not null)
             {
+                httpCtx.Response.StatusCode = responseStatus;
                 var outBody = await outboundAdapter.AdaptBufferedAsync(bridgeCtx.Response.BufferedBody, ct);
                 if (shouldSignalReasoningIncluded)
                 {
