@@ -55,3 +55,5 @@
 - [x] 6.2 Include the selected legacy source format in successful migration telemetry.
 - [x] 6.3 Correct the API research note so raw migration remains explicitly
   token-prefix-opaque.
+- [x] 6.4 Split real-client credential staging into raw-legacy and validated
+  non-refreshable version-2 modes so tests cannot copy a live rotating refresh token.

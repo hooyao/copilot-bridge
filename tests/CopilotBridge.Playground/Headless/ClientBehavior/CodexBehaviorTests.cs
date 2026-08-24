@@ -97,6 +97,7 @@ public class CodexBehaviorTests
             "codex-built-in-github-cli-oauth",
             prompt,
             credentialSourceDirectory: credentialSource,
+            credentialStagingMode: CredentialStagingMode.PurposeBuiltDirectVersionTwo,
             expectedBridgeLogs:
             [
                 "credential migration cleanup outcome=success version=2",
@@ -159,17 +160,11 @@ public class CodexBehaviorTests
             CredentialId = Guid.NewGuid().ToString("N"),
             Generation = 1,
         };
-        var plaintext = JsonSerializer.SerializeToUtf8Bytes(
-            record, JsonContext.Default.CredentialFileRecord);
+        WriteProtectedCredential(source.Path, record);
         var residualLegacyPlaintext = Encoding.UTF8.GetBytes("ghu_disposable_residual");
         try
         {
             var entropy = Encoding.UTF8.GetBytes("copilot-bridge.github_token.v1");
-            var encrypted = ProtectedData.Protect(
-                plaintext,
-                entropy,
-                DataProtectionScope.CurrentUser);
-            File.WriteAllBytes(Path.Combine(source.Path, "github_credentials.dat"), encrypted);
             var encryptedResidual = ProtectedData.Protect(
                 residualLegacyPlaintext,
                 entropy,
@@ -178,10 +173,54 @@ public class CodexBehaviorTests
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(plaintext);
             CryptographicOperations.ZeroMemory(residualLegacyPlaintext);
         }
         return source;
+    }
+
+    [Fact]
+    public void Direct_staging_rejects_a_refresh_bearing_version_one_unified_credential()
+    {
+        using var source = ClientBehaviorSupport.NewWorkDir("invalid-direct-credential");
+        using var destination = ClientBehaviorSupport.NewWorkDir("invalid-direct-destination");
+        WriteProtectedCredential(source.Path, new CredentialFileRecord
+        {
+            Version = CredentialFileRecord.CopilotPluginVersion,
+            AccessToken = "ghu_do_not_copy",
+            RefreshToken = "ghr_single_use_do_not_copy",
+            CredentialId = "refresh-bearing-version-one",
+            Generation = 1,
+        });
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            ServeProcess.StageExplicitCredential(
+                source.Path,
+                destination.Path,
+                CredentialStagingMode.PurposeBuiltDirectVersionTwo));
+
+        Assert.Contains("non-refreshable version-2", error.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(destination.Path, "github_credentials.dat")));
+    }
+
+    private static void WriteProtectedCredential(
+        string directory,
+        CredentialFileRecord record)
+    {
+        var plaintext = JsonSerializer.SerializeToUtf8Bytes(
+            record, JsonContext.Default.CredentialFileRecord);
+        try
+        {
+            var entropy = Encoding.UTF8.GetBytes("copilot-bridge.github_token.v1");
+            var encrypted = ProtectedData.Protect(
+                plaintext,
+                entropy,
+                DataProtectionScope.CurrentUser);
+            File.WriteAllBytes(Path.Combine(directory, "github_credentials.dat"), encrypted);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plaintext);
+        }
     }
 
     [Fact]
@@ -644,12 +683,14 @@ public class CodexBehaviorTests
         string expectedCodexVersion = ClientBehaviorSupport.CodexVersion,
         ForcedCapiForbiddenOperation? forceCapiForbiddenOnce = null,
         string? credentialSourceDirectory = null,
+        CredentialStagingMode credentialStagingMode = CredentialStagingMode.LegacyRawMirror,
         IReadOnlyList<string>? expectedBridgeLogs = null)
     {
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
             ServeScenario.Passthrough,
             ForceCapiForbiddenOnce: forceCapiForbiddenOnce,
-            CredentialSourceDirectory: credentialSourceDirectory));
+            CredentialSourceDirectory: credentialSourceDirectory,
+            CredentialStagingMode: credentialStagingMode));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
 
         // Disposable work dir so codex's file-writing tools mutate a throwaway dir, never

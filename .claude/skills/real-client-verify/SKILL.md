@@ -23,9 +23,11 @@ compatibility: >-
   file-based app (dotnet run scripts/read-codex-log.cs). If the encrypted credential
   exists only beside an installed bridge, set
   COPILOT_BRIDGE_TEST_CREDENTIAL_SOURCE_DIRECTORY to that directory; ServeProcess
-  stages an explicit disposable credential set (a raw legacy mirror, a purpose-built
-  unified test credential, or both); it never stages the old refresh-bearing v2 record
-  and never modifies source files.
+  stages only its raw legacy mirror. Direct-auth tests use the separate
+  COPILOT_BRIDGE_TEST_DIRECT_CREDENTIAL_SOURCE_DIRECTORY and accept only a purpose-built,
+  non-refreshable version-2 unified record (or build one from `gh auth token`); they
+  reject installed version-1 and refresh-bearing records before copying. Source files
+  are never modified.
 metadata:
   author: cc-copilot-bridge
   version: "1.0"
