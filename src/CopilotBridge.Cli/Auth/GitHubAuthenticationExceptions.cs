@@ -45,7 +45,7 @@ internal sealed class GitHubReauthenticationRequiredException : InvalidOperation
     public GitHubReauthenticationRequiredException(string reason, Exception? inner = null)
         : base(
             $"Stored GitHub credentials cannot be refreshed ({reason}). "
-            + "Run `auth logout`, then `auth login`.",
+            + "Run `auth login` to replace them with the newest credential version.",
             inner)
     {
     }

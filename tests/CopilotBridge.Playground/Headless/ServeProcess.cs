@@ -1,7 +1,11 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using CopilotBridge.Cli.Auth;
+using CopilotBridge.Cli.Models;
+using CopilotBridge.Cli.Models.GitHub;
 
 namespace CopilotBridge.Playground.Headless;
 
@@ -28,9 +32,9 @@ namespace CopilotBridge.Playground.Headless;
 /// <c>_Locations_disabled</c> route to active <c>Locations</c>. Patching the real file
 /// (rather than shipping a hand-written duplicate) keeps the whole <c>Pipeline</c>
 /// block — runaway/leak guards, detectors — byte-identical to production, so the
-/// flywheel can never drift from what ships. The GitHub token is found via the store's
-/// <c>~/github_token.dat</c> fallback (same Windows user → DPAPI decrypts), so it need
-/// not be copied.</para>
+/// flywheel can never drift from what ships. Credentials are never inherited from the
+/// build output: callers explicitly select either the raw legacy mirror or a validated,
+/// purpose-built, non-refreshable version-2 unified test credential.</para>
 /// <para><b>Readiness.</b> Startup logs go to the console; Serilog routes everything
 /// at/above Verbose to <b>stderr</b> (<c>SerilogBootstrapper</c> —
 /// <c>standardErrorFromLevel: Verbose</c>), so we watch stderr for the "listening on
@@ -59,7 +63,14 @@ internal sealed record ServeInvocation(
     string? CodexConfigPath = null,
     string? ClaudeVersion = null,
     string? CredentialSourceDirectory = null,
+    CredentialStagingMode CredentialStagingMode = CredentialStagingMode.LegacyRawMirror,
     string? WorkingDirectory = null);
+
+internal enum CredentialStagingMode
+{
+    LegacyRawMirror,
+    PurposeBuiltDirectVersionTwo,
+}
 
 /// <summary>
 /// The appsettings shape a behavior run needs. Each value is applied by patching the
@@ -265,8 +276,10 @@ internal static class ServeProcess
                     "COPILOT_BRIDGE_TEST_CREDENTIAL_SOURCE_DIRECTORY");
             if (!string.IsNullOrWhiteSpace(credentialSourceDirectory))
             {
-                StageEncryptedAccessTokenMirror(
-                    credentialSourceDirectory, scratchDir);
+                StageExplicitCredential(
+                    credentialSourceDirectory,
+                    scratchDir,
+                    inv.CredentialStagingMode);
             }
             Directory.CreateDirectory(traceDir);
             PatchAppSettings(
@@ -548,11 +561,11 @@ internal static class ServeProcess
             var rel = Path.GetRelativePath(source, file);
 
             // Never copy a credential implicitly from build output. An explicit
-            // CredentialSourceDirectory stages only the legacy access-token mirror
-            // separately after this copy. Never stage v2: its rotating refresh token is
+            // CredentialSourceDirectory stages one explicitly selected format separately
+            // after this copy. Never stage legacy v2: its rotating refresh token is
             // single-use, and refreshing an independent copy would invalidate the source.
             var name = Path.GetFileName(file);
-            if (GitHubCredentialStore.IsCredentialArtifactName(name))
+            if (CredentialStore.IsCredentialArtifactName(name))
                 continue;
 
             // Skip the bridge's own runtime output subtrees if a prior JIT run left them
@@ -604,9 +617,10 @@ internal static class ServeProcess
             + "Build the CLI project first.");
     }
 
-    private static void StageEncryptedAccessTokenMirror(
+    internal static void StageExplicitCredential(
         string sourceDirectory,
-        string scratchDir)
+        string scratchDir,
+        CredentialStagingMode mode)
     {
         var sourceRoot = Path.GetFullPath(sourceDirectory);
         if (!Directory.Exists(sourceRoot))
@@ -615,13 +629,79 @@ internal static class ServeProcess
                 $"Credential source directory does not exist: {sourceRoot}");
         }
 
-        const string mirrorName = "github_token.dat";
-        var source = Path.Combine(sourceRoot, mirrorName);
+        switch (mode)
+        {
+            case CredentialStagingMode.LegacyRawMirror:
+                CopyRequiredCredential(sourceRoot, scratchDir, "github_token.dat");
+                return;
+            case CredentialStagingMode.PurposeBuiltDirectVersionTwo:
+                var unifiedPath = Path.Combine(sourceRoot, "github_credentials.dat");
+                ValidatePurposeBuiltDirectCredential(unifiedPath);
+                File.Copy(
+                    unifiedPath,
+                    Path.Combine(scratchDir, "github_credentials.dat"),
+                    overwrite: false);
+                var residualRaw = Path.Combine(sourceRoot, "github_token.dat");
+                if (File.Exists(residualRaw))
+                {
+                    File.Copy(
+                        residualRaw,
+                        Path.Combine(scratchDir, "github_token.dat"),
+                        overwrite: false);
+                }
+                return;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
+        }
+    }
+
+    private static void CopyRequiredCredential(
+        string sourceRoot,
+        string scratchDir,
+        string fileName)
+    {
+        var source = Path.Combine(sourceRoot, fileName);
         if (!File.Exists(source))
             throw new FileNotFoundException(
-                "Credential source directory has no encrypted legacy access-token mirror.",
+                $"Credential source directory has no required {fileName}.",
                 source);
-        File.Copy(source, Path.Combine(scratchDir, mirrorName), overwrite: false);
+        File.Copy(source, Path.Combine(scratchDir, fileName), overwrite: false);
+    }
+
+    private static void ValidatePurposeBuiltDirectCredential(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+            throw new PlatformNotSupportedException(
+                "Purpose-built direct credential staging currently requires Windows DPAPI.");
+        if (!File.Exists(path))
+            throw new FileNotFoundException(
+                "Direct credential source has no github_credentials.dat.", path);
+
+        var entropy = Encoding.UTF8.GetBytes("copilot-bridge.github_token.v1");
+        var plaintext = ProtectedData.Unprotect(
+            File.ReadAllBytes(path),
+            entropy,
+            DataProtectionScope.CurrentUser);
+        try
+        {
+            var record = JsonSerializer.Deserialize(
+                    plaintext, JsonContext.Default.CredentialFileRecord)
+                ?? throw new InvalidOperationException(
+                    "Direct credential source contains an empty unified record.");
+            if (record.Version != CredentialFileRecord.GitHubCliOAuthVersion
+                || string.IsNullOrWhiteSpace(record.AccessToken)
+                || record.IsRefreshable)
+            {
+                throw new InvalidOperationException(
+                    "Direct credential staging requires a purpose-built, non-refreshable "
+                    + "version-2 github_credentials.dat; installed version-1 and "
+                    + "refresh-bearing records cannot be copied.");
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plaintext);
+        }
     }
 
     internal static string LocateBridgeExecutable() =>

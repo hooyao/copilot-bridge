@@ -10,14 +10,14 @@ namespace CopilotBridge.Cli.Auth;
 /// </list>
 /// <para>
 /// The contract is pure: <see cref="Protect"/>/<see cref="Unprotect"/> only transform bytes.
-/// File I/O, path resolution, and the load-fallback order all live in <see cref="TokenStore"/>,
+/// File I/O, path resolution, and migration order all live in <see cref="CredentialStore"/>,
 /// so the platform-specific surface stays a single byte-in/byte-out function (which is what makes
 /// the non-Windows path unit-testable on Windows).
 /// </para>
 /// <para>
 /// <see cref="Unprotect"/> MUST throw <see cref="System.Security.Cryptography.CryptographicException"/>
-/// on ANY failure — wrong machine, wrong user, tampered blob, truncation, or unknown version — so the
-/// caller can treat "cannot decrypt" uniformly as "not logged in" and re-run the device-code flow.
+/// on ANY protection failure — wrong machine, wrong user, tampered blob, or truncation — so the
+/// credential reader can fail closed without rewriting or deleting the unreadable authority.
 /// </para>
 /// </summary>
 internal interface ITokenProtector

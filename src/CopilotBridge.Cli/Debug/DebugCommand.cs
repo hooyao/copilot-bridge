@@ -15,14 +15,13 @@ internal static class DebugCommand
 
     public static async Task<int> ListModelsAsync(bool showAll)
     {
-        if (TokenStore.TryLoad() is null)
+        using var http = CreateHttpClient();
+        using var auth = new AuthService(new SingleClientHttpClientFactory(http));
+        if (!auth.IsAuthenticated)
         {
             Console.Error.WriteLine("Not logged in. Run `auth login` first.");
             return 1;
         }
-
-        using var http = CreateHttpClient();
-        using var auth = new AuthService(new SingleClientHttpClientFactory(http));
         // GetModelsAsync doesn't use the retry path; supply defaults + a null
         // logger so this throwaway debug command needn't wire up DI.
         var copilot = new CopilotClient(

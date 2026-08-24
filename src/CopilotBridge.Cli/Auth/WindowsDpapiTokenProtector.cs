@@ -28,8 +28,8 @@ internal sealed class WindowsDpapiTokenProtector : ITokenProtector
     public byte[] Protect(byte[] plaintext) =>
         ProtectedData.Protect(plaintext, _entropy, DataProtectionScope.CurrentUser);
 
-    // Throws CryptographicException on wrong user / corrupt file / copied from another machine —
-    // which is exactly what TokenStore's catch turns into "not logged in".
+    // Throws CryptographicException on wrong user / corrupt file / copied from another machine;
+    // CredentialStore surfaces that as a fail-closed unreadable authority.
     public byte[] Unprotect(byte[] blob) =>
         ProtectedData.Unprotect(blob, _entropy, DataProtectionScope.CurrentUser);
 }

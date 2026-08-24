@@ -13,7 +13,8 @@ namespace CopilotBridge.Cli.Copilot;
 /// <summary>
 /// Talks to Copilot's authenticated CAPI surfaces. Every send is built from one
 /// immutable auth lease. Connection failures before headers use the configured
-/// transient budget; a first HTTP 401 or 403 uses one shared authentication replay.
+/// transient budget; a recoverable first HTTP 401 or 403 uses one shared
+/// authentication replay.
 /// </summary>
 internal sealed class CopilotClient(
     IHttpClientFactory httpClientFactory,
@@ -208,19 +209,29 @@ internal sealed class CopilotClient(
 
             // A first 401/403 rejects the lease before model work is accepted.
             // Dispose both single-use objects, reject only the generation used,
-            // and replay once with a fresh request and the exact business bytes.
+            // and request a replacement lease. Only a successful replacement is
+            // replayed once with a fresh request and the exact business bytes.
             var rejectedStatus = response.StatusCode;
+            var rejectedGeneration = lease.Generation;
             response.Dispose();
             request.Dispose();
-            authReplayUsed = true;
             log.LogWarning(
                 "upstream {Operation} rejected Copilot bearer status={Status} "
-                + "generation={Generation}; refreshing and replaying once",
+                + "generation={Generation} reason={Reason}; resolving authentication recovery",
                 operation,
                 (int)rejectedStatus,
-                lease.Generation);
+                rejectedGeneration,
+                rejectionReason);
             lease = await auth.GetCopilotTokenAsync(
                 new CopilotLeaseRejection(lease, rejectionReason), ct);
+            authReplayUsed = true;
+            log.LogInformation(
+                "upstream {Operation} authentication recovery outcome=replacement_acquired "
+                + "rejected_generation={RejectedGeneration} "
+                + "replacement_generation={ReplacementGeneration}; replaying once",
+                operation,
+                rejectedGeneration,
+                lease.Generation);
         }
     }
 

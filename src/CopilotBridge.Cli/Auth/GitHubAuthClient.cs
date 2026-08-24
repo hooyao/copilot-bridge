@@ -8,7 +8,7 @@ namespace CopilotBridge.Cli.Auth;
 
 /// <summary>
 /// The GitHub OAuth device-code endpoints. Implementation detail of
-/// <see cref="AuthService"/>; should not be used directly outside the Auth folder.
+/// <see cref="CredentialService"/>; should not be used directly outside the Auth folder.
 /// </summary>
 /// <remarks>
 /// Stateless: the caller creates an <see cref="HttpClient"/> at its own call site
@@ -20,18 +20,20 @@ internal static class GitHubAuthClient
     private const string DeviceCodeUrl = "https://github.com/login/device/code";
     private const string AccessTokenUrl = "https://github.com/login/oauth/access_token";
 
-    // Official GitHub Copilot OAuth client id (same one VS Code Copilot uses).
-    public const string ClientId = "Iv1.b507a08c87ecfe98";
-    public const string Scope = "read:user";
+    // Fresh logins intentionally mirror GitHub CLI's reviewed OAuth device flow.
+    // The client id is public; device flow does not send GitHub CLI's web-app secret.
+    public const string ClientId = GitHubOAuthProvider.GitHubCliClientId;
+    public const string Scope = GitHubOAuthProvider.GitHubCliScope;
 
     public static async ValueTask<DeviceCodeResponse> RequestDeviceCodeAsync(
         HttpClient http, CancellationToken ct = default)
     {
         using var req = new HttpRequestMessage(HttpMethod.Post, DeviceCodeUrl)
         {
-            Content = JsonContent.Create(
-                new DeviceCodeRequest(ClientId, Scope),
-                JsonContext.Default.DeviceCodeRequest),
+            Content = Form([
+                new("client_id", ClientId),
+                new("scope", Scope),
+            ]),
         };
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
@@ -47,11 +49,6 @@ internal static class GitHubAuthClient
         CancellationToken ct = default)
     {
         var pollDelay = TimeSpan.FromSeconds(deviceCode.Interval + 1);
-        var body = new AccessTokenRequest(
-            ClientId,
-            deviceCode.DeviceCode,
-            "urn:ietf:params:oauth:grant-type:device_code");
-
         while (true)
         {
             ct.ThrowIfCancellationRequested();
@@ -59,7 +56,11 @@ internal static class GitHubAuthClient
 
             using var req = new HttpRequestMessage(HttpMethod.Post, AccessTokenUrl)
             {
-                Content = JsonContent.Create(body, JsonContext.Default.AccessTokenRequest),
+                Content = Form([
+                    new("client_id", ClientId),
+                    new("device_code", deviceCode.DeviceCode),
+                    new("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ]),
             };
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
@@ -91,6 +92,17 @@ internal static class GitHubAuthClient
     public static async ValueTask<AccessTokenResponse> RefreshAccessTokenAsync(
         HttpClient http,
         string refreshToken,
+        CancellationToken ct = default) =>
+        await RefreshAccessTokenAsync(
+            http,
+            refreshToken,
+            GitHubOAuthProvider.CopilotPluginClientId,
+            ct).ConfigureAwait(false);
+
+    public static async ValueTask<AccessTokenResponse> RefreshAccessTokenAsync(
+        HttpClient http,
+        string refreshToken,
+        string clientId,
         CancellationToken ct = default)
     {
         using var req = new HttpRequestMessage(HttpMethod.Post, AccessTokenUrl)
@@ -98,7 +110,7 @@ internal static class GitHubAuthClient
             Content = JsonContent.Create(
                 new RefreshTokenRequest
                 {
-                    ClientId = ClientId,
+                    ClientId = clientId,
                     RefreshToken = refreshToken,
                 },
                 JsonContext.Default.RefreshTokenRequest),
@@ -135,4 +147,7 @@ internal static class GitHubAuthClient
             or "invalid_grant"
             or "expired_token"
             or "revoked_token";
+
+    private static FormUrlEncodedContent Form(
+        IEnumerable<KeyValuePair<string, string>> fields) => new(fields);
 }

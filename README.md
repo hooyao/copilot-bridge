@@ -64,11 +64,20 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
    To authorize, open https://github.com/login/device and enter code: ABCD-1234
    ```
 
-   Open that URL in your browser, enter the code, and approve. The bridge saves
-   the complete OAuth credential state **encrypted** next to the executable and
-   silently rotates refreshable GitHub tokens before expiry. The legacy
-   `github_token.dat` remains an encrypted access-token compatibility mirror;
-   current binaries use `github_credentials.v2.dat`. (On Windows,
+   Open that URL in your browser, enter the code, and approve. Fresh logins use
+   the GitHub CLI OAuth App's public Device Flow **inside the bridge**—GitHub CLI
+   is not installed, invoked, or read. GitHub grants the same minimum scopes as
+   `gh auth login` (`repo`, `read:org`, and `gist`). The resulting `gho_` token is
+   sent directly to Copilot CAPI; it is never passed through
+   `/copilot_internal/v2/token`.
+
+   The bridge saves one encrypted, versioned `github_credentials.dat` beside the
+   executable. On upgrade it migrates the richer `github_credentials.v2.dat` or,
+   when that cannot be read, `github_token.dat`; it verifies the new file before
+   deleting both old files. A migrated version-1 Copilot Plugin credential keeps
+   working and refreshing without login until GitHub genuinely rejects it. The next
+   explicit `auth login` replaces it with a version-2 `gho_` direct credential.
+   (On Windows,
    double-clicking opens a console window that shows the URL and live log.)
 
 3. Leave it running. Now point your CLI at it.
@@ -451,20 +460,21 @@ copilot-bridge auth copilot-status
 copilot-bridge debug list-models --all
 ```
 
-- `auth status` reports the authoritative encrypted file, legacy/v2 format,
-  refreshability, and deadlines—never token bytes.
+- `auth status` reports the single authoritative encrypted file, credential version,
+  direct/exchanged mode, refreshability, generation, and deadlines—never token bytes.
 - `auth whoami` validates (and when possible refreshes) the stored GitHub OAuth
   credential.
-- `auth copilot-status` exchanges it for one Copilot bearer/endpoint lease and
-  prints only expiry, refresh time, and API URL.
+- `auth copilot-status` prints direct/exchanged mode, known deadlines, and the API
+  URL. A fresh GitHub CLI OAuth credential is the direct CAPI bearer; an existing
+  Copilot Plugin credential is exchanged for a short-lived bearer.
 - `debug list-models --all` proves the resulting Copilot lease can reach CAPI and
   shows which models the current account/policy actually exposes.
 
-`refreshable: False` with unknown access expiry is a valid device-login result,
-not a failed token exchange. The Copilot OAuth client currently returns no
-refresh metadata for some accounts, so the bridge can reuse that GitHub token but
-cannot silently replace it if GitHub later revokes it. The separately minted
-Copilot bearer is still short-lived and refreshes in memory.
+Version 1 means a migrated Copilot Plugin credential and retains its full refresh
+state. Version 2 means a GitHub CLI OAuth direct credential and has no separately
+minted bearer deadline. A non-refreshable version 1 with unknown access expiry remains
+valid until GitHub actually rejects it; its short-lived Copilot bearer still refreshes
+in memory.
 
 A first CAPI 403 is not treated as definitive account policy. The bridge rejects
 only the bearer/endpoint generation used, obtains an already-newer or fresh lease,
@@ -475,15 +485,15 @@ stale process-local bearer. A catalog warning saying capacity is degraded refers
 to `/codex/models` metadata only; the endpoint serves a safe baseline/stale overlay
 during its configured cooldown, and inference remains independent.
 
-If `whoami` and the token exchange both report GitHub `401 Bad credentials`, the
+If `whoami` and the token exchange/direct CAPI both report GitHub `401 Bad credentials`, the
 failure occurs before model inference and therefore is not specific to gpt-5.6
-or any request body. A refreshable v2 credential is rotated once automatically;
+or any request body. A refreshable version-1 credential is rotated once automatically;
 if its refresh token is missing, expired, or rejected, GitHub requires a new
-interactive authorization. Check the account security log for an
-`oauth_authorization.destroy` event, then run:
+interactive authorization. Check the account security log for
+`oauth_access.destroy`; `explanation=max_for_app` means another login exceeded
+GitHub's ten-token user/application/scope limit and evicted this credential. Then run:
 
 ```pwsh
-copilot-bridge auth logout
 copilot-bridge auth login
 ```
 
