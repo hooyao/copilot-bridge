@@ -58,6 +58,12 @@ authoritative and a later load retries deletion of every residual old credential
 the same ordered locks. Empty lock files intentionally remain at stable identities and
 contain no credential material. On Unix credential files are forced to `0600`.
 
+An updater-managed target or rollback activation defers this entire credential load,
+migration, and network-authentication path until the first upstream request. That lets
+the candidate report `Ready` based on local serving health without a token outage
+forcing rollback, and it preserves legacy credential inputs throughout the readiness
+window. Ordinary launches retain the startup authentication/device-flow behavior.
+
 ### Lifecycle
 
 A migrated version 1 is not obsolete merely because version 2 exists. It remains in
