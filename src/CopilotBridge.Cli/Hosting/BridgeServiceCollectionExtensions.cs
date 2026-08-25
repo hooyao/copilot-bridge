@@ -316,7 +316,8 @@ internal static class BridgeServiceCollectionExtensions
         //    StartAsync, so the constructor is the barrier that ensures loggers
         //    injected into later services target the full console+file pipeline.
         services.AddHostedService<SerilogReplacerHostedService>();
-        // 2. Auth + routes validation + startup banner.
+        // 2. Routes validation + startup banner; ordinary launches also warm
+        //    auth, while updater-managed activation defers it until first use.
         services.AddHostedService<BridgeStartupHostedService>();
         // 3. Update readiness reporter — inert unless this process was launched
         //    by an updater with a one-launch context. It registers for

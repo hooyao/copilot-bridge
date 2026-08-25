@@ -202,9 +202,9 @@ After preparation succeeds, the updater SHALL publish a per-attempt cutover-read
 - **WHEN** the install directory contains a user-created file not in the managed allowlist
 - **THEN** cutover neither deletes nor modifies that file
 
-### Requirement: Ready-authenticated commit
+### Requirement: Capability-authenticated Ready commit
 
-Starting a replacement process SHALL NOT by itself commit the update. For each replacement or rollback launch, the updater SHALL create private one-launch readiness context containing an unpredictable token and attempt identity. The bridge SHALL report Ready only after configuration and route validation, authentication setup, hosted-service startup, and successful proxy listener startup, using a local per-attempt signal that includes the expected token, PID, product version, and attempt ID. The updater SHALL use a finite readiness timeout, verify that the signal belongs to the process it launched and that the process remains alive, and commit only when the new target version reports Ready. It SHALL keep all rollback material until commit.
+Starting a replacement process SHALL NOT by itself commit the update. For each replacement or rollback launch, the updater SHALL create private one-launch readiness context containing an unpredictable token and attempt identity. The bridge SHALL report Ready only after configuration and route validation, hosted-service startup, and successful proxy listener startup, using a local per-attempt signal that includes the expected token, PID, product version, and attempt ID. During an updater-managed target or rollback activation, the bridge SHALL perform no credential load, migration, refresh, device flow, or Copilot authentication exchange before Ready. Authentication is external recoverable state rather than installed-binary health; after Ready, the first upstream request MAY resolve it lazily, and an authentication failure SHALL fail that request without terminating the serving bridge or reversing the installed version. The updater SHALL use a finite readiness timeout, verify that the signal belongs to the process it launched and that the process remains alive, and commit only when the new target version reports Ready. It SHALL keep all rollback material until commit.
 
 #### Scenario: New process starts and immediately exits
 - **WHEN** process creation succeeds but the new bridge exits before reporting Ready
@@ -213,6 +213,18 @@ Starting a replacement process SHALL NOT by itself commit the update. For each r
 #### Scenario: New bridge cannot bind the configured port
 - **WHEN** the replacement fails listener startup
 - **THEN** no valid Ready signal is emitted and the updater rolls back
+
+#### Scenario: Stored credential is expired during target activation
+- **WHEN** the replacement starts with valid updater readiness context but the stored credential is expired, rejected, unreadable by the new credential format, or its refresh endpoint is unavailable
+- **THEN** the replacement performs no credential or authentication operation before Ready, reports Ready after local serving health succeeds, and the updater does not roll back because of that external authentication state
+
+#### Scenario: Rollback activation does not depend on authentication
+- **WHEN** the updater restores and launches the old bridge with rollback readiness context while GitHub authentication is unavailable
+- **THEN** the restored bridge can report Ready after local serving health succeeds without reading, migrating, or refreshing credentials
+
+#### Scenario: Ordinary launch keeps its authentication gate
+- **WHEN** the bridge starts without updater readiness context
+- **THEN** it retains the normal startup authentication and interactive-login behavior
 
 #### Scenario: Stale or forged readiness marker is present
 - **WHEN** a readiness signal has the wrong token, attempt ID, PID, or version

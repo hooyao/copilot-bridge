@@ -129,6 +129,32 @@ public class CodexBehaviorTests
             expectedBridgeLogs: ["credential_version=1"]);
     }
 
+    [Fact]
+    public async Task Codex_UpdaterManagedActivation_DefersAuthAndCompletesToolChain_ForVerdict()
+    {
+        using var stagedCredential = await StageDirectCredentialFromGitHubCliAsync();
+        const string canary = "codex-update-activation-canary-82531";
+        var prompt =
+            "Do these steps in order with real shell tools; do not fabricate output:\n"
+            + "1. Run a command that writes first-update-line to update_activation_probe.txt.\n"
+            + $"2. Run a separate command that appends {canary}.\n"
+            + "3. Run a third command that reads the file, report its exact second line, and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-updater-activation-auth-deferred",
+            prompt,
+            credentialSourceDirectory: stagedCredential.Path,
+            credentialStagingMode: CredentialStagingMode.PurposeBuiltDirectVersionTwo,
+            expectedBridgeLogs:
+            [
+                "Updater-managed target activation: deferring credential migration and network authentication",
+                "Upstream: authentication deferred until the first request",
+                "credential migration cleanup outcome=success version=2",
+                "Copilot direct lease trigger=deadline outcome=success credential_version=2",
+            ],
+            simulateUpdaterTargetActivation: true);
+    }
+
     private static async Task<ClientBehaviorSupport.ScratchDir> StageDirectCredentialFromGitHubCliAsync()
     {
         var startInfo = new ProcessStartInfo("gh", "auth token --hostname github.com")
@@ -770,13 +796,15 @@ public class CodexBehaviorTests
         ForcedCapiForbiddenOperation? forceCapiForbiddenOnce = null,
         string? credentialSourceDirectory = null,
         CredentialStagingMode credentialStagingMode = CredentialStagingMode.LegacyRawMirror,
-        IReadOnlyList<string>? expectedBridgeLogs = null)
+        IReadOnlyList<string>? expectedBridgeLogs = null,
+        bool simulateUpdaterTargetActivation = false)
     {
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
             ServeScenario.Passthrough,
             ForceCapiForbiddenOnce: forceCapiForbiddenOnce,
             CredentialSourceDirectory: credentialSourceDirectory,
-            CredentialStagingMode: credentialStagingMode));
+            CredentialStagingMode: credentialStagingMode,
+            SimulateUpdaterTargetActivation: simulateUpdaterTargetActivation));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
 
         // Disposable work dir so codex's file-writing tools mutate a throwaway dir, never

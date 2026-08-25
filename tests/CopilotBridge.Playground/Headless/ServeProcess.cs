@@ -6,6 +6,7 @@ using System.Text.Json.Nodes;
 using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.GitHub;
+using CopilotBridge.Update.Wire;
 
 namespace CopilotBridge.Playground.Headless;
 
@@ -64,7 +65,8 @@ internal sealed record ServeInvocation(
     string? ClaudeVersion = null,
     string? CredentialSourceDirectory = null,
     CredentialStagingMode CredentialStagingMode = CredentialStagingMode.LegacyRawMirror,
-    string? WorkingDirectory = null);
+    string? WorkingDirectory = null,
+    bool SimulateUpdaterTargetActivation = false);
 
 internal enum CredentialStagingMode
 {
@@ -268,6 +270,7 @@ internal static class ServeProcess
         // (holding its port), and temp dirs. So run the whole copy+setup+wait under one
         // guard.
         Process? proc = null;
+        CancellationTokenSource? updateReadyCaptureCts = null;
         try
         {
             CopyDirectory(buildOutputDir, scratchDir);
@@ -374,6 +377,26 @@ internal static class ServeProcess
                     };
             }
 
+            UpdateLaunchContext? simulatedUpdateContext = null;
+            Task<string?>? simulatedUpdateReady = null;
+            if (inv.SimulateUpdaterTargetActivation)
+            {
+                var attemptId = "behavior" + Guid.NewGuid().ToString("N")[..16];
+                var capability = UpdateCapability.Create(attemptId, UpdateWire.RoleTarget);
+                simulatedUpdateContext = new UpdateLaunchContext(
+                    attemptId,
+                    UpdateWire.RoleTarget,
+                    capability.PipeName,
+                    capability.Token,
+                    CopilotBridge.Cli.Hosting.ProductInfo.Version);
+                simulatedUpdateContext.ApplyTo(psi.Environment);
+                updateReadyCaptureCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                simulatedUpdateReady = UpdatePipeTransport.ServerReceiveLineAsync(
+                    capability.PipeName,
+                    TimeSpan.FromSeconds(30),
+                    updateReadyCaptureCts.Token);
+            }
+
             proc = new Process { StartInfo = psi };
             var stderrTail = new StringBuilder();
             var stderrAll = new StringBuilder();
@@ -442,10 +465,37 @@ internal static class ServeProcess
                     $"Bridge process exited (code {SafeExitCode(proc)}) before listening. Stderr:\n{Snapshot(stderrTail)}");
             }
 
+            if (simulatedUpdateReady is not null && simulatedUpdateContext is not null)
+            {
+                var readyLine = await simulatedUpdateReady.ConfigureAwait(false);
+                var readyMessage = readyLine is null
+                    ? null
+                    : UpdatePipeCodec.DecodeReady(readyLine);
+                if (!UpdatePipeCodec.IsValidReady(
+                        readyMessage,
+                        simulatedUpdateContext.AttemptId,
+                        simulatedUpdateContext.Role,
+                        simulatedUpdateContext.Token,
+                        proc.Id,
+                        simulatedUpdateContext.ExpectedVersion))
+                {
+                    await KillQuietly(proc);
+                    TryDeleteDir(scratchDir);
+                    TryDeleteDir(traceDir);
+                    throw new ServeStartupException(
+                        "Updater-activation behavior scenario did not receive a valid "
+                        + $"target Ready message. Stderr:\n{Snapshot(stderrTail)}");
+                }
+                updateReadyCaptureCts?.Dispose();
+                updateReadyCaptureCts = null;
+            }
+
             return new ServeHandle(proc, scratchDir, baseUrl, traceDir, stderrTail, stderrAll);
         }
         catch
         {
+            updateReadyCaptureCts?.Cancel();
+            updateReadyCaptureCts?.Dispose();
             // ANY abnormal exit before we handed ownership to a ServeHandle: the caller's
             // ct cancelling the readiness wait, PatchAppSettings throwing on a drifted
             // config (a ServeStartupException raised BEFORE proc exists — which an

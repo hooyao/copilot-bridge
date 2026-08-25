@@ -1,6 +1,7 @@
 using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Pipeline.Routing;
+using CopilotBridge.Update.Wire;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -11,13 +12,14 @@ namespace CopilotBridge.Cli.Hosting;
 /// Production startup chores, scheduled by the generic host:
 /// <list type="number">
 ///   <item>Validate the routing config (fail fast on misconfigured locations).</item>
-///   <item>Ensure a GitHub OAuth token exists; run the device-code flow if not.</item>
-///   <item>Resolve a direct or exchanged Copilot authentication lease (populates
-///         <see cref="IAuthService.CopilotApiBaseUrl"/>).</item>
+///   <item>On an ordinary launch, ensure a GitHub OAuth token exists and resolve
+///         a direct or exchanged Copilot authentication lease. On an
+///         updater-managed activation, defer all credential access until the
+///         first upstream request so external auth cannot trigger rollback.</item>
 ///   <item>Print the listening URL, upstream URL, trace directory, and route
 ///         counts so the operator can confirm the bridge is healthy.</item>
 /// </list>
-/// Throws on validation / auth failure; the generic host surfaces this to
+/// Throws on validation / ordinary-launch auth failure; the generic host surfaces this to
 /// <c>app.RunAsync</c> which bubbles up to <c>Program.cs</c>'s top-level
 /// catch — <see cref="FatalErrorHandler"/> then displays the error and
 /// pauses for keypress.
@@ -78,34 +80,32 @@ internal sealed class BridgeStartupHostedService : IHostedService
             throw new BridgeStartupException($"Invalid Routing config: {ex.Message}", ex);
         }
 
-        // 2-3. Auth: device-code flow if no credential, then resolve its direct or
-        //      exchanged Copilot lease. Cancellation propagates back out as
-        //      OperationCanceledException (handled by host as a clean shutdown, not a fatal).
-        if (!_auth.IsAuthenticated)
-        {
-            _log.LogInformation(
-                "No GitHub token on disk — starting device-code flow. Complete the browser handshake to continue.");
-        }
-        try
-        {
-            await _auth.EnsureGitHubTokenAsync(cancellationToken).ConfigureAwait(false);
-            await _auth.GetCopilotTokenAsync(ct: cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            throw new BridgeStartupException($"Auth setup failed: {ex.Message}", ex);
-        }
+        // 2-3. Auth: ordinary launches preserve the interactive startup contract.
+        //      An updater-managed target or rollback launch must prove only that the
+        //      installed program can validate local configuration and start serving.
+        //      Credential migration and network refresh are external, recoverable
+        //      operations; running either before Ready can turn a transient auth
+        //      failure into an endless update/rollback loop (and can mutate a
+        //      credential into a format the rollback binary cannot read).
+        var updateContext = UpdateLaunchContext.FromEnvironment(
+            Environment.GetEnvironmentVariable);
+        var authenticationReady = await BootstrapAuthenticationAsync(
+            _auth, updateContext, _log, cancellationToken).ConfigureAwait(false);
 
         // 4. Operator-facing summary. ILogger so the formatting matches every
         //    other line in the rolling log.
         var port = _server.Value.Port;
         var textLogDir = Path.Combine(AppContext.BaseDirectory, "log");
         _log.LogInformation("copilot-bridge listening on http://localhost:{Port}", port);
-        _log.LogInformation("Upstream: {UpstreamUrl}", _auth.CopilotApiBaseUrl);
+        if (authenticationReady)
+        {
+            _log.LogInformation("Upstream: {UpstreamUrl}", _auth.CopilotApiBaseUrl);
+        }
+        else
+        {
+            _log.LogInformation(
+                "Upstream: authentication deferred until the first request; run `auth login` if the stored credential is no longer usable");
+        }
         _log.LogInformation("Text log: {LogDir} (one file per process start)", textLogDir);
         if (_ioSink is not null)
         {
@@ -174,6 +174,49 @@ internal sealed class BridgeStartupHostedService : IHostedService
             && (toolInput.MalformedJsonAction != ToolInputAction.Observe
                 || toolInput.SchemaViolationAction != ToolInputAction.Observe);
         return leakBuffers || toolInputBuffers;
+    }
+
+    /// <summary>
+    /// Warms authentication only for an ordinary launch. An updater-managed
+    /// activation deliberately performs zero credential or network access before
+    /// readiness, keeping transaction commit independent from external auth and
+    /// preserving rollback compatibility with the pre-update credential format.
+    /// Returns <see langword="true"/> when authentication was warmed.
+    /// </summary>
+    internal static async Task<bool> BootstrapAuthenticationAsync(
+        IAuthService auth,
+        UpdateLaunchContext? updateContext,
+        ILogger log,
+        CancellationToken cancellationToken)
+    {
+        if (updateContext is not null)
+        {
+            log.LogInformation(
+                "Updater-managed {UpdateRole} activation: deferring credential migration and network authentication until the first upstream request",
+                updateContext.Role);
+            return false;
+        }
+
+        if (!auth.IsAuthenticated)
+        {
+            log.LogInformation(
+                "No GitHub token on disk — starting device-code flow. Complete the browser handshake to continue.");
+        }
+
+        try
+        {
+            await auth.EnsureGitHubTokenAsync(cancellationToken).ConfigureAwait(false);
+            await auth.GetCopilotTokenAsync(ct: cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new BridgeStartupException($"Auth setup failed: {ex.Message}", ex);
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

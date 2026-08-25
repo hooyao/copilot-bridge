@@ -166,9 +166,13 @@ The install is a recoverable transaction:
    install the new binaries, and write the merged config.
 4. **Commit on readiness**: launch the replacement and wait for an
    authenticated `Ready` signal it emits **only after it truly reaches serving
-   state** (route/config validation, auth setup, all hosted services, and the
-   listener are up). Process creation, a log line, or elapsed time is never
-   enough. Only a valid `Ready` commits.
+   state** (route/config validation, all hosted services, and the listener are
+   up). Process creation, a log line, or elapsed time is never enough. Only a
+   valid `Ready` commits. The updater-managed launch deliberately defers
+   credential migration and network authentication until the first upstream
+   request: external auth availability is not binary health, and making it a
+   commit condition creates an update/rollback loop when a token expires or a
+   refresh endpoint is temporarily unavailable.
 5. **Rollback** on any post-cutover failure: restore the old binaries and the
    **exact original config** (byte-for-byte, including keys a successful
    migration would have dropped), relaunch the old bridge, and require *its*

@@ -8,11 +8,14 @@ namespace CopilotBridge.Cli.Update;
 /// Inert on ordinary launches. When the bridge was launched by an updater with a
 /// valid one-launch <see cref="UpdateLaunchContext"/>, this hosted service
 /// registers for <see cref="IHostApplicationLifetime.ApplicationStarted"/> and,
-/// only then — after route/config validation, auth setup, all hosted-service
-/// startup, and Kestrel listener start have completed — sends a single
+/// only then — after route/config validation, all hosted-service startup, and
+/// Kestrel listener start have completed — sends a single
 /// role-scoped Ready message back to the updater over the named pipe. This is the
 /// bridge's transactional proof of "actually serving"; the startup banner's
 /// "listening" log is produced too early to serve as that proof.
+/// Authentication is intentionally deferred on updater-managed launches: an
+/// external credential/network failure is not evidence that the installed
+/// binary is unhealthy and must never force a rollback loop.
 /// </summary>
 internal sealed class UpdateReadinessReporter : IHostedService
 {
