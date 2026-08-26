@@ -257,6 +257,66 @@ public sealed class GitHubOAuthContractTests : IDisposable
     }
 
     [Fact]
+    public async Task Version_three_exchange_401_refreshes_with_recorded_client_id_and_replays_once()
+    {
+        // Contract: a Copilot-token exchange 401 for version 3 performs one OAuth
+        // refresh through the persisted provider, preserves version 3, and replays
+        // the Copilot-token exchange exactly once with the rotated access token.
+        var handler = new CaptureHandler(new Queue<HttpResponseMessage>([
+            Json(HttpStatusCode.Unauthorized, "{\"message\":\"Bad credentials\"}"),
+            Json(HttpStatusCode.OK,
+                "{\"access_token\":\"ghu_rotated\",\"expires_in\":28800,"
+                + "\"refresh_token\":\"ghr_rotated\",\"refresh_token_expires_in\":15811200}"),
+            Json(HttpStatusCode.OK, """
+                {"token":"copilot-recovered","expires_at":2000000000,"refresh_in":1500,
+                 "endpoints":{"api":"https://api.githubcopilot.com"}}
+                """),
+        ]));
+        var store = new CredentialStore(
+            Path.Combine(_root, "version-three-exchange-401"), new TestProtector());
+        store.Save(PluginRecord() with
+        {
+            RefreshToken = PluginRefreshToken,
+            RefreshTokenExpiresAt = _time.GetUtcNow().AddDays(30),
+        });
+        var factory = new SingleClientHttpClientFactory(new HttpClient(handler));
+        var credentials = new CredentialService(
+            factory, store, _time, NullLogger<CredentialService>.Instance);
+        using var auth = new AuthService(
+            factory, credentials, _time, NullLoggerFactory.Instance,
+            enableBackgroundRefresh: false, ownsCredentialService: true);
+
+        var lease = await auth.GetCopilotTokenAsync(ct: CancellationToken.None);
+
+        Assert.Equal("copilot-recovered", lease.Token);
+        Assert.Equal(CredentialFileRecord.CopilotPluginExplicitProviderVersion,
+            lease.CredentialVersion);
+        Assert.Equal(2, lease.CredentialGeneration);
+
+        var requests = handler.Requests.ToArray();
+        Assert.Equal(3, requests.Length);
+        Assert.Equal(2, requests.Count(request =>
+            request.Uri.AbsolutePath == "/copilot_internal/v2/token"));
+        Assert.Equal(PluginToken, requests[0].AuthorizationParameter);
+        Assert.Equal("/login/oauth/access_token", requests[1].Uri.AbsolutePath);
+        using var refreshBody = JsonDocument.Parse(requests[1].Body);
+        Assert.Equal(PluginRefreshToken,
+            refreshBody.RootElement.GetProperty("refresh_token").GetString());
+        Assert.Equal(CopilotPluginClientId,
+            refreshBody.RootElement.GetProperty("client_id").GetString());
+        Assert.Equal("refresh_token",
+            refreshBody.RootElement.GetProperty("grant_type").GetString());
+        Assert.Equal("ghu_rotated", requests[2].AuthorizationParameter);
+
+        var loaded = store.TryLoad();
+        Assert.NotNull(loaded);
+        Assert.Equal(CredentialFileRecord.CopilotPluginExplicitProviderVersion, loaded.Version);
+        Assert.Equal(CopilotPluginClientId, loaded.OAuthClientId);
+        Assert.Equal("ghu_rotated", loaded.AccessToken);
+        Assert.Equal(2, loaded.Generation);
+    }
+
+    [Fact]
     public void Version_three_without_oauth_client_id_is_rejected()
     {
         var store = new CredentialStore(
