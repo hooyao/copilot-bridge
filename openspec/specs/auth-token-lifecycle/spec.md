@@ -176,11 +176,11 @@ making the new credential visible to callers. Version 3 SHALL use the client ID 
 in the credential; version 1 SHALL retain its historical implicit provider mapping.
 
 #### Scenario: Known access-token expiry approaches
-- **WHEN** a caller needs GitHub authentication and the stored version-1 access token is inside the configured refresh safety window
+- **WHEN** a caller needs GitHub authentication and the stored version-1 or version-3 access token is inside the configured refresh safety window
 - **THEN** exactly one refresh operation obtains and persists the rotated credential before the caller receives an access token
 
 #### Scenario: Credential remains outside the refresh window
-- **WHEN** a caller needs GitHub authentication and the stored version-1 access token is not near a known expiry
+- **WHEN** a caller needs GitHub authentication and the stored version-1 or version-3 access token is not near a known expiry
 - **THEN** the system reuses it without an OAuth refresh request
 
 #### Scenario: Refresh token is expired or rejected
@@ -196,11 +196,12 @@ in the credential; version 1 SHALL retain its historical implicit provider mappi
 - **THEN** the system preserves the committed credential, does not require interactive login, and allows the bounded timer/request retry policy to try again later
 
 ### Requirement: GitHub 401 recovery is bounded and classified
-The system SHALL treat a GitHub API or legacy token-exchange `401 Bad credentials`
-response as rejection of the credential used for that call. If a version-1 credential
-has a refresh token, it SHALL perform at most one credential refresh and one replay of
-the failed GitHub call; otherwise it SHALL report that interactive GitHub login is
-required.
+The system SHALL treat a GitHub API or exchanged token-path `401 Bad credentials`
+response as rejection of the credential used for that call. If an exchanged
+version-1 or version-3 credential has a refresh token, it SHALL perform at most one
+credential refresh and one replay of the failed GitHub call; otherwise it SHALL report
+that interactive GitHub login is required. Version 3 SHALL use its recorded OAuth
+client ID for that refresh.
 
 #### Scenario: Token exchange rejects a refreshable GitHub access token
 - **WHEN** `/copilot_internal/v2/token` returns 401 for the current GitHub access token and the credential has a refresh token

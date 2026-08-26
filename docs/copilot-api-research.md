@@ -265,12 +265,13 @@ form-encoded RFC 8628 Device Flow. The bridge implements these requests itself a
 uses no client secret or `gh` process. Version 3 records that client ID in the
 encrypted credential so refresh never guesses the issuing provider.
 
-The resulting `gho_` is not accepted by `/copilot_internal/v2/token` (live 403),
-but it is accepted directly as the CAPI bearer. Live `/models` and `/responses`
-requests returned 200 on both the Enterprise host and generic
-`api.githubcopilot.com`; the latter is therefore the direct lease's default.
+For existing version-2 compatibility, a GitHub CLI `gho_` is not accepted by
+`/copilot_internal/v2/token` (live 403), but it is accepted directly as the CAPI
+bearer. Live `/models` and `/responses` requests returned 200 on both the
+Enterprise host and generic `api.githubcopilot.com`; the latter therefore remains
+the version-2 direct lease's default. Fresh version-3 login does not take this path.
 
-For that expiring-token flow, GitHub states that using a refresh token invalidates
+When an OAuth response carries rotating refresh fields, GitHub states that using a refresh token invalidates
 both it and the old access token, and the response supplies newly rotated values.
 If a response anomalously contains a new access token but omits its replacement
 refresh token, retaining the submitted token would persist a credential known to
