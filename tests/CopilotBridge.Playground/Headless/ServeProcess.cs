@@ -72,6 +72,7 @@ internal enum CredentialStagingMode
 {
     LegacyRawMirror,
     PurposeBuiltDirectVersionTwo,
+    CopilotPluginVersionThree,
 }
 
 /// <summary>
@@ -700,6 +701,14 @@ internal static class ServeProcess
                         overwrite: false);
                 }
                 return;
+            case CredentialStagingMode.CopilotPluginVersionThree:
+                var pluginPath = Path.Combine(sourceRoot, "github_credentials.dat");
+                ValidateCopilotPluginCredential(pluginPath);
+                File.Copy(
+                    pluginPath,
+                    Path.Combine(scratchDir, "github_credentials.dat"),
+                    overwrite: false);
+                return;
             default:
                 throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
         }
@@ -746,6 +755,41 @@ internal static class ServeProcess
                     "Direct credential staging requires a purpose-built, non-refreshable "
                     + "version-2 github_credentials.dat; installed version-1 and "
                     + "refresh-bearing records cannot be copied.");
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plaintext);
+        }
+    }
+
+    private static void ValidateCopilotPluginCredential(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+            throw new PlatformNotSupportedException(
+                "Copilot Plugin credential staging currently requires Windows DPAPI.");
+        if (!File.Exists(path))
+            throw new FileNotFoundException(
+                "Copilot Plugin credential source has no github_credentials.dat.", path);
+
+        var entropy = Encoding.UTF8.GetBytes("copilot-bridge.github_token.v1");
+        var plaintext = ProtectedData.Unprotect(
+            File.ReadAllBytes(path), entropy, DataProtectionScope.CurrentUser);
+        try
+        {
+            var record = JsonSerializer.Deserialize(
+                    plaintext, JsonContext.Default.CredentialFileRecord)
+                ?? throw new InvalidOperationException(
+                    "Copilot Plugin credential source contains an empty record.");
+            if (record.Version != CredentialFileRecord.CopilotPluginExplicitProviderVersion
+                || string.IsNullOrWhiteSpace(record.AccessToken)
+                || !string.Equals(
+                    record.OAuthClientId,
+                    GitHubOAuthProvider.CopilotPluginClientId,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "Copilot Plugin staging requires a version-3 credential with the official OAuth client id.");
             }
         }
         finally

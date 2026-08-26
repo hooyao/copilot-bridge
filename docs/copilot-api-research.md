@@ -246,8 +246,8 @@ hop rather than inferred from the client-visible model request:
 | Credential / lease | Obtained from | Lifetime / refresh source |
 | --- | --- | --- |
 | GitHub user access token | device flow at `github.com/login/oauth/access_token` | A valid OAuth response may omit all expiry/refresh fields; expiring GitHub App user tokens include `expires_in`, rotating `refresh_token`, and `refresh_token_expires_in` |
-| Direct Copilot lease (fresh default) | GitHub CLI OAuth App `gho_` sent directly to CAPI | Unknown token expiry; generic CAPI host is `https://api.githubcopilot.com`; no token-exchange timer |
-| Exchanged Copilot lease (legacy compatibility) | `GET api.github.com/copilot_internal/v2/token` with a Copilot Plugin `ghu_` | Short-lived; response carries `expires_at`, `refresh_in`, and `endpoints.api` |
+| Direct Copilot lease (version-2 compatibility) | GitHub CLI OAuth App `gho_` sent directly to CAPI | Unknown token expiry; generic CAPI host is `https://api.githubcopilot.com`; no token-exchange timer |
+| Exchanged Copilot lease (fresh version 3 and migrated version 1) | `GET api.github.com/copilot_internal/v2/token` with a Copilot Plugin `ghu_` | Short-lived; response carries `expires_at`, `refresh_in`, and `endpoints.api` |
 
 The affected account's Copilot Plugin device login produced a v2 record with
 `refreshable=False`, unknown access expiry, and no refresh expiry. This was not an
@@ -259,12 +259,11 @@ applies when a GitHub App enables expiring user access tokens (eight-hour access
 six-month refresh). The bridge preserves those optional fields when present but
 must not invent them when absent.
 
-Fresh bridge login now follows GitHub CLI source revision
-`a255baf71d13fe5947a4eb7ad521ffd412d64cee`: OAuth App client ID
-`178c6fc778ccc68e1d6a`, exact minimum scopes `repo read:org gist`, and
-form-encoded RFC 8628 Device Flow. `github.com/cli/oauth` v1.2.2 confirms that
-device flow sends no client secret. The bridge implements these requests itself;
-it never installs or executes `gh` and never reads GitHub CLI's keyring.
+Fresh bridge login follows the official Copilot Plugin identity in the checked-in
+reference: OAuth App client ID `Iv1.b507a08c87ecfe98`, scope `read:user`, and
+form-encoded RFC 8628 Device Flow. The bridge implements these requests itself and
+uses no client secret or `gh` process. Version 3 records that client ID in the
+encrypted credential so refresh never guesses the issuing provider.
 
 The resulting `gho_` is not accepted by `/copilot_internal/v2/token` (live 403),
 but it is accepted directly as the CAPI bearer. Live `/models` and `/responses`
@@ -868,14 +867,17 @@ All five keys appear even when cache buckets are zero. `message_delta.usage` car
 
 ```
 Fresh login (default):
-  built-in GitHub CLI OAuth Device Flow -> encrypted gho_
-  gho_ as Authorization: Bearer -> https://api.githubcopilot.com/{CAPI route}
+  built-in Copilot Plugin OAuth Device Flow -> encrypted version-3 ghu_ + oauth_client_id
+  ghu_ -> GET api.github.com/copilot_internal/v2/token
+       -> exchanged bearer as Authorization: Bearer -> endpoints.api/{CAPI route}
 
 Existing credential compatibility:
-  encrypted Copilot Plugin ghu_
+  encrypted version-1 Copilot Plugin ghu_
       -> GET api.github.com/copilot_internal/v2/token
       -> { token: "tid=...", expires_at, refresh_in, endpoints.api }
       -> tid=... as Authorization: Bearer -> endpoints.api/{CAPI route}
+  encrypted version-2 GitHub CLI gho_
+      -> gho_ as Authorization: Bearer -> https://api.githubcopilot.com/{CAPI route}
 ```
 
 Both chains are implemented behind `AuthService`; callers consume one immutable
@@ -1075,8 +1077,9 @@ GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"   // VS Code Copilot's official OAuth 
 GITHUB_APP_SCOPES = "read:user"
 ```
 
-This identity remains required for exchanging existing `ghu_` credentials. Fresh
-login instead mirrors GitHub CLI's public OAuth App contract:
+This identity is used for both existing `ghu_` credentials and fresh version-3 login.
+The GitHub CLI public OAuth App identity remains supported only for compatible
+version-2 direct credentials:
 
 ```
 GITHUB_CLI_CLIENT_ID = "178c6fc778ccc68e1d6a"
@@ -1087,7 +1090,9 @@ The two identities are not interchangeable at the token-exchange endpoint. A
 GitHub CLI `gho_` receives 403 there but authenticates successfully when sent
 directly to CAPI. The single `github_credentials.dat` therefore uses semantic
 version 1 for the Copilot Plugin exchange shape and version 2 for the GitHub CLI
-direct shape. Runtime dispatch reads only that version. The old raw file's token bytes
+direct shape; fresh Copilot Plugin login writes version 3 with an explicit
+`oauth_client_id`. Runtime dispatch reads the version, and version-3 refresh reads
+the recorded App ID. The old raw file's token bytes
 remain opaque and always migrate to version 1; migration never infers semantics from a
 token prefix.
 
@@ -1118,7 +1123,7 @@ I lean **probe**: it's cheap (~50 lines of C#) and eliminates the routing-layer'
 
 ```
 1. AuthService.GetCopilotTokenAsync()
-   - direct GitHub CLI OAuth lease, or legacy GET /copilot_internal/v2/token exchange
+   - compatible direct GitHub CLI OAuth lease, or version-1/3 GET /copilot_internal/v2/token exchange
    - Atomic token/endpoint lease + credential-version-specific refresh + bounded 401/403 CAPI recovery
    Acceptance: `copilot-bridge auth copilot-status` prints mode, known deadlines,
    and API base URL without any token bytes

@@ -29,6 +29,7 @@ internal sealed record CredentialLease
 internal sealed record CredentialStatus(
     string Path,
     int Version,
+    string? OAuthClientId,
     bool IsDirect,
     bool IsRefreshable,
     DateTimeOffset? AccessTokenExpiresAt,

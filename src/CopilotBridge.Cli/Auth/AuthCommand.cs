@@ -96,6 +96,7 @@ internal static class AuthCommand
         Console.WriteLine("Logged in.");
         Console.WriteLine($"  loaded from: {status.Path}");
         Console.WriteLine($"  version:     {status.Version}");
+        Console.WriteLine($"  OAuth app:   {status.OAuthClientId ?? "(implicit legacy provider)"}");
         Console.WriteLine($"  mode:        {(status.IsDirect ? "direct" : "exchanged")}");
         Console.WriteLine($"  refreshable: {status.IsRefreshable}");
         Console.WriteLine($"  generation:  {status.Generation}");

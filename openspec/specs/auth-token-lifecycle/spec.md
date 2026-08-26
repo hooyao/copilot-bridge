@@ -24,6 +24,12 @@ filename or token prefix. Unknown versions SHALL fail closed without mutation.
 - **WHEN** `version=2` is read
 - **THEN** the service treats it as a GitHub CLI OAuth direct credential.
 
+#### Scenario: Version 3 is loaded
+
+- **WHEN** `version=3` is read
+- **THEN** the service treats it as a Copilot Plugin exchanged credential
+- **AND** requires the issuing OAuth App ID in `oauth_client_id`.
+
 #### Scenario: Unknown version is loaded
 
 - **WHEN** the file carries any unsupported version
@@ -120,33 +126,35 @@ preserve the credential.
 - **THEN** CredentialService preserves the file, marks that identity terminal in-process,
   and returns an actionable login-required error without automatic Device Flow.
 
-### Requirement: Replacement login creates the newest direct version
+### Requirement: Replacement login creates the explicit-provider Copilot Plugin version
 
-Interactive login SHALL use built-in GitHub CLI OAuth Device Flow without `gh.exe` or
-a client secret and SHALL atomically replace the single file with version 2. Version 2
-SHALL authenticate directly to generic Copilot CAPI without token exchange.
+Interactive login SHALL use the official GitHub Copilot Plugin OAuth Device Flow
+without `gh.exe` or a client secret and SHALL atomically replace the single file with
+version 3. Version 3 SHALL record the issuing App ID in `oauth_client_id` and authenticate
+through the Copilot token exchange. Existing version-2 direct credentials SHALL remain
+readable and usable without rewrite.
 
 #### Scenario: User logs in after legacy rejection
 
 - **WHEN** the operator runs `auth login`
-- **THEN** successful authorization overwrites `github_credentials.dat` with version 2
+- **THEN** successful authorization overwrites `github_credentials.dat` with version 3
+- **AND** records the official Copilot Plugin App ID
 - **AND** clears terminal rejection state.
 
-#### Scenario: Version 2 obtains a Copilot lease
+#### Scenario: Version 3 obtains a Copilot lease
 
-- **WHEN** AuthService receives a version-2 credential lease
-- **THEN** it uses the access token directly as CAPI bearer at
-  `https://api.githubcopilot.com` with unknown expiry and no exchange timer.
+- **WHEN** AuthService receives a version-3 credential lease
+- **THEN** it exchanges the GitHub access token for the short-lived Copilot bearer and endpoint.
 
 #### Scenario: Concurrent first use observes no credential
 
 - **WHEN** multiple callers in one process request authentication before any credential
   exists
-- **THEN** exactly one Device Flow runs and every waiter uses the committed version-2
+- **THEN** exactly one Device Flow runs and every waiter uses the committed version-3
   credential.
 
 ### Requirement: Complete GitHub OAuth credential state is preserved securely
-The system SHALL preserve the access token, every expiry and rotating refresh-token field returned by GitHub device authorization, and an opaque credential-instance identity in a versioned credential record protected by the existing OS-specific token protector. A fresh device login SHALL mint a new identity while refresh rotation SHALL preserve it. Credential serialization SHALL use the source-generated JSON context, and no credential field SHALL be written in plaintext.
+The system SHALL preserve the access token, issuing OAuth client ID, every expiry and rotating refresh-token field returned by GitHub device authorization, and an opaque credential-instance identity in a versioned credential record protected by the existing OS-specific token protector. A fresh device login SHALL mint a new identity while refresh rotation SHALL preserve it. Credential serialization SHALL use the source-generated JSON context, and no credential field SHALL be written in plaintext.
 
 #### Scenario: Device flow returns a refreshable credential
 - **WHEN** GitHub completes device authorization with `access_token`, `expires_in`, `refresh_token`, and `refresh_token_expires_in`
@@ -161,10 +169,11 @@ The system SHALL preserve the access token, every expiry and rotating refresh-to
 - **THEN** the new record has a distinct credential-instance identity so running processes cannot confuse it with the rejected older credential
 
 ### Requirement: GitHub access tokens refresh before expiry
-The system SHALL refresh a version-1 legacy Copilot Plugin access token with the OAuth
+The system SHALL refresh a version-1 or version-3 Copilot Plugin access token with the OAuth
 refresh-token grant before a known access-token deadline, using a safety margin, and
 SHALL atomically persist the rotated access token, refresh token, and deadlines before
-making the new credential visible to callers.
+making the new credential visible to callers. Version 3 SHALL use the client ID recorded
+in the credential; version 1 SHALL retain its historical implicit provider mapping.
 
 #### Scenario: Known access-token expiry approaches
 - **WHEN** a caller needs GitHub authentication and the stored version-1 access token is inside the configured refresh safety window
@@ -337,7 +346,7 @@ The credential records, OAuth requests, and responses SHALL use source-generated
 
 The system SHALL classify the first 401 or 403 from an authenticated Copilot CAPI
 endpoint against the exact bearer/endpoint lease generation used for that request.
-For an exchanged version-1 lease, it SHALL obtain an already-newer or freshly minted
+For an exchanged version-1 or version-3 lease, it SHALL obtain an already-newer or freshly minted
 lease, rebuild the request, and replay it at most once. For a direct version-2 lease,
 401 SHALL terminally reject the persisted credential without replaying the same bearer,
 while 403 SHALL remain ambiguous and MAY republish that direct lease for one bounded

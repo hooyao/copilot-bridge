@@ -65,18 +65,19 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
    ```
 
    Open that URL in your browser, enter the code, and approve. Fresh logins use
-   the GitHub CLI OAuth App's public Device Flow **inside the bridge**—GitHub CLI
-   is not installed, invoked, or read. GitHub grants the same minimum scopes as
-   `gh auth login` (`repo`, `read:org`, and `gist`). The resulting `gho_` token is
-   sent directly to Copilot CAPI; it is never passed through
-   `/copilot_internal/v2/token`.
+   the official GitHub Copilot Plugin App's public Device Flow **inside the
+   bridge**—no `gh` executable or client secret is required. The resulting
+   credential is exchanged through `/copilot_internal/v2/token`, matching the
+   official Copilot client.
 
    The bridge saves one encrypted, versioned `github_credentials.dat` beside the
    executable. On upgrade it migrates the richer `github_credentials.v2.dat` or,
    when that cannot be read, `github_token.dat`; it verifies the new file before
    deleting both old files. A migrated version-1 Copilot Plugin credential keeps
    working and refreshing without login until GitHub genuinely rejects it. The next
-   explicit `auth login` replaces it with a version-2 `gho_` direct credential.
+   explicit `auth login` replaces it with a version-3 Copilot Plugin credential
+   that records its OAuth App ID in the encrypted file. Existing version-2
+   `gho_` direct credentials remain supported.
    (On Windows,
    double-clicking opens a console window that shows the URL and live log.)
 
@@ -466,14 +467,15 @@ copilot-bridge debug list-models --all
 - `auth whoami` validates (and when possible refreshes) the stored GitHub OAuth
   credential.
 - `auth copilot-status` prints direct/exchanged mode, known deadlines, and the API
-  URL. A fresh GitHub CLI OAuth credential is the direct CAPI bearer; an existing
-  Copilot Plugin credential is exchanged for a short-lived bearer.
+  URL. Copilot Plugin credentials are exchanged for a short-lived bearer; an
+  existing version-2 GitHub CLI OAuth credential remains a direct CAPI bearer.
 - `debug list-models --all` proves the resulting Copilot lease can reach CAPI and
   shows which models the current account/policy actually exposes.
 
 Version 1 means a migrated Copilot Plugin credential and retains its full refresh
 state. Version 2 means a GitHub CLI OAuth direct credential and has no separately
-minted bearer deadline. A non-refreshable version 1 with unknown access expiry remains
+minted bearer deadline. Version 3 means a newly issued Copilot Plugin credential
+with an explicit `oauth_client_id`. A non-refreshable version 1 or 3 with unknown access expiry remains
 valid until GitHub actually rejects it; its short-lived Copilot bearer still refreshes
 in memory.
 

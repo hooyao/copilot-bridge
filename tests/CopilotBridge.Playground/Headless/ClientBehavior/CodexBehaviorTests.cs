@@ -106,6 +106,35 @@ public class CodexBehaviorTests
     }
 
     [Fact]
+    public async Task Codex_CopilotPluginVersionThree_ExchangeLeaseCompletesToolChain_ForVerdict()
+    {
+        var credentialSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(credentialSource))
+            throw new InvalidOperationException(
+                "Set COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY to a scratch "
+                + "directory containing a freshly authorized version-3 credential.");
+
+        const string canary = "codex-plugin-v3-canary-82631";
+        var prompt =
+            "Do these steps in order with real shell tools; do not fabricate output:\n"
+            + "1. Run a command that writes first-plugin-v3-line to plugin_v3_probe.txt.\n"
+            + $"2. Run a separate command that appends {canary}.\n"
+            + "3. Run a third command that reads the file, report its exact second line, and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-copilot-plugin-version-three",
+            prompt,
+            credentialSourceDirectory: credentialSource,
+            credentialStagingMode: CredentialStagingMode.CopilotPluginVersionThree,
+            expectedBridgeLogs:
+            [
+                "Copilot bearer refresh trigger=deadline outcome=success",
+                "credential_version=3",
+            ]);
+    }
+
+    [Fact]
     public async Task Codex_MigratedVersionOne_ExchangeLeaseCompletesToolChain_ForVerdict()
     {
         var credentialSource = Environment.GetEnvironmentVariable(

@@ -11,6 +11,7 @@ internal sealed record CredentialFileRecord
 {
     public const int CopilotPluginVersion = 1;
     public const int GitHubCliOAuthVersion = 2;
+    public const int CopilotPluginExplicitProviderVersion = 3;
 
     [JsonPropertyName("version")]
     public required int Version { get; init; }
@@ -33,6 +34,9 @@ internal sealed record CredentialFileRecord
     [JsonPropertyName("scope")]
     public string? Scope { get; init; }
 
+    [JsonPropertyName("oauth_client_id")]
+    public string? OAuthClientId { get; init; }
+
     [JsonPropertyName("credential_id")]
     public string CredentialId { get; init; } = "";
 
@@ -50,5 +54,6 @@ internal sealed record CredentialFileRecord
         + $"AccessTokenExpiresAt = {AccessTokenExpiresAt:O}, "
         + $"RefreshToken = {(IsRefreshable ? "(redacted)" : "(none)")}, "
         + $"RefreshTokenExpiresAt = {RefreshTokenExpiresAt:O}, "
-        + $"TokenType = {TokenType}, Scope = {Scope}, Generation = {Generation} }}";
+        + $"TokenType = {TokenType}, Scope = {Scope}, "
+        + $"OAuthClientId = {OAuthClientId ?? "(implicit)"}, Generation = {Generation} }}";
 }

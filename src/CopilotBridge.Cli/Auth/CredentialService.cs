@@ -48,6 +48,7 @@ internal sealed class CredentialService : IDisposable
             : new CredentialStatus(
                 _store.FilePath,
                 record.Version,
+                record.OAuthClientId,
                 record.IsDirect,
                 record.IsRefreshable,
                 record.AccessTokenExpiresAt,
@@ -159,7 +160,7 @@ internal sealed class CredentialService : IDisposable
             if (IdentityOf(current) != observed) return ToLease(current);
             if (!force && !NeedsRefresh(current, _timeProvider.GetUtcNow()))
                 return ToLease(current);
-            EnsureRefreshableLegacy(current);
+            EnsureRefreshableExchangeCredential(current);
 
             await using var rotationLock = await _store.AcquireLockAsync(
                 RotationLockTimeout, ct).ConfigureAwait(false);
@@ -168,7 +169,7 @@ internal sealed class CredentialService : IDisposable
             if (IdentityOf(current) != observed) return ToLease(current);
             if (!force && !NeedsRefresh(current, _timeProvider.GetUtcNow()))
                 return ToLease(current);
-            EnsureRefreshableLegacy(current);
+            EnsureRefreshableExchangeCredential(current);
 
             var started = _timeProvider.GetTimestamp();
             try
@@ -177,7 +178,7 @@ internal sealed class CredentialService : IDisposable
                 var response = await GitHubAuthClient.RefreshAccessTokenAsync(
                     http,
                     current.RefreshToken!,
-                    GitHubOAuthProvider.CopilotPluginClientId,
+                    OAuthClientIdForRefresh(current),
                     ct).ConfigureAwait(false);
                 var refreshed = FromRefreshResponse(current, response);
                 _store.SaveWhileLocked(refreshed);
@@ -239,7 +240,7 @@ internal sealed class CredentialService : IDisposable
         var receivedAt = _timeProvider.GetUtcNow();
         var record = new CredentialFileRecord
         {
-            Version = CredentialFileRecord.GitHubCliOAuthVersion,
+            Version = CredentialFileRecord.CopilotPluginExplicitProviderVersion,
             AccessToken = response.AccessToken,
             AccessTokenExpiresAt = response.ExpiresIn is > 0
                 ? receivedAt.AddSeconds(response.ExpiresIn.Value)
@@ -253,6 +254,7 @@ internal sealed class CredentialService : IDisposable
                     : null,
             TokenType = response.TokenType,
             Scope = response.Scope,
+            OAuthClientId = GitHubOAuthProvider.CopilotPluginClientId,
             CredentialId = Guid.NewGuid().ToString("N"),
             Generation = 1,
         };
@@ -283,14 +285,16 @@ internal sealed class CredentialService : IDisposable
             Volatile.Write(ref _terminalRejected, rejected);
     }
 
-    private void EnsureRefreshableLegacy(CredentialFileRecord record)
+    private void EnsureRefreshableExchangeCredential(CredentialFileRecord record)
     {
-        if (record.Version != CredentialFileRecord.CopilotPluginVersion)
+        if (record.Version is not (
+                CredentialFileRecord.CopilotPluginVersion
+                or CredentialFileRecord.CopilotPluginExplicitProviderVersion))
             throw new GitHubReauthenticationRequiredException(
                 "the direct credential was rejected and requires interactive login");
         if (!record.IsRefreshable)
             throw new GitHubReauthenticationRequiredException(
-                "the stored legacy access token has no refresh token");
+                "the stored Copilot Plugin access token has no refresh token");
         if (record.RefreshTokenExpiresAt is { } expiry
             && expiry <= _timeProvider.GetUtcNow())
             throw new GitHubReauthenticationRequiredException(
@@ -309,7 +313,7 @@ internal sealed class CredentialService : IDisposable
             : response.RefreshToken;
         return new CredentialFileRecord
         {
-            Version = CredentialFileRecord.CopilotPluginVersion,
+            Version = current.Version,
             AccessToken = response.AccessToken,
             AccessTokenExpiresAt = response.ExpiresIn is > 0
                 ? now.AddSeconds(response.ExpiresIn.Value)
@@ -321,10 +325,16 @@ internal sealed class CredentialService : IDisposable
                     : null,
             TokenType = response.TokenType ?? current.TokenType,
             Scope = response.Scope ?? current.Scope,
+            OAuthClientId = current.OAuthClientId,
             CredentialId = current.CredentialId,
             Generation = checked(current.Generation + 1),
         };
     }
+
+    private static string OAuthClientIdForRefresh(CredentialFileRecord record) =>
+        record.Version == CredentialFileRecord.CopilotPluginExplicitProviderVersion
+            ? record.OAuthClientId!
+            : GitHubOAuthProvider.CopilotPluginClientId;
 
     private static bool NeedsRefresh(CredentialFileRecord record, DateTimeOffset now) =>
         record.AccessTokenExpiresAt is { } expiry

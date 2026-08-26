@@ -20,10 +20,11 @@ internal static class GitHubAuthClient
     private const string DeviceCodeUrl = "https://github.com/login/device/code";
     private const string AccessTokenUrl = "https://github.com/login/oauth/access_token";
 
-    // Fresh logins intentionally mirror GitHub CLI's reviewed OAuth device flow.
-    // The client id is public; device flow does not send GitHub CLI's web-app secret.
-    public const string ClientId = GitHubOAuthProvider.GitHubCliClientId;
-    public const string Scope = GitHubOAuthProvider.GitHubCliScope;
+    // Fresh logins mirror the official GitHub Copilot Plugin device flow. The
+    // public client id is persisted with version-3 credentials and no client
+    // secret is used by RFC 8628 device authorization.
+    public const string ClientId = GitHubOAuthProvider.CopilotPluginClientId;
+    public const string Scope = GitHubOAuthProvider.CopilotPluginScope;
 
     public static async ValueTask<DeviceCodeResponse> RequestDeviceCodeAsync(
         HttpClient http, CancellationToken ct = default)
