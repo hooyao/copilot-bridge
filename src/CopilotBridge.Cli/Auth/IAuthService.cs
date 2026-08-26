@@ -14,8 +14,8 @@ public interface IAuthService
 
     /// <summary>
     /// Status-only view of the current lease's CAPI base URL, populated after the first successful
-    /// lease resolution. Version 1 uses <c>endpoints.api</c> from token exchange and defaults to
-    /// <c>https://api.githubcopilot.com</c>; version 2 uses that generic host directly.
+    /// lease resolution. Versions 1 and 3 use <c>endpoints.api</c> from token exchange and
+    /// default to <c>https://api.githubcopilot.com</c>; version 2 uses that generic host directly.
     /// Null until <see cref="GetCopilotTokenAsync"/> has run at least once.
     /// </summary>
     string? CopilotApiBaseUrl { get; }
@@ -33,8 +33,8 @@ public interface IAuthService
     ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// Returns one atomic Copilot bearer/endpoint lease. A GitHub CLI OAuth credential
-    /// is used directly; a legacy Copilot Plugin credential is exchanged first. Fetches
+    /// Returns one atomic Copilot bearer/endpoint lease. A version-2 GitHub CLI OAuth
+    /// credential is used directly; version-1/3 Copilot Plugin credentials are exchanged first. Fetches
     /// and caches on first call; subsequent calls return the cached lease until its
     /// credential-version-specific refresh deadline.
     /// Pass the lease and closed 401/403 reason that rejected it to discard exactly

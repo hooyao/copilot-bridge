@@ -1,8 +1,8 @@
 # Token storage security model
 
 The bridge persists GitHub OAuth state in one encrypted, versioned file beside the
-executable: `github_credentials.dat`. Fresh login implements the GitHub CLI OAuth App
-Device Flow inside the bridge and requires no `gh` executable. Every secret-bearing
+executable: `github_credentials.dat`. Fresh login implements the official GitHub
+Copilot Plugin Device Flow inside the bridge and requires no `gh` executable. Every secret-bearing
 file is encrypted on disk—never
 plaintext—but the encryption scheme is chosen per platform at runtime, because
 the strong OS-native facility used on Windows (DPAPI) has no portable equivalent
@@ -35,7 +35,8 @@ source-generated JSON begins with a required semantic version:
 | Version | Meaning | CAPI authentication |
 | --- | --- | --- |
 | `1` | Migrated Copilot Plugin credential, including complete access/refresh/deadline/identity/generation state when available | Exchange at `/copilot_internal/v2/token`; use returned bearer + endpoint |
-| `2` | GitHub CLI OAuth `gho_` credential produced by built-in Device Flow | Use directly as bearer at `https://api.githubcopilot.com` |
+| `2` | Compatible GitHub CLI OAuth `gho_` direct credential | Use directly as bearer at `https://api.githubcopilot.com` |
+| `3` | Newly issued Copilot Plugin credential with explicit `oauth_client_id` | Exchange at `/copilot_internal/v2/token`; use returned bearer + endpoint |
 
 The runtime never infers credential semantics from a filename or token prefix. An
 unknown version fails closed and leaves the file untouched.
@@ -66,15 +67,16 @@ window. Ordinary launches retain the startup authentication/device-flow behavior
 
 ### Lifecycle
 
-A migrated version 1 is not obsolete merely because version 2 exists. It remains in
+A migrated version 1 is not obsolete merely because newer versions exist. It remains in
 use and, when refresh metadata is present, rotates five minutes before expiry under
 the same cross-process lock. It is replaced only after GitHub terminally rejects it
 and the operator runs `auth login`. Transient rate limits, server failures, and
 transport errors preserve the current record.
 
-Explicit login uses GitHub CLI's public OAuth client ID and exact minimum scopes
-(`repo read:org gist`) with form-encoded RFC 8628 requests, no client secret, and no
-`gh` process or keyring. Success atomically overwrites the same file with version 2.
+Explicit login uses the official Copilot Plugin public OAuth client ID and `read:user`
+scope with form-encoded RFC 8628 requests, no client secret, and no `gh` process or
+keyring. Success atomically overwrites the same file with version 3 and records the
+issuing client ID in `oauth_client_id`.
 `auth logout` removes the new file plus any exact pre-migration files that survived a
 failed migration, then clears in-memory Copilot leases.
 
@@ -83,9 +85,10 @@ used directly as the bearer paired with
 `https://api.githubcopilot.com`; its expiry is unknown and the bridge neither
 calls `/copilot_internal/v2/token` nor arms a short-lived bearer timer. Version-1
 credentials continue producing the former short-lived,
-memory-only exchanged lease using the endpoint returned by GitHub.
+memory-only exchanged lease using the endpoint returned by GitHub. Version 3 uses
+the same exchange shape and reads its refresh client ID from the credential record.
 
-For an exchanged version-1 lease, a first CAPI 401 or 403 rejects the exact
+For an exchanged version-1 or version-3 lease, a first CAPI 401 or 403 rejects the exact
 bearer/endpoint generation, obtains its replacement, and replays the exact request once.
 A direct version-2 403 is likewise ambiguous and gets one bounded replay. A direct 401,
 however, rejects the persisted credential identity and requires `auth login`; replaying
@@ -180,10 +183,9 @@ brief window at default umask.
   (different `machineId`), DPAPI won't decrypt → useless ciphertext.
 - Casual disclosure: neither file is plaintext; `cat`-ing either yields ciphertext.
 
-The GitHub CLI OAuth-compatible token carries broader GitHub scopes than the old
-Copilot Plugin credential (`repo`, `read:org`, and `gist` rather than `read:user`).
-Encryption and redaction therefore remain mandatory; the bridge never writes the
-token to client configuration or command output.
+Compatible version-2 GitHub CLI OAuth tokens carry broader GitHub scopes than the
+Copilot Plugin credential. Encryption and redaction therefore remain mandatory; the
+bridge never writes any credential to client configuration or command output.
 
 **Windows (DPAPI):** additionally, another user on the same machine cannot
 decrypt it (OS-enforced, key bound to the Windows account).
@@ -215,7 +217,7 @@ ubiquity of the fallback path).
   wrong-machine/user, every tamper position, truncation, unknown version, blob
   layout). `MachineKeyProviderParseTests` covers `ParseIOPlatformUUID`.
 - **Credential lifecycle unit contracts:** `CredentialServiceMigrationTests`,
-  `GitHubCliOAuthContractTests`, `AuthServiceGitHubRecoveryTests`, and
+  `GitHubOAuthContractTests`, `AuthServiceGitHubRecoveryTests`, and
   `AuthenticationSecretRedactionTests` cover legacy migration, the encrypted
   versioned authority, atomic/locked rotation, expiry/401 refresh, bounded failure, and
   no-secret diagnostics.

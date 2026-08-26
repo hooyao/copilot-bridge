@@ -1,7 +1,7 @@
 namespace CopilotBridge.Cli.Models.GitHub;
 
 /// <summary>
-/// OAuth client identities used by the two supported credential versions.
+/// OAuth client identities used by the supported credential versions.
 /// </summary>
 internal static class GitHubOAuthProvider
 {
@@ -12,4 +12,5 @@ internal static class GitHubOAuthProvider
 
     // Official GitHub Copilot OAuth client used by older bridge credentials.
     public const string CopilotPluginClientId = "Iv1.b507a08c87ecfe98";
+    public const string CopilotPluginScope = "read:user";
 }

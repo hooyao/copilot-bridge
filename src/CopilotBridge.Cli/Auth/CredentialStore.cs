@@ -301,10 +301,22 @@ internal sealed class CredentialStore
     {
         if (record.Version is not (
                 CredentialFileRecord.CopilotPluginVersion
-                or CredentialFileRecord.GitHubCliOAuthVersion))
+                or CredentialFileRecord.GitHubCliOAuthVersion
+                or CredentialFileRecord.CopilotPluginExplicitProviderVersion))
             throw new UnsupportedCredentialVersionException(record.Version);
         if (string.IsNullOrWhiteSpace(record.AccessToken))
             throw new InvalidOperationException("Credential has no access token.");
+        if (record.Version == CredentialFileRecord.CopilotPluginExplicitProviderVersion
+            && string.IsNullOrWhiteSpace(record.OAuthClientId))
+            throw new InvalidOperationException(
+                "Version 3 credential has no OAuth client id.");
+        if (record.Version == CredentialFileRecord.CopilotPluginExplicitProviderVersion
+            && !string.Equals(
+                record.OAuthClientId,
+                GitHubOAuthProvider.CopilotPluginClientId,
+                StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "Version 3 credential has an unsupported OAuth client id.");
     }
 
     private static void DeleteIfExists(string path)

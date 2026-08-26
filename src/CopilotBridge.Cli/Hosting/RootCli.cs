@@ -40,7 +40,7 @@ internal static class RootCli
         // --- auth -----------------------------------------------------------
         var authLogin = new Command(
             "login",
-            "Log in via the built-in GitHub CLI OAuth-compatible device flow (gh is not required)");
+            "Log in via the built-in GitHub Copilot Plugin device flow (gh is not required)");
         authLogin.SetAction((_, _) => AuthCommand.LoginAsync());
 
         var authWhoami = new Command("whoami",

@@ -843,24 +843,25 @@ independent `CredentialService` shields all persistence and OAuth details:
    `github_token.dat`, atomically writes and re-opens version 1, then deletes both old
    files; a later load retries any cleanup interrupted after verified commit. Version 1
    keeps rotating refresh state and remains usable until terminal rejection. Explicit
-   login implements GitHub CLI OAuth Device Flow in-process
-   (`178c6fc778ccc68e1d6a`, `repo read:org gist`, form-encoded RFC 8628, no client
-   secret or `gh` process) and overwrites the same path with version 2. The service
+   login implements the official GitHub Copilot Plugin Device Flow in-process
+   (`Iv1.b507a08c87ecfe98`, `read:user`, form-encoded RFC 8628, no client secret or
+   `gh` process) and overwrites the same path with version 3, including the issuing
+   OAuth client ID. Version 2 remains readable for existing direct credentials. The service
    owns migration, locks, first-use login single-flight, identity/generation, refresh,
    rejection, status, and logout;
    AuthService sees only an immutable credential lease.
 2. **Copilot lease (memory only).** `GetCopilotTokenAsync` returns an immutable
    `CopilotAuthLease`: bearer, API base URL, deadline metadata, kind, and generation.
-   Version 2 is the direct bearer paired with
+   Version 2 is the compatible direct bearer paired with
    `https://api.githubcopilot.com`; no `/copilot_internal/v2/token` request or
-   short-lived refresh timer exists. Version 1 uses the exchanged lease: bearer,
+   short-lived refresh timer exists. Versions 1 and 3 use the exchanged lease: bearer,
    returned `endpoints.api`,
    receipt-relative refresh deadline, and server expiry. That local deadline follows
    the official-client clock-skew rule (`receipt + refresh_in + 60s`, refreshed five
    minutes early). Callers never read a token and endpoint from separate snapshots.
 
 Every authenticated CAPI send (`/v1/messages`, `/responses`, `/models`, and
-`/v1/messages/count_tokens`) is built from one lease. For an exchanged version-1
+`/v1/messages/count_tokens`) is built from one lease. For an exchanged version-1 or version-3
 lease, a first HTTP 401 or 403 disposes the rejected response/request, obtains the
 already-newer or freshly minted lease, rebuilds the single-use request with the same
 body bytes and business headers, and replays once. A direct version-2 403 follows the
@@ -2066,14 +2067,14 @@ Before opening the listening socket, `BridgeHost.RunStartupAsync`:
    logs `[INF] No GitHub token on disk — starting device-code flow`, then
    the injected `PrintDeviceCode` callback writes the verification URL +
    user code to stdout. `EnsureGitHubTokenAsync` **blocks** polling GitHub
-   until the user completes the browser handshake; version 2 is encrypted and
+   until the user completes the browser handshake; version 3 is encrypted and
    atomically saved as exe-local `github_credentials.dat` (DPAPI on Windows,
    derived-key protection on Linux/macOS). Before any login, CredentialService first
    migrates and continues a still-working version-1 credential. An existing
    refreshable credential is silently
    rotated first when its access-token deadline is near.
 3. `auth.GetCopilotTokenAsync(ct)` — publishes an atomic version-specific lease.
-   Version 2 becomes a direct generic-CAPI lease with no exchange timer; version 1 is exchanged for the
+   Version 2 remains a direct generic-CAPI lease with no exchange timer; versions 1 and 3 are exchanged for the
    short-lived token/endpoint lease and arms its receipt-relative refresh timer.
    A GitHub 401 on the exchange path rotates once before failing.
 4. `ModelProfileCatalog` is a static DI singleton (hand-curated, no
