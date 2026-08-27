@@ -66,13 +66,15 @@ internal sealed record ServeInvocation(
     string? CredentialSourceDirectory = null,
     CredentialStagingMode CredentialStagingMode = CredentialStagingMode.LegacyRawMirror,
     string? WorkingDirectory = null,
-    bool SimulateUpdaterTargetActivation = false);
+    bool SimulateUpdaterTargetActivation = false,
+    bool UseCustomOAuthApp = false);
 
 internal enum CredentialStagingMode
 {
     LegacyRawMirror,
     PurposeBuiltDirectVersionTwo,
     CopilotPluginVersionThree,
+    CustomOAuthVersionFour,
 }
 
 /// <summary>
@@ -294,7 +296,8 @@ internal static class ServeProcess
                 inv.WholeResponseBuffering,
                 inv.KeepAliveIntervalSeconds,
                 inv.CodexCatalogCacheDirectory,
-                inv.LiveOverlayFailureCooldownSeconds);
+                inv.LiveOverlayFailureCooldownSeconds,
+                inv.UseCustomOAuthApp);
 
             var scratchExe = Path.Combine(scratchDir, "copilot-bridge.exe");
             var port = GetFreeLoopbackPort();
@@ -530,7 +533,8 @@ internal static class ServeProcess
         bool wholeResponseBuffering,
         int? keepAliveIntervalSeconds,
         string? codexCatalogCacheDirectory,
-        int? liveOverlayFailureCooldownSeconds)
+        int? liveOverlayFailureCooldownSeconds,
+        bool useCustomOAuthApp)
     {
         var root = JsonNode.Parse(File.ReadAllText(path))?.AsObject()
             ?? throw new ServeStartupException($"appsettings.json at {path} is not a JSON object.");
@@ -542,6 +546,14 @@ internal static class ServeProcess
             ?? throw new ServeStartupException("appsettings.json has no Tracing section to enable.");
         tracing["Enabled"] = true;
         tracing["Directory"] = traceDir;
+
+        if (useCustomOAuthApp)
+        {
+            var authentication = root["Authentication"]?.AsObject()
+                ?? throw new ServeStartupException(
+                    "appsettings.json has no Authentication section for custom OAuth.");
+            authentication["UseCustomAppId"] = true;
+        }
 
         if (codexCatalogCacheDirectory is not null
             || liveOverlayFailureCooldownSeconds is not null)
@@ -709,6 +721,14 @@ internal static class ServeProcess
                     Path.Combine(scratchDir, "github_credentials.dat"),
                     overwrite: false);
                 return;
+            case CredentialStagingMode.CustomOAuthVersionFour:
+                var customPath = Path.Combine(sourceRoot, "github_credentials.dat");
+                ValidateCustomOAuthCredential(customPath);
+                File.Copy(
+                    customPath,
+                    Path.Combine(scratchDir, "github_credentials.dat"),
+                    overwrite: false);
+                return;
             default:
                 throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
         }
@@ -790,6 +810,43 @@ internal static class ServeProcess
             {
                 throw new InvalidOperationException(
                     "Copilot Plugin staging requires a version-3 credential with the official OAuth client id.");
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plaintext);
+        }
+    }
+
+    private static void ValidateCustomOAuthCredential(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+            throw new PlatformNotSupportedException(
+                "Custom OAuth credential staging currently requires Windows DPAPI.");
+        if (!File.Exists(path))
+            throw new FileNotFoundException(
+                "Custom OAuth credential source has no github_credentials.dat.", path);
+
+        var entropy = Encoding.UTF8.GetBytes("copilot-bridge.github_token.v1");
+        var plaintext = ProtectedData.Unprotect(
+            File.ReadAllBytes(path), entropy, DataProtectionScope.CurrentUser);
+        try
+        {
+            var record = JsonSerializer.Deserialize(
+                    plaintext, JsonContext.Default.CredentialFileRecord)
+                ?? throw new InvalidOperationException(
+                    "Custom OAuth credential source contains an empty record.");
+            if (record.Version != CredentialFileRecord.CustomOAuthDirectVersion
+                || string.IsNullOrWhiteSpace(record.AccessToken)
+                || string.IsNullOrWhiteSpace(record.OAuthClientId)
+                || !record.IsRefreshable
+                || record.AccessTokenExpiresAt is not { } expiry
+                || expiry <= DateTimeOffset.UtcNow.AddMinutes(30))
+            {
+                throw new InvalidOperationException(
+                    "Custom OAuth staging requires a freshly authorized, refreshable "
+                    + "version-4 github_credentials.dat whose access token remains valid "
+                    + "for at least 30 minutes.");
             }
         }
         finally

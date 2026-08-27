@@ -18,6 +18,7 @@ internal sealed class CredentialService : IDisposable
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<CredentialService> _log;
     private readonly Action<DeviceCodeChallenge> _onDeviceCodeIssued;
+    private readonly GitHubOAuthLoginProvider _loginProvider;
     private readonly SemaphoreSlim _loginLock = new(1, 1);
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private CredentialIdentity? _terminalRejected;
@@ -28,13 +29,15 @@ internal sealed class CredentialService : IDisposable
         CredentialStore store,
         TimeProvider timeProvider,
         ILogger<CredentialService> log,
-        Action<DeviceCodeChallenge>? onDeviceCodeIssued = null)
+        Action<DeviceCodeChallenge>? onDeviceCodeIssued = null,
+        GitHubOAuthLoginProvider? loginProvider = null)
     {
         _httpClientFactory = httpClientFactory;
         _store = store;
         _timeProvider = timeProvider;
         _log = log;
         _onDeviceCodeIssued = onDeviceCodeIssued ?? (_ => { });
+        _loginProvider = loginProvider ?? GitHubOAuthLoginProvider.OfficialCopilotPlugin;
     }
 
     public bool IsAuthenticated => _store.LoadOrMigrate() is not null;
@@ -100,12 +103,29 @@ internal sealed class CredentialService : IDisposable
 
     public async ValueTask<CredentialLease> RecoverAfterRejectionAsync(
         CredentialLease rejected,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        await RecoverAfterRejectionAsync(
+            IdentityOf(rejected), "github_401", ct).ConfigureAwait(false);
+
+    internal async ValueTask<CredentialLease> RecoverAfterRejectionAsync(
+        int version,
+        string credentialId,
+        long generation,
+        string trigger,
+        CancellationToken ct = default) =>
+        await RecoverAfterRejectionAsync(
+            new CredentialIdentity(version, credentialId, generation), trigger, ct)
+            .ConfigureAwait(false);
+
+    private async ValueTask<CredentialLease> RecoverAfterRejectionAsync(
+        CredentialIdentity rejected,
+        string trigger,
+        CancellationToken ct)
     {
         try
         {
             return await RefreshAsync(
-                IdentityOf(rejected), force: true, "github_401", ct).ConfigureAwait(false);
+                rejected, force: true, trigger, ct).ConfigureAwait(false);
         }
         catch (GitHubReauthenticationRequiredException)
         {
@@ -160,7 +180,7 @@ internal sealed class CredentialService : IDisposable
             if (IdentityOf(current) != observed) return ToLease(current);
             if (!force && !NeedsRefresh(current, _timeProvider.GetUtcNow()))
                 return ToLease(current);
-            EnsureRefreshableExchangeCredential(current);
+            EnsureRefreshableCredential(current);
 
             await using var rotationLock = await _store.AcquireLockAsync(
                 RotationLockTimeout, ct).ConfigureAwait(false);
@@ -169,7 +189,7 @@ internal sealed class CredentialService : IDisposable
             if (IdentityOf(current) != observed) return ToLease(current);
             if (!force && !NeedsRefresh(current, _timeProvider.GetUtcNow()))
                 return ToLease(current);
-            EnsureRefreshableExchangeCredential(current);
+            EnsureRefreshableCredential(current);
 
             var started = _timeProvider.GetTimestamp();
             try
@@ -225,13 +245,15 @@ internal sealed class CredentialService : IDisposable
     private async ValueTask<CredentialLease> LoginCoreAsync(CancellationToken ct)
     {
         var http = _httpClientFactory.CreateClient(UpstreamHttpClientNames.GitHubAuth);
-        var deviceCode = await GitHubAuthClient.RequestDeviceCodeAsync(http, ct)
+        var deviceCode = await GitHubAuthClient.RequestDeviceCodeAsync(
+                http, _loginProvider, ct)
             .ConfigureAwait(false);
         _onDeviceCodeIssued(new DeviceCodeChallenge(
             deviceCode.UserCode,
             deviceCode.VerificationUri,
             TimeSpan.FromSeconds(deviceCode.ExpiresIn)));
-        var response = await GitHubAuthClient.PollAccessTokenAsync(http, deviceCode, ct)
+        var response = await GitHubAuthClient.PollAccessTokenAsync(
+                http, deviceCode, _loginProvider, ct)
             .ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(response.AccessToken))
             throw new GitHubOAuthException(
@@ -240,7 +262,7 @@ internal sealed class CredentialService : IDisposable
         var receivedAt = _timeProvider.GetUtcNow();
         var record = new CredentialFileRecord
         {
-            Version = CredentialFileRecord.CopilotPluginExplicitProviderVersion,
+            Version = _loginProvider.CredentialVersion,
             AccessToken = response.AccessToken,
             AccessTokenExpiresAt = response.ExpiresIn is > 0
                 ? receivedAt.AddSeconds(response.ExpiresIn.Value)
@@ -254,7 +276,7 @@ internal sealed class CredentialService : IDisposable
                     : null,
             TokenType = response.TokenType,
             Scope = response.Scope,
-            OAuthClientId = GitHubOAuthProvider.CopilotPluginClientId,
+            OAuthClientId = _loginProvider.ClientId,
             CredentialId = Guid.NewGuid().ToString("N"),
             Generation = 1,
         };
@@ -285,16 +307,17 @@ internal sealed class CredentialService : IDisposable
             Volatile.Write(ref _terminalRejected, rejected);
     }
 
-    private void EnsureRefreshableExchangeCredential(CredentialFileRecord record)
+    private void EnsureRefreshableCredential(CredentialFileRecord record)
     {
         if (record.Version is not (
                 CredentialFileRecord.CopilotPluginVersion
-                or CredentialFileRecord.CopilotPluginExplicitProviderVersion))
+                or CredentialFileRecord.CopilotPluginExplicitProviderVersion
+                or CredentialFileRecord.CustomOAuthDirectVersion))
             throw new GitHubReauthenticationRequiredException(
                 "the direct credential was rejected and requires interactive login");
         if (!record.IsRefreshable)
             throw new GitHubReauthenticationRequiredException(
-                "the stored Copilot Plugin access token has no refresh token");
+                "the stored OAuth access token has no refresh token");
         if (record.RefreshTokenExpiresAt is { } expiry
             && expiry <= _timeProvider.GetUtcNow())
             throw new GitHubReauthenticationRequiredException(
@@ -332,7 +355,8 @@ internal sealed class CredentialService : IDisposable
     }
 
     private static string OAuthClientIdForRefresh(CredentialFileRecord record) =>
-        record.Version == CredentialFileRecord.CopilotPluginExplicitProviderVersion
+        record.Version is CredentialFileRecord.CopilotPluginExplicitProviderVersion
+            or CredentialFileRecord.CustomOAuthDirectVersion
             ? record.OAuthClientId!
             : GitHubOAuthProvider.CopilotPluginClientId;
 

@@ -19,7 +19,8 @@ internal sealed class CopilotHeaderFactory
     //   r["Editor-Plugin-Version"] = `copilot-chat/${this._extensionInfo.version}`;
     //   r["Editor-Version"]        = `vscode/${this._extensionInfo.vscodeVersion}`;
     private const string ApiVersion = "2026-01-09";
-    private const string IntegrationId = "vscode-chat";
+    internal const string DefaultIntegrationId = "vscode-chat";
+    internal const string CustomOAuthIntegrationId = "copilot-developer-cli";
 
     // Editor identity. These get re-checked against current VS Code Copilot Chat
     // releases periodically; mismatch is a soft signal Copilot may treat traffic
@@ -48,11 +49,16 @@ internal sealed class CopilotHeaderFactory
         HttpRequestMessage req,
         string copilotToken,
         bool vision = false,
-        IReadOnlyDictionary<string, string?>? overrides = null)
+        IReadOnlyDictionary<string, string?>? overrides = null,
+        string? integrationId = null)
     {
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", copilotToken);
         AddOrOverride(req, "X-GitHub-Api-Version", ApiVersion, overrides);
-        AddOrOverride(req, "Copilot-Integration-Id", IntegrationId, overrides);
+        AddOrOverride(
+            req,
+            "Copilot-Integration-Id",
+            integrationId ?? DefaultIntegrationId,
+            overrides);
         req.Headers.TryAddWithoutValidation("VScode-SessionId", _sessionId);
         req.Headers.TryAddWithoutValidation("VScode-MachineId", _machineId);
         req.Headers.TryAddWithoutValidation("Editor-Device-Id", _deviceId);

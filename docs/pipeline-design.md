@@ -842,19 +842,24 @@ independent `CredentialService` shields all persistence and OAuth details:
    service migrates complete `github_credentials.v2.dat` state or falls back to
    `github_token.dat`, atomically writes and re-opens version 1, then deletes both old
    files; a later load retries any cleanup interrupted after verified commit. Version 1
-   keeps rotating refresh state and remains usable until terminal rejection. Explicit
-   login implements the official GitHub Copilot Plugin Device Flow in-process
-   (`Iv1.b507a08c87ecfe98`, `read:user`, form-encoded RFC 8628, no client secret or
-   `gh` process) and overwrites the same path with version 3, including the issuing
-   OAuth client ID. Version 2 remains readable for existing direct credentials. The service
+   keeps rotating refresh state and remains usable until terminal rejection. A prominent
+   top-level `Authentication` section selects the provider for the next explicit login:
+   the stock `UseCustomAppId=false` implements the official GitHub Copilot Plugin Device
+   Flow (`Iv1.b507a08c87ecfe98`) and writes version 3; true uses the configured
+   `CustomAppId` (stock `Ov23liSD97ZYGfIEHAZE`) and writes version 4. Both use
+   `read:user`, form-encoded RFC 8628, no client secret, and no `gh` process. Versions
+   2 and 3 remain readable with their frozen behavior. The service
    owns migration, locks, first-use login single-flight, identity/generation, refresh,
    rejection, status, and logout;
    AuthService sees only an immutable credential lease.
 2. **Copilot lease (memory only).** `GetCopilotTokenAsync` returns an immutable
    `CopilotAuthLease`: bearer, API base URL, deadline metadata, kind, and generation.
-   Version 2 is the compatible direct bearer paired with
-   `https://api.githubcopilot.com`; no `/copilot_internal/v2/token` request or
-   short-lived refresh timer exists. Versions 1 and 3 use the exchanged lease: bearer,
+   Versions 2 and 4 are direct bearers paired with
+   `https://api.githubcopilot.com`; neither calls `/copilot_internal/v2/token`.
+   Version 2 keeps its unknown-expiry compatibility shape and no timer. A refreshable
+   version 4 schedules GitHub OAuth rotation five minutes before its recorded access
+   deadline and carries the official Copilot SDK `copilot-developer-cli` integration
+   identity. Versions 1–3 and compatible v2 retain `vscode-chat`. Versions 1 and 3 use the exchanged lease: bearer,
    returned `endpoints.api`,
    receipt-relative refresh deadline, and server expiry. That local deadline follows
    the official-client clock-skew rule (`receipt + refresh_in + 60s`, refreshed five
@@ -867,7 +872,10 @@ already-newer or freshly minted lease, rebuilds the single-use request with the 
 body bytes and business headers, and replays once. A direct version-2 403 follows the
 same bounded ambiguous replay, but a direct 401 rejects the persisted credential
 identity and requires `auth login`; resending the same `gho_` cannot recover. That
-transition CAS-invalidates every cached lease generation for the terminal identity,
+rule also applies to a non-refreshable version 4. A refreshable version 4 instead
+rotates its GitHub credential once on the first 401 or 403 and publishes the new direct
+lease for the bounded replay. For a terminal direct 401, the terminal
+transition CAS-invalidates every cached lease generation for that identity,
 and the lock-free cache fast path checks terminal identity before reuse. The same check
 also catches a late 401 for older credential A without returning already-terminal cached
 credential B. A truly newer non-terminal credential identity remains usable.
@@ -882,9 +890,10 @@ other statuses never enter auth replay. Connection-layer retries retain one
 shared budget across the auth replay, while each actual send retains its configured
 first-byte inactivity budget.
 
-GitHub `401 Bad credentials` during `/user` or legacy Copilot-token exchange uses at
-most one version-1 refresh-token rotation and one replay. A direct CAPI 401 takes the
-terminal path above. If supported refresh metadata is absent or rejected, the persisted
+GitHub `401 Bad credentials` during `/user`, legacy Copilot-token exchange, or
+refreshable custom direct authentication uses at most one provider-bound refresh-token
+rotation and one replay. A non-refreshable direct CAPI 401 takes the terminal path
+above. If supported refresh metadata is absent or rejected, the persisted
 record is preserved and interactive login is required. Rate limits, 5xx responses, and
 transport failures remain transient and
 use bounded retry/backoff without marking the credential rejected. Lifecycle logs
@@ -2067,7 +2076,8 @@ Before opening the listening socket, `BridgeHost.RunStartupAsync`:
    logs `[INF] No GitHub token on disk — starting device-code flow`, then
    the injected `PrintDeviceCode` callback writes the verification URL +
    user code to stdout. `EnsureGitHubTokenAsync` **blocks** polling GitHub
-   until the user completes the browser handshake; version 3 is encrypted and
+   until the user completes the browser handshake; version 3 (official default) or
+   version 4 (custom opt-in) is encrypted and
    atomically saved as exe-local `github_credentials.dat` (DPAPI on Windows,
    derived-key protection on Linux/macOS). Before any login, CredentialService first
    migrates and continues a still-working version-1 credential. An existing

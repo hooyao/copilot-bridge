@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using CopilotBridge.Cli.Copilot;
+using CopilotBridge.Cli.Hosting;
+using CopilotBridge.Cli.Hosting.Options;
+using Microsoft.Extensions.Configuration;
 
 namespace CopilotBridge.Cli.Auth;
 
@@ -22,7 +25,9 @@ internal static class AuthCommand
     {
         using var http = CreateHttpClient();
         using var auth = new AuthService(
-            new SingleClientHttpClientFactory(http), OnDeviceCodeIssued);
+            new SingleClientHttpClientFactory(http),
+            OnDeviceCodeIssued,
+            LoadLoginProvider());
 
         try
         {
@@ -134,6 +139,7 @@ internal static class AuthCommand
         output.WriteLine($"Token expires at:      {FormatDeadline(lease.ServerExpiresAt)}");
         output.WriteLine($"Token refresh at:      {FormatDeadline(lease.RefreshAt)}");
         output.WriteLine($"Copilot API base URL:  {lease.ApiBaseUrl}");
+        output.WriteLine($"CAPI integration ID:   {lease.IntegrationId}");
     }
 
     private static string FormatDeadline(DateTimeOffset value) =>
@@ -144,6 +150,16 @@ internal static class AuthCommand
         var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
         return http;
+    }
+
+    internal static Models.GitHub.GitHubOAuthLoginProvider LoadLoginProvider(
+        IConfiguration? configuration = null)
+    {
+        configuration ??= new ConfigurationBuilder()
+            .AddBridgeAppSettings()
+            .Build();
+        return AuthenticationOptions.FromConfiguration(configuration)
+            .ResolveLoginProvider();
     }
 
     private static void OnDeviceCodeIssued(DeviceCodeChallenge challenge)

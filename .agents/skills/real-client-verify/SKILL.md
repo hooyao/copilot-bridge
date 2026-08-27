@@ -27,7 +27,10 @@ compatibility: >-
   COPILOT_BRIDGE_TEST_DIRECT_CREDENTIAL_SOURCE_DIRECTORY and accept only a purpose-built,
   non-refreshable version-2 unified record (or build one from `gh auth token`); they
   reject installed version-1 and refresh-bearing records before copying. Source files
-  are never modified.
+  are never modified. Custom OAuth tests use
+  COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY and require a freshly
+  authorized, refreshable version-4 unified record with at least 30 minutes of access
+  lifetime remaining.
 metadata:
   author: cc-copilot-bridge
   version: "1.0"

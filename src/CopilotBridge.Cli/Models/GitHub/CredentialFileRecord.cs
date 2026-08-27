@@ -12,6 +12,7 @@ internal sealed record CredentialFileRecord
     public const int CopilotPluginVersion = 1;
     public const int GitHubCliOAuthVersion = 2;
     public const int CopilotPluginExplicitProviderVersion = 3;
+    public const int CustomOAuthDirectVersion = 4;
 
     [JsonPropertyName("version")]
     public required int Version { get; init; }
@@ -47,7 +48,7 @@ internal sealed record CredentialFileRecord
     public bool IsRefreshable => !string.IsNullOrWhiteSpace(RefreshToken);
 
     [JsonIgnore]
-    public bool IsDirect => Version == GitHubCliOAuthVersion;
+    public bool IsDirect => Version is GitHubCliOAuthVersion or CustomOAuthDirectVersion;
 
     public override string ToString() =>
         $"CredentialFileRecord {{ Version = {Version}, AccessToken = (redacted), "

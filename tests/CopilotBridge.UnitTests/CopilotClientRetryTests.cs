@@ -35,6 +35,31 @@ public class CopilotClientRetryTests
             value => value.Contains(AuthCommand.ProviderSentinel, StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(CopilotHeaderFactory.DefaultIntegrationId)]
+    [InlineData(CopilotHeaderFactory.CustomOAuthIntegrationId)]
+    public async Task Copilot_lease_integration_id_reaches_every_CAPI_request(
+        string integrationId)
+    {
+        var handler = new CapturingScriptedHandler([
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"data\":[]}"),
+            },
+            _ => new HttpResponseMessage(HttpStatusCode.OK),
+        ]);
+        var client = BuildClient(
+            handler, maxRetries: 0, auth: new FixedAuth("lease-token", integrationId));
+
+        _ = await client.GetModelsAsync();
+        using var response = await client.PostResponsesAsync(
+            System.Text.Encoding.UTF8.GetBytes("{}"));
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, request =>
+            Assert.Equal(integrationId, request.Headers["Copilot-Integration-Id"]));
+    }
+
     // ── TransientUpstreamError classification ────────────────────────────
 
     [Fact]
@@ -598,7 +623,9 @@ public class CopilotClientRetryTests
         public void SignOut() { }
     }
 
-    private sealed class FixedAuth(string token) : IAuthService
+    private sealed class FixedAuth(
+        string token,
+        string integrationId = CopilotHeaderFactory.DefaultIntegrationId) : IAuthService
     {
         public bool IsAuthenticated => true;
         public string TokenLocation => "(test)";
@@ -610,7 +637,8 @@ public class CopilotClientRetryTests
             ValueTask.FromResult(new CopilotAuthLease
             {
                 Token = token, ApiBaseUrl = CopilotApiBaseUrl!,
-                RefreshAt = DateTimeOffset.MaxValue, ServerExpiresAt = DateTimeOffset.MaxValue, Generation = 1,
+                RefreshAt = DateTimeOffset.MaxValue, ServerExpiresAt = DateTimeOffset.MaxValue,
+                Generation = 1, IntegrationId = integrationId,
             });
         public void SignOut() { }
     }

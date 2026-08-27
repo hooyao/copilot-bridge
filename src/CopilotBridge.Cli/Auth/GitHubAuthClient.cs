@@ -27,13 +27,20 @@ internal static class GitHubAuthClient
     public const string Scope = GitHubOAuthProvider.CopilotPluginScope;
 
     public static async ValueTask<DeviceCodeResponse> RequestDeviceCodeAsync(
-        HttpClient http, CancellationToken ct = default)
+        HttpClient http, CancellationToken ct = default) =>
+        await RequestDeviceCodeAsync(
+            http, GitHubOAuthLoginProvider.OfficialCopilotPlugin, ct).ConfigureAwait(false);
+
+    public static async ValueTask<DeviceCodeResponse> RequestDeviceCodeAsync(
+        HttpClient http,
+        GitHubOAuthLoginProvider provider,
+        CancellationToken ct = default)
     {
         using var req = new HttpRequestMessage(HttpMethod.Post, DeviceCodeUrl)
         {
             Content = Form([
-                new("client_id", ClientId),
-                new("scope", Scope),
+                new("client_id", provider.ClientId),
+                new("scope", provider.Scope),
             ]),
         };
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -47,6 +54,15 @@ internal static class GitHubAuthClient
     public static async ValueTask<AccessTokenResponse> PollAccessTokenAsync(
         HttpClient http,
         DeviceCodeResponse deviceCode,
+        CancellationToken ct = default) =>
+        await PollAccessTokenAsync(
+            http, deviceCode, GitHubOAuthLoginProvider.OfficialCopilotPlugin, ct)
+            .ConfigureAwait(false);
+
+    public static async ValueTask<AccessTokenResponse> PollAccessTokenAsync(
+        HttpClient http,
+        DeviceCodeResponse deviceCode,
+        GitHubOAuthLoginProvider provider,
         CancellationToken ct = default)
     {
         var pollDelay = TimeSpan.FromSeconds(deviceCode.Interval + 1);
@@ -58,7 +74,7 @@ internal static class GitHubAuthClient
             using var req = new HttpRequestMessage(HttpMethod.Post, AccessTokenUrl)
             {
                 Content = Form([
-                    new("client_id", ClientId),
+                    new("client_id", provider.ClientId),
                     new("device_code", deviceCode.DeviceCode),
                     new("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                 ]),

@@ -39,7 +39,19 @@ public sealed class AuthService : IAuthService, IDisposable
         Action<DeviceCodeChallenge>? onDeviceCodeIssued = null)
         : this(
             httpClientFactory,
-            CreateDefaultCredentialService(httpClientFactory, onDeviceCodeIssued),
+            onDeviceCodeIssued,
+            GitHubOAuthLoginProvider.OfficialCopilotPlugin)
+    {
+    }
+
+    internal AuthService(
+        IHttpClientFactory httpClientFactory,
+        Action<DeviceCodeChallenge>? onDeviceCodeIssued,
+        GitHubOAuthLoginProvider loginProvider)
+        : this(
+            httpClientFactory,
+            CreateDefaultCredentialService(
+                httpClientFactory, onDeviceCodeIssued, loginProvider),
             TimeProvider.System,
             NullLoggerFactory.Instance,
             enableBackgroundRefresh: true,
@@ -137,8 +149,8 @@ public sealed class AuthService : IAuthService, IDisposable
         }
 #endif
 
-        var rejectsDirectCredential = RejectsDirectCredential(rejection);
-        if (rejectsDirectCredential)
+        var rejectsTerminalDirectCredential = RejectsTerminalDirectCredential(rejection);
+        if (rejectsTerminalDirectCredential)
         {
             var rejected = rejection!.Value.Lease;
             _credentials.MarkTerminal(
@@ -159,17 +171,29 @@ public sealed class AuthService : IAuthService, IDisposable
 
             var rejectingCurrent = rejection is not null
                 && snapshot is not null
-                && (rejectsDirectCredential
-                    ? SameCredential(snapshot, rejection.Value.Lease)
-                    : snapshot.Generation == rejection.Value.Lease.Generation);
+                && RejectionTargetsSnapshot(snapshot, rejection.Value);
             if (rejectingCurrent)
             {
                 Volatile.Write(ref _copilotCache, null);
                 StopRefreshTimer();
             }
 
+            if (RequiresDirectCredentialRefresh(rejection))
+            {
+                var rejected = rejection!.Value.Lease;
+                var credential = await _credentials.RecoverAfterRejectionAsync(
+                        rejected.CredentialVersion,
+                        rejected.CredentialId,
+                        rejected.CredentialGeneration,
+                        TriggerFor(rejection.Value.Reason),
+                        ct)
+                    .ConfigureAwait(false);
+                return PublishDirectLease(
+                    credential, TriggerFor(rejection.Value.Reason));
+            }
+
             return await FetchAndCacheAsync(
-                rejectingCurrent || rejectsDirectCredential
+                rejectingCurrent || rejectsTerminalDirectCredential
                     ? TriggerFor(rejection!.Value.Reason)
                     : "deadline",
                 ct).ConfigureAwait(false);
@@ -223,7 +247,7 @@ public sealed class AuthService : IAuthService, IDisposable
         if (snapshot is null || snapshot.RefreshAt <= _timeProvider.GetUtcNow()) return false;
         if (IsTerminalDirectCredential(snapshot)) return false;
         if (rejection is null) return true;
-        return RejectsDirectCredential(rejection)
+        return RejectionUsesCredentialIdentity(rejection.Value)
             ? !SameCredential(snapshot, rejection.Value.Lease)
             : snapshot.Generation != rejection.Value.Lease.Generation;
     }
@@ -260,10 +284,28 @@ public sealed class AuthService : IAuthService, IDisposable
         }
     }
 
-    private static bool RejectsDirectCredential(CopilotLeaseRejection? rejection) =>
+    private static bool RejectsTerminalDirectCredential(CopilotLeaseRejection? rejection) =>
         rejection is { } value
         && value.Reason == CopilotLeaseRejectionReason.Unauthorized
-        && value.Lease.Kind == CopilotLeaseKind.Direct;
+        && value.Lease.Kind == CopilotLeaseKind.Direct
+        && !value.Lease.CredentialIsRefreshable;
+
+    private static bool RequiresDirectCredentialRefresh(CopilotLeaseRejection? rejection) =>
+        rejection is { } value
+        && value.Lease.Kind == CopilotLeaseKind.Direct
+        && value.Lease.CredentialIsRefreshable;
+
+    private static bool RejectionUsesCredentialIdentity(CopilotLeaseRejection rejection) =>
+        rejection.Lease.Kind == CopilotLeaseKind.Direct
+        && (rejection.Reason == CopilotLeaseRejectionReason.Unauthorized
+            || rejection.Lease.CredentialIsRefreshable);
+
+    private static bool RejectionTargetsSnapshot(
+        CopilotAuthLease snapshot,
+        CopilotLeaseRejection rejection) =>
+        RejectionUsesCredentialIdentity(rejection)
+            ? SameCredential(snapshot, rejection.Lease)
+            : snapshot.Generation == rejection.Lease.Generation;
 
     private static bool SameCredential(CopilotAuthLease left, CopilotAuthLease right) =>
         left.CredentialVersion == right.CredentialVersion
@@ -323,9 +365,11 @@ public sealed class AuthService : IAuthService, IDisposable
             RefreshAt = refreshAt,
             ServerExpiresAt = serverExpiry,
             Generation = Interlocked.Increment(ref _copilotGeneration),
+            IntegrationId = CopilotHeaderFactory.DefaultIntegrationId,
             CredentialVersion = credential.Version,
             CredentialId = credential.CredentialId,
             CredentialGeneration = credential.Generation,
+            CredentialIsRefreshable = credential.IsRefreshable,
         };
         Volatile.Write(ref _copilotCache, lease);
         ScheduleRefresh(refreshAt - receivedAt);
@@ -344,20 +388,33 @@ public sealed class AuthService : IAuthService, IDisposable
     private CopilotAuthLease PublishDirectLease(CredentialLease credential, string trigger)
     {
         StopRefreshTimer();
+        var receivedAt = _timeProvider.GetUtcNow();
         var expiry = credential.AccessTokenExpiresAt ?? DateTimeOffset.MaxValue;
+        var refreshAt = expiry;
+        if (credential.IsRefreshable && expiry != DateTimeOffset.MaxValue)
+        {
+            refreshAt = expiry - CopilotSafetyWindow;
+            if (refreshAt <= receivedAt) refreshAt = receivedAt + MinRefreshDelay;
+        }
         var lease = new CopilotAuthLease
         {
             Token = credential.AccessToken,
             ApiBaseUrl = DefaultCopilotApiBaseUrl,
-            RefreshAt = expiry,
+            RefreshAt = refreshAt,
             ServerExpiresAt = expiry,
             Generation = Interlocked.Increment(ref _copilotGeneration),
             Kind = CopilotLeaseKind.Direct,
+            IntegrationId = credential.Version == CredentialFileRecord.CustomOAuthDirectVersion
+                ? CopilotHeaderFactory.CustomOAuthIntegrationId
+                : CopilotHeaderFactory.DefaultIntegrationId,
             CredentialVersion = credential.Version,
             CredentialId = credential.CredentialId,
             CredentialGeneration = credential.Generation,
+            CredentialIsRefreshable = credential.IsRefreshable,
         };
         Volatile.Write(ref _copilotCache, lease);
+        if (credential.IsRefreshable && refreshAt != DateTimeOffset.MaxValue)
+            ScheduleRefresh(refreshAt - receivedAt);
         _log.LogInformation(
             "Copilot direct lease trigger={Trigger} outcome=success credential_version={CredentialVersion} "
             + "generation={Generation} api_host={ApiHost} expiry_known={ExpiryKnown}",
@@ -448,12 +505,14 @@ public sealed class AuthService : IAuthService, IDisposable
 
     private static CredentialService CreateDefaultCredentialService(
         IHttpClientFactory factory,
-        Action<DeviceCodeChallenge>? onDeviceCodeIssued) => new(
+        Action<DeviceCodeChallenge>? onDeviceCodeIssued,
+        GitHubOAuthLoginProvider? loginProvider) => new(
             factory,
             TokenStore.CreateUnifiedCredentialStore(),
             TimeProvider.System,
             NullLogger<CredentialService>.Instance,
-            onDeviceCodeIssued);
+            onDeviceCodeIssued,
+            loginProvider);
 
     private static string SafeHost(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : "(invalid)";

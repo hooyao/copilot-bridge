@@ -14,14 +14,16 @@ public sealed record CopilotAuthLease
     public required DateTimeOffset ServerExpiresAt { get; init; }
     public required long Generation { get; init; }
     public CopilotLeaseKind Kind { get; init; }
+    public string IntegrationId { get; init; } = "vscode-chat";
     internal int CredentialVersion { get; init; }
     internal string CredentialId { get; init; } = "";
     internal long CredentialGeneration { get; init; }
+    internal bool CredentialIsRefreshable { get; init; }
 
     public override string ToString() =>
         $"CopilotAuthLease {{ Token = (redacted), ApiBaseUrl = {ApiBaseUrl}, "
         + $"RefreshAt = {RefreshAt:O}, ServerExpiresAt = {ServerExpiresAt:O}, "
-        + $"Generation = {Generation}, Kind = {Kind} }}";
+        + $"Generation = {Generation}, Kind = {Kind}, IntegrationId = {IntegrationId} }}";
 }
 
 public enum CopilotLeaseKind
