@@ -208,10 +208,13 @@ client and both Windows Native AOT executables have been produced.
 #### Scenario: Real Codex exercises version-4 rejection recovery
 
 - **WHEN** a real Codex client performs a complex tool task while the bridge injects
-  the first CAPI 403 for a freshly authorized refreshable version-4 credential
+  the first CAPI 403 using a separately authorized, marker-confirmed, single-use
+  refreshable version-4 credential source
 - **THEN** the bridge rotates that credential with its recorded client ID and sends one
   successful authentication replay to live Copilot
-- **AND** the client completes the tool round trip with no abort or dispatch fatal.
+- **AND** the client completes the tool round trip with no abort or dispatch fatal
+- **AND** the harness rejects installed or reusable success-test credential sources for
+  this rotation-consuming scenario.
 
 #### Scenario: Native AOT artifacts are published
 

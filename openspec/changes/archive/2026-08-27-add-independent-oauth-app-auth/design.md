@@ -64,7 +64,7 @@ A refreshable v4 credential rejected by CAPI receives one forced credential rota
 
 ### Verification guards both authentication and downstream execution
 
-Unit contracts first assert the Device Flow client ID/scope and actionable failure code, v4 persistence and validation, absence of token exchange, proactive/reactive refresh, concurrency, and secret-free status. The new tests are mutation-checked against provider/version/direct-dispatch decisions. One `ClientBehavior` case stages a freshly authorized encrypted v4 credential and drives real Codex through a multi-step tool loop; a second injects the first CAPI 403 and requires a real version-4 OAuth rotation plus one successful authentication replay before applying the client-log verdict. The Windows AOT bridge and updater are published only after these gates pass.
+Unit contracts first assert the Device Flow client ID/scope and actionable failure code, v4 persistence and validation, absence of token exchange, proactive/reactive refresh, concurrency, and secret-free status. The new tests are mutation-checked against provider/version/direct-dispatch decisions. One `ClientBehavior` case stages a freshly authorized encrypted v4 credential and drives real Codex through a multi-step tool loop. The forced-first-403 case uses a separate environment variable and an exact marker to require a newly authorized single-use v4 source; this prevents its mandatory OAuth rotation from invalidating the installed credential or the reusable success-case source. It then requires one real version-4 rotation plus one successful authentication replay before applying the client-log verdict. The Windows AOT bridge and updater are published only after these gates pass.
 
 ## Risks / Trade-offs
 

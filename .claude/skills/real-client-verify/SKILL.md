@@ -27,10 +27,14 @@ compatibility: >-
   COPILOT_BRIDGE_TEST_DIRECT_CREDENTIAL_SOURCE_DIRECTORY and accept only a purpose-built,
   non-refreshable version-2 unified record (or build one from `gh auth token`); they
   reject installed version-1 and refresh-bearing records before copying. Source files
-  are never modified. Custom OAuth tests use
+  are never modified. Custom OAuth success tests use
   COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY and require a freshly
   authorized, refreshable version-4 unified record with at least 30 minutes of access
-  lifetime remaining.
+  lifetime remaining. Forced-refresh B14 instead requires a separately authorized,
+  single-use COPILOT_BRIDGE_TEST_CUSTOM_RECOVERY_CREDENTIAL_SOURCE_DIRECTORY containing
+  `.copilot-bridge-disposable-v4-recovery` with exact text
+  `single-use custom OAuth recovery credential`; never point it at an installed bridge
+  or the reusable B13 source, because GitHub rotation invalidates the copied token pair.
 metadata:
   author: cc-copilot-bridge
   version: "1.0"

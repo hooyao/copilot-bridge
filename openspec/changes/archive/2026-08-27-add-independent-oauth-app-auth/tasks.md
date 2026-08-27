@@ -39,3 +39,4 @@
 - [x] 6.2 Surface GitHub's bounded `device_flow_disabled` code for a rejected device-code request, with a contract-first mutation check.
 - [x] 6.3 Add and render the real Codex version-4 forced-first-403 rotation/replay scenario from the exact manifest and client dispatch log.
 - [x] 6.4 Preserve version-owned dispatch when rejection recovery observes a cross-process replacement across the direct/exchanged provider boundary, with contract-first mutation checks in both directions.
+- [x] 6.5 Isolate B14 behind a separately authorized, marker-confirmed, single-use v4 credential source so forced OAuth rotation cannot invalidate B13 or an installed credential.

@@ -167,11 +167,26 @@ public class CodexBehaviorTests
     public async Task Codex_CustomOAuthVersionFour_OneShotCopilot403_RotatesAndCompletesComplexToolChain_ForVerdict()
     {
         var credentialSource = Environment.GetEnvironmentVariable(
-            "COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY");
+            "COPILOT_BRIDGE_TEST_CUSTOM_RECOVERY_CREDENTIAL_SOURCE_DIRECTORY");
         if (string.IsNullOrWhiteSpace(credentialSource))
             throw new InvalidOperationException(
-                "Set COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY to a scratch "
-                + "directory containing a freshly authorized version-4 credential.");
+                "Set COPILOT_BRIDGE_TEST_CUSTOM_RECOVERY_CREDENTIAL_SOURCE_DIRECTORY to a "
+                + "dedicated single-use directory containing a freshly authorized version-4 "
+                + $"credential and the {ServeProcess.DisposableCustomOAuthRecoveryMarkerFileName} "
+                + "marker. Never reuse the B13 credential source: this run consumes its "
+                + "rotating refresh token.");
+
+        var reusableSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY");
+        if (!string.IsNullOrWhiteSpace(reusableSource)
+            && string.Equals(
+                Path.GetFullPath(credentialSource),
+                Path.GetFullPath(reusableSource),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "B14 custom OAuth recovery must not share B13's reusable credential source.");
+        }
 
         const string canary = "codex-custom-v4-auth-replay-canary-82714";
         var prompt =
@@ -188,7 +203,8 @@ public class CodexBehaviorTests
             prompt,
             forceCapiForbiddenOnce: ForcedCapiForbiddenOperation.Responses,
             credentialSourceDirectory: credentialSource,
-            credentialStagingMode: CredentialStagingMode.CustomOAuthVersionFour,
+            credentialStagingMode:
+                CredentialStagingMode.DisposableCustomOAuthVersionFourRecovery,
             expectedBridgeLogs:
             [
                 "Copilot direct lease trigger=copilot_403 outcome=success credential_version=4",
