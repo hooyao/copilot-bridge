@@ -12,7 +12,6 @@ the authenticated two-phase parent/updater handoff, readiness-gated commit,
 byte-exact rollback (including old-only config keys), preservation of all
 unmanaged install state (tokens, logs, traces, unknown files), and the release
 packaging that ships both executables with GitHub-supplied asset digests.
-
 ## Requirements
 ### Requirement: Minimal self-contained updater artifact
 
@@ -204,7 +203,7 @@ After preparation succeeds, the updater SHALL publish a per-attempt cutover-read
 
 ### Requirement: Capability-authenticated Ready commit
 
-Starting a replacement process SHALL NOT by itself commit the update. For each replacement or rollback launch, the updater SHALL create private one-launch readiness context containing an unpredictable token and attempt identity. The bridge SHALL report Ready only after configuration and route validation, hosted-service startup, and successful proxy listener startup, using a local per-attempt signal that includes the expected token, PID, product version, and attempt ID. During an updater-managed target or rollback activation, the bridge SHALL perform no credential load, migration, refresh, device flow, or Copilot authentication exchange before Ready. Authentication is external recoverable state rather than installed-binary health; after Ready, the first upstream request MAY resolve it lazily, and an authentication failure SHALL fail that request without terminating the serving bridge or reversing the installed version. The updater SHALL use a finite readiness timeout, verify that the signal belongs to the process it launched and that the process remains alive, and commit only when the new target version reports Ready. It SHALL keep all rollback material until commit.
+Starting a replacement process SHALL NOT by itself commit the update. For each replacement or rollback launch, the updater SHALL create private one-launch readiness context containing an unpredictable token and attempt identity. The bridge SHALL report Ready only after configuration and route validation, hosted-service startup, and successful proxy listener startup, using a local per-attempt signal that includes the expected token, PID, product version, and attempt ID. During an updater-managed target or rollback activation, the bridge SHALL perform no credential load, migration, refresh, device flow, or Copilot authentication exchange before Ready. After the Ready message is successfully sent, the bridge SHALL asynchronously resume the ordinary authentication bootstrap; an authentication failure SHALL be reported without terminating the serving bridge or reversing the installed version. The updater SHALL use a finite readiness timeout, verify that the signal belongs to the process it launched and that the process remains alive, and commit only when the new target version reports Ready. It SHALL keep all rollback material until commit.
 
 #### Scenario: New process starts and immediately exits
 - **WHEN** process creation succeeds but the new bridge exits before reporting Ready
@@ -216,11 +215,21 @@ Starting a replacement process SHALL NOT by itself commit the update. For each r
 
 #### Scenario: Stored credential is expired during target activation
 - **WHEN** the replacement starts with valid updater readiness context but the stored credential is expired, rejected, unreadable by the new credential format, or its refresh endpoint is unavailable
-- **THEN** the replacement performs no credential or authentication operation before Ready, reports Ready after local serving health succeeds, and the updater does not roll back because of that external authentication state
+- **THEN** the replacement performs no credential or authentication operation before Ready and reports Ready after local serving health succeeds
+- **AND** authentication resumes after the Ready send and any failure leaves the replacement serving without causing rollback
+
+#### Scenario: Credential-free replacement resumes first-run login
+- **WHEN** an updater-managed replacement has no current or legacy credential and successfully sends Ready
+- **THEN** it starts the ordinary GitHub device-code flow and displays the login challenge without waiting for an upstream request
+
+#### Scenario: Readiness send fails
+- **WHEN** an updater-managed bridge cannot send its Ready message to the updater
+- **THEN** it does not start the deferred authentication bootstrap for that activation
 
 #### Scenario: Rollback activation does not depend on authentication
 - **WHEN** the updater restores and launches the old bridge with rollback readiness context while GitHub authentication is unavailable
-- **THEN** the restored bridge can report Ready after local serving health succeeds without reading, migrating, or refreshing credentials
+- **THEN** the restored bridge can report Ready after local serving health succeeds without reading, migrating, or refreshing credentials before Ready
+- **AND** any authentication failure after the Ready send does not terminate the restored bridge
 
 #### Scenario: Ordinary launch keeps its authentication gate
 - **WHEN** the bridge starts without updater readiness context

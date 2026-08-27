@@ -59,14 +59,20 @@ the complete record. Only after verified readback does it delete both old files.
 failure before verification removes the unverified new file and leaves both old files
 untouched. If cleanup is interrupted after verification, the new file remains
 authoritative and a later load retries deletion of every residual old credential under
-the same ordered locks. Empty lock files intentionally remain at stable identities and
-contain no credential material. On Unix credential files are forced to `0600`.
+the same ordered locks. The authoritative lock remains at a stable identity. The
+historical `github_credentials.v2.dat.lock` is created only when a legacy credential or
+that lock already exists; once present it likewise remains stable, but a fresh lookup,
+login, or logout does not introduce it. Lock files contain no credential material. On
+Unix credential files are forced to `0600`.
 
 An updater-managed target or rollback activation defers this entire credential load,
-migration, and network-authentication path until the first upstream request. That lets
-the candidate report `Ready` based on local serving health without a token outage
-forcing rollback, and it preserves legacy credential inputs throughout the readiness
-window. Ordinary launches retain the startup authentication/device-flow behavior.
+migration, and network-authentication path until after it sends `Ready`. It then resumes
+the ordinary authentication bootstrap in the background, including the first-run device
+flow when no credential exists. This lets the candidate report `Ready` based on local
+serving health without a token outage forcing rollback, while preserving the normal
+login UX and legacy credential inputs throughout the readiness window. Post-readiness
+auth failures are actionable but non-fatal. Ordinary launches retain the synchronous
+startup authentication/device-flow behavior.
 
 ### Lifecycle
 
