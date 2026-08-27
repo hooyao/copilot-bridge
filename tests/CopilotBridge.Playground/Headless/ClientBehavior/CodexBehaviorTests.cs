@@ -237,7 +237,7 @@ public class CodexBehaviorTests
     }
 
     [Fact]
-    public async Task Codex_UpdaterManagedActivation_DefersAuthAndCompletesToolChain_ForVerdict()
+    public async Task Codex_UpdaterManagedActivation_ResumesAuthAfterReadyAndCompletesToolChain_ForVerdict()
     {
         using var stagedCredential = await StageDirectCredentialFromGitHubCliAsync();
         const string canary = "codex-update-activation-canary-82531";
@@ -252,10 +252,10 @@ public class CodexBehaviorTests
             prompt,
             credentialSourceDirectory: stagedCredential.Path,
             credentialStagingMode: CredentialStagingMode.PurposeBuiltDirectVersionTwo,
-            expectedBridgeLogs:
+            expectedBridgeLogsBeforeClient:
             [
-                "Updater-managed target activation: deferring credential migration and network authentication",
-                "Upstream: authentication deferred until the first request",
+                "Updater-managed target activation: deferring credential migration and network authentication until after Ready",
+                "Upstream: authentication deferred until after update readiness",
                 "credential migration cleanup outcome=success version=2",
                 "Copilot direct lease trigger=deadline outcome=success credential_version=2",
             ],
@@ -904,6 +904,7 @@ public class CodexBehaviorTests
         string? credentialSourceDirectory = null,
         CredentialStagingMode credentialStagingMode = CredentialStagingMode.LegacyRawMirror,
         IReadOnlyList<string>? expectedBridgeLogs = null,
+        IReadOnlyList<string>? expectedBridgeLogsBeforeClient = null,
         bool simulateUpdaterTargetActivation = false,
         bool useCustomOAuthApp = false)
     {
@@ -915,6 +916,14 @@ public class CodexBehaviorTests
             SimulateUpdaterTargetActivation: simulateUpdaterTargetActivation,
             UseCustomOAuthApp: useCustomOAuthApp));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
+
+        if (expectedBridgeLogsBeforeClient is not null)
+        {
+            await WaitForBridgeLogsAsync(
+                bridge,
+                expectedBridgeLogsBeforeClient,
+                TimeSpan.FromSeconds(10));
+        }
 
         // Disposable work dir so codex's file-writing tools mutate a throwaway dir, never
         // the test runner's checkout.
@@ -953,7 +962,9 @@ public class CodexBehaviorTests
                 ForcedCapiForbiddenOperation: forceCapiForbiddenOnce),
             result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
             out _, out _,
-            bridgeLog: forceCapiForbiddenOnce is null && expectedBridgeLogs is null
+            bridgeLog: forceCapiForbiddenOnce is null
+                    && expectedBridgeLogs is null
+                    && expectedBridgeLogsBeforeClient is null
                 ? null
                 : bridge.StderrAll);
 
@@ -991,6 +1002,12 @@ public class CodexBehaviorTests
                 Assert.Contains(expectedBridgeLog, bridge.StderrAll, StringComparison.Ordinal);
         }
 
+        if (expectedBridgeLogsBeforeClient is not null)
+        {
+            foreach (var expectedBridgeLog in expectedBridgeLogsBeforeClient)
+                Assert.Contains(expectedBridgeLog, bridge.StderrAll, StringComparison.Ordinal);
+        }
+
         // Harness contract only. The skill owns the semantic SQLite verdict.
         ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
     }
@@ -1005,6 +1022,25 @@ public class CodexBehaviorTests
             start += value.Length;
         }
         return count;
+    }
+
+    private static async Task WaitForBridgeLogsAsync(
+        ServeHandle bridge,
+        IReadOnlyList<string> expected,
+        TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var log = bridge.StderrAll;
+            if (expected.All(item => log.Contains(item, StringComparison.Ordinal)))
+                return;
+            await Task.Delay(50);
+        }
+
+        throw new InvalidOperationException(
+            "Bridge did not complete post-Ready authentication before the client started. "
+            + $"Expected: {string.Join(" | ", expected)}\nStderr:\n{bridge.StderrAll}");
     }
 
     private async Task DriveLongContextCatalogCaseAsync(

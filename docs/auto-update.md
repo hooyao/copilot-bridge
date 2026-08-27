@@ -169,10 +169,12 @@ The install is a recoverable transaction:
    state** (route/config validation, all hosted services, and the listener are
    up). Process creation, a log line, or elapsed time is never enough. Only a
    valid `Ready` commits. The updater-managed launch deliberately defers
-   credential migration and network authentication until the first upstream
-   request: external auth availability is not binary health, and making it a
-   commit condition creates an update/rollback loop when a token expires or a
-   refresh endpoint is temporarily unavailable.
+   credential migration and network authentication until after it sends
+   `Ready`, then resumes the ordinary authentication bootstrap asynchronously.
+   A credential-free installation therefore still displays its device-code
+   login challenge after updating, while external auth availability remains
+   outside binary health: a login/refresh failure leaves the new bridge serving
+   and cannot create an update/rollback loop.
 5. **Rollback** on any post-cutover failure: restore the old binaries and the
    **exact original config** (byte-for-byte, including keys a successful
    migration would have dropped), relaunch the old bridge, and require *its*

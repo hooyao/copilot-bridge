@@ -14,8 +14,8 @@ namespace CopilotBridge.Cli.Hosting;
 ///   <item>Validate the routing config (fail fast on misconfigured locations).</item>
 ///   <item>On an ordinary launch, ensure a GitHub OAuth token exists and resolve
 ///         a direct or exchanged Copilot authentication lease. On an
-///         updater-managed activation, defer all credential access until the
-///         first upstream request so external auth cannot trigger rollback.</item>
+///         updater-managed activation, defer all credential access until after
+///         Ready so external auth cannot trigger rollback.</item>
 ///   <item>Print the listening URL, upstream URL, trace directory, and route
 ///         counts so the operator can confirm the bridge is healthy.</item>
 /// </list>
@@ -104,7 +104,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
         else
         {
             _log.LogInformation(
-                "Upstream: authentication deferred until the first request; run `auth login` if the stored credential is no longer usable");
+                "Upstream: authentication deferred until after update readiness; first-run login will resume automatically");
         }
         _log.LogInformation("Text log: {LogDir} (one file per process start)", textLogDir);
         if (_ioSink is not null)
@@ -179,8 +179,9 @@ internal sealed class BridgeStartupHostedService : IHostedService
     /// <summary>
     /// Warms authentication only for an ordinary launch. An updater-managed
     /// activation deliberately performs zero credential or network access before
-    /// readiness, keeping transaction commit independent from external auth and
-    /// preserving rollback compatibility with the pre-update credential format.
+    /// readiness; UpdateReadinessReporter resumes it after sending Ready. This
+    /// keeps transaction commit independent from external auth and preserves
+    /// rollback compatibility with the pre-update credential format.
     /// Returns <see langword="true"/> when authentication was warmed.
     /// </summary>
     internal static async Task<bool> BootstrapAuthenticationAsync(
@@ -192,7 +193,7 @@ internal sealed class BridgeStartupHostedService : IHostedService
         if (updateContext is not null)
         {
             log.LogInformation(
-                "Updater-managed {UpdateRole} activation: deferring credential migration and network authentication until the first upstream request",
+                "Updater-managed {UpdateRole} activation: deferring credential migration and network authentication until after Ready",
                 updateContext.Role);
             return false;
         }

@@ -323,7 +323,7 @@ internal static class BridgeServiceCollectionExtensions
         //    injected into later services target the full console+file pipeline.
         services.AddHostedService<SerilogReplacerHostedService>();
         // 2. Routes validation + startup banner; ordinary launches also warm
-        //    auth, while updater-managed activation defers it until first use.
+        //    auth, while updater-managed activation defers it until after Ready.
         services.AddHostedService<BridgeStartupHostedService>();
         // 3. Update readiness reporter — inert unless this process was launched
         //    by an updater with a one-launch context. It registers for

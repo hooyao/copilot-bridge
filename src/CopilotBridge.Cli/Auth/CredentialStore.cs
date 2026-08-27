@@ -86,16 +86,23 @@ internal sealed class CredentialStore
         if (current is not null && !LegacyFilesExist()) return current;
 
         using var mutationLock = AcquireLock(LockTimeout);
-        using var legacyLock = AcquirePathLock(LegacyLockPath, LockTimeout);
+        using var legacyLock = AcquireLegacyLockIfRequired(LockTimeout);
         current = TryLoad();
         if (current is not null)
         {
-            DeleteLegacyFiles();
-            _diagnostic?.Invoke(
-                $"credential migration cleanup outcome=success version={current.Version} "
-                + "source=residual_legacy_files");
+            if (legacyLock is not null)
+            {
+                DeleteLegacyFiles();
+                _diagnostic?.Invoke(
+                    $"credential migration cleanup outcome=success version={current.Version} "
+                    + "source=residual_legacy_files");
+            }
             return current;
         }
+
+        // A fresh credential lifecycle has no historical writer to coordinate
+        // with. Do not introduce the old v2 lock merely by checking login state.
+        if (legacyLock is null) return null;
 
         var source = TryReadLegacyVersioned();
         var sourceFormat = "legacy_v2";
@@ -140,9 +147,9 @@ internal sealed class CredentialStore
     {
         Validate(record);
         using var mutationLock = AcquireLock(LockTimeout);
-        using var legacyLock = AcquirePathLock(LegacyLockPath, LockTimeout);
+        using var legacyLock = AcquireLegacyLockIfRequired(LockTimeout);
         SaveWhileLocked(record);
-        DeleteLegacyFiles();
+        if (legacyLock is not null) DeleteLegacyFiles();
     }
 
     internal void SaveWhileLocked(CredentialFileRecord record)
@@ -158,10 +165,13 @@ internal sealed class CredentialStore
     public void DeleteAll()
     {
         using var mutationLock = AcquireLock(LockTimeout);
-        using var legacyLock = AcquirePathLock(LegacyLockPath, LockTimeout);
+        using var legacyLock = AcquireLegacyLockIfRequired(LockTimeout);
         DeleteIfExists(FilePath);
-        DeleteIfExists(LegacyVersionedPath);
-        DeleteIfExists(LegacyRawPath);
+        if (legacyLock is not null)
+        {
+            DeleteIfExists(LegacyVersionedPath);
+            DeleteIfExists(LegacyRawPath);
+        }
         // Lock files intentionally remain at stable identities.
     }
 
@@ -257,6 +267,17 @@ internal sealed class CredentialStore
 
     private IDisposable AcquireLock(TimeSpan timeout)
         => AcquirePathLock(LockPath, timeout);
+
+    /// <summary>
+    /// The historical lock coordinates only installations that have observable
+    /// legacy state. Once created it remains a permanent rendezvous point, but a
+    /// fresh unified-only installation never creates it as a side effect of read,
+    /// save, or logout.
+    /// </summary>
+    private IDisposable? AcquireLegacyLockIfRequired(TimeSpan timeout) =>
+        LegacyFilesExist() || File.Exists(LegacyLockPath)
+            ? AcquirePathLock(LegacyLockPath, timeout)
+            : null;
 
     private static IDisposable AcquirePathLock(string lockPath, TimeSpan timeout)
     {

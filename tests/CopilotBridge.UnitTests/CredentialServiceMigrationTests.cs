@@ -49,6 +49,29 @@ public sealed class CredentialServiceMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Empty_lookup_does_not_create_historical_v2_lock()
+    {
+        var store = CreateStore("empty-lookup");
+
+        var loaded = store.LoadOrMigrate();
+
+        Assert.Null(loaded);
+        Assert.False(File.Exists(store.LegacyLockPath));
+    }
+
+    [Fact]
+    public void First_unified_save_does_not_create_historical_v2_lock()
+    {
+        var store = CreateStore("fresh-save");
+
+        store.Save(LegacyRecord(generation: 1));
+
+        Assert.NotNull(store.TryLoad());
+        Assert.True(File.Exists(store.LockPath));
+        Assert.False(File.Exists(store.LegacyLockPath));
+    }
+
+    [Fact]
     public void Complete_v2_record_wins_and_both_old_files_are_deleted_after_readback()
     {
         var directory = Path.Combine(_root, "v2-migration");
@@ -83,6 +106,7 @@ public sealed class CredentialServiceMigrationTests : IDisposable
         Assert.True(File.Exists(store.FilePath));
         Assert.False(File.Exists(store.LegacyVersionedPath));
         Assert.False(File.Exists(store.LegacyRawPath));
+        Assert.True(File.Exists(store.LegacyLockPath));
         Assert.Contains(
             diagnostics,
             message => message.Contains("source=legacy_v2", StringComparison.Ordinal));

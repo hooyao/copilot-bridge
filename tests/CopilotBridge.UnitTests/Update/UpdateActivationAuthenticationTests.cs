@@ -2,7 +2,11 @@ using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Hosting.Options;
 using CopilotBridge.Cli.Pipeline.Routing;
+using CopilotBridge.Cli.Update;
 using CopilotBridge.Update.Wire;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -64,6 +68,105 @@ public class UpdateActivationAuthenticationTests
     }
 
     [Fact]
+    public async Task Updater_managed_activation_resumes_authentication_after_ready_is_sent()
+    {
+        var auth = new RecordingAuthService { Authenticated = false };
+        using var lifetime = new TestHostApplicationLifetime();
+        using var logs = new RecordingLoggerProvider();
+        using var services = new ServiceCollection()
+            .AddSingleton<IHostApplicationLifetime>(lifetime)
+            .AddSingleton<IAuthService>(auth)
+            .AddLogging(builder => builder.AddProvider(logs))
+            .BuildServiceProvider();
+        var capability = UpdateCapability.Create("post-ready-auth", UpdateWire.RoleTarget);
+        var context = new UpdateLaunchContext(
+            "post-ready-auth",
+            UpdateWire.RoleTarget,
+            capability.PipeName,
+            capability.Token,
+            ProductInfo.Version);
+        var reporter = new UpdateReadinessReporter(services, context);
+        var ready = UpdatePipeTransport.ServerReceiveLineAsync(
+            capability.PipeName,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        await reporter.StartAsync(CancellationToken.None);
+        lifetime.NotifyStarted();
+
+        Assert.NotNull(await ready);
+        await auth.FirstEnsureCall.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await auth.FirstCopilotLeaseCall.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(1, auth.AuthenticationChecks);
+        Assert.Equal(1, auth.EnsureCalls);
+        Assert.Equal(1, auth.CopilotLeaseCalls);
+        Assert.Contains(
+            logs.Events,
+            entry => entry.Message.Contains(
+                "No GitHub token on disk — starting device-code flow",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Failed_ready_send_does_not_resume_authentication()
+    {
+        var auth = new RecordingAuthService { ThrowOnAnyAccess = true };
+        using var services = new ServiceCollection()
+            .AddSingleton<IAuthService>(auth)
+            .AddLogging()
+            .BuildServiceProvider();
+        var context = new UpdateLaunchContext(
+            "failed-ready",
+            UpdateWire.RoleTarget,
+            "unused-pipe",
+            "secret",
+            ProductInfo.Version);
+        var reporter = new UpdateReadinessReporter(
+            services,
+            context,
+            (_, _) => Task.FromResult(false));
+
+        await reporter.ReportReadyAndResumeAuthenticationAsync(CancellationToken.None);
+
+        Assert.Equal(0, auth.TotalAccesses);
+    }
+
+    [Fact]
+    public async Task Post_ready_authentication_failure_is_non_fatal_and_actionable()
+    {
+        var auth = new RecordingAuthService
+        {
+            Authenticated = true,
+            EnsureFailure = new HttpRequestException("offline"),
+        };
+        using var logs = new RecordingLoggerProvider();
+        using var services = new ServiceCollection()
+            .AddSingleton<IAuthService>(auth)
+            .AddLogging(builder => builder.AddProvider(logs))
+            .BuildServiceProvider();
+        var context = new UpdateLaunchContext(
+            "failed-auth",
+            UpdateWire.RoleTarget,
+            "unused-pipe",
+            "secret",
+            ProductInfo.Version);
+        var reporter = new UpdateReadinessReporter(
+            services,
+            context,
+            (_, _) => Task.FromResult(true));
+
+        await reporter.ReportReadyAndResumeAuthenticationAsync(CancellationToken.None);
+
+        Assert.Equal(1, auth.EnsureCalls);
+        Assert.Equal(0, auth.CopilotLeaseCalls);
+        Assert.Contains(
+            logs.Events,
+            entry => entry.Level == LogLevel.Warning
+                && entry.Message.Contains("bridge remains serving", StringComparison.Ordinal)
+                && entry.Message.Contains("auth login", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Ordinary_launch_still_warms_authentication_before_serving()
     {
         var auth = new RecordingAuthService { Authenticated = true };
@@ -111,6 +214,11 @@ public class UpdateActivationAuthenticationTests
     private sealed class RecordingAuthService : IAuthService
     {
         private int _authenticationChecks;
+
+        public TaskCompletionSource FirstEnsureCall { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FirstCopilotLeaseCall { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public bool ThrowOnAnyAccess { get; init; }
         public bool Authenticated { get; init; }
@@ -165,6 +273,7 @@ public class UpdateActivationAuthenticationTests
         public ValueTask<string> EnsureGitHubTokenAsync(CancellationToken ct = default)
         {
             EnsureCalls++;
+            FirstEnsureCall.TrySetResult();
             ThrowIfForbidden();
             if (EnsureFailure is not null) return ValueTask.FromException<string>(EnsureFailure);
             return ValueTask.FromResult("github-token");
@@ -175,6 +284,7 @@ public class UpdateActivationAuthenticationTests
             CancellationToken ct = default)
         {
             CopilotLeaseCalls++;
+            FirstCopilotLeaseCall.TrySetResult();
             ThrowIfForbidden();
             return ValueTask.FromResult(new CopilotAuthLease
             {
@@ -193,6 +303,27 @@ public class UpdateActivationAuthenticationTests
             if (ThrowOnAnyAccess)
                 throw new InvalidOperationException(
                     "Updater-managed activation touched authentication.");
+        }
+    }
+
+    private sealed class TestHostApplicationLifetime : IHostApplicationLifetime, IDisposable
+    {
+        private readonly CancellationTokenSource _started = new();
+        private readonly CancellationTokenSource _stopping = new();
+        private readonly CancellationTokenSource _stopped = new();
+
+        public CancellationToken ApplicationStarted => _started.Token;
+        public CancellationToken ApplicationStopping => _stopping.Token;
+        public CancellationToken ApplicationStopped => _stopped.Token;
+
+        public void NotifyStarted() => _started.Cancel();
+        public void StopApplication() => _stopping.Cancel();
+
+        public void Dispose()
+        {
+            _started.Dispose();
+            _stopping.Dispose();
+            _stopped.Dispose();
         }
     }
 }
