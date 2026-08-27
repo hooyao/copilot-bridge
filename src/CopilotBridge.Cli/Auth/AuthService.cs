@@ -181,15 +181,21 @@ public sealed class AuthService : IAuthService, IDisposable
             if (RequiresDirectCredentialRefresh(rejection))
             {
                 var rejected = rejection!.Value.Lease;
+                var trigger = TriggerFor(rejection.Value.Reason);
                 var credential = await _credentials.RecoverAfterRejectionAsync(
                         rejected.CredentialVersion,
                         rejected.CredentialId,
                         rejected.CredentialGeneration,
-                        TriggerFor(rejection.Value.Reason),
+                        trigger,
                         ct)
                     .ConfigureAwait(false);
-                return PublishDirectLease(
-                    credential, TriggerFor(rejection.Value.Reason));
+                if (credential.IsDirect) return PublishDirectLease(credential, trigger);
+
+                // Another process may have completed an official-provider login while
+                // this direct rejection was being handled. Re-read and dispatch that
+                // replacement through its version-owned exchanged path; never publish
+                // a Copilot Plugin GitHub token as a raw CAPI bearer.
+                return await FetchAndCacheAsync(trigger, ct).ConfigureAwait(false);
             }
 
             return await FetchAndCacheAsync(
@@ -334,6 +340,8 @@ public sealed class AuthService : IAuthService, IDisposable
         {
             credential = await _credentials.RecoverAfterRejectionAsync(credential, ct)
                 .ConfigureAwait(false);
+            if (credential.IsDirect)
+                return PublishDirectLease(credential, "github_401");
             try
             {
                 response = await FetchCopilotTokenAsync(credential.AccessToken, ct)

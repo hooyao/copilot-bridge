@@ -88,6 +88,9 @@ error preserves GitHub's bounded `device_flow_disabled` code and HTTP status wit
 echoing the response body.
 Changing appsettings never reinterprets or rewrites an existing credential; run
 `auth login` after restart to replace it deliberately.
+If rejection recovery races a login from another process, the newer record remains
+authoritative and authentication is rebuilt from its own version, including a direct
+↔ exchanged provider change, rather than inheriting the rejected lease's mode.
 `auth logout` removes the new file plus any exact pre-migration files that survived a
 failed migration, then clears in-memory Copilot leases.
 

@@ -60,7 +60,7 @@ The existing single-flight and cross-process refresh transaction is extended to 
 
 ### Direct rejection distinguishes refreshable v4 from legacy v2
 
-A refreshable v4 credential rejected by CAPI receives one forced credential rotation and one exact authentication replay, using the same total replay bound as exchanged credentials. A non-refreshable direct credential receiving 401 becomes terminal and requires login. A first 403 remains ambiguous; it gets at most one fresh/reused direct lease replay before a second 403 is classified as policy/entitlement. The immutable Copilot lease carries enough credential metadata to make this decision without exposing token bytes.
+A refreshable v4 credential rejected by CAPI receives one forced credential rotation and one exact authentication replay, using the same total replay bound as exchanged credentials. A non-refreshable direct credential receiving 401 becomes terminal and requires login. A first 403 remains ambiguous; it gets at most one fresh/reused direct lease replay before a second 403 is classified as policy/entitlement. Recovery can observe a credential that another process replaced through an explicit login; the recovered record is therefore dispatched by its own version-owned direct/exchanged semantics in either direction instead of inheriting the rejected lease's mode. The immutable Copilot lease carries enough credential metadata to make this decision without exposing token bytes.
 
 ### Verification guards both authentication and downstream execution
 

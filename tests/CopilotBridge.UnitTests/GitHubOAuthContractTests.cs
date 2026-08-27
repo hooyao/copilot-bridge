@@ -581,6 +581,91 @@ public sealed class GitHubOAuthContractTests : IDisposable
             StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(CopilotLeaseRejectionReason.Unauthorized)]
+    [InlineData(CopilotLeaseRejectionReason.Forbidden)]
+    public async Task Refreshable_version_four_rejection_honors_newer_plugin_replacement_semantics(
+        CopilotLeaseRejectionReason reason)
+    {
+        var handler = new CaptureHandler(new Queue<HttpResponseMessage>([
+            Json(HttpStatusCode.OK, """
+                {"token":"copilot-exchanged","expires_at":2000000000,"refresh_in":1500,
+                 "endpoints":{"api":"https://api.githubcopilot.com"}}
+                """),
+        ]));
+        var store = new CredentialStore(
+            Path.Combine(_root, $"version-four-replaced-by-three-{reason}"),
+            new TestProtector());
+        store.Save(CustomRecord() with
+        {
+            AccessTokenExpiresAt = _time.GetUtcNow().AddHours(8),
+            RefreshTokenExpiresAt = _time.GetUtcNow().AddDays(30),
+        });
+        var factory = new SingleClientHttpClientFactory(new HttpClient(handler));
+        var credentials = new CredentialService(
+            factory, store, _time, NullLogger<CredentialService>.Instance);
+        using var auth = new AuthService(
+            factory, credentials, _time, NullLoggerFactory.Instance,
+            enableBackgroundRefresh: false, ownsCredentialService: true);
+        var rejected = await auth.GetCopilotTokenAsync(ct: CancellationToken.None);
+
+        // Models another process completing an explicit official-provider login
+        // after this process obtained the rejected v4 lease.
+        store.Save(PluginRecord() with { CredentialId = "replacement-plugin-id" });
+
+        var recovered = await auth.GetCopilotTokenAsync(
+            new CopilotLeaseRejection(rejected, reason), CancellationToken.None);
+
+        Assert.Equal("copilot-exchanged", recovered.Token);
+        Assert.Equal(CopilotLeaseKind.Exchanged, recovered.Kind);
+        Assert.Equal(CredentialFileRecord.CopilotPluginExplicitProviderVersion,
+            recovered.CredentialVersion);
+        Assert.Equal(CopilotHeaderFactory.DefaultIntegrationId, recovered.IntegrationId);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("/copilot_internal/v2/token", request.Uri.AbsolutePath);
+        Assert.Equal(PluginToken, request.AuthorizationParameter);
+    }
+
+    [Fact]
+    public async Task Version_three_exchange_rejection_honors_newer_direct_replacement_semantics()
+    {
+        var store = new CredentialStore(
+            Path.Combine(_root, "version-three-replaced-by-four"), new TestProtector());
+        store.Save(PluginRecord());
+        var handler = new CaptureHandler(
+            new Queue<HttpResponseMessage>([
+                Json(HttpStatusCode.Unauthorized, "{\"message\":\"Bad credentials\"}"),
+            ]),
+            requestNumber =>
+            {
+                if (requestNumber == 1)
+                {
+                    store.Save(CustomRecord() with
+                    {
+                        AccessTokenExpiresAt = _time.GetUtcNow().AddHours(8),
+                        RefreshTokenExpiresAt = _time.GetUtcNow().AddDays(30),
+                    });
+                }
+            });
+        var factory = new SingleClientHttpClientFactory(new HttpClient(handler));
+        var credentials = new CredentialService(
+            factory, store, _time, NullLogger<CredentialService>.Instance);
+        using var auth = new AuthService(
+            factory, credentials, _time, NullLoggerFactory.Instance,
+            enableBackgroundRefresh: false, ownsCredentialService: true);
+
+        var recovered = await auth.GetCopilotTokenAsync(ct: CancellationToken.None);
+
+        Assert.Equal(CustomToken, recovered.Token);
+        Assert.Equal(CopilotLeaseKind.Direct, recovered.Kind);
+        Assert.Equal(CredentialFileRecord.CustomOAuthDirectVersion,
+            recovered.CredentialVersion);
+        Assert.Equal(CopilotHeaderFactory.CustomOAuthIntegrationId, recovered.IntegrationId);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("/copilot_internal/v2/token", request.Uri.AbsolutePath);
+        Assert.Equal(PluginToken, request.AuthorizationParameter);
+    }
+
     [Fact]
     public async Task Unauthorized_nonrefreshable_version_four_requires_login_without_replay()
     {
@@ -883,8 +968,11 @@ public sealed class GitHubOAuthContractTests : IDisposable
         Content = new StringContent(body, Encoding.UTF8, "application/json"),
     };
 
-    private sealed class CaptureHandler(Queue<HttpResponseMessage> responses) : HttpMessageHandler
+    private sealed class CaptureHandler(
+        Queue<HttpResponseMessage> responses,
+        Action<int>? onRequest = null) : HttpMessageHandler
     {
+        private int _requestCount;
         public ConcurrentQueue<CapturedRequest> Requests { get; } = new();
 
         protected override async Task<HttpResponseMessage> SendAsync(
@@ -899,6 +987,7 @@ public sealed class GitHubOAuthContractTests : IDisposable
                 request.Content?.Headers.ContentType?.MediaType,
                 body,
                 request.Headers.Authorization?.Parameter));
+            onRequest?.Invoke(Interlocked.Increment(ref _requestCount));
             if (responses.Count == 0)
                 throw new InvalidOperationException("Unexpected HTTP request.");
             return responses.Dequeue();

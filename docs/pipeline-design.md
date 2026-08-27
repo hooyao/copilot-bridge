@@ -851,9 +851,11 @@ independent `CredentialService` shields all persistence and OAuth details:
    2 and 3 remain readable with their frozen behavior. Startup rejects a blank custom
    ID or the official Plugin ID mislabelled as custom direct auth; a rejected device-code
    request carries GitHub's bounded OAuth error code and HTTP status to the operator.
-   The service
-   owns migration, locks, first-use login single-flight, identity/generation, refresh,
-   rejection, status, and logout;
+   The service owns migration, locks, first-use login single-flight,
+   identity/generation, refresh, rejection, status, and logout. When rejection recovery
+   observes a cross-process login that changed credential versions, it dispatches the
+   replacement by that record's own direct/exchanged semantics rather than inheriting
+   the rejected lease's mode;
    AuthService sees only an immutable credential lease.
 2. **Copilot lease (memory only).** `GetCopilotTokenAsync` returns an immutable
    `CopilotAuthLease`: bearer, API base URL, deadline metadata, kind, and generation.

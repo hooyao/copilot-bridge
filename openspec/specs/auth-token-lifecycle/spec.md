@@ -543,6 +543,14 @@ terminally rather than replaying the same bearer.
   appropriate credential generation
 - **AND** authentication recovery does not reset the transient retry budget.
 
+#### Scenario: Concurrent login replaces the rejected provider version
+
+- **WHEN** rejection recovery observes that another process replaced the rejected
+  credential with a newer credential using different direct/exchanged semantics
+- **THEN** the replacement is dispatched according to its own recorded version
+- **AND** no Copilot Plugin GitHub token is sent directly to CAPI and no custom direct
+  token is sent to the internal exchange endpoint.
+
 ### Requirement: Project OAuth direct authentication is proven before publication
 
 The project SHALL NOT report or publish the independent OAuth authentication change as
