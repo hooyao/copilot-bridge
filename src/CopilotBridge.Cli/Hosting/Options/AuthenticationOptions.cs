@@ -32,10 +32,22 @@ internal sealed class AuthenticationOptions
         return options;
     }
 
-    internal static string? ValidationError(AuthenticationOptions options) =>
-        options.UseCustomAppId && string.IsNullOrWhiteSpace(options.CustomAppId)
-            ? "Authentication:CustomAppId must be non-empty when Authentication:UseCustomAppId is true."
-            : null;
+    internal static string? ValidationError(AuthenticationOptions options)
+    {
+        if (!options.UseCustomAppId) return null;
+        if (string.IsNullOrWhiteSpace(options.CustomAppId))
+            return "Authentication:CustomAppId must be non-empty when Authentication:UseCustomAppId is true.";
+        if (string.Equals(
+                options.CustomAppId.Trim(),
+                GitHubOAuthProvider.CopilotPluginClientId,
+                StringComparison.Ordinal))
+        {
+            return "Authentication:CustomAppId cannot be GitHub's official Copilot Plugin "
+                + "client ID when Authentication:UseCustomAppId is true; set "
+                + "Authentication:UseCustomAppId to false for that provider.";
+        }
+        return null;
+    }
 
     private static void ThrowIfInvalid(AuthenticationOptions options)
     {

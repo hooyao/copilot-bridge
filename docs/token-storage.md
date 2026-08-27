@@ -82,6 +82,10 @@ client ID and writes version 3. `UseCustomAppId=true` uses `CustomAppId` (stock 
 `Ov23liSD97ZYGfIEHAZE`) and writes version 4. Both use `read:user`, form-encoded RFC
 8628 requests, no client secret, and no `gh` process or keyring. Success atomically
 overwrites the same file and records the issuing client ID in `oauth_client_id`.
+Custom mode rejects a blank ID and the official Copilot Plugin ID (which must retain
+version-3 exchange semantics). If the custom App has Device Flow disabled, the login
+error preserves GitHub's bounded `device_flow_disabled` code and HTTP status without
+echoing the response body.
 Changing appsettings never reinterprets or rewrites an existing credential; run
 `auth login` after restart to replace it deliberately.
 `auth logout` removes the new file plus any exact pre-migration files that survived a

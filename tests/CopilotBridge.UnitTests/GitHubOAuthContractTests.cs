@@ -86,6 +86,30 @@ public sealed class GitHubOAuthContractTests : IDisposable
     }
 
     [Fact]
+    public async Task Device_code_misconfiguration_surfaces_GitHubs_error_code()
+    {
+        var handler = new CaptureHandler(new Queue<HttpResponseMessage>([
+            Json(HttpStatusCode.BadRequest, """
+                {
+                  "error":"device_flow_disabled",
+                  "error_description":"Device Flow must be enabled for this OAuth App."
+                }
+                """),
+        ]));
+        using var http = new HttpClient(handler);
+
+        var error = await Assert.ThrowsAsync<GitHubOAuthException>(() =>
+            GitHubAuthClient.RequestDeviceCodeAsync(
+                http, CustomProvider(), CancellationToken.None).AsTask());
+
+        Assert.Equal("device_flow_disabled", error.ErrorCode);
+        Assert.Equal(HttpStatusCode.BadRequest, error.StatusCode);
+        Assert.Contains("device_flow_disabled", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Device Flow must be enabled", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Device_token_poll_matches_Copilot_Plugin_OAuth_contract()
     {
         var handler = new CaptureHandler(new Queue<HttpResponseMessage>([

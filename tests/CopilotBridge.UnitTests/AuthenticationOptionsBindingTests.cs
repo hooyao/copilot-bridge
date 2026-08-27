@@ -75,6 +75,20 @@ public sealed class AuthenticationOptionsBindingTests
     }
 
     [Fact]
+    public void Enabled_custom_provider_rejects_the_official_Copilot_Plugin_app_id()
+    {
+        var configuration = Config(
+            ("Authentication:UseCustomAppId", "true"),
+            ("Authentication:CustomAppId", GitHubOAuthProvider.CopilotPluginClientId));
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            AuthenticationOptions.FromConfiguration(configuration));
+
+        Assert.Contains("Authentication:CustomAppId", error.Message, StringComparison.Ordinal);
+        Assert.Contains("Authentication:UseCustomAppId", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Disabled_custom_provider_ignores_a_blank_custom_id()
     {
         var configuration = Config(

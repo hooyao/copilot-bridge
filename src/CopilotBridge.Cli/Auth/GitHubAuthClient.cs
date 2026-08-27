@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using CopilotBridge.Cli.Models;
 using CopilotBridge.Cli.Models.GitHub;
 
@@ -46,7 +47,12 @@ internal static class GitHubAuthClient
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         using var resp = await http.SendAsync(req, ct);
-        resp.EnsureSuccessStatusCode();
+        if (!resp.IsSuccessStatusCode)
+        {
+            var errorCode = await ReadOAuthErrorCodeAsync(resp, ct).ConfigureAwait(false);
+            throw new GitHubOAuthException(
+                "device-code request", errorCode, resp.StatusCode);
+        }
         return (await resp.Content.ReadFromJsonAsync(JsonContext.Default.DeviceCodeResponse, ct))
                ?? throw new InvalidOperationException("Empty device-code response from GitHub.");
     }
@@ -164,6 +170,22 @@ internal static class GitHubAuthClient
             or "invalid_grant"
             or "expired_token"
             or "revoked_token";
+
+    private static async ValueTask<string?> ReadOAuthErrorCodeAsync(
+        HttpResponseMessage response,
+        CancellationToken ct)
+    {
+        try
+        {
+            var error = await response.Content.ReadFromJsonAsync(
+                JsonContext.Default.AccessTokenResponse, ct).ConfigureAwait(false);
+            return error?.Error;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     private static FormUrlEncodedContent Form(
         IEnumerable<KeyValuePair<string, string>> fields) => new(fields);

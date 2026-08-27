@@ -82,7 +82,10 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 
    The stock switch is **false** and the shown custom ID is prefilled. A custom App
    must have GitHub Device Flow enabled; Marketplace publication is not required.
-   The client ID is public, not a client secret. After changing it, restart and run
+   The client ID is public, not a client secret. Do not put the official Copilot
+   Plugin client ID in `CustomAppId`; leave `UseCustomAppId` false to use that
+   provider. If Device Flow is disabled, login reports GitHub's
+   `device_flow_disabled` error. After changing it, restart and run
    `copilot-bridge auth login`: the new version-4 credential goes directly to
    `https://api.githubcopilot.com` and never enters the internal token-exchange
    endpoint. Its CAPI requests use GitHub Copilot SDK's `copilot-developer-cli`

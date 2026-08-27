@@ -36,7 +36,7 @@ The stock configuration adds a top-level `Authentication` section before the ord
 }
 ```
 
-An adjacent `_comment` explains the two wire paths and that a change applies only to the next `auth login`. Source-generated options binding and startup validation reject `UseCustomAppId=true` with a blank ID. The same options loader is used by the long-running server and standalone `auth` commands, preventing the CLI from silently ignoring appsettings.
+An adjacent `_comment` explains the two wire paths and that a change applies only to the next `auth login`. Source-generated options binding and startup validation reject `UseCustomAppId=true` with either a blank ID or the official Copilot Plugin client ID, which cannot be relabelled as version-4 direct authentication. The same options loader is used by the long-running server and standalone `auth` commands, preventing the CLI from silently ignoring appsettings. GitHub device-code request failures are decoded into a bounded OAuth error code and HTTP status, so a custom App with Device Flow disabled reports `device_flow_disabled` instead of a generic 400 without echoing the response body.
 
 When the switch is false, fresh login keeps the official Copilot Plugin client ID, v3 persistence, and token exchange. When true, `GitHubAuthClient` uses the configured custom ID with `read:user`, form-encoded RFC 8628 messages, and no client secret, and CredentialService writes v4. Existing credentials keep their recorded issuer/semantics until explicit login; changing the switch never rewrites a working credential.
 
@@ -64,7 +64,7 @@ A refreshable v4 credential rejected by CAPI receives one forced credential rota
 
 ### Verification guards both authentication and downstream execution
 
-Unit contracts first assert the Device Flow client ID/scope, v4 persistence and validation, absence of token exchange, proactive/reactive refresh, concurrency, and secret-free status. The new tests are mutation-checked against provider/version/direct-dispatch decisions. A new `ClientBehavior` case stages a freshly authorized encrypted v4 credential, drives real Codex through a multi-step tool loop, then applies the client-log verdict. The Windows AOT bridge and updater are published only after this gate passes.
+Unit contracts first assert the Device Flow client ID/scope and actionable failure code, v4 persistence and validation, absence of token exchange, proactive/reactive refresh, concurrency, and secret-free status. The new tests are mutation-checked against provider/version/direct-dispatch decisions. One `ClientBehavior` case stages a freshly authorized encrypted v4 credential and drives real Codex through a multi-step tool loop; a second injects the first CAPI 403 and requires a real version-4 OAuth rotation plus one successful authentication replay before applying the client-log verdict. The Windows AOT bridge and updater are published only after these gates pass.
 
 ## Risks / Trade-offs
 

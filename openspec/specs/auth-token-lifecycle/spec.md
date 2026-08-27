@@ -429,11 +429,23 @@ recorded provider semantics until an explicit login replaces them.
 - **THEN** it sends the configured `CustomAppId` and scope `read:user`
 - **AND** it sends no client secret.
 
+#### Scenario: Custom Device Flow is disabled
+
+- **WHEN** GitHub rejects the device-code request with `device_flow_disabled`
+- **THEN** login reports that bounded OAuth error code and the HTTP status
+- **AND** it does not expose the OAuth response body or any credential material.
+
 #### Scenario: Enabled custom provider is missing
 
 - **WHEN** `UseCustomAppId` is true and `CustomAppId` is null, empty, or whitespace
 - **THEN** configuration validation fails before Device Flow or serving begins
 - **AND** the error identifies `Authentication:CustomAppId` without exposing credentials.
+
+#### Scenario: Official provider cannot be labelled as custom direct auth
+
+- **WHEN** `UseCustomAppId` is true and `CustomAppId` is the official Copilot Plugin client ID
+- **THEN** configuration validation fails before Device Flow or serving begins
+- **AND** the error directs the operator to disable `UseCustomAppId` for the official provider.
 
 #### Scenario: User completes custom OAuth authorization
 
@@ -545,6 +557,14 @@ client and both Windows Native AOT executables have been produced.
   credential-version-4 lifecycle evidence
 - **AND** client stdout contains no abort and its dispatch log contains zero router or
   incompatible-payload fatal rows.
+
+#### Scenario: Real Codex exercises version-4 rejection recovery
+
+- **WHEN** a real Codex client performs a complex tool task while the bridge injects
+  the first CAPI 403 for a freshly authorized refreshable version-4 credential
+- **THEN** the bridge rotates that credential with its recorded client ID and sends one
+  successful authentication replay to live Copilot
+- **AND** the client completes the tool round trip with no abort or dispatch fatal.
 
 #### Scenario: Native AOT artifacts are published
 

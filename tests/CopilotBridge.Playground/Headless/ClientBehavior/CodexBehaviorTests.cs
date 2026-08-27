@@ -164,6 +164,39 @@ public class CodexBehaviorTests
     }
 
     [Fact]
+    public async Task Codex_CustomOAuthVersionFour_OneShotCopilot403_RotatesAndCompletesComplexToolChain_ForVerdict()
+    {
+        var credentialSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(credentialSource))
+            throw new InvalidOperationException(
+                "Set COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY to a scratch "
+                + "directory containing a freshly authorized version-4 credential.");
+
+        const string canary = "codex-custom-v4-auth-replay-canary-82714";
+        var prompt =
+            "Perform these steps with real tools, in order; do not fabricate output:\n"
+            + "1. Use your code-execution tool (actual code, not mental arithmetic or shell echo) "
+            + "to compute the sum of integers 1 through 100.\n"
+            + "2. Run a shell command that writes that numeric result as the first line of "
+            + "custom_v4_auth_replay_probe.txt.\n"
+            + $"3. Run a separate shell command that appends {canary} as the second line.\n"
+            + "4. Run a third shell command that reads the file, report its exact two lines, and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-custom-oauth-version-four-403-recovery",
+            prompt,
+            forceCapiForbiddenOnce: ForcedCapiForbiddenOperation.Responses,
+            credentialSourceDirectory: credentialSource,
+            credentialStagingMode: CredentialStagingMode.CustomOAuthVersionFour,
+            expectedBridgeLogs:
+            [
+                "Copilot direct lease trigger=copilot_403 outcome=success credential_version=4",
+            ],
+            useCustomOAuthApp: true);
+    }
+
+    [Fact]
     public async Task Codex_MigratedVersionOne_ExchangeLeaseCompletesToolChain_ForVerdict()
     {
         var credentialSource = Environment.GetEnvironmentVariable(

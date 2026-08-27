@@ -268,7 +268,10 @@ version-3 exchange. With the switch true, login uses the configured
 Device Flow, then writes direct version 4. Neither path uses a client secret or `gh`
 process; each record preserves the issuer that must refresh it. V4 CAPI sends use the
 official Copilot SDK integration ID `copilot-developer-cli`; every older credential
-version retains `vscode-chat`.
+version retains `vscode-chat`. Custom mode rejects the official Plugin client ID rather
+than persisting that provider under v4 direct semantics. GitHub can reject the initial
+device-code request with JSON `error=device_flow_disabled`; the bridge surfaces that
+bounded code and HTTP status rather than collapsing it to a generic 400.
 
 For existing version-2 compatibility, a GitHub CLI `gho_` is not accepted by
 `/copilot_internal/v2/token` (live 403), but it is accepted directly as the CAPI

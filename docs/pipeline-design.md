@@ -848,7 +848,10 @@ independent `CredentialService` shields all persistence and OAuth details:
    Flow (`Iv1.b507a08c87ecfe98`) and writes version 3; true uses the configured
    `CustomAppId` (stock `Ov23liSD97ZYGfIEHAZE`) and writes version 4. Both use
    `read:user`, form-encoded RFC 8628, no client secret, and no `gh` process. Versions
-   2 and 3 remain readable with their frozen behavior. The service
+   2 and 3 remain readable with their frozen behavior. Startup rejects a blank custom
+   ID or the official Plugin ID mislabelled as custom direct auth; a rejected device-code
+   request carries GitHub's bounded OAuth error code and HTTP status to the operator.
+   The service
    owns migration, locks, first-use login single-flight, identity/generation, refresh,
    rejection, status, and logout;
    AuthService sees only an immutable credential lease.

@@ -32,3 +32,9 @@
 - [x] 5.1 Publish the win-x64 Native AOT bridge and updater together using the verified Windows toolchain flow.
 - [x] 5.2 Record and review both artifact sizes, scan the release outputs for accidental client-secret material, and update `docs/size-history.md` with measured values and verification evidence.
 - [x] 5.3 Confirm the publish directory contains `copilot-bridge.exe`, `copilot-updater.exe`, and stock configuration with custom auth disabled, then report the exact artifact paths and any remaining verification limitations.
+
+## 6. PR Review Follow-ups
+
+- [x] 6.1 Reject the official Copilot Plugin client ID when custom direct authentication is enabled, with a contract-first mutation check.
+- [x] 6.2 Surface GitHub's bounded `device_flow_disabled` code for a rejected device-code request, with a contract-first mutation check.
+- [x] 6.3 Add and render the real Codex version-4 forced-first-403 rotation/replay scenario from the exact manifest and client dispatch log.
