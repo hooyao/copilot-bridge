@@ -48,7 +48,8 @@ internal sealed class CopilotClient(
             {
                 var request = new HttpRequestMessage(
                     HttpMethod.Get, $"{lease.ApiBaseUrl}/models");
-                headers.ApplyTo(request, lease.Token);
+                headers.ApplyTo(
+                    request, lease.Token, integrationId: lease.IntegrationId);
                 request.Headers.Accept.Add(
                     new MediaTypeWithQualityHeaderValue("application/json"));
                 return request;
@@ -81,7 +82,11 @@ internal sealed class CopilotClient(
                 var request = JsonPost(
                     $"{lease.ApiBaseUrl}/v1/messages", body);
                 headers.ApplyTo(
-                    request, lease.Token, vision, copilotHeaderOverrides);
+                    request,
+                    lease.Token,
+                    vision,
+                    copilotHeaderOverrides,
+                    lease.IntegrationId);
                 if (anthropicBeta is { Count: > 0 })
                     request.Headers.Add(
                         "anthropic-beta", string.Join(',', anthropicBeta));
@@ -102,7 +107,8 @@ internal sealed class CopilotClient(
             {
                 var request = JsonPost(
                     $"{lease.ApiBaseUrl}/v1/messages/count_tokens", body);
-                headers.ApplyTo(request, lease.Token);
+                headers.ApplyTo(
+                    request, lease.Token, integrationId: lease.IntegrationId);
                 return request;
             },
             UpstreamHttpClientNames.Metadata,
@@ -120,7 +126,8 @@ internal sealed class CopilotClient(
             lease =>
             {
                 var request = JsonPost($"{lease.ApiBaseUrl}/responses", body);
-                headers.ApplyTo(request, lease.Token, vision);
+                headers.ApplyTo(
+                    request, lease.Token, vision, integrationId: lease.IntegrationId);
                 return request;
             },
             UpstreamHttpClientNames.Responses,

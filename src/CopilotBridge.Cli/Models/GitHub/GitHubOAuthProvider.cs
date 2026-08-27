@@ -13,4 +13,8 @@ internal static class GitHubOAuthProvider
     // Official GitHub Copilot OAuth client used by older bridge credentials.
     public const string CopilotPluginClientId = "Iv1.b507a08c87ecfe98";
     public const string CopilotPluginScope = "read:user";
+
+    // Project-owned public OAuth App. This is a Device Flow client identity,
+    // not a secret; appsettings exposes it as the default custom opt-in value.
+    public const string CopilotBridgeClientId = "Ov23liSD97ZYGfIEHAZE";
 }

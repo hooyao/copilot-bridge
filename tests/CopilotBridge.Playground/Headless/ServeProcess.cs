@@ -34,8 +34,10 @@ namespace CopilotBridge.Playground.Headless;
 /// (rather than shipping a hand-written duplicate) keeps the whole <c>Pipeline</c>
 /// block — runaway/leak guards, detectors — byte-identical to production, so the
 /// flywheel can never drift from what ships. Credentials are never inherited from the
-/// build output: callers explicitly select either the raw legacy mirror or a validated,
-/// purpose-built, non-refreshable version-2 unified test credential.</para>
+/// build output: callers explicitly select a validated staging mode. Ordinary source
+/// credentials are copied read-only. The forced-refresh v4 mode additionally requires
+/// a dedicated single-use source marker so it cannot silently consume the rotating
+/// refresh token used by the ordinary v4 success case.</para>
 /// <para><b>Readiness.</b> Startup logs go to the console; Serilog routes everything
 /// at/above Verbose to <b>stderr</b> (<c>SerilogBootstrapper</c> —
 /// <c>standardErrorFromLevel: Verbose</c>), so we watch stderr for the "listening on
@@ -66,13 +68,16 @@ internal sealed record ServeInvocation(
     string? CredentialSourceDirectory = null,
     CredentialStagingMode CredentialStagingMode = CredentialStagingMode.LegacyRawMirror,
     string? WorkingDirectory = null,
-    bool SimulateUpdaterTargetActivation = false);
+    bool SimulateUpdaterTargetActivation = false,
+    bool UseCustomOAuthApp = false);
 
 internal enum CredentialStagingMode
 {
     LegacyRawMirror,
     PurposeBuiltDirectVersionTwo,
     CopilotPluginVersionThree,
+    CustomOAuthVersionFour,
+    DisposableCustomOAuthVersionFourRecovery,
 }
 
 /// <summary>
@@ -235,6 +240,11 @@ internal sealed class ServeHandle : IAsyncDisposable
 
 internal static class ServeProcess
 {
+    internal const string DisposableCustomOAuthRecoveryMarkerFileName =
+        ".copilot-bridge-disposable-v4-recovery";
+    internal const string DisposableCustomOAuthRecoveryMarkerContents =
+        "single-use custom OAuth recovery credential";
+
     /// <summary>
     /// Copy the bridge build output to a scratch dir, patch the copied appsettings for
     /// the scenario, and launch <c>copilot-bridge.exe serve --port &lt;free&gt;</c>.
@@ -294,7 +304,8 @@ internal static class ServeProcess
                 inv.WholeResponseBuffering,
                 inv.KeepAliveIntervalSeconds,
                 inv.CodexCatalogCacheDirectory,
-                inv.LiveOverlayFailureCooldownSeconds);
+                inv.LiveOverlayFailureCooldownSeconds,
+                inv.UseCustomOAuthApp);
 
             var scratchExe = Path.Combine(scratchDir, "copilot-bridge.exe");
             var port = GetFreeLoopbackPort();
@@ -530,7 +541,8 @@ internal static class ServeProcess
         bool wholeResponseBuffering,
         int? keepAliveIntervalSeconds,
         string? codexCatalogCacheDirectory,
-        int? liveOverlayFailureCooldownSeconds)
+        int? liveOverlayFailureCooldownSeconds,
+        bool useCustomOAuthApp)
     {
         var root = JsonNode.Parse(File.ReadAllText(path))?.AsObject()
             ?? throw new ServeStartupException($"appsettings.json at {path} is not a JSON object.");
@@ -542,6 +554,14 @@ internal static class ServeProcess
             ?? throw new ServeStartupException("appsettings.json has no Tracing section to enable.");
         tracing["Enabled"] = true;
         tracing["Directory"] = traceDir;
+
+        if (useCustomOAuthApp)
+        {
+            var authentication = root["Authentication"]?.AsObject()
+                ?? throw new ServeStartupException(
+                    "appsettings.json has no Authentication section for custom OAuth.");
+            authentication["UseCustomAppId"] = true;
+        }
 
         if (codexCatalogCacheDirectory is not null
             || liveOverlayFailureCooldownSeconds is not null)
@@ -709,6 +729,23 @@ internal static class ServeProcess
                     Path.Combine(scratchDir, "github_credentials.dat"),
                     overwrite: false);
                 return;
+            case CredentialStagingMode.CustomOAuthVersionFour:
+                var customPath = Path.Combine(sourceRoot, "github_credentials.dat");
+                ValidateCustomOAuthCredential(customPath);
+                File.Copy(
+                    customPath,
+                    Path.Combine(scratchDir, "github_credentials.dat"),
+                    overwrite: false);
+                return;
+            case CredentialStagingMode.DisposableCustomOAuthVersionFourRecovery:
+                ValidateDisposableCustomOAuthRecoverySource(sourceRoot);
+                var recoveryPath = Path.Combine(sourceRoot, "github_credentials.dat");
+                ValidateCustomOAuthCredential(recoveryPath);
+                File.Copy(
+                    recoveryPath,
+                    Path.Combine(scratchDir, "github_credentials.dat"),
+                    overwrite: false);
+                return;
             default:
                 throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
         }
@@ -795,6 +832,61 @@ internal static class ServeProcess
         finally
         {
             CryptographicOperations.ZeroMemory(plaintext);
+        }
+    }
+
+    private static void ValidateCustomOAuthCredential(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+            throw new PlatformNotSupportedException(
+                "Custom OAuth credential staging currently requires Windows DPAPI.");
+        if (!File.Exists(path))
+            throw new FileNotFoundException(
+                "Custom OAuth credential source has no github_credentials.dat.", path);
+
+        var entropy = Encoding.UTF8.GetBytes("copilot-bridge.github_token.v1");
+        var plaintext = ProtectedData.Unprotect(
+            File.ReadAllBytes(path), entropy, DataProtectionScope.CurrentUser);
+        try
+        {
+            var record = JsonSerializer.Deserialize(
+                    plaintext, JsonContext.Default.CredentialFileRecord)
+                ?? throw new InvalidOperationException(
+                    "Custom OAuth credential source contains an empty record.");
+            if (record.Version != CredentialFileRecord.CustomOAuthDirectVersion
+                || string.IsNullOrWhiteSpace(record.AccessToken)
+                || string.IsNullOrWhiteSpace(record.OAuthClientId)
+                || !record.IsRefreshable
+                || record.AccessTokenExpiresAt is not { } expiry
+                || expiry <= DateTimeOffset.UtcNow.AddMinutes(30))
+            {
+                throw new InvalidOperationException(
+                    "Custom OAuth staging requires a freshly authorized, refreshable "
+                    + "version-4 github_credentials.dat whose access token remains valid "
+                    + "for at least 30 minutes.");
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plaintext);
+        }
+    }
+
+    private static void ValidateDisposableCustomOAuthRecoverySource(string sourceRoot)
+    {
+        var markerPath = Path.Combine(
+            sourceRoot, DisposableCustomOAuthRecoveryMarkerFileName);
+        if (!File.Exists(markerPath)
+            || !string.Equals(
+                File.ReadAllText(markerPath).Trim(),
+                DisposableCustomOAuthRecoveryMarkerContents,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Forced-refresh custom OAuth staging requires a dedicated single-use "
+                + $"credential directory containing {DisposableCustomOAuthRecoveryMarkerFileName} "
+                + $"with the exact text '{DisposableCustomOAuthRecoveryMarkerContents}'. "
+                + "Never point it at an installed bridge or the reusable B13 credential source.");
         }
     }
 

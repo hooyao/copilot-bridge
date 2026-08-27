@@ -24,6 +24,15 @@ public sealed class AuthenticationSecretRedactionTests : IDisposable
     public void Credential_and_lease_ToString_are_secret_free()
     {
         var credential = Credential();
+        var customCredential = new CredentialFileRecord
+        {
+            Version = CredentialFileRecord.CustomOAuthDirectVersion,
+            AccessToken = OldAccess,
+            RefreshToken = OldRefresh,
+            OAuthClientId = "Ov23_PUBLIC_CLIENT_ID",
+            CredentialId = "custom-redaction-test",
+            Generation = 1,
+        };
         var lease = new CopilotAuthLease
         {
             Token = CopilotBearer,
@@ -39,6 +48,9 @@ public sealed class AuthenticationSecretRedactionTests : IDisposable
         };
 
         AssertSecretFree(credential.ToString());
+        AssertSecretFree(customCredential.ToString());
+        Assert.Contains("Ov23_PUBLIC_CLIENT_ID", customCredential.ToString(),
+            StringComparison.Ordinal);
         AssertSecretFree(lease.ToString());
         AssertSecretFree(refreshRequest.ToString());
     }
@@ -103,6 +115,7 @@ public sealed class AuthenticationSecretRedactionTests : IDisposable
             RefreshAt = _now.AddMinutes(20),
             ServerExpiresAt = _now.AddMinutes(30),
             Generation = 2,
+            IntegrationId = CopilotHeaderFactory.CustomOAuthIntegrationId,
         };
         using var output = new StringWriter();
 
@@ -111,6 +124,7 @@ public sealed class AuthenticationSecretRedactionTests : IDisposable
         var text = output.ToString();
         Assert.Contains("api.test.githubcopilot.com", text);
         Assert.Contains(lease.RefreshAt.ToString("O"), text);
+        Assert.Contains(CopilotHeaderFactory.CustomOAuthIntegrationId, text);
         AssertSecretFree(text);
         Assert.DoesNotContain("token (head)", text, StringComparison.OrdinalIgnoreCase);
     }

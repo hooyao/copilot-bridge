@@ -64,20 +64,43 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
    To authorize, open https://github.com/login/device and enter code: ABCD-1234
    ```
 
-   Open that URL in your browser, enter the code, and approve. Fresh logins use
-   the official GitHub Copilot Plugin App's public Device Flow **inside the
-   bridge**—no `gh` executable or client secret is required. The resulting
-   credential is exchanged through `/copilot_internal/v2/token`, matching the
-   official Copilot client.
+   Open that URL in your browser, enter the code, and approve. By default, fresh
+   logins use the official GitHub Copilot Plugin App's public Device Flow **inside
+   the bridge**—no `gh` executable or client secret is required. The resulting
+   version-3 credential is exchanged through `/copilot_internal/v2/token`, matching
+   the official Copilot client.
+
+   To isolate logins under another public OAuth App, use the prominent top-level
+   section in `appsettings.json`:
+
+   ```jsonc
+   "Authentication": {
+     "UseCustomAppId": true,
+     "CustomAppId": "Ov23liSD97ZYGfIEHAZE"
+   }
+   ```
+
+   The stock switch is **false** and the shown custom ID is prefilled. A custom App
+   must have GitHub Device Flow enabled; Marketplace publication is not required.
+   The client ID is public, not a client secret. Do not put the official Copilot
+   Plugin client ID in `CustomAppId`; leave `UseCustomAppId` false to use that
+   provider. If Device Flow is disabled, login reports GitHub's
+   `device_flow_disabled` error. After changing it, restart and run
+   `copilot-bridge auth login`: the new version-4 credential goes directly to
+   `https://api.githubcopilot.com` and never enters the internal token-exchange
+   endpoint. Its CAPI requests use GitHub Copilot SDK's `copilot-developer-cli`
+   integration identity; older credential versions retain `vscode-chat`. The setting
+   controls only the next login; it never silently rewrites an
+   existing encrypted credential.
 
    The bridge saves one encrypted, versioned `github_credentials.dat` beside the
    executable. On upgrade it migrates the richer `github_credentials.v2.dat` or,
    when that cannot be read, `github_token.dat`; it verifies the new file before
    deleting both old files. A migrated version-1 Copilot Plugin credential keeps
    working and refreshing without login until GitHub genuinely rejects it. The next
-   explicit `auth login` replaces it with a version-3 Copilot Plugin credential
-   that records its OAuth App ID in the encrypted file. Existing version-2
-   `gho_` direct credentials remain supported.
+   explicit `auth login` replaces it with the provider selected above: version 3 for
+   the default official App, or refreshable direct version 4 for a custom App.
+   Existing version-2 `gho_` direct credentials remain supported.
    (On Windows,
    double-clicking opens a console window that shows the URL and live log.)
 
@@ -466,16 +489,20 @@ copilot-bridge debug list-models --all
   direct/exchanged mode, refreshability, generation, and deadlines—never token bytes.
 - `auth whoami` validates (and when possible refreshes) the stored GitHub OAuth
   credential.
-- `auth copilot-status` prints direct/exchanged mode, known deadlines, and the API
+- `auth copilot-status` prints direct/exchanged mode, known deadlines, CAPI integration ID, and the API
   URL. Copilot Plugin credentials are exchanged for a short-lived bearer; an
-  existing version-2 GitHub CLI OAuth credential remains a direct CAPI bearer.
+  existing version-2 GitHub CLI OAuth credential and custom version-4 OAuth
+  credential are direct CAPI bearers.
 - `debug list-models --all` proves the resulting Copilot lease can reach CAPI and
   shows which models the current account/policy actually exposes.
 
 Version 1 means a migrated Copilot Plugin credential and retains its full refresh
 state. Version 2 means a GitHub CLI OAuth direct credential and has no separately
 minted bearer deadline. Version 3 means a newly issued Copilot Plugin credential
-with an explicit `oauth_client_id`. A non-refreshable version 1 or 3 with unknown access expiry remains
+with an explicit `oauth_client_id`. Version 4 means a configured custom OAuth App
+credential used directly at CAPI; when GitHub token expiration is enabled it preserves
+and rotates the eight-hour access token and refresh token using its recorded App ID.
+A non-refreshable version 1 or 3 with unknown access expiry remains
 valid until GitHub actually rejects it; its short-lived Copilot bearer still refreshes
 in memory.
 
@@ -490,7 +517,7 @@ during its configured cooldown, and inference remains independent.
 
 If `whoami` and the token exchange/direct CAPI both report GitHub `401 Bad credentials`, the
 failure occurs before model inference and therefore is not specific to gpt-5.6
-or any request body. A refreshable version-1 credential is rotated once automatically;
+or any request body. A refreshable persisted OAuth credential is rotated once automatically;
 if its refresh token is missing, expired, or rejected, GitHub requires a new
 interactive authorization. Check the account security log for
 `oauth_access.destroy`; `explanation=max_for_app` means another login exceeded

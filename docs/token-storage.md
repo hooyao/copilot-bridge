@@ -1,8 +1,10 @@
 # Token storage security model
 
 The bridge persists GitHub OAuth state in one encrypted, versioned file beside the
-executable: `github_credentials.dat`. Fresh login implements the official GitHub
-Copilot Plugin Device Flow inside the bridge and requires no `gh` executable. Every secret-bearing
+executable: `github_credentials.dat`. Fresh login implements the appsettings-selected
+GitHub OAuth Device Flow inside the bridge and requires no `gh` executable. The stock
+configuration selects the official Copilot Plugin App; an explicit custom-App opt-in
+uses the configured public client ID. Every secret-bearing
 file is encrypted on disk—never
 plaintext—but the encryption scheme is chosen per platform at runtime, because
 the strong OS-native facility used on Windows (DPAPI) has no portable equivalent
@@ -37,6 +39,7 @@ source-generated JSON begins with a required semantic version:
 | `1` | Migrated Copilot Plugin credential, including complete access/refresh/deadline/identity/generation state when available | Exchange at `/copilot_internal/v2/token`; use returned bearer + endpoint |
 | `2` | Compatible GitHub CLI OAuth `gho_` direct credential | Use directly as bearer at `https://api.githubcopilot.com` |
 | `3` | Newly issued Copilot Plugin credential with explicit `oauth_client_id` | Exchange at `/copilot_internal/v2/token`; use returned bearer + endpoint |
+| `4` | Explicit custom OAuth App credential with recorded `oauth_client_id` | Use the GitHub OAuth access token directly at `https://api.githubcopilot.com`; refresh it from its recorded issuer |
 
 The runtime never infers credential semantics from a filename or token prefix. An
 unknown version fails closed and leaves the file untouched.
@@ -73,18 +76,32 @@ the same cross-process lock. It is replaced only after GitHub terminally rejects
 and the operator runs `auth login`. Transient rate limits, server failures, and
 transport errors preserve the current record.
 
-Explicit login uses the official Copilot Plugin public OAuth client ID and `read:user`
-scope with form-encoded RFC 8628 requests, no client secret, and no `gh` process or
-keyring. Success atomically overwrites the same file with version 3 and records the
-issuing client ID in `oauth_client_id`.
+The top-level `Authentication` configuration controls only the next explicit login.
+`UseCustomAppId=false` (stock default) uses the official Copilot Plugin public OAuth
+client ID and writes version 3. `UseCustomAppId=true` uses `CustomAppId` (stock value
+`Ov23liSD97ZYGfIEHAZE`) and writes version 4. Both use `read:user`, form-encoded RFC
+8628 requests, no client secret, and no `gh` process or keyring. Success atomically
+overwrites the same file and records the issuing client ID in `oauth_client_id`.
+Custom mode rejects a blank ID and the official Copilot Plugin ID (which must retain
+version-3 exchange semantics). If the custom App has Device Flow disabled, the login
+error preserves GitHub's bounded `device_flow_disabled` code and HTTP status without
+echoing the response body.
+Changing appsettings never reinterprets or rewrites an existing credential; run
+`auth login` after restart to replace it deliberately.
+If rejection recovery races a login from another process, the newer record remains
+authoritative and authentication is rebuilt from its own version, including a direct
+↔ exchanged provider change, rather than inheriting the rejected lease's mode.
 `auth logout` removes the new file plus any exact pre-migration files that survived a
 failed migration, then clears in-memory Copilot leases.
 
-Copilot authentication has two compatible lease forms. A version-2 credential is
-used directly as the bearer paired with
-`https://api.githubcopilot.com`; its expiry is unknown and the bridge neither
-calls `/copilot_internal/v2/token` nor arms a short-lived bearer timer. Version-1
-credentials continue producing the former short-lived,
+Copilot authentication has two compatible lease forms. Version-2 and version-4
+credentials are direct bearers paired with `https://api.githubcopilot.com`; neither
+calls `/copilot_internal/v2/token`. Version 2 retains its unknown-expiry compatibility
+behavior. A refreshable version 4 schedules rotation five minutes before its known
+GitHub access-token deadline and atomically preserves GitHub's rotating access/refresh
+pair. Its Copilot lease uses the official SDK integration identity
+`copilot-developer-cli`; versions 1–3 and compatible v2 retain `vscode-chat`.
+Version-1 credentials continue producing the former short-lived,
 memory-only exchanged lease using the endpoint returned by GitHub. Version 3 uses
 the same exchange shape and reads its refresh client ID from the credential record.
 
@@ -92,7 +109,10 @@ For an exchanged version-1 or version-3 lease, a first CAPI 401 or 403 rejects t
 bearer/endpoint generation, obtains its replacement, and replays the exact request once.
 A direct version-2 403 is likewise ambiguous and gets one bounded replay. A direct 401,
 however, rejects the persisted credential identity and requires `auth login`; replaying
-the same `gho_` would be meaningless. The terminal transition removes every cached lease
+the same non-refreshable `gho_` would be meaningless. A refreshable version-4 direct
+lease instead rotates its GitHub credential once on the first 401 or 403 and uses the
+new direct bearer for the same bounded replay; a non-refreshable v4 follows the terminal
+401 rule. The terminal transition removes every cached lease
 generation carrying that identity, and lock-free cache reuse checks terminal state before
 returning a direct bearer. Credential identity, not only lease generation, therefore
 prevents ordinary concurrent callers or a late 401 from reusing a terminal bearer.
@@ -184,7 +204,8 @@ brief window at default umask.
 - Casual disclosure: neither file is plaintext; `cat`-ing either yields ciphertext.
 
 Compatible version-2 GitHub CLI OAuth tokens carry broader GitHub scopes than the
-Copilot Plugin credential. Encryption and redaction therefore remain mandatory; the
+Copilot Plugin credential. Custom version-4 tokens carry the configured App's grant
+and a rotating refresh credential. Encryption and redaction therefore remain mandatory; the
 bridge never writes any credential to client configuration or command output.
 
 **Windows (DPAPI):** additionally, another user on the same machine cannot

@@ -17,7 +17,9 @@ internal sealed record CredentialLease
     public required long Generation { get; init; }
 
     public bool IsRefreshable => !string.IsNullOrWhiteSpace(RefreshToken);
-    public bool IsDirect => Version == Models.GitHub.CredentialFileRecord.GitHubCliOAuthVersion;
+    public bool IsDirect => Version is
+        Models.GitHub.CredentialFileRecord.GitHubCliOAuthVersion
+        or Models.GitHub.CredentialFileRecord.CustomOAuthDirectVersion;
 
     public override string ToString() =>
         $"CredentialLease {{ Version = {Version}, AccessToken = (redacted), "

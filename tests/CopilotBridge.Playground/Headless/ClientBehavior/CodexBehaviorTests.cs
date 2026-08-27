@@ -135,6 +135,84 @@ public class CodexBehaviorTests
     }
 
     [Fact]
+    public async Task Codex_CustomOAuthVersionFour_DirectLeaseCompletesToolChain_ForVerdict()
+    {
+        var credentialSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(credentialSource))
+            throw new InvalidOperationException(
+                "Set COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY to a scratch "
+                + "directory containing a freshly authorized version-4 credential.");
+
+        const string canary = "codex-custom-v4-canary-82647";
+        var prompt =
+            "Do these steps in order with real shell tools; do not fabricate output:\n"
+            + "1. Run a command that writes first-custom-v4-line to custom_v4_probe.txt.\n"
+            + $"2. Run a separate command that appends {canary}.\n"
+            + "3. Run a third command that reads the file, report its exact second line, and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-custom-oauth-version-four",
+            prompt,
+            credentialSourceDirectory: credentialSource,
+            credentialStagingMode: CredentialStagingMode.CustomOAuthVersionFour,
+            expectedBridgeLogs:
+            [
+                "Copilot direct lease trigger=deadline outcome=success credential_version=4",
+            ],
+            useCustomOAuthApp: true);
+    }
+
+    [Fact]
+    public async Task Codex_CustomOAuthVersionFour_OneShotCopilot403_RotatesAndCompletesComplexToolChain_ForVerdict()
+    {
+        var credentialSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_CUSTOM_RECOVERY_CREDENTIAL_SOURCE_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(credentialSource))
+            throw new InvalidOperationException(
+                "Set COPILOT_BRIDGE_TEST_CUSTOM_RECOVERY_CREDENTIAL_SOURCE_DIRECTORY to a "
+                + "dedicated single-use directory containing a freshly authorized version-4 "
+                + $"credential and the {ServeProcess.DisposableCustomOAuthRecoveryMarkerFileName} "
+                + "marker. Never reuse the B13 credential source: this run consumes its "
+                + "rotating refresh token.");
+
+        var reusableSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY");
+        if (!string.IsNullOrWhiteSpace(reusableSource)
+            && string.Equals(
+                Path.GetFullPath(credentialSource),
+                Path.GetFullPath(reusableSource),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "B14 custom OAuth recovery must not share B13's reusable credential source.");
+        }
+
+        const string canary = "codex-custom-v4-auth-replay-canary-82714";
+        var prompt =
+            "Perform these steps with real tools, in order; do not fabricate output:\n"
+            + "1. Use your code-execution tool (actual code, not mental arithmetic or shell echo) "
+            + "to compute the sum of integers 1 through 100.\n"
+            + "2. Run a shell command that writes that numeric result as the first line of "
+            + "custom_v4_auth_replay_probe.txt.\n"
+            + $"3. Run a separate shell command that appends {canary} as the second line.\n"
+            + "4. Run a third shell command that reads the file, report its exact two lines, and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-custom-oauth-version-four-403-recovery",
+            prompt,
+            forceCapiForbiddenOnce: ForcedCapiForbiddenOperation.Responses,
+            credentialSourceDirectory: credentialSource,
+            credentialStagingMode:
+                CredentialStagingMode.DisposableCustomOAuthVersionFourRecovery,
+            expectedBridgeLogs:
+            [
+                "Copilot direct lease trigger=copilot_403 outcome=success credential_version=4",
+            ],
+            useCustomOAuthApp: true);
+    }
+
+    [Fact]
     public async Task Codex_MigratedVersionOne_ExchangeLeaseCompletesToolChain_ForVerdict()
     {
         var credentialSource = Environment.GetEnvironmentVariable(
@@ -826,14 +904,16 @@ public class CodexBehaviorTests
         string? credentialSourceDirectory = null,
         CredentialStagingMode credentialStagingMode = CredentialStagingMode.LegacyRawMirror,
         IReadOnlyList<string>? expectedBridgeLogs = null,
-        bool simulateUpdaterTargetActivation = false)
+        bool simulateUpdaterTargetActivation = false,
+        bool useCustomOAuthApp = false)
     {
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
             ServeScenario.Passthrough,
             ForceCapiForbiddenOnce: forceCapiForbiddenOnce,
             CredentialSourceDirectory: credentialSourceDirectory,
             CredentialStagingMode: credentialStagingMode,
-            SimulateUpdaterTargetActivation: simulateUpdaterTargetActivation));
+            SimulateUpdaterTargetActivation: simulateUpdaterTargetActivation,
+            UseCustomOAuthApp: useCustomOAuthApp));
         _output.WriteLine($"bridge up at {bridge.BaseUrl} (trace: {bridge.TraceDir})");
 
         // Disposable work dir so codex's file-writing tools mutate a throwaway dir, never

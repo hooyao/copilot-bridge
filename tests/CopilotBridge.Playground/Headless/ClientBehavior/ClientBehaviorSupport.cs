@@ -37,7 +37,7 @@ internal static class ClientBehaviorSupport
     public const string LatestGpt = "gpt-5.6-sol";
 
     /// <summary>Reviewed Codex app-server build used by the behavior flywheel.</summary>
-    public const string CodexVersion = "0.149.0-alpha.4.3";
+    public const string CodexVersion = "0.150.0-alpha.8";
 
     /// <summary>Filename-safe UTC stamp for manifest/IO filenames. Test code, so a
     /// direct clock read is fine (unlike workflow scripts).</summary>

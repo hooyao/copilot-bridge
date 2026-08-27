@@ -72,6 +72,10 @@ internal static class BridgeServiceCollectionExtensions
         Action<DeviceCodeChallenge>? deviceCodePrinter = null)
     {
         // --- Options -------------------------------------------------------
+        services.AddOptions<AuthenticationOptions>()
+            .Bind(config.GetSection(AuthenticationOptions.SectionName))
+            .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<AuthenticationOptions>, AuthenticationOptionsValidator>();
         services.Configure<BridgeServerOptions>(config.GetSection("Server"));
         if (cliPort.HasValue)
         {
@@ -176,7 +180,9 @@ internal static class BridgeServiceCollectionExtensions
                     message => logger.LogInformation("{CredentialEvent}", message)),
                 TimeProvider.System,
                 logger,
-                deviceCodePrinter);
+                deviceCodePrinter,
+                sp.GetRequiredService<IOptions<AuthenticationOptions>>()
+                    .Value.ResolveLoginProvider());
         });
         services.AddSingleton(sp => new AuthService(
             sp.GetRequiredService<IHttpClientFactory>(),
