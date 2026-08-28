@@ -25,7 +25,8 @@ internal sealed record CodexAppServerInvocation(
     long? ModelAutoCompactTokenLimit = null,
     long? StreamIdleTimeoutMs = null,
     int? RequestMaxRetries = null,
-    int? StreamMaxRetries = null);
+    int? StreamMaxRetries = null,
+    string? ModelCatalogTemplateSlug = null);
 
 internal sealed record CodexAppServerResult(
     int ExitCode,
@@ -53,10 +54,42 @@ internal static class CodexAppServerProcess
         var dispatchLog = Path.Combine(dispatchHome, "logs_2.sqlite");
 
         var connection = new BridgeConnection(new Uri(invocation.BridgeBaseUrl).Port);
-        var (config, _) = CodexConfigurator.BuildContent(
-            original: null,
-            connection,
-            CodexProviderAuthInvocation.ResolveCurrent());
+        string config;
+        if (invocation.ModelCatalogTemplateSlug is { Length: > 0 } templateSlug)
+        {
+            // A local startup catalog must remain authoritative for this diagnostic
+            // case. Command auth would fetch /codex/models after startup and replace
+            // the alias with the public exact-version catalog that omits this id.
+            config =
+                "model_provider = \"copilot-bridge\"\n\n"
+                + "[features]\n"
+                + "multi_agent = false\n"
+                + "tool_suggest = false\n"
+                + "plugins = false\n"
+                + "remote_plugin = false\n\n"
+                + "[model_providers.copilot-bridge]\n"
+                + "name = \"copilot-bridge\"\n"
+                + $"base_url = \"{connection.CodexBaseUrl}\"\n"
+                + "wire_api = \"responses\"\n"
+                + "env_key = \"BRIDGE_DUMMY_KEY\"\n";
+            var catalogPath = Path.Combine(invocation.CodexHome, "model-catalog.json");
+            await WriteAliasedBundledModelCatalogAsync(
+                codexExe,
+                invocation.CodexHome,
+                templateSlug,
+                invocation.Model,
+                catalogPath,
+                cancellationToken);
+            var tomlPath = Path.GetFullPath(catalogPath).Replace('\\', '/');
+            config = $"model_catalog_json = \"{tomlPath}\"\n" + config;
+        }
+        else
+        {
+            (config, _) = CodexConfigurator.BuildContent(
+                original: null,
+                connection,
+                CodexProviderAuthInvocation.ResolveCurrent());
+        }
         if (invocation.StreamIdleTimeoutMs is not null
             || invocation.RequestMaxRetries is not null
             || invocation.StreamMaxRetries is not null)
@@ -100,6 +133,7 @@ internal static class CodexAppServerProcess
         start.ArgumentList.Add("--stdio");
         start.Environment["CODEX_HOME"] = invocation.CodexHome;
         start.Environment["CODEX_SQLITE_HOME"] = dispatchHome;
+        start.Environment["BRIDGE_DUMMY_KEY"] = "dummy-bridge-bypass";
         start.Environment["RUST_LOG"] = "warn";
         start.Environment.Remove("CODEX_THREAD_ID");
         start.Environment.Remove("CODEX_INTERNAL_ORIGINATOR_OVERRIDE");
@@ -258,6 +292,58 @@ internal static class CodexAppServerProcess
     {
         await process.StandardInput.WriteLineAsync(message.ToJsonString().AsMemory(), token);
         await process.StandardInput.FlushAsync(token);
+    }
+
+    /// <summary>
+    /// Builds a one-model startup catalog from the exact real client's bundled
+    /// metadata, changing only the slug/display name. This lets a candidate model
+    /// exercise a client tool mode that its own upstream-only id does not yet carry
+    /// in OpenAI's public catalog; the model id on every request remains the target.
+    /// </summary>
+    private static async Task WriteAliasedBundledModelCatalogAsync(
+        string codexExe,
+        string codexHome,
+        string templateSlug,
+        string targetSlug,
+        string destination,
+        CancellationToken cancellationToken)
+    {
+        var start = new ProcessStartInfo
+        {
+            FileName = codexExe,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        start.ArgumentList.Add("debug");
+        start.ArgumentList.Add("models");
+        start.ArgumentList.Add("--bundled");
+        start.Environment["CODEX_HOME"] = codexHome;
+        using var process = Process.Start(start)
+            ?? throw new InvalidOperationException("Failed to start codex debug models.");
+        var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        await process.WaitForExitAsync(cancellationToken);
+        var output = await outputTask;
+        var error = await errorTask;
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"codex debug models --bundled exited {process.ExitCode}: {error.Trim()}");
+
+        var root = JsonNode.Parse(output)?.AsObject()
+            ?? throw new InvalidDataException("Codex bundled catalog was not a JSON object.");
+        var models = root["models"]?.AsArray()
+            ?? throw new InvalidDataException("Codex bundled catalog had no models array.");
+        var template = models.OfType<JsonObject>().SingleOrDefault(model =>
+                string.Equals(model["slug"]?.GetValue<string>(), templateSlug, StringComparison.Ordinal))
+            ?? throw new InvalidDataException(
+                $"Codex bundled catalog had no template model {templateSlug}.");
+        var target = (JsonObject)template.DeepClone();
+        target["slug"] = targetSlug;
+        target["display_name"] = targetSlug;
+        var catalog = new JsonObject { ["models"] = new JsonArray(target) };
+        File.WriteAllText(destination, catalog.ToJsonString());
     }
 
     private static async Task<JsonNode> ReadUntilAsync(

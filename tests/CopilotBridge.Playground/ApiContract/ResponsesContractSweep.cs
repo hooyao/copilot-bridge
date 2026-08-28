@@ -84,21 +84,11 @@ public partial class ResponsesProbe
                     + "\"stream\":false,\"tool_choice\":\"auto\",\"tools\":[" + toolJson + "]}";
                 var (status, body) = await ProbeRetry.WithRetry(
                     () => client.TryPostResponsesAsync(payload), $"{model} tool={label}");
-                // 5xx handling is scoped to the ONE documented cell where a server
-                // error was historically the contract fact: mai-code-1-flash-picker
-                // returned 500 on custom/apply_patch tools (research §2.4; the
-                // 2026-08-28 re-probe now returns 200). For every other cell a
-                // 5xx is a flaky upstream, not a rejection — use the throwing
-                // classifier so a transient 5xx ABORTS the sweep instead of being
-                // silently recorded as tools_rejected (which would poison the
-                // snapshot and, after a human regen, the Codex catalog). Reviewer
-                // #7: a blanket 5xx-as-reject across all tool probes was too broad.
-                var isFlashCustomCell =
-                    string.Equals(model, "mai-code-1-flash-picker", StringComparison.OrdinalIgnoreCase)
-                    && label == "custom_apply_patch";
-                var accepted = isFlashCustomCell
-                    ? WireAcceptance.IsAcceptedTreating5xxAsReject(status)
-                    : WireAcceptance.IsAccepted(status, body, $"{model} tool={label}");
+                // No current model has a documented 5xx rejection contract. A
+                // transient 5xx must abort through the standard classifier instead
+                // of being recorded as tools_rejected and poisoning the snapshot.
+                var accepted = WireAcceptance.IsAccepted(
+                    status, body, $"{model} tool={label}");
                 if (!accepted)
                     toolRejected.Add(label);
             }
