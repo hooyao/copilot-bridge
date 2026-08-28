@@ -538,9 +538,9 @@ copilot-bridge auth login
 
 If GitHub auth succeeds but a gpt-5.6 id is absent from `/models`, check the
 Copilot plan and organization model policy instead. Sol and Sol Fast require
-Pro+/Max or an enabled Business/Enterprise policy; Terra and Luna require a paid
-Copilot plan, and Business/Enterprise administrators must explicitly enable the
-new-model policy during rollout.
+Pro+/Max or an enabled Business/Enterprise policy; Terra requires a paid plan,
+while current metadata also exposes Luna to Free and Edu accounts. Business and
+Enterprise administrators must explicitly enable the new-model policy during rollout.
 
 ## Roadmap
 
