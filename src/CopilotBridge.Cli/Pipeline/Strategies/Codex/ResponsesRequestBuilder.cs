@@ -1313,11 +1313,10 @@ internal static class ResponsesRequestBuilder
     }
 
     /// <summary>
-    /// Re-emit the bag's un-modeled knobs, applying the two uniform coercions:
-    /// strip <c>service_tier</c> (Copilot 400s it), drop the
-    /// <c>image_generation</c> tool (Copilot 400s it). <c>store</c> is only
-    /// stripped when <c>true</c> (Codex sends false; harmless). Everything else
-    /// passes through verbatim.
+    /// Re-emit the bag's un-modeled knobs, applying the three uniform coercions:
+    /// strip <c>service_tier</c> (Copilot 400s it), strip <c>store:true</c>
+    /// (Codex sends false; harmless), and drop the <c>image_generation</c> tool
+    /// (Copilot 400s it). Everything else passes through verbatim.
     /// </summary>
     private static void WriteBagFields(
         Utf8JsonWriter w,
@@ -1332,11 +1331,17 @@ internal static class ResponsesRequestBuilder
             {
                 case "service_tier":
                     // STRIP — uniform coercion (research §2.3).
-                    mutations |= ResponsesRequestMutation.ServiceTierStripped;
-                    continue;
+                    if (CodexModelProfileCatalog.StripsServiceTier)
+                    {
+                        mutations |= ResponsesRequestMutation.ServiceTierStripped;
+                        continue;
+                    }
+                    prop.WriteTo(w);
+                    break;
                 case "store":
                     // Strip only when true (Q3). Codex sends false → keep.
-                    if (prop.Value.ValueKind == JsonValueKind.True)
+                    if (CodexModelProfileCatalog.StripsStoreTrue &&
+                        prop.Value.ValueKind == JsonValueKind.True)
                     {
                         mutations |= ResponsesRequestMutation.StoreTrueStripped;
                         continue;
@@ -1395,7 +1400,7 @@ internal static class ResponsesRequestBuilder
         foreach (var tool in tools.EnumerateArray())
         {
             var type = tool.TryGetProperty("type", out var t) ? t.GetString() : null;
-            if (type == "image_generation")
+            if (type == "image_generation" && CodexModelProfileCatalog.DropsImageGenerationTool)
             {
                 mutations |= ResponsesRequestMutation.ImageGenerationToolDropped;
                 continue;

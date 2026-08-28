@@ -87,6 +87,7 @@ public sealed class ResponsesAdmissionEstimatorTests
 
     [Theory]
     [InlineData("gpt-5.6-luna")]
+    [InlineData("gpt-5.6-sol-fast")]
     [InlineData("gpt-5.6-terra")]
     public void UnprobedSiblingModel_DoesNotBorrowSolsExactCalibration(string model)
     {

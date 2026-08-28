@@ -32,7 +32,7 @@ public class CodexRequestBuildTests
 {
     // The production catalog (not a hand-built stub) so these assert the real
     // shipping profiles: large = gpt-5.3-codex (none/low/medium/high/xhigh),
-    // small = gpt-5-mini (minimal/low/medium/high), flash = small + RejectsCustomTools.
+    // small = gpt-5-mini / MAI Flash (minimal/low/medium/high).
     private static readonly CodexModelProfileCatalog Catalog = new();
 
     private static JsonObject Emit(MessagesRequest ir) =>
@@ -85,10 +85,12 @@ public class CodexRequestBuildTests
     // being clamped to xhigh (Gpt56_Effort_ReProbe: max → 200). Only 'minimal' —
     // the one value the set rejects — falls back to the xhigh default.
     [InlineData("gpt-5.6-sol",   "max", "max")]         // ACCEPTED → verbatim (NOT clamped to xhigh like gpt-5.5)
+    [InlineData("gpt-5.6-sol-fast", "max", "max")]
     [InlineData("gpt-5.6-luna",  "max", "max")]
     [InlineData("gpt-5.6-terra", "max", "max")]
     [InlineData("gpt-5.6-sol",   "xhigh", "xhigh")]     // accepted → kept
     [InlineData("gpt-5.6-sol",   "minimal", "xhigh")]   // the only rejected value → profile default xhigh
+    [InlineData("gpt-5.6-sol-fast", "minimal", "xhigh")]
     [InlineData("gpt-5.6-luna",  "minimal", "xhigh")]   // per-row DefaultEffort guard: NOT max (the documented footgun)
     [InlineData("gpt-5.6-terra", "minimal", "xhigh")]   // per-row DefaultEffort guard: NOT max
     [InlineData("gpt-5.6-sol",   "none", "none")]       // accepted → kept
@@ -142,8 +144,8 @@ public class CodexRequestBuildTests
 
     [Theory]
     [InlineData("gpt-5.3-codex", true, 2)]                 // large: custom kept → function + custom
-    [InlineData("mai-code-1-flash-picker", false, 1)]    // flash: custom dropped → function only
-    public void WriteToolsWithDrops_DropsImageGen_AndCustomForFlash(string model, bool customKept, int expectedCount)
+    [InlineData("mai-code-1-flash-picker", true, 2)]     // 2026-08-28 live re-probe: custom accepted
+    public void WriteToolsWithDrops_DropsImageGen_AndHonorsCustomCapability(string model, bool customKept, int expectedCount)
     {
         var emitted = Emit(Ir(model, bag: ToolsBag()));
         var tools = emitted["tools"]!.AsArray();
@@ -155,10 +157,35 @@ public class CodexRequestBuildTests
         Assert.Contains("function", types);
         var fn = tools.First(t => t!["type"]!.GetValue<string>() == "function");
         Assert.Equal("shell", fn!["name"]!.GetValue<string>());
-        // custom: kept for the large profile, dropped for flash (RejectsCustomTools).
+        // custom: kept for every currently live profile; RejectsCustomTools remains
+        // available for a future backend-specific rejection.
         Assert.Equal(customKept, types.Contains("custom"));
 
         Assert.Equal(expectedCount, tools.Count);
+    }
+
+    [Fact]
+    public void WriteToolsWithDrops_DropsCustomWhenExactProfileRejectsIt()
+    {
+        var rejectingCatalog = new CodexModelProfileCatalog(
+        [
+            new CodexModelProfile
+            {
+                CanonicalId = "gpt-contract-rejects-custom",
+                AcceptedEfforts = ["high"],
+                DefaultEffort = "high",
+                RejectsCustomTools = true,
+            },
+        ]);
+
+        var emitted = JsonNode.Parse(ResponsesRequestBuilder.Build(
+            Ir("gpt-contract-rejects-custom", bag: ToolsBag()),
+            rejectingCatalog).Body)!.AsObject();
+        var types = emitted["tools"]!.AsArray()
+            .Select(tool => tool!["type"]!.GetValue<string>())
+            .ToArray();
+
+        Assert.Equal(["function"], types);
     }
 
     // ── max_output_tokens round-trip (P2's fix: emit only when MaxTokens > 0) ────

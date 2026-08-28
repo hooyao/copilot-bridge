@@ -1,14 +1,16 @@
 using System.Runtime.Versioning;
 using System.Text.Json;
+using CopilotBridge.Playground.Contract;
 using Xunit;
 using Xunit.Abstractions;
 
 namespace CopilotBridge.Playground;
 
 /// <summary>
-/// Live contract proof for Responses structured multimodal function output. This is
-/// intentionally a two-turn function loop rather than an ordinary top-level vision
-/// probe: the model first emits a real call, then receives a generated image through
+/// Live contract proof for Responses structured multimodal function output. The
+/// focused Sol-family assertions and the full profile observation matrix use a
+/// two-turn function loop rather than an ordinary top-level vision probe: the model
+/// first emits a real call, then receives a generated image through
 /// <c>function_call_output.output</c> content items. A 200 alone is insufficient;
 /// the final answer must identify the image's color.
 /// </summary>
@@ -17,17 +19,46 @@ namespace CopilotBridge.Playground;
 [Trait("Kind", "ApiContract")]
 public class MultimodalFunctionOutputProbe
 {
-    private const string Model = "gpt-5.6-sol";
     private readonly ITestOutputHelper _output;
 
     public MultimodalFunctionOutputProbe(ITestOutputHelper output) => _output = output;
 
-    [Fact]
-    public async Task Gpt56Sol_StructuredImageFunctionOutput_IsAcceptedAndUnderstood()
+    [Theory]
+    [InlineData("gpt-5.6-sol")]
+    [InlineData("gpt-5.6-sol-fast")]
+    public async Task Gpt56SolFamily_StructuredImageFunctionOutput_IsAcceptedAndUnderstood(string model)
     {
-        const string first = """
+        using var client = new PlaygroundClient();
+        var result = await ProbeAsync(client, model);
+        _output.WriteLine(
+            $"first={(int)result.FirstStatus} second={(int?)result.SecondStatus} answer={result.Answer}");
+
+        Assert.Equal(System.Net.HttpStatusCode.OK, result.FirstStatus);
+        Assert.Equal(System.Net.HttpStatusCode.OK, result.SecondStatus);
+        Assert.Equal("red", result.Answer, ignoreCase: true);
+    }
+
+    [Theory]
+    [MemberData(nameof(ExactProfileModelRows))]
+    public async Task ExactProfiles_StructuredImageFunctionOutput_ProbeAcceptance(string model)
+    {
+        using var client = new PlaygroundClient();
+        var result = await ProbeAsync(client, model);
+        _output.WriteLine(
+            $"[{model}] multimodal function output first={(int)result.FirstStatus} "
+            + $"second={(int?)result.SecondStatus} answer={result.Answer} supported={result.Supported}");
+    }
+
+    public static IEnumerable<object[]> ExactProfileModelRows() =>
+        ResponsesProbe.AllModels.Select(model => new object[] { model });
+
+    internal static async Task<MultimodalFunctionOutputProbeResult> ProbeAsync(
+        PlaygroundClient client,
+        string model)
+    {
+        var first = $$"""
             {
-              "model":"gpt-5.6-sol",
+              "model":"{{model}}",
               "instructions":"You must call inspect_image exactly once. Do not answer before the tool result.",
               "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Use inspect_image, then answer with only the dominant color."}]}],
               "tools":[{"type":"function","name":"inspect_image","description":"Returns the image to inspect.","parameters":{"type":"object","properties":{},"required":[]},"strict":false}],
@@ -36,17 +67,19 @@ public class MultimodalFunctionOutputProbe
             }
             """;
 
-        using var client = new PlaygroundClient();
-        var (firstStatus, firstBody) = await client.TryPostResponsesAsync(first);
-        Assert.Equal(System.Net.HttpStatusCode.OK, firstStatus);
+        var (firstStatus, firstBody) = await ProbeRetry.WithRetry(
+            () => client.TryPostResponsesAsync(first), $"{model} multimodal function call");
+        if (firstStatus != System.Net.HttpStatusCode.OK)
+            return new(firstStatus, null, "");
         var call = ReadFunctionCall(firstBody);
-        Assert.Equal("inspect_image", call.Name);
+        if (!string.Equals("inspect_image", call.Name, StringComparison.Ordinal))
+            throw new Xunit.Sdk.XunitException($"{model} called unexpected tool {call.Name}");
 
         var dataUrl = "data:image/png;base64,"
             + Convert.ToBase64String(PngGen.SolidRgbPng(100, 100, 255, 0, 0));
         var second = $$"""
             {
-              "model":"{{Model}}",
+              "model":"{{model}}",
               "instructions":"Answer with only the dominant color in the returned image.",
               "input":[
                 {"type":"message","role":"user","content":[{"type":"input_text","text":"Use inspect_image, then answer with only the dominant color."}]},
@@ -60,12 +93,13 @@ public class MultimodalFunctionOutputProbe
             }
             """;
 
-        var (secondStatus, secondBody) = await client.TryPostResponsesAsync(second, vision: true);
-        var answer = ReadOutputText(secondBody).Trim();
-        _output.WriteLine($"first={(int)firstStatus} second={(int)secondStatus} answer={answer}");
-
-        Assert.Equal(System.Net.HttpStatusCode.OK, secondStatus);
-        Assert.Equal("red", answer, ignoreCase: true);
+        var (secondStatus, secondBody) = await ProbeRetry.WithRetry(
+            () => client.TryPostResponsesAsync(second, vision: true),
+            $"{model} multimodal function output");
+        var answer = secondStatus == System.Net.HttpStatusCode.OK
+            ? ReadOutputText(secondBody).Trim()
+            : "";
+        return new(firstStatus, secondStatus, answer);
     }
 
     private static (string CallId, string Name, string Arguments) ReadFunctionCall(string body)
@@ -94,4 +128,15 @@ public class MultimodalFunctionOutputProbe
         }
         return string.Concat(parts);
     }
+}
+
+internal readonly record struct MultimodalFunctionOutputProbeResult(
+    System.Net.HttpStatusCode FirstStatus,
+    System.Net.HttpStatusCode? SecondStatus,
+    string Answer)
+{
+    public bool Supported =>
+        FirstStatus == System.Net.HttpStatusCode.OK &&
+        SecondStatus == System.Net.HttpStatusCode.OK &&
+        string.Equals(Answer, "red", StringComparison.OrdinalIgnoreCase);
 }

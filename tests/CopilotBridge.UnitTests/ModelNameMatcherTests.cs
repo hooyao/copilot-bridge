@@ -24,11 +24,11 @@ public class ModelNameMatcherTests
 
     // The Codex/Responses catalog's known ids. Mirrors
     // CodexModelProfileCatalog.BuildDefault() so the fuzzy-match cases exercise
-    // the real candidate set (incl. the gpt-5.6 codenames added 2026-07).
+    // the real candidate set (incl. the gpt-5.6 codenames added 2026-07/08).
     private static readonly string[] Codex =
     [
         "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
-        "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
+        "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-sol-fast", "gpt-5.6-terra",
         "gpt-5-mini", "mai-code-1-flash-picker",
     ];
 

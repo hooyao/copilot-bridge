@@ -1,25 +1,24 @@
 using System.Runtime.Versioning;
 using System.Text.Json.Nodes;
+using CopilotBridge.Cli.Pipeline.Routing;
 using CopilotBridge.Playground.Contract;
 using Xunit;
 
 namespace CopilotBridge.Playground;
 
 /// <summary>
-/// B1/B2 for the Copilot <c>/responses</c> (Responses/Codex) backend
+/// B1/B2/B3 for the Copilot <c>/responses</c> (Responses/Codex) backend
 /// (`docs/ir-definition-design.md` §7.B). Promotes <see cref="ResponsesProbe"/>
 /// from print-only to ASSERTING: one aggregate sweep hits every verified cell
-/// (per-model effort, the field rejections, the tool rejections, and the live
-/// SSE event set), builds a structured facts object, and:
+/// (per-model effort, field/tool rejections, structured multimodal function
+/// output, and the live SSE event set), builds a structured facts object, and:
 ///   B1 — asserts each Responses model in <see cref="ResponsesProbe.AllModels"/>
 ///        answered;
 ///   B2 — diffs the live facts against the committed Responses snapshot and
-///        FAILS with a readable diff on any drift.
-///
-/// NO B3 here: the Responses-side catalog + coercions don't exist yet — they're
-/// change 3 (`add-codex-responses-client`). This change only RECORDS the live
-/// Responses wire-truth as the snapshot change 3's Codex profile catalog will be
-/// built against (noted in the snapshot header). Tagged Integration (inherited).
+///        FAILS with a readable diff on any drift;
+///   B3 — compares every rewrite-driving live fact with the shipping
+///        <see cref="CodexModelProfileCatalog"/> in both directions.
+/// Tagged Integration (inherited).
 /// </summary>
 [SupportedOSPlatform("windows")]
 public partial class ResponsesProbe
@@ -85,29 +84,27 @@ public partial class ResponsesProbe
                     + "\"stream\":false,\"tool_choice\":\"auto\",\"tools\":[" + toolJson + "]}";
                 var (status, body) = await ProbeRetry.WithRetry(
                     () => client.TryPostResponsesAsync(payload), $"{model} tool={label}");
-                // 5xx handling is scoped to the ONE documented cell where a server
-                // error is the contract fact: mai-code-1-flash-internal 500s on
-                // custom/apply_patch tools (research §2.4). For every other cell a
-                // 5xx is a flaky upstream, not a rejection — use the throwing
-                // classifier so a transient 5xx ABORTS the sweep instead of being
-                // silently recorded as tools_rejected (which would poison the
-                // snapshot and, after a human regen, the Codex catalog). Reviewer
-                // #7: a blanket 5xx-as-reject across all tool probes was too broad.
-                var isFlashCustomCell =
-                    string.Equals(model, "mai-code-1-flash-internal", StringComparison.OrdinalIgnoreCase)
-                    && label == "custom_apply_patch";
-                var accepted = isFlashCustomCell
-                    ? WireAcceptance.IsAcceptedTreating5xxAsReject(status)
-                    : WireAcceptance.IsAccepted(status, body, $"{model} tool={label}");
+                // No current model has a documented 5xx rejection contract. A
+                // transient 5xx must abort through the standard classifier instead
+                // of being recorded as tools_rejected and poisoning the snapshot.
+                var accepted = WireAcceptance.IsAccepted(
+                    status, body, $"{model} tool={label}");
                 if (!accepted)
                     toolRejected.Add(label);
             }
+
+            // ── structured multimodal function output (exact-model capability) ──
+            var multimodal = await MultimodalFunctionOutputProbe.ProbeAsync(client, model);
+            _output.WriteLine(
+                $"[{model}] multimodal function output first={(int)multimodal.FirstStatus} "
+                + $"second={(int?)multimodal.SecondStatus} understood={multimodal.Supported}");
 
             models[model] = new JsonObject
             {
                 ["effort"] = new JsonObject { ["accepted"] = effortAccepted, ["rejected"] = effortRejected },
                 ["fields_rejected"] = fieldRejected,
                 ["tools_rejected"] = toolRejected,
+                ["supports_multimodal_function_output"] = multimodal.Supported,
             };
         }
 
@@ -123,9 +120,8 @@ public partial class ResponsesProbe
                 ["account_type"] = "enterprise",
                 ["models_probed"] = AllModels.Length,
                 ["note"] = "Live wire-truth of what Copilot's /responses accepts per model. "
-                         + "RECORDED FOR change 3 (add-codex-responses-client): its Codex profile "
-                         + "catalog + coercions are built against THIS snapshot (no catalog exists "
-                         + "yet, so there is no B3 here). Drift (B2) fails "
+                         + "The shipping Codex profile catalog is checked against every "
+                         + "rewrite-driving fact in B3. Drift (B2) fails "
                          + "B_ResponsesContract_SweepAssertAndDetectDrift; regenerate with "
                          + "BRIDGE_REGEN_CONTRACT_SNAPSHOT=1 and review.",
             },
@@ -136,6 +132,9 @@ public partial class ResponsesProbe
         // ── B1: every model in AllModels answered. ──
         Assert.Equal(AllModels.Length, models.Count);
         Assert.True(sseEvents.Count > 0, "captured no SSE event types from the streaming probe");
+
+        // ── B3: every backend fact that causes a request rewrite matches the catalog. ──
+        AssertCatalogMatchesLive(models);
 
         // ── B2: drift detection vs the committed snapshot. ──
         var (diffs, seeded) = ContractSnapshot.SeedOrDiff(ResponsesSnapshotFile, facts);
@@ -152,6 +151,55 @@ public partial class ResponsesProbe
                 + "Review the diff above: update the snapshot (BRIDGE_REGEN_CONTRACT_SNAPSHOT=1) and, "
                 + "in change 3, reconcile the Codex profile catalog / coercions if a guarded fact changed.\n  "
                 + string.Join("\n  ", diffs));
+        }
+    }
+
+    private static void AssertCatalogMatchesLive(JsonObject models)
+    {
+        var catalog = new CodexModelProfileCatalog();
+        Assert.Equal(
+            catalog.KnownIds.Order(StringComparer.Ordinal),
+            models.Select(entry => entry.Key).Order(StringComparer.Ordinal));
+
+        foreach (var model in catalog.KnownIds)
+        {
+            var profile = Assert.IsType<CodexModelProfile>(catalog.Get(model));
+            var facts = Assert.IsType<JsonObject>(models[model]);
+            var effort = Assert.IsType<JsonObject>(facts["effort"]);
+            var accepted = Assert.IsType<JsonArray>(effort["accepted"])
+                .Select(value => value!.GetValue<string>())
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+            var expectedAccepted = profile.AcceptedEfforts.Order(StringComparer.Ordinal).ToArray();
+            Assert.True(
+                expectedAccepted.SequenceEqual(accepted, StringComparer.Ordinal),
+                $"{model}: catalog accepted efforts [{string.Join(',', expectedAccepted)}] "
+                + $"!= live [{string.Join(',', accepted)}]");
+
+            var fieldsRejected = Assert.IsType<JsonArray>(facts["fields_rejected"])
+                .Select(value => value!.GetValue<string>())
+                .ToHashSet(StringComparer.Ordinal);
+            Assert.True(
+                CodexModelProfileCatalog.StripsServiceTier == fieldsRejected.Contains("service_tier"),
+                $"{model}: catalog/live service_tier rewrite fact differs");
+            Assert.True(
+                CodexModelProfileCatalog.StripsStoreTrue == fieldsRejected.Contains("store_true"),
+                $"{model}: catalog/live store:true rewrite fact differs");
+
+            var toolsRejected = Assert.IsType<JsonArray>(facts["tools_rejected"])
+                .Select(value => value!.GetValue<string>())
+                .ToHashSet(StringComparer.Ordinal);
+            Assert.True(
+                CodexModelProfileCatalog.DropsImageGenerationTool == toolsRejected.Contains("image_generation"),
+                $"{model}: catalog/live image_generation rewrite fact differs");
+            Assert.True(
+                profile.RejectsCustomTools == toolsRejected.Contains("custom_apply_patch"),
+                $"{model}: catalog/live custom-tool rewrite fact differs");
+            var liveSupportsMultimodal = facts["supports_multimodal_function_output"]?.GetValue<bool>()
+                ?? throw new InvalidDataException($"{model}: live facts omit multimodal function-output support");
+            Assert.True(
+                profile.SupportsMultimodalFunctionOutput == liveSupportsMultimodal,
+                $"{model}: catalog/live multimodal function-output fact differs");
         }
     }
 

@@ -5,8 +5,8 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 /// <c>/responses</c> model the bridge serves. The Responses-side analog of
 /// <see cref="ModelProfileCatalog"/>. Every row is sourced from the live contract
 /// snapshot (<c>docs/copilot-responses-contract-snapshot.json</c>, change 2);
-/// change-2's B2 drift test goes red when the snapshot moves, prompting a
-/// reconcile here.
+/// the B2/B3 contract sweep goes red when the snapshot or catalog moves,
+/// prompting a reconcile here.
 /// </summary>
 /// <remarks>
 /// <para>Lookup is by canonical id (post-<see cref="CopilotModelRegistry.Normalize"/>,
@@ -18,10 +18,10 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 /// model is a hard, surfaced error (<see cref="UnknownModelException"/>). The
 /// catalog stays the source of probed truth — fuzzy matching is a best-effort
 /// bridge until a real profile is added, not a substitute for probing.</para>
-/// <para>Two uniform coercions apply to EVERY model (research §2.3/§2.4), so they
-/// live as catalog-level facts rather than per-row flags: strip
-/// <c>service_tier</c> (Copilot 400s it) and drop the <c>image_generation</c>
-/// tool (Copilot 400s it). T2 applies both unconditionally.</para>
+/// <para>Three uniform coercions apply to EVERY model (research §2.3/§2.4), so
+/// they live as catalog-level facts rather than per-row flags: strip
+/// <c>service_tier</c>, strip <c>store:true</c>, and drop the
+/// <c>image_generation</c> tool (Copilot 400s each shape). T2 applies all three.</para>
 /// </remarks>
 internal sealed class CodexModelProfileCatalog
 {
@@ -81,25 +81,27 @@ internal sealed class CodexModelProfileCatalog
     public int Count => _byId.Count;
 
     /// <summary>
-    /// True for the two uniform coercions every Responses model needs. Named
-    /// constants so T2 reads them by intent and a future per-model exception is a
-    /// one-line change.
+    /// True for the three uniform coercions every Responses model needs. Named
+    /// catalog-level facts so T2 reads them by intent and a future per-model
+    /// exception is a one-line change.
     /// </summary>
-    public const bool StripsServiceTier = true;
-    public const bool DropsImageGenerationTool = true;
+    public static readonly bool StripsServiceTier = true;
+    public static readonly bool StripsStoreTrue = true;
+    public static readonly bool DropsImageGenerationTool = true;
 
     /// <summary>
     /// The baseline profile set, row-by-row from
     /// <c>docs/copilot-responses-contract-snapshot.json</c> (seeded 2026-06-15,
     /// Enterprise), with <c>mai-code-1-flash-picker</c> re-probed directly 2026-07
-    /// (see its row) and the <c>gpt-5.6</c> codename slots probed directly 2026-07
+    /// (see its row) and the <c>gpt-5.6</c> codename slots probed directly 2026-07/08
     /// (see their rows). Three effort profiles:
     /// <list type="bullet">
     ///   <item><b>large</b> — <c>gpt-5.3-codex</c>, <c>gpt-5.4</c>,
     ///         <c>gpt-5.4-mini</c>, <c>gpt-5.5</c>: accept
     ///         <c>none/low/medium/high/xhigh</c>, reject <c>minimal</c>.</item>
     ///   <item><b>xlarge</b> — <c>gpt-5.6-luna</c>, <c>gpt-5.6-sol</c>,
-    ///         <c>gpt-5.6-terra</c>: <b>large + <c>max</c></b> — the first Codex
+    ///         <c>gpt-5.6-sol-fast</c>, <c>gpt-5.6-terra</c>:
+    ///         <b>large + <c>max</c></b> — the first Codex
     ///         models to accept <c>max</c> (<c>Gpt56_Effort_ReProbe</c>: max → 200,
     ///         minimal → 400). So Anthropic's top tier passes through instead of
     ///         being clamped to <c>xhigh</c>.</item>
@@ -108,11 +110,16 @@ internal sealed class CodexModelProfileCatalog
     ///         <c>minimal/low/medium/high</c>, reject <c>none</c> AND <c>xhigh</c>
     ///         (the inverse of large at the boundaries).</item>
     /// </list>
-    /// <c>mai-code-1-flash-picker</c> additionally 500s on custom tools
-    /// (<c>RejectsCustomTools</c>).
+    /// No current model rejects custom tools; the flag remains available for a
+    /// future model-specific backend constraint.
     /// </summary>
     private static IEnumerable<CodexModelProfile> BuildDefault()
     {
+        // Structured multimodal function output was probed independently on every
+        // exact profile (ExactProfiles_StructuredImageFunctionOutput_ProbeAcceptance,
+        // 2026-08-28). Every OpenAI model below understood the red test image;
+        // mai-code-1-flash-picker returned 200 but answered "blue", so it remains
+        // false and takes the compatibility string fallback.
         // ── "large" effort profile: accept none/low/medium/high/xhigh, reject minimal ──
         // DefaultEffort=xhigh: an unaccepted inbound effort falls back to xhigh —
         // the large profile's top accepted tier — with a WARNING in CoerceEffort.
@@ -120,14 +127,14 @@ internal sealed class CodexModelProfileCatalog
         // xhigh), so 'max' lands on the fallback; the "xlarge" profile below DOES
         // accept 'max', so there it passes through instead.
         string[] large = ["none", "low", "medium", "high", "xhigh"];
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.3-codex", AcceptedEfforts = large, DefaultEffort = "xhigh" };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.4",       AcceptedEfforts = large, DefaultEffort = "xhigh" };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.4-mini",  AcceptedEfforts = large, DefaultEffort = "xhigh" };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.5",       AcceptedEfforts = large, DefaultEffort = "xhigh" };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.3-codex", AcceptedEfforts = large, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.4",       AcceptedEfforts = large, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.4-mini",  AcceptedEfforts = large, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.5",       AcceptedEfforts = large, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
 
         // ── "xlarge" effort profile: accept none/low/medium/high/xhigh/max, reject minimal ──
-        // The gpt-5.6 codename slots (luna/sol/terra) are the first Codex models to
-        // accept 'max' — every effort axis RE-PROBED directly 2026-07
+        // The gpt-5.6 codename slots (luna/sol/sol-fast/terra) are the first Codex models to
+        // accept 'max' — every effort axis RE-PROBED directly 2026-07/08
         // (ResponsesProbe.Gpt56_Effort_ReProbe): null/none/low/medium/high/xhigh/max
         // → 200, minimal → 400. This EXTENDS "large" with max, so Anthropic's top
         // tier (which large clamps to xhigh) now passes through verbatim on these.
@@ -143,11 +150,12 @@ internal sealed class CodexModelProfileCatalog
         // web_search → 200; image_generation → 400 but that's the catalog-level
         // uniform drop, not a per-model flag) → RejectsCustomTools stays false.
         string[] xlarge = ["none", "low", "medium", "high", "xhigh", "max"];
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-luna",  AcceptedEfforts = xlarge, DefaultEffort = "xhigh" };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-luna",  AcceptedEfforts = xlarge, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
         // A direct two-turn function-output probe (2026-08-06) sent a generated red
         // PNG as output:[{type:input_text},{type:input_image}] and sol answered
         // exactly "red" (200). This proves a capability that ordinary top-level
-        // vision probes do not. Sibling rows remain false until individually probed.
+        // vision probes do not. The 2026-08-28 exact-profile sweep subsequently
+        // proved this capability for Luna and Terra too; MAI Flash remains false.
         yield return new CodexModelProfile
         {
             CanonicalId = "gpt-5.6-sol",
@@ -155,28 +163,41 @@ internal sealed class CodexModelProfileCatalog
             DefaultEffort = "xhigh",
             SupportsMultimodalFunctionOutput = true,
         };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-terra", AcceptedEfforts = xlarge, DefaultEffort = "xhigh" };
+        // Added 2026-08-28 from direct live evidence:
+        // Gpt56_Effort_ReProbe accepts none/low/medium/high/xhigh/max and rejects
+        // minimal; Gpt56_Tool_ReProbe accepts function/custom/web_search and
+        // rejects only the catalog-wide image_generation tool;
+        // Gpt56SolFamily_StructuredImageFunctionOutput_IsAcceptedAndUnderstood
+        // completes the exact two-turn structured image-output loop as "red".
+        yield return new CodexModelProfile
+        {
+            CanonicalId = "gpt-5.6-sol-fast",
+            AcceptedEfforts = xlarge,
+            DefaultEffort = "xhigh",
+            SupportsMultimodalFunctionOutput = true,
+        };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-terra", AcceptedEfforts = xlarge, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
 
         // ── "small" effort profile: accept minimal/low/medium/high, reject none+xhigh ──
         // DefaultEffort=high: small rejects xhigh, so its fallback is 'high' (its
         // top accepted tier) — an inbound 'max'/'xhigh' lands here.
         string[] small = ["minimal", "low", "medium", "high"];
-        yield return new CodexModelProfile { CanonicalId = "gpt-5-mini", AcceptedEfforts = small, DefaultEffort = "high" };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5-mini", AcceptedEfforts = small, DefaultEffort = "high", SupportsMultimodalFunctionOutput = true };
         // mai-code-1-flash-INTERNAL was retired by Copilot (2026 reconciliation —
         // 400 "not available for integrator"); the live Responses id is
         // mai-code-1-flash-PICKER (200 — ResponsesProbe.MaiCode_LivenessProbe).
-        // Effort + custom-tool contract RE-PROBED directly on -picker 2026-07
+        // Effort + custom-tool contract RE-PROBED directly on -picker 2026-07/08
         // (ResponsesProbe.MaiCodePicker_Effort_ReProbe / _Tool_ReProbe; underlying
         // model 'mai-2-flash-code-2026-05-18'): accepts null/minimal/low/medium/high,
         // REJECTS none + xhigh (400 "Supported values are: minimal, low, medium,
-        // high") → the "small" set; custom apply_patch → 500 → RejectsCustomTools.
-        // function + web_search → 200. Wire-verified, no longer extrapolated.
+        // high") → the "small" set. Custom apply_patch was 500 in 2026-07 but
+        // re-probed 200 on 2026-08-28 (MaiCodePicker_Tool_ReProbe), so no custom
+        // tool rewrite remains. function + web_search → 200.
         yield return new CodexModelProfile
         {
             CanonicalId = "mai-code-1-flash-picker",
             AcceptedEfforts = small,     // MaiCodePicker_Effort_ReProbe: none/xhigh → 400
             DefaultEffort = "high",      // small's top accepted tier (xhigh rejected)
-            RejectsCustomTools = true,   // MaiCodePicker_Tool_ReProbe: custom apply_patch → 500
         };
     }
 }

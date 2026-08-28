@@ -33,8 +33,8 @@ public partial class ResponsesProbe
     public ResponsesProbe(ITestOutputHelper output) => _output = output;
 
     /// <summary>
-    /// ALL Responses-capable models confirmed live by
-    /// <see cref="DiscoverResponsesModels"/> (2026-06-12, Enterprise). Every
+    /// ALL Responses-capable models with an exact bridge profile, confirmed live
+    /// by <see cref="DiscoverResponsesModels"/> (Enterprise). Every
     /// matrix iterates the full set — per-model behavior is NOT extrapolated
     /// from family names (the /v1/messages path proved siblings diverge, e.g.
     /// gpt-5.3-codex advertises no `none` yet accepts it; the mini/flash models
@@ -46,21 +46,24 @@ public partial class ResponsesProbe
         "gpt-5.4-mini",
         "gpt-5.4",
         "gpt-5.5",
-        // gpt-5.6 codename slots (2026-07). Included so the asserting contract
+        // gpt-5.6 codename slots (2026-07/08). Included so the asserting contract
         // sweep (ResponsesContractSweep.B_ResponsesContract_SweepAssertAndDetectDrift)
         // and its snapshot cover the new ids AND their distinguishing `max`
         // acceptance (max was added to EffortVocabulary for exactly this).
         "gpt-5.6-luna",
         "gpt-5.6-sol",
+        "gpt-5.6-sol-fast",
         "gpt-5.6-terra",
         "gpt-5-mini",
-        "mai-code-1-flash-internal",
+        "mai-code-1-flash-picker",
     ];
 
     /// <summary>Models advertising vision (input_image) — all but the flash model.</summary>
     public static readonly string[] VisionModels =
     [
-        "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5-mini",
+        "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5",
+        "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-sol-fast", "gpt-5.6-terra",
+        "gpt-5-mini",
     ];
 
     // Codex effort vocabulary (config-reference): minimal|low|medium|high|xhigh.
@@ -147,13 +150,13 @@ public partial class ResponsesProbe
 
     /// <summary>
     /// 2026 reconciliation follow-up — re-probe <c>mai-code-1-flash-picker</c>'s
-    /// TOOL contract directly (PR #15 review #3). The catalog row asserts
+    /// TOOL contract directly. The catalog historically asserted
     /// <c>RejectsCustomTools = true</c> (custom <c>apply_patch</c> → 500),
-    /// extrapolated from <c>-internal</c>. This probes function / custom
+    /// originally extrapolated from <c>-internal</c>. This probes function / custom
     /// apply_patch / web_search / image_generation against the LIVE <c>-picker</c>
     /// id. The load-bearing case is <c>apply_patch_custom</c>: a non-200 there
-    /// confirms <c>RejectsCustomTools</c>; a 200 refutes it and the row must drop
-    /// the flag.
+    /// confirms <c>RejectsCustomTools</c>; the 2026-08-28 200 refuted that old
+    /// rule and caused the row to drop the flag.
     /// </summary>
     [Theory]
     [MemberData(nameof(MaiCodePickerToolMatrix))]

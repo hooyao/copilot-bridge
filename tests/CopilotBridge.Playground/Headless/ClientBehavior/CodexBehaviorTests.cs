@@ -76,6 +76,70 @@ public class CodexBehaviorTests
         await DriveAndRecordAsync("codex-multistep-toolchain", prompt);
     }
 
+    /// <summary>
+    /// Candidate-targeted evidence for Copilot's internal-only Sol Fast id. This
+    /// must remain separate from <see cref="ClientBehaviorSupport.LatestGpt"/>:
+    /// Fast is an opt-in variant, not a replacement for the public Sol default.
+    /// </summary>
+    [Fact]
+    public async Task Codex_SolFast_MultiToolTask_ProducesDispatchLogForVerdict()
+    {
+        var credentialSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(credentialSource))
+            throw new InvalidOperationException(
+                "Set COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY to a scratch "
+                + "directory containing a freshly authorized version-3 credential.");
+
+        const string canary = "codex-sol-fast-canary-82856";
+        var prompt =
+            "Use max reasoning. First call the collaboration.list_agents function tool once and inspect its result. "
+            + "Then use your code-execution tool to compute 43 * 47 (run actual code, do not compute by hand). "
+            + "Run a shell command that writes the numeric result to sol_fast_probe.txt, run another shell command "
+            + "that appends the exact suffix " + canary + ", then read the file, report both lines verbatim, and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-sol-fast-model-support",
+            prompt,
+            modelReasoningEffort: "max",
+            modelReasoningSummary: "detailed",
+            credentialSourceDirectory: credentialSource,
+            credentialStagingMode: CredentialStagingMode.CopilotPluginVersionThree,
+            model: "gpt-5.6-sol-fast");
+    }
+
+    /// <summary>
+    /// Live client evidence for MAI Flash's re-probed custom-tool support. The
+    /// task forces Codex's grammar <c>exec</c> tool so removing the historical
+    /// custom-tool drop is verified as an execution-and-echo loop, not merely a
+    /// declaration accepted by the backend.
+    /// </summary>
+    [Fact]
+    public async Task Codex_MaiFlash_CustomTool_ProducesDispatchLogForVerdict()
+    {
+        var credentialSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(credentialSource))
+            throw new InvalidOperationException(
+                "Set COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY to a scratch "
+                + "directory containing a freshly authorized version-3 credential.");
+
+        const string canary = "codex-mai-custom-tool-canary-62841";
+        var prompt =
+            "Use the apply_patch tool (not a shell command) to create mai_custom_probe.txt with exactly two "
+            + "lines: 3127 and " + canary + ". Then run one shell command that reads the file, report both "
+            + "lines verbatim, and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-mai-flash-custom-tool",
+            prompt,
+            modelReasoningEffort: "high",
+            credentialSourceDirectory: credentialSource,
+            credentialStagingMode: CredentialStagingMode.CopilotPluginVersionThree,
+            model: "mai-code-1-flash-picker",
+            modelCatalogTemplateSlug: "gpt-5.5");
+    }
+
     [Fact]
     public async Task Codex_BuiltInGitHubCliOAuth_DirectLeaseCompletesToolChain_ForVerdict()
     {
@@ -906,7 +970,9 @@ public class CodexBehaviorTests
         IReadOnlyList<string>? expectedBridgeLogs = null,
         IReadOnlyList<string>? expectedBridgeLogsBeforeClient = null,
         bool simulateUpdaterTargetActivation = false,
-        bool useCustomOAuthApp = false)
+        bool useCustomOAuthApp = false,
+        string model = ClientBehaviorSupport.LatestGpt,
+        string? modelCatalogTemplateSlug = null)
     {
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
             ServeScenario.Passthrough,
@@ -933,13 +999,14 @@ public class CodexBehaviorTests
         var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
             BridgeBaseUrl: bridge.BaseUrl,
             Prompt: prompt,
-            Model: ClientBehaviorSupport.LatestGpt,
+            Model: model,
             Timeout: TimeSpan.FromMinutes(6),
             CodexHome: codexHome.Path,
             WorkingDirectory: work.Path,
             ExpectedCodexVersion: expectedCodexVersion,
             ModelReasoningEffort: modelReasoningEffort,
-            ModelReasoningSummary: modelReasoningSummary));
+            ModelReasoningSummary: modelReasoningSummary,
+            ModelCatalogTemplateSlug: modelCatalogTemplateSlug));
 
         _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration}");
         _output.WriteLine($"dispatch log={result.DispatchLogPath} thread={result.ThreadId} window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
@@ -949,7 +1016,7 @@ public class CodexBehaviorTests
                 CaseId: caseId,
                 Client: "codex",
                 Route: "/codex",
-                Model: ClientBehaviorSupport.LatestGpt,
+                Model: model,
                 Scenario: ServeScenario.Passthrough,
                 ClientExitCode: result.ExitCode,
                 DurationSeconds: result.Duration.TotalSeconds,

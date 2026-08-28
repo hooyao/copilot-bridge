@@ -42,10 +42,9 @@ internal sealed record CodexModelProfile
     public required string DefaultEffort { get; init; }
 
     /// <summary>
-    /// True for <c>mai-code-1-flash-internal</c>: Copilot 500s on custom/grammar
-    /// tools (e.g. <c>apply_patch</c>) for this model (research §2.4 / snapshot
-    /// <c>tools_rejected</c>). Recorded as a fact, not silently surfaced as a
-    /// bridge bug; T2 may drop custom tools for this model rather than 500.
+    /// True only when a live probe proves that this model rejects custom/grammar
+    /// tools (e.g. <c>apply_patch</c>). Recorded as a fact, not silently surfaced
+    /// as a bridge bug; T2 may drop custom tools for such a model rather than 500.
     /// </summary>
     public bool RejectsCustomTools { get; init; }
 

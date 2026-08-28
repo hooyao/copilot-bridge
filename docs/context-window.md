@@ -54,6 +54,11 @@
   `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` and choose the companion telemetry
   and timeout settings explicitly (see §5). `config claude-code` preserves that
   choice. No `[1m]` suffix is needed; the transcript model stays clean. See §5.
+- **Codex Sol Fast is 1M-class on Copilot**: the internal-only
+  `gpt-5.6-sol-fast` id advertises 1,050,000 total / 922,000 prompt / 128,000
+  output tokens, and a real Codex-shaped request reported 310,465 input tokens
+  with HTTP 200. Select it explicitly; it is absent from the official Codex
+  catalog and the bridge does not invent a model-catalog entry for it.
 
 ## 1. Where the context window comes from — the client, not the server
 
