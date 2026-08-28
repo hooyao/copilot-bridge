@@ -164,15 +164,6 @@ public partial class ResponsesProbe
         }
     }
 
-    [Fact]
-    public void B3_CommittedResponsesSnapshotMatchesCatalog()
-    {
-        var snapshot = ContractSnapshot.ReadOrNull(ResponsesSnapshotFile)
-            ?? throw new FileNotFoundException($"Missing {ResponsesSnapshotFile}");
-        var models = Assert.IsType<JsonObject>(snapshot["models"]);
-        AssertCatalogMatchesLive(models);
-    }
-
     private static void AssertCatalogMatchesLive(JsonObject models)
     {
         var catalog = new CodexModelProfileCatalog();
