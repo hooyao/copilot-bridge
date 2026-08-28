@@ -1331,11 +1331,17 @@ internal static class ResponsesRequestBuilder
             {
                 case "service_tier":
                     // STRIP — uniform coercion (research §2.3).
-                    mutations |= ResponsesRequestMutation.ServiceTierStripped;
-                    continue;
+                    if (CodexModelProfileCatalog.StripsServiceTier)
+                    {
+                        mutations |= ResponsesRequestMutation.ServiceTierStripped;
+                        continue;
+                    }
+                    prop.WriteTo(w);
+                    break;
                 case "store":
                     // Strip only when true (Q3). Codex sends false → keep.
-                    if (prop.Value.ValueKind == JsonValueKind.True)
+                    if (CodexModelProfileCatalog.StripsStoreTrue &&
+                        prop.Value.ValueKind == JsonValueKind.True)
                     {
                         mutations |= ResponsesRequestMutation.StoreTrueStripped;
                         continue;
@@ -1394,7 +1400,7 @@ internal static class ResponsesRequestBuilder
         foreach (var tool in tools.EnumerateArray())
         {
             var type = tool.TryGetProperty("type", out var t) ? t.GetString() : null;
-            if (type == "image_generation")
+            if (type == "image_generation" && CodexModelProfileCatalog.DropsImageGenerationTool)
             {
                 mutations |= ResponsesRequestMutation.ImageGenerationToolDropped;
                 continue;

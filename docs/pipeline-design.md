@@ -1132,9 +1132,10 @@ block is a valid Anthropic text/image block; unknown or malformed siblings fall
 back as a complete array, never a partially translated one. T2 never asks who
 produced the request: a source that means its tool output to stay opaque says so
 ON THE IR (Codex T1 marks `opaque_tool_output` on the block), and T2 pulls that
-fact. Positive support is exact-profile only (currently live-proven for
-`gpt-5.6-sol` and `gpt-5.6-sol-fast`); fuzzy-nearest and unprobed sibling models
-keep the compatibility string path.
+fact. Positive support is exact-profile only: the 2026-08-28 matrix proved it
+for every current OpenAI Responses profile, while `mai-code-1-flash-picker`
+returned 200 but misidentified the red test image as blue and keeps the
+compatibility string path. Fuzzy-nearest and unprobed models also keep that path.
 
 Responses reasoning items follow the same push/pull split. T3 pushes the whole
 item into the IR unconditionally — a hidden `redacted_thinking` block carrying

@@ -98,24 +98,29 @@ public class CodexRoutingAndCatalogTests
     // ── Catalog rows match the change-2 contract snapshot ────────────────────
 
     [Theory]
-    [InlineData("gpt-5.3-codex", "none,low,medium,high,xhigh", false)]
-    [InlineData("gpt-5.4",       "none,low,medium,high,xhigh", false)]
-    [InlineData("gpt-5.4-mini",  "none,low,medium,high,xhigh", false)]
-    [InlineData("gpt-5.5",       "none,low,medium,high,xhigh", false)]
+    [InlineData("gpt-5.3-codex", "none,low,medium,high,xhigh", false, true)]
+    [InlineData("gpt-5.4",       "none,low,medium,high,xhigh", false, true)]
+    [InlineData("gpt-5.4-mini",  "none,low,medium,high,xhigh", false, true)]
+    [InlineData("gpt-5.5",       "none,low,medium,high,xhigh", false, true)]
     // xlarge = large + max (the gpt-5.6 codenames; Gpt56_Effort_ReProbe: max → 200).
-    [InlineData("gpt-5.6-luna",  "none,low,medium,high,xhigh,max", false)]
-    [InlineData("gpt-5.6-sol",   "none,low,medium,high,xhigh,max", false)]
-    [InlineData("gpt-5.6-sol-fast", "none,low,medium,high,xhigh,max", false)]
-    [InlineData("gpt-5.6-terra", "none,low,medium,high,xhigh,max", false)]
-    [InlineData("gpt-5-mini",    "minimal,low,medium,high",    false)]
-    [InlineData("mai-code-1-flash-picker", "minimal,low,medium,high", false)]
-    public void Catalog_EffortProfilesMatchSnapshot(string id, string expectedEfforts, bool rejectsCustom)
+    [InlineData("gpt-5.6-luna",  "none,low,medium,high,xhigh,max", false, true)]
+    [InlineData("gpt-5.6-sol",   "none,low,medium,high,xhigh,max", false, true)]
+    [InlineData("gpt-5.6-sol-fast", "none,low,medium,high,xhigh,max", false, true)]
+    [InlineData("gpt-5.6-terra", "none,low,medium,high,xhigh,max", false, true)]
+    [InlineData("gpt-5-mini",    "minimal,low,medium,high", false, true)]
+    [InlineData("mai-code-1-flash-picker", "minimal,low,medium,high", false, false)]
+    public void Catalog_ProfilesMatchLiveContract(
+        string id,
+        string expectedEfforts,
+        bool rejectsCustom,
+        bool supportsMultimodalFunctionOutput)
     {
         var catalog = new CodexModelProfileCatalog();
         var profile = catalog.Get(id);
         Assert.NotNull(profile);
         Assert.Equal(expectedEfforts.Split(','), profile!.AcceptedEfforts);
         Assert.Equal(rejectsCustom, profile.RejectsCustomTools);
+        Assert.Equal(supportsMultimodalFunctionOutput, profile.SupportsMultimodalFunctionOutput);
     }
 
     /// <summary>

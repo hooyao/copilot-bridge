@@ -93,8 +93,15 @@ public class CodexImageTests
     }
 
     [Theory]
+    [InlineData("gpt-5.3-codex")]
+    [InlineData("gpt-5.4")]
+    [InlineData("gpt-5.4-mini")]
+    [InlineData("gpt-5.5")]
+    [InlineData("gpt-5.6-luna")]
     [InlineData("gpt-5.6-sol")]
     [InlineData("gpt-5.6-sol-fast")]
+    [InlineData("gpt-5.6-terra")]
+    [InlineData("gpt-5-mini")]
     public void ClaudeToolResult_TextImageText_PreservesStructuredOutputAndSetsVision(string model)
     {
         const string callId = "toolu_image_contract";
@@ -155,7 +162,6 @@ public class CodexImageTests
     }
 
     [Theory]
-    [InlineData("gpt-5.6-luna")]
     [InlineData("gpt-5.6-sol-next")]
     public void ClaudeToolResultImage_UnprobedExactModel_UsesStringFallback(string model)
     {
@@ -301,7 +307,7 @@ public class CodexImageTests
         // The recorded expectation for that model, not news. Reporting it would train
         // the operator to ignore the warning that actually matters.
         var ir = ToolResultImageRequest(
-            "gpt-5.6-terra",
+            "mai-code-1-flash-picker",
             "[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"aGVsbG8=\"}}]");
 
         var (_, vision, _) = ResponsesRequestBuilder.Build(

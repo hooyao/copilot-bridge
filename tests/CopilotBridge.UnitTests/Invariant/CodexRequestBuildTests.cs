@@ -164,6 +164,30 @@ public class CodexRequestBuildTests
         Assert.Equal(expectedCount, tools.Count);
     }
 
+    [Fact]
+    public void WriteToolsWithDrops_DropsCustomWhenExactProfileRejectsIt()
+    {
+        var rejectingCatalog = new CodexModelProfileCatalog(
+        [
+            new CodexModelProfile
+            {
+                CanonicalId = "gpt-contract-rejects-custom",
+                AcceptedEfforts = ["high"],
+                DefaultEffort = "high",
+                RejectsCustomTools = true,
+            },
+        ]);
+
+        var emitted = JsonNode.Parse(ResponsesRequestBuilder.Build(
+            Ir("gpt-contract-rejects-custom", bag: ToolsBag()),
+            rejectingCatalog).Body)!.AsObject();
+        var types = emitted["tools"]!.AsArray()
+            .Select(tool => tool!["type"]!.GetValue<string>())
+            .ToArray();
+
+        Assert.Equal(["function"], types);
+    }
+
     // ── max_output_tokens round-trip (P2's fix: emit only when MaxTokens > 0) ────
 
     [Theory]

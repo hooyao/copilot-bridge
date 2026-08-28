@@ -10,8 +10,8 @@ namespace CopilotBridge.Playground;
 /// B1/B2/B3 for the Copilot <c>/responses</c> (Responses/Codex) backend
 /// (`docs/ir-definition-design.md` §7.B). Promotes <see cref="ResponsesProbe"/>
 /// from print-only to ASSERTING: one aggregate sweep hits every verified cell
-/// (per-model effort, the field rejections, the tool rejections, and the live
-/// SSE event set), builds a structured facts object, and:
+/// (per-model effort, field/tool rejections, structured multimodal function
+/// output, and the live SSE event set), builds a structured facts object, and:
 ///   B1 — asserts each Responses model in <see cref="ResponsesProbe.AllModels"/>
 ///        answered;
 ///   B2 — diffs the live facts against the committed Responses snapshot and
@@ -103,11 +103,18 @@ public partial class ResponsesProbe
                     toolRejected.Add(label);
             }
 
+            // ── structured multimodal function output (exact-model capability) ──
+            var multimodal = await MultimodalFunctionOutputProbe.ProbeAsync(client, model);
+            _output.WriteLine(
+                $"[{model}] multimodal function output first={(int)multimodal.FirstStatus} "
+                + $"second={(int?)multimodal.SecondStatus} understood={multimodal.Supported}");
+
             models[model] = new JsonObject
             {
                 ["effort"] = new JsonObject { ["accepted"] = effortAccepted, ["rejected"] = effortRejected },
                 ["fields_rejected"] = fieldRejected,
                 ["tools_rejected"] = toolRejected,
+                ["supports_multimodal_function_output"] = multimodal.Supported,
             };
         }
 
@@ -157,6 +164,15 @@ public partial class ResponsesProbe
         }
     }
 
+    [Fact]
+    public void B3_CommittedResponsesSnapshotMatchesCatalog()
+    {
+        var snapshot = ContractSnapshot.ReadOrNull(ResponsesSnapshotFile)
+            ?? throw new FileNotFoundException($"Missing {ResponsesSnapshotFile}");
+        var models = Assert.IsType<JsonObject>(snapshot["models"]);
+        AssertCatalogMatchesLive(models);
+    }
+
     private static void AssertCatalogMatchesLive(JsonObject models)
     {
         var catalog = new CodexModelProfileCatalog();
@@ -198,6 +214,11 @@ public partial class ResponsesProbe
             Assert.True(
                 profile.RejectsCustomTools == toolsRejected.Contains("custom_apply_patch"),
                 $"{model}: catalog/live custom-tool rewrite fact differs");
+            var liveSupportsMultimodal = facts["supports_multimodal_function_output"]?.GetValue<bool>()
+                ?? throw new InvalidDataException($"{model}: live facts omit multimodal function-output support");
+            Assert.True(
+                profile.SupportsMultimodalFunctionOutput == liveSupportsMultimodal,
+                $"{model}: catalog/live multimodal function-output fact differs");
         }
     }
 

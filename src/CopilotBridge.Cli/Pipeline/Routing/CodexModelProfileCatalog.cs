@@ -82,12 +82,12 @@ internal sealed class CodexModelProfileCatalog
 
     /// <summary>
     /// True for the three uniform coercions every Responses model needs. Named
-    /// constants so T2 reads them by intent and a future per-model exception is a
-    /// one-line change.
+    /// catalog-level facts so T2 reads them by intent and a future per-model
+    /// exception is a one-line change.
     /// </summary>
-    public const bool StripsServiceTier = true;
-    public const bool StripsStoreTrue = true;
-    public const bool DropsImageGenerationTool = true;
+    public static readonly bool StripsServiceTier = true;
+    public static readonly bool StripsStoreTrue = true;
+    public static readonly bool DropsImageGenerationTool = true;
 
     /// <summary>
     /// The baseline profile set, row-by-row from
@@ -115,6 +115,11 @@ internal sealed class CodexModelProfileCatalog
     /// </summary>
     private static IEnumerable<CodexModelProfile> BuildDefault()
     {
+        // Structured multimodal function output was probed independently on every
+        // exact profile (ExactProfiles_StructuredImageFunctionOutput_ProbeAcceptance,
+        // 2026-08-28). Every OpenAI model below understood the red test image;
+        // mai-code-1-flash-picker returned 200 but answered "blue", so it remains
+        // false and takes the compatibility string fallback.
         // ── "large" effort profile: accept none/low/medium/high/xhigh, reject minimal ──
         // DefaultEffort=xhigh: an unaccepted inbound effort falls back to xhigh —
         // the large profile's top accepted tier — with a WARNING in CoerceEffort.
@@ -122,10 +127,10 @@ internal sealed class CodexModelProfileCatalog
         // xhigh), so 'max' lands on the fallback; the "xlarge" profile below DOES
         // accept 'max', so there it passes through instead.
         string[] large = ["none", "low", "medium", "high", "xhigh"];
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.3-codex", AcceptedEfforts = large, DefaultEffort = "xhigh" };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.4",       AcceptedEfforts = large, DefaultEffort = "xhigh" };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.4-mini",  AcceptedEfforts = large, DefaultEffort = "xhigh" };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.5",       AcceptedEfforts = large, DefaultEffort = "xhigh" };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.3-codex", AcceptedEfforts = large, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.4",       AcceptedEfforts = large, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.4-mini",  AcceptedEfforts = large, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.5",       AcceptedEfforts = large, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
 
         // ── "xlarge" effort profile: accept none/low/medium/high/xhigh/max, reject minimal ──
         // The gpt-5.6 codename slots (luna/sol/sol-fast/terra) are the first Codex models to
@@ -145,7 +150,7 @@ internal sealed class CodexModelProfileCatalog
         // web_search → 200; image_generation → 400 but that's the catalog-level
         // uniform drop, not a per-model flag) → RejectsCustomTools stays false.
         string[] xlarge = ["none", "low", "medium", "high", "xhigh", "max"];
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-luna",  AcceptedEfforts = xlarge, DefaultEffort = "xhigh" };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-luna",  AcceptedEfforts = xlarge, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
         // A direct two-turn function-output probe (2026-08-06) sent a generated red
         // PNG as output:[{type:input_text},{type:input_image}] and sol answered
         // exactly "red" (200). This proves a capability that ordinary top-level
@@ -170,13 +175,13 @@ internal sealed class CodexModelProfileCatalog
             DefaultEffort = "xhigh",
             SupportsMultimodalFunctionOutput = true,
         };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-terra", AcceptedEfforts = xlarge, DefaultEffort = "xhigh" };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-terra", AcceptedEfforts = xlarge, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
 
         // ── "small" effort profile: accept minimal/low/medium/high, reject none+xhigh ──
         // DefaultEffort=high: small rejects xhigh, so its fallback is 'high' (its
         // top accepted tier) — an inbound 'max'/'xhigh' lands here.
         string[] small = ["minimal", "low", "medium", "high"];
-        yield return new CodexModelProfile { CanonicalId = "gpt-5-mini", AcceptedEfforts = small, DefaultEffort = "high" };
+        yield return new CodexModelProfile { CanonicalId = "gpt-5-mini", AcceptedEfforts = small, DefaultEffort = "high", SupportsMultimodalFunctionOutput = true };
         // mai-code-1-flash-INTERNAL was retired by Copilot (2026 reconciliation —
         // 400 "not available for integrator"); the live Responses id is
         // mai-code-1-flash-PICKER (200 — ResponsesProbe.MaiCode_LivenessProbe).

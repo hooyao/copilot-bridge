@@ -53,6 +53,10 @@ OpenAI-Chat translation" assumption (§4.4).
 > - **Custom tools:** a 2026-08-28 re-probe found that
 >   `mai-code-1-flash-picker` now accepts the custom `apply_patch` shape (200),
 >   so the old per-model custom-tool drop is retired.
+> - **Multimodal function output:** a two-turn semantic sweep found that all nine
+>   OpenAI profiles accepted a structured red image and answered `red`.
+>   `mai-code-1-flash-picker` returned 200 but answered `blue`, so only that exact
+>   profile retains the compatibility string fallback.
 
 > **Addendum — 2026-08-28 Codex model-catalog metadata and large-context confirmation.**
 > `ResponsesProbe.CaptureBridgeResponsesModelCapabilities` captured the complete

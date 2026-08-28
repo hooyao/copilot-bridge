@@ -99,8 +99,6 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
         // Inspect what each UPSTREAM (T2-built) /responses body actually carried —
         // this is the full Codex client wire shape the smoke exists to exercise.
         var sawAdditionalTools = false;
-        var sawToolCall = false;
-        var sawToolCallOutput = false;
         var modelOnWire = false;
         for (var i = 0; i < entries.Count; i++)
         {
@@ -110,11 +108,8 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
             _output.WriteLine($"  [{i}] status={e.UpstreamStatus} model={wireModel} input_items={string.Join(",", itemTypes)}");
             if (wireModel == model) modelOnWire = true;
             if (itemTypes.Contains("additional_tools")) sawAdditionalTools = true;
-            if (itemTypes.Contains("function_call") || itemTypes.Contains("custom_tool_call"))
-                sawToolCall = true;
-            if (itemTypes.Contains("function_call_output") || itemTypes.Contains("custom_tool_call_output"))
-                sawToolCallOutput = true;
         }
+        var matchingToolRoundTrips = MatchingToolRoundTrips(entries);
 
         // codex.exe closed the loop cleanly.
         Assert.Equal(0, result.ExitCode);
@@ -127,8 +122,8 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
         // stdout, which a model could satisfy by echoing the prompt-embedded canary
         // without calling any tool). Requires BOTH a function/custom call the model
         // emitted AND the corresponding output codex.exe fed back.
-        Assert.True(sawToolCall, "No upstream body carried a function/custom tool-call item — the model never invoked a tool (a plain/echo turn would still print the canary).");
-        Assert.True(sawToolCallOutput, "No upstream body carried a matching function/custom tool output — codex.exe never forwarded a tool result back.");
+        Assert.NotEmpty(matchingToolRoundTrips);
+        _output.WriteLine($"matching tool round-trips: {string.Join(',', matchingToolRoundTrips)}");
 
         // ≥2 successful upstream rounds (at minimum: the round that produced the
         // first tool call, and the round that carried its result back). This also
@@ -173,17 +168,7 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
                 .Where(e => e.InboundPath.EndsWith("/responses", StringComparison.Ordinal))
                 .ToList();
 
-            var haveCall = false;
-            var haveOutput = false;
-            foreach (var e in entries)
-            {
-                var types = ExtractInputItemTypes(e.UpstreamBody);
-                if (types.Contains("function_call") || types.Contains("custom_tool_call"))
-                    haveCall = true;
-                if (types.Contains("function_call_output") || types.Contains("custom_tool_call_output"))
-                    haveOutput = true;
-            }
-            if ((haveCall && haveOutput) || DateTime.UtcNow >= deadline)
+            if (MatchingToolRoundTrips(entries).Count > 0 || DateTime.UtcNow >= deadline)
                 return entries;
 
             await Task.Delay(250);
@@ -204,5 +189,39 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
             if (it is JsonObject io && io["type"]?.GetValue<string>() is { } t)
                 types.Add(t);
         return types;
+    }
+
+    private static IReadOnlyList<string> MatchingToolRoundTrips(IEnumerable<BridgeLogEntry> entries)
+    {
+        var calls = new HashSet<string>(StringComparer.Ordinal);
+        var outputs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in entries)
+        {
+            if (entry.UpstreamBody is not JsonObject obj || obj["input"] is not JsonArray input)
+                continue;
+            foreach (var item in input.OfType<JsonObject>())
+            {
+                var type = item["type"]?.GetValue<string>();
+                var callId = item["call_id"]?.GetValue<string>();
+                if (string.IsNullOrEmpty(callId)) continue;
+                switch (type)
+                {
+                    case "function_call":
+                        calls.Add("function:" + callId);
+                        break;
+                    case "function_call_output":
+                        outputs.Add("function:" + callId);
+                        break;
+                    case "custom_tool_call":
+                        calls.Add("custom:" + callId);
+                        break;
+                    case "custom_tool_call_output":
+                        outputs.Add("custom:" + callId);
+                        break;
+                }
+            }
+        }
+        calls.IntersectWith(outputs);
+        return calls.Order(StringComparer.Ordinal).ToArray();
     }
 }
