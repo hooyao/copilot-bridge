@@ -29,10 +29,13 @@ public partial class ResponsesProbe
     [InlineData("gpt-5.5")]
     [InlineData("gpt-5.6-luna")]
     [InlineData("gpt-5.6-sol")]
+    [InlineData("gpt-5.6-sol-fast")]
     [InlineData("gpt-5.6-terra")]
     public async Task OneMillionClass_RealCodexBytes_AcceptBeyondFormer272kCeiling(string model)
     {
         var (capturePath, body) = LoadNewestRealCodexBody();
+        if (string.Equals(model, "gpt-5.6-sol-fast", StringComparison.Ordinal))
+            Assert.Equal(model, body["model"]?.GetValue<string>());
         body["model"] = model;
 
         var input = body["input"]?.AsArray()

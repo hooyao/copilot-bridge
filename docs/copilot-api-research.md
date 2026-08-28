@@ -578,6 +578,7 @@ Captured Copilot metadata for the current Responses models:
 | Models | Total context | Maximum prompt | Maximum output | Bridge auto-compact |
 | --- | ---: | ---: | ---: | ---: |
 | `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,terra}` | 1,050,000 | 922,000 | 128,000 | 892,000 |
+| `gpt-5.6-sol-fast` (internal-only; absent from official Codex catalog) | 1,050,000 | 922,000 | 128,000 | not synthesized |
 | `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 | 265,000 |
 | `gpt-5-mini` | 264,000 | 128,000 | 64,000 | 124,000 |
 | `mai-code-1-flash-picker` | 256,000 | 128,000 | 128,000 | 124,000 |
@@ -589,9 +590,10 @@ the safe working threshold is 892,000, below Copilot's 922,000 prompt ceiling.
 Missing, non-positive, or inconsistent limits keep the reviewed Codex baseline.
 
 These limits are accepted as metadata only after live real-Codex-shaped requests
-cross the previous 272k boundary. The 2026-08 probe recorded successful input
-usage around 308k for all five 1M-class exact slugs; the real command-auth Codex
-behavior run carried 285k padding units, consumed the 1.05M catalog entry, and
+cross the previous 272k boundary. The 2026-08 probes recorded successful input
+usage around 308k for the original five 1M-class exact slugs and 310,465 for
+`gpt-5.6-sol-fast`; the real command-auth Codex behavior run for a
+catalog-backed model carried 285k padding units, consumed the 1.05M entry, and
 completed a multi-tool loop. `/models` capability arrays remain unsuitable for
 request-shape rules such as effort/thinking; `CodexModelProfileCatalog` continues
 to come from active probes.

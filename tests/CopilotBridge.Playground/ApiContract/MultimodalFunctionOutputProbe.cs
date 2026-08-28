@@ -17,17 +17,18 @@ namespace CopilotBridge.Playground;
 [Trait("Kind", "ApiContract")]
 public class MultimodalFunctionOutputProbe
 {
-    private const string Model = "gpt-5.6-sol";
     private readonly ITestOutputHelper _output;
 
     public MultimodalFunctionOutputProbe(ITestOutputHelper output) => _output = output;
 
-    [Fact]
-    public async Task Gpt56Sol_StructuredImageFunctionOutput_IsAcceptedAndUnderstood()
+    [Theory]
+    [InlineData("gpt-5.6-sol")]
+    [InlineData("gpt-5.6-sol-fast")]
+    public async Task Gpt56SolFamily_StructuredImageFunctionOutput_IsAcceptedAndUnderstood(string model)
     {
-        const string first = """
+        var first = $$"""
             {
-              "model":"gpt-5.6-sol",
+              "model":"{{model}}",
               "instructions":"You must call inspect_image exactly once. Do not answer before the tool result.",
               "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Use inspect_image, then answer with only the dominant color."}]}],
               "tools":[{"type":"function","name":"inspect_image","description":"Returns the image to inspect.","parameters":{"type":"object","properties":{},"required":[]},"strict":false}],
@@ -46,7 +47,7 @@ public class MultimodalFunctionOutputProbe
             + Convert.ToBase64String(PngGen.SolidRgbPng(100, 100, 255, 0, 0));
         var second = $$"""
             {
-              "model":"{{Model}}",
+              "model":"{{model}}",
               "instructions":"Answer with only the dominant color in the returned image.",
               "input":[
                 {"type":"message","role":"user","content":[{"type":"input_text","text":"Use inspect_image, then answer with only the dominant color."}]},

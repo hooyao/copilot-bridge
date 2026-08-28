@@ -130,8 +130,8 @@ full set:
 > wire / Responses SSE → IR). They run on the **same shared
 > `Pipeline<MessagesRequest>`**; the strategy registry picks by
 > `target.Vendor` (`CopilotAnthropic` → `/v1/messages`, `CopilotResponses` →
-> `/responses`). The research's three coercions (per-model `reasoning.effort`
-> clamp, `service_tier` strip, `image_generation` drop) live **inside T2**,
+> `/responses`). The research's four coercions (per-model `reasoning.effort`
+> clamp, `service_tier` strip, `store:true` strip, `image_generation` drop) live **inside T2**,
 > driven by the snapshot-grounded `CodexModelProfileCatalog`. The deliberate
 > hub-IR cost — even Codex's own gpt path round-trips through the Anthropic IR
 > (`Responses →T1→ IR →T2→ Responses`) — is guarded by the A-invariant
@@ -780,7 +780,9 @@ Ownership is strict:
   not raise the validated exact-version baseline.
 - **The bridge owns the safe join.** Live-only models are never synthesized,
   retired/baseline-only models are hidden, and review overrides are retained
-  only when their target remains routable.
+  only when their target remains routable. `gpt-5.6-sol-fast` is the current
+  example: explicit inference is supported, while `/codex/models` omits it until
+  an exact official Codex catalog supplies the client-owned instruction record.
 
 `CodexCatalogOverlayService` is a singleton, single-flight, five-minute successful-
 overlay cache. A refresh failure serves its stale last known good overlay; a cold
@@ -1131,8 +1133,8 @@ back as a complete array, never a partially translated one. T2 never asks who
 produced the request: a source that means its tool output to stay opaque says so
 ON THE IR (Codex T1 marks `opaque_tool_output` on the block), and T2 pulls that
 fact. Positive support is exact-profile only (currently live-proven for
-`gpt-5.6-sol`); fuzzy-nearest and unprobed sibling models keep the compatibility
-string path.
+`gpt-5.6-sol` and `gpt-5.6-sol-fast`); fuzzy-nearest and unprobed sibling models
+keep the compatibility string path.
 
 Responses reasoning items follow the same push/pull split. T3 pushes the whole
 item into the IR unconditionally — a hidden `redacted_thinking` block carrying

@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "captured_utc": "2026-08-05T04:36:58.7958653\u002B00:00",
+    "captured_utc": "2026-08-28T04:49:22.0569334\u002B00:00",
     "endpoint": "/models",
     "account_type": "enterprise",
     "selection": "exact CodexModelProfileCatalog.KnownIds; no fuzzy matches",
@@ -323,6 +323,8 @@
     {
       "billing": {
         "restricted_to": [
+          "free",
+          "edu",
           "pro",
           "pro_plus",
           "business",
@@ -409,9 +411,87 @@
         ],
         "token_prices": {
           "batch_size": 1000000,
-          "cache_price": 50000000000,
-          "input_price": 500000000000,
-          "output_price": 3000000000000
+          "cache_price": 40000000000,
+          "input_price": 400000000000,
+          "output_price": 2000000000000
+        }
+      },
+      "capabilities": {
+        "family": "gpt-5.6-sol-fast",
+        "limits": {
+          "max_context_window_tokens": 1050000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 922000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif",
+              "application/pdf"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "gpt-5.6-sol-fast",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "powerful",
+      "model_picker_enabled": true,
+      "model_picker_price_category": "high",
+      "name": "GPT-5.6 Sol Fast (Internal only)",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest GPT-5.6 Sol Fast model from OpenAI. [Learn more about how GitHub Copilot serves GPT-5.6 Sol Fast](https://gh.io/copilot-openai)."
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/responses",
+        "ws:/responses"
+      ],
+      "vendor": "OpenAI",
+      "version": "gpt-5.6-sol-fast",
+      "warning_messages": [
+        {
+          "code": "client_version_deprecated",
+          "message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
+        }
+      ]
+    },
+    {
+      "billing": {
+        "restricted_to": [
+          "pro_plus",
+          "business",
+          "enterprise",
+          "max"
+        ],
+        "token_prices": {
+          "batch_size": 1000000,
+          "cache_price": 20000000000,
+          "input_price": 200000000000,
+          "output_price": 1000000000000
         }
       },
       "capabilities": {
@@ -456,7 +536,7 @@
       "is_chat_fallback": false,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
-      "model_picker_price_category": "high",
+      "model_picker_price_category": "medium",
       "name": "GPT-5.6 Sol",
       "object": "model",
       "policy": {
@@ -597,6 +677,12 @@
         "type": "chat"
       },
       "id": "mai-code-1-flash-picker",
+      "info_messages": [
+        {
+          "code": "model_pending_deprecation",
+          "message": "MAI-Code-1-Flash has a planned deprecation date of 2026-09-10."
+        }
+      ],
       "is_chat_default": false,
       "is_chat_fallback": false,
       "model_picker_category": "lightweight",

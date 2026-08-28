@@ -18,7 +18,7 @@ public sealed class CodexCatalogSnapshotContractTests
     public void Captured_live_model_bytes_project_truthful_context_and_fail_closed_mutations()
     {
         var snapshot = LoadSnapshot();
-        Assert.Equal(9, snapshot.Count);
+        Assert.Equal(10, snapshot.Count);
         var projected = Project(snapshot);
         var reviewedBaseline = Project([]);
 
@@ -31,6 +31,8 @@ public sealed class CodexCatalogSnapshotContractTests
         }
 
         Assert.Equal(400_000, Find(projected.Models, "gpt-5.4-mini").GetProperty("context_window").GetInt32());
+        Assert.DoesNotContain(projected.Models,
+            model => model.GetProperty("slug").GetString() == "gpt-5.6-sol-fast");
 
         // Mutate only one captured capability axis at a time. Missing/inconsistent
         // live limits keep reviewed values, a retired model is hidden, and a

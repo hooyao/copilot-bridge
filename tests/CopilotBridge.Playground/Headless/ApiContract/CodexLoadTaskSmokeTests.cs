@@ -9,7 +9,8 @@ namespace CopilotBridge.Playground.Headless;
 /// Codex <b>load-task</b> smoke for the copilot-model-sync skill: drives the real
 /// <c>codex.exe</c> through the bridge on a genuinely multi-step tool task (not a
 /// plain one-word turn) so a real Codex client tool loop —
-/// <c>function_call</c>/<c>function_call_output</c> round-trips (and reasoning
+/// <c>function_call</c>/<c>function_call_output</c> or
+/// <c>custom_tool_call</c>/<c>custom_tool_call_output</c> round-trips (and reasoning
 /// echoes) — actually crosses the bridge for the model under test, asserted from
 /// the bridge's own audit (not just stdout).
 /// </summary>
@@ -23,7 +24,7 @@ namespace CopilotBridge.Playground.Headless;
 /// <para><b>Scope — what this does and does NOT cover.</b> The assertions read the
 /// bridge's four-file IO audit via <see cref="BridgeLogReader"/> and REQUIRE the
 /// model under test on the wire, ≥2 successful upstream rounds, and a real
-/// <c>function_call</c>/<c>function_call_output</c> pair on the <c>/responses</c>
+/// function or custom-tool call/output pair on the <c>/responses</c>
 /// wire — NOT merely the canary in stdout (a model could echo a prompt-embedded
 /// canary without ever calling a tool). The gpt-5.6 <c>additional_tools</c> harness
 /// preamble is <b>observed-and-logged, NOT required</b>: the <c>codex exec</c> CLI
@@ -87,8 +88,8 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
         // BridgeLogReader.ReadNew returns only what has been flushed — so a single
         // read right after codex.exe exits can race the sink and observe partial
         // bodies on a slow filesystem. Poll (bounded) until the /responses entries
-        // settle: stop once the tool-loop signal we assert on (function_call +
-        // function_call_output) is present, or the deadline passes. The reader is
+        // settle: stop once the tool-loop signal we assert on (a function/custom
+        // call plus its output) is present, or the deadline passes. The reader is
         // constructed BEFORE the run so it only reports this test's requests.
         var entries = await PollUntilSettledAsync(reader, TimeSpan.FromSeconds(15));
 
@@ -98,8 +99,8 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
         // Inspect what each UPSTREAM (T2-built) /responses body actually carried —
         // this is the full Codex client wire shape the smoke exists to exercise.
         var sawAdditionalTools = false;
-        var sawFunctionCall = false;
-        var sawFunctionCallOutput = false;
+        var sawToolCall = false;
+        var sawToolCallOutput = false;
         var modelOnWire = false;
         for (var i = 0; i < entries.Count; i++)
         {
@@ -109,8 +110,10 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
             _output.WriteLine($"  [{i}] status={e.UpstreamStatus} model={wireModel} input_items={string.Join(",", itemTypes)}");
             if (wireModel == model) modelOnWire = true;
             if (itemTypes.Contains("additional_tools")) sawAdditionalTools = true;
-            if (itemTypes.Contains("function_call")) sawFunctionCall = true;
-            if (itemTypes.Contains("function_call_output")) sawFunctionCallOutput = true;
+            if (itemTypes.Contains("function_call") || itemTypes.Contains("custom_tool_call"))
+                sawToolCall = true;
+            if (itemTypes.Contains("function_call_output") || itemTypes.Contains("custom_tool_call_output"))
+                sawToolCallOutput = true;
         }
 
         // codex.exe closed the loop cleanly.
@@ -122,10 +125,10 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
         // A real multi-step tool loop actually crossed the bridge — the whole point
         // of a LOAD task over a plain turn, asserted from the bridge AUDIT (not just
         // stdout, which a model could satisfy by echoing the prompt-embedded canary
-        // without calling any tool). Requires BOTH a function_call the model emitted
-        // AND the function_call_output codex.exe fed back.
-        Assert.True(sawFunctionCall, "No upstream body carried a function_call item — the model never invoked a tool (a plain/echo turn would still print the canary).");
-        Assert.True(sawFunctionCallOutput, "No upstream body carried a function_call_output item — codex.exe never forwarded a tool result back.");
+        // without calling any tool). Requires BOTH a function/custom call the model
+        // emitted AND the corresponding output codex.exe fed back.
+        Assert.True(sawToolCall, "No upstream body carried a function/custom tool-call item — the model never invoked a tool (a plain/echo turn would still print the canary).");
+        Assert.True(sawToolCallOutput, "No upstream body carried a matching function/custom tool output — codex.exe never forwarded a tool result back.");
 
         // ≥2 successful upstream rounds (at minimum: the round that produced the
         // first tool call, and the round that carried its result back). This also
@@ -153,8 +156,8 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
     /// <summary>
     /// Poll the bridge audit until the <c>/responses</c> entries settle, tolerating
     /// the async <see cref="BridgeIoSink"/> flush. Returns as soon as the tool-loop
-    /// signal the test asserts on (a <c>function_call</c> AND a
-    /// <c>function_call_output</c> on some upstream body) is present, or when the
+    /// signal the test asserts on (a function/custom call AND its corresponding
+    /// output on some upstream body) is present, or when the
     /// deadline passes — then the assertions run against a stable snapshot instead
     /// of racing a half-written audit. Bounded so a genuinely tool-less run still
     /// terminates (and fails loudly on the missing signal) rather than hanging.
@@ -175,8 +178,10 @@ public class CodexLoadTaskSmokeTests : IClassFixture<BridgeFixture>
             foreach (var e in entries)
             {
                 var types = ExtractInputItemTypes(e.UpstreamBody);
-                if (types.Contains("function_call")) haveCall = true;
-                if (types.Contains("function_call_output")) haveOutput = true;
+                if (types.Contains("function_call") || types.Contains("custom_tool_call"))
+                    haveCall = true;
+                if (types.Contains("function_call_output") || types.Contains("custom_tool_call_output"))
+                    haveOutput = true;
             }
             if ((haveCall && haveOutput) || DateTime.UtcNow >= deadline)
                 return entries;

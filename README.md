@@ -25,8 +25,9 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 - **The full Claude line-up, with native 1M context.** opus-4.6/4.7/4.8/**5**,
   sonnet-4.6/**5**, haiku-4.5 — 1M on everything except haiku-4.5. Codex runs on
   Copilot's gpt-5.x, up to the newest **gpt-5.6**
-  (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`), with live model-catalog
-  discovery instead of Codex's older bundled context ceiling.
+  (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-sol-fast` /
+  `gpt-5.6-terra`), with live model-catalog discovery instead of Codex's older
+  bundled context ceiling.
 - **Run Claude Code on a GPT model.** One `Routing.Locations` rule points
   `claude-opus-5` at `gpt-5.6-sol`; the bridge translates the full Anthropic
   tool-use protocol to and from the Responses API, so an agentic session runs end
@@ -183,14 +184,22 @@ This bridge command intentionally targets the global file, so it has no `--scope
 Codex project/profile/CLI layers can still affect a particular future process.
 `--dry-run` and `--port` work the same as above.
 
-For the current 1M-class gpt models (`gpt-5.4`, `gpt-5.5`, and the three
-`gpt-5.6` codenames), Copilot reports **1,050,000 total context**, **922,000
+For the current official-catalog-backed 1M-class gpt models (`gpt-5.4`,
+`gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-5.6-terra`), Copilot reports
+**1,050,000 total context**, **922,000
 maximum prompt**, and 128,000 maximum output. The bridge advertises the truthful
 1.05M total window but tells Codex to auto-compact at **892,000 tokens** (85% of
 total context, rounded down to a whole thousand). Think of it as a safe roughly
 890k working threshold — not 1.05M tokens of prompt
 capacity. Explicit user context overrides are preserved and may intentionally
 select a smaller window.
+
+Copilot reports the same live limits for `gpt-5.6-sol-fast` and labels it
+**Internal only**. The bridge accepts it when selected explicitly
+(`codex exec -m gpt-5.6-sol-fast ...` or
+`model = "gpt-5.6-sol-fast"`), but does not synthesize it into `/codex/models`:
+that endpoint preserves complete model behavior only from the exact official
+Codex catalog, which does not currently publish the internal slug.
 
 **Or do it by hand** — edit `~/.codex/config.toml`, set the default model +
 provider at the top and add the provider block:
@@ -321,9 +330,9 @@ native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
   `thinking` disabled it rejects `xhigh`/`max`, so the bridge clamps those to
   `high` on that path only. On the Codex side it's
   also per-model: most gpt-5.x models accept up to `xhigh` and the **gpt-5.6**
-  models (`luna`/`sol`/`terra`) are the first to also accept `max`, while smaller
-  ones like `gpt-5-mini` top out at `high` (no `xhigh`). The bridge strips (or
-  clamps) an effort the target rejects instead of letting it fail.
+  models (`luna`/`sol`/`sol-fast`/`terra`) are the first to also accept `max`,
+  while smaller ones like `gpt-5-mini` top out at `high` (no `xhigh`). The
+  bridge strips (or clamps) an effort the target rejects instead of letting it fail.
 - **Codex 1.05M is total context, not prompt capacity.** The current backend
   maximum prompt is 922k and the bridge's safe auto-compact threshold is 898k.
   Official Codex catalogs are resolved from the exact complete client version
@@ -528,10 +537,10 @@ copilot-bridge auth login
 ```
 
 If GitHub auth succeeds but a gpt-5.6 id is absent from `/models`, check the
-Copilot plan and organization model policy instead. Sol requires Pro+/Max or an
-enabled Business/Enterprise policy; Terra and Luna require a paid Copilot plan,
-and Business/Enterprise administrators must explicitly enable the new-model
-policy during rollout.
+Copilot plan and organization model policy instead. Sol and Sol Fast require
+Pro+/Max or an enabled Business/Enterprise policy; Terra and Luna require a paid
+Copilot plan, and Business/Enterprise administrators must explicitly enable the
+new-model policy during rollout.
 
 ## Roadmap
 

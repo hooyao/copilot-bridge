@@ -178,12 +178,14 @@ The inverted profiles (large models reject `minimal`; small models reject
 `none`+`xhigh`) are applied **inside T2** (IR→Responses request), after the IR
 `thinking`/effort has been mapped to a Responses `reasoning.effort`. The
 `CodexModelProfileCatalog` (table-driven, probe-sourced, never family-name
-guessed) clamps the mapped effort to what the resolved model accepts, and records
-the `mai-code-1-flash-internal` custom-tool 500 quirk. `service_tier` strip +
+guessed) clamps the mapped effort to what the resolved model accepts. The former
+`mai-code-1-flash-picker` custom-tool 500 quirk was removed after a 2026-08-28
+live re-probe returned 200. `service_tier` / `store:true` strip plus the
 `image_generation` drop also live in T2 (uniform across models).
 
-> **2026-07 update — a third "xlarge" profile.** The `gpt-5.6` codename slots
-> (`gpt-5.6-luna`/`-sol`/`-terra`) are the first Codex models to accept the `max`
+> **2026-07/08 update — a third "xlarge" profile.** The `gpt-5.6` codename slots
+> (`gpt-5.6-luna`/`-sol`/`-sol-fast`/`-terra`) are the first Codex models to
+> accept the `max`
 > effort tier: `xlarge` = large + `max` (`none/low/medium/high/xhigh/max`, reject
 > `minimal`), live-probed in `ResponsesProbe.Gpt56_Effort_ReProbe`. Because `max`
 > is accepted, Anthropic's top tier passes through verbatim on these instead of
@@ -205,10 +207,15 @@ Change: route the Codex/Responses model ids (`gpt-5.3-codex`, `gpt-5.4`,
 
 > **Current routed set (the id list above is change-3's original set).** The 2026
 > reconciliation retired `mai-code-1-flash-internal` (→ `mai-code-1-flash-picker`)
-> and the 2026-07 reconciliation added the three `gpt-5.6` codenames
-> (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`). The live
+> and the 2026-07/08 reconciliations added the four `gpt-5.6` codenames
+> (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-sol-fast` / `gpt-5.6-terra`). The live
 > `CopilotModelRegistry.ResponsesModelIds` allowlist is the source of truth;
 > membership is still an explicit list, never a `gpt-` prefix takeover.
+
+`gpt-5.6-sol-fast` is Copilot-only and marked "Internal only" in live metadata.
+It is supported for explicit model selection, but is not synthesized into
+`GET /codex/models` while the exact official Codex catalog omits the slug; the
+metadata control plane deliberately never invents Codex-owned instructions.
 
 The router runs once, on the IR, in the shared `Pipeline<MessagesRequest>`. It is
 **backend-agnostic by construction** — it keys off the resolved model id, not the

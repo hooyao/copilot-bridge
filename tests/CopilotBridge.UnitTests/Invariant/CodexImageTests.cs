@@ -92,14 +92,16 @@ public class CodexImageTests
         Assert.Equal(malformed, src.Url);
     }
 
-    [Fact]
-    public void ClaudeToolResult_TextImageText_PreservesStructuredOutputAndSetsVision()
+    [Theory]
+    [InlineData("gpt-5.6-sol")]
+    [InlineData("gpt-5.6-sol-fast")]
+    public void ClaudeToolResult_TextImageText_PreservesStructuredOutputAndSetsVision(string model)
     {
         const string callId = "toolu_image_contract";
         const string pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nWQAAAAASUVORK5CYII=";
         var ir = new MessagesRequest
         {
-            Model = "gpt-5.6-sol",
+            Model = model,
             Messages =
             [
                 new MessageParam

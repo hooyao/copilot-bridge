@@ -1313,11 +1313,10 @@ internal static class ResponsesRequestBuilder
     }
 
     /// <summary>
-    /// Re-emit the bag's un-modeled knobs, applying the two uniform coercions:
-    /// strip <c>service_tier</c> (Copilot 400s it), drop the
-    /// <c>image_generation</c> tool (Copilot 400s it). <c>store</c> is only
-    /// stripped when <c>true</c> (Codex sends false; harmless). Everything else
-    /// passes through verbatim.
+    /// Re-emit the bag's un-modeled knobs, applying the three uniform coercions:
+    /// strip <c>service_tier</c> (Copilot 400s it), strip <c>store:true</c>
+    /// (Codex sends false; harmless), and drop the <c>image_generation</c> tool
+    /// (Copilot 400s it). Everything else passes through verbatim.
     /// </summary>
     private static void WriteBagFields(
         Utf8JsonWriter w,

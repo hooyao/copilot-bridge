@@ -34,13 +34,14 @@ Per-model edge: `mai-code-1-flash-internal` 500s on custom/`apply_patch` tools.
 work-item list: §4.3. This overturns `pipeline-design.md` §3's "Codex needs
 OpenAI-Chat translation" assumption (§4.4).
 
-> **Addendum — 2026-07 model-set update (the tables below are a 2026-06-12 snapshot).**
+> **Addendum — 2026-07/08 model-set update (the tables below are a 2026-06-12 snapshot).**
 > The live `/responses` model set and effort profiles have since moved; the §2.1 /
 > §2.2 / §4 tables reflect the original 2026-06-12 probe and are NOT re-probed here.
 > Current wire-truth (see `codex-implementation-design.md` §5–§6 and the live
 > `CodexModelProfileCatalog` / `CopilotModelRegistry.ResponsesModelIds`):
 > - **Model set:** `mai-code-1-flash-internal` was retired → **`mai-code-1-flash-picker`**;
->   the three **`gpt-5.6` codenames** (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra`)
+>   the four **`gpt-5.6` codenames** (`gpt-5.6-luna` / `gpt-5.6-sol` /
+>   `gpt-5.6-sol-fast` / `gpt-5.6-terra`)
 >   were added. So it is no longer "6 models".
 > - **Effort profiles: now THREE, not two.** The large/small split still holds, plus
 >   a new **`xlarge`** profile for the gpt-5.6 codenames: they accept
@@ -49,29 +50,32 @@ OpenAI-Chat translation" assumption (§4.4).
 >   effort vocabulary omits `max` precisely because no 2026-06-12 model accepted it.
 >   Probe trap: the 400 body for `minimal` on these ids lists supported values
 >   WITHOUT `max`, yet `max` live-probes 200 — the advertised list lies.
+> - **Custom tools:** a 2026-08-28 re-probe found that
+>   `mai-code-1-flash-picker` now accepts the custom `apply_patch` shape (200),
+>   so the old per-model custom-tool drop is retired.
 
-> **Addendum — 2026-08-05 Codex model-catalog metadata and large-context confirmation.**
+> **Addendum — 2026-08-28 Codex model-catalog metadata and large-context confirmation.**
 > `ResponsesProbe.CaptureBridgeResponsesModelCapabilities` captured the complete
-> live `/models` entries for all nine exact `CodexModelProfileCatalog.KnownIds`
+> live `/models` entries for all ten exact `CodexModelProfileCatalog.KnownIds`
 > into `docs/copilot-codex-model-capabilities-snapshot.json` (Enterprise account;
 > no bridge profile was missing). The advertised limits are:
 >
 > | models | total context | max prompt | max output |
 > | --- | ---: | ---: | ---: |
-> | `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,terra}` | 1,050,000 | 922,000 | 128,000 |
+> | `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,sol-fast,terra}` | 1,050,000 | 922,000 | 128,000 |
 > | `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 |
 > | `gpt-5-mini` | 264,000 | 128,000 | 64,000 |
 > | `mai-code-1-flash-picker` | 256,000 | 128,000 | 128,000 |
 >
-> Because `/models` is not authoritative for request acceptance, the five
+> Because `/models` is not authoritative for request acceptance, the six
 > 1M-class models were independently re-probed by
 > `ResponsesProbe.OneMillionClass_RealCodexBytes_AcceptBeyondFormer272kCeiling`.
 > The probe replayed a real Codex 0.144.x `Kind=ClientBehavior` upstream request
 > (complete instructions, tools, metadata, streaming and headers), changing only
-> the exact model id and appending a padding input. On 2026-08-05 all five
-> returned HTTP 200 and reported input usage beyond the former 272,000-token
-> catalog ceiling: 308,792 (`gpt-5.4`, `gpt-5.5`) and 308,758 (each gpt-5.6
-> codename). This establishes that the advertised uplift is real at >272k; it
+> the exact model id and appending a padding input. On 2026-08-05 the original
+> five returned HTTP 200 and reported input usage around 308k; on 2026-08-28 an
+> exact `gpt-5.6-sol-fast` capture returned 200 with 310,465 input tokens. This
+> establishes that the advertised uplift is real at >272k; it
 > does not claim that a 1,050,000-token input is valid. The distinct 922,000
 > prompt ceiling remains the catalog projection's safety boundary.
 
