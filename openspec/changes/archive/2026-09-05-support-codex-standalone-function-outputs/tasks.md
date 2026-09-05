@@ -22,3 +22,8 @@
 - [x] 4.2 Run focused tests, the full non-integration solution suite, `AgentRepositoryCompatibilityTests`, and relevant ApiContract tests. PASS: 1739 non-integration tests, 14 standalone backend probes, 4 repository-compatibility tests.
 - [x] 4.3 Add and run a real Codex app-server ClientBehavior case using `thread/inject_items`, then judge its trace, stdout, and `logs_2.sqlite` under the real-client-verification rubric. PASS: manifest `codex-standalone-named-function-output-20260905-164042-528.json`; two custom-exec call/output loops, injected-only canary, router/ERROR/retry rows all zero.
 - [x] 4.4 Reconcile every task with actual evidence and prepare only this change's paths for OpenSpec archive/sync and the current PR.
+
+## 5. PR Review Follow-ups
+
+- [x] 5.1 Tighten the live rejection matrix to require the exact `Function call output requires call_id` and `No tool call found` diagnostics, so unrelated 4xx responses cannot masquerade as backend contract evidence.
+- [x] 5.2 Extend standalone opaque-output coverage across string, object, array, and explicit null JSON values with deep kind/value comparison.

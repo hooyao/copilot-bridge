@@ -48,6 +48,14 @@ public partial class ResponsesProbe
         _output.WriteLine($"[{model}] standalone named output → {(int)status} accepted={accepted}");
         _output.WriteLine($"  body: {Truncate(body, 600)}");
         Assert.Equal(expectedAccepted, accepted);
+        if (!expectedAccepted)
+        {
+            Assert.Equal(System.Net.HttpStatusCode.BadRequest, status);
+            Assert.Contains(
+                "Function call output requires call_id",
+                WireAcceptance.ErrorMessage(body),
+                StringComparison.Ordinal);
+        }
     }
 
     public static IEnumerable<object[]> StandaloneNamedFunctionOutputModels() =>
@@ -104,6 +112,11 @@ public partial class ResponsesProbe
         _output.WriteLine($"  body: {Truncate(body, 900)}");
         Assert.False(accepted,
             $"{model} now accepts the synthetic call-id workaround; re-evaluate the no-rewrite policy.");
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, status);
+        Assert.Contains(
+            "No tool call found for function call output with call_id call_bridge_standalone_probe",
+            WireAcceptance.ErrorMessage(body),
+            StringComparison.Ordinal);
     }
 
     [Fact]

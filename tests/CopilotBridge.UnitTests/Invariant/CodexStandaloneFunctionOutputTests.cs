@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text;
 using Xunit;
 
 namespace CopilotBridge.UnitTests.Invariant;
@@ -76,6 +77,40 @@ public class CodexStandaloneFunctionOutputTests
         Assert.Equal("done", output["output"]!.GetValue<string>());
         Assert.Equal("lookup", output["name"]!.GetValue<string>());
         Assert.Equal("codex_app", output["namespace"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData("\"plain text\"")]
+    [InlineData("{\"rows\":[1,2],\"ok\":true}")]
+    [InlineData("[{\"type\":\"input_text\",\"text\":\"first\"},{\"type\":\"input_text\",\"text\":\"second\"}]")]
+    [InlineData("null")]
+    public void StandaloneOutput_PreservesEveryJsonKindAndValue(string outputJson)
+    {
+        var body = $$"""
+          {
+            "model":"gpt-5.6-sol-fast",
+            "input":[{
+              "type":"function_call_output",
+              "name":"notifications",
+              "namespace":"codex_app",
+              "output":{{outputJson}}
+            }],
+            "stream":true,
+            "store":false
+          }
+          """;
+
+        var request = CodexRoundTrip.ParseRequest(body);
+        var wire = Encoding.UTF8.GetString(
+            CodexRoundTrip.ToResponsesWire(CodexRoundTrip.ToIr(request)));
+        using var expected = JsonDocument.Parse(outputJson);
+        using var actual = JsonDocument.Parse(wire);
+        var actualOutput = actual.RootElement.GetProperty("input")[0].GetProperty("output");
+
+        Assert.Equal(expected.RootElement.ValueKind, actualOutput.ValueKind);
+        Assert.True(
+            JsonElement.DeepEquals(expected.RootElement, actualOutput),
+            $"standalone output changed from {outputJson} to {actualOutput.GetRawText()}");
     }
 
     [Fact]
