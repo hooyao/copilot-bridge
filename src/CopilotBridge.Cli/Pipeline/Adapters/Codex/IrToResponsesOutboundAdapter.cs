@@ -561,10 +561,17 @@ internal sealed class AnthropicToResponsesStream
         if (!_created)
         {
             _created = true;
-            yield return Ev("response.created", ResponseEnvelope("response.created", "in_progress"));
-            yield return Ev("response.in_progress", ResponseEnvelope("response.in_progress", "in_progress"));
+            yield return RewriteNativeProtocolIds(
+                Ev("response.created", ResponseEnvelope("response.created", "in_progress")));
+            yield return RewriteNativeProtocolIds(
+                Ev("response.in_progress", ResponseEnvelope("response.in_progress", "in_progress")));
         }
-        foreach (var s in Flush()) yield return s;
+        // A native response.failed throws in T3 before its carrier is recorded, so
+        // Flush must synthesize the terminal from semantic state. Route that generated
+        // terminal through the same identity correction as restored native terminals;
+        // otherwise a message already sent with its output_item.added id reappears in
+        // response.failed.output as generated item_N and Codex creates a duplicate item.
+        foreach (var s in Flush()) yield return RewriteNativeProtocolIds(s);
     }
 
     private static bool SemanticSequenceEquals(

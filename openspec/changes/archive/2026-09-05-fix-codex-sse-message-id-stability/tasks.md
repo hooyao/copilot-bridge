@@ -26,3 +26,7 @@
 - [x] 4.4 Confirm the production bridge on port 8765 was never stopped, all scratch processes were stopped by verified PID/path, and no test-created credential copy remains outside its source directory.
 
 Validation note: the full non-integration run reported 1,735 passes and one unrelated existing `CredentialServiceMigrationTests.Refresh_does_not_reenter_migration_when_legacy_file_reappears_while_locked` failure (expected 8, actual 9); the same test failed when rerun alone and no auth source/test file is changed. Re-running the remaining suite with that case excluded passed 1,735/1,735. Windows Native AOT publish succeeded at 14,828,032 bytes.
+
+## 5. PR review follow-ups
+
+- [x] 5.1 Route a synthesized `response.failed` terminal through the same message-id correction as restored native terminals, and add a mutation-proven regression where T3 throws after a completed message. Before the fix the client lifecycle contained both `opaque-failed-added` and `item_0`; after the fix the message-ID/native-fidelity set passes 27/27 with one canonical id.

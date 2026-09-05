@@ -2,6 +2,7 @@ using System.Net.ServerSentEvents;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Pipeline.Adapters.Codex;
 using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 using Xunit;
@@ -110,7 +111,46 @@ public class CodexMessageItemIdStabilityTests
             NormalizeMessageIdentity(
                 NormalizeMessageIdentity(source, 0), 1),
             NormalizeMessageIdentity(
-                NormalizeMessageIdentity(emitted, 0), 1));
+            NormalizeMessageIdentity(emitted, 0), 1));
+    }
+
+    [Fact]
+    public void Synthesized_failed_terminal_keeps_the_message_identity_already_sent()
+    {
+        // response.failed is exceptional in T3: it throws before recording a native
+        // carrier. T4 must therefore synthesize the failed terminal, but any message
+        // completed before that fault is still the SAME client item whose lifecycle
+        // was already restored with the output_item.added id.
+        var source = new List<SseItem<string>>
+        {
+            Sse("response.created", """{"type":"response.created","response":{"id":"resp_failed","status":"in_progress","model":"gpt-5.6-sol"}}"""),
+            Sse("response.output_item.added", """{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"opaque-failed-added","phase":"final_answer","role":"assistant","status":"in_progress","content":[]}}"""),
+            Sse("response.output_text.delta", """{"type":"response.output_text.delta","item_id":"rolling-failed-delta","output_index":0,"content_index":0,"delta":"partial"}"""),
+            Sse("response.output_item.done", """{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"rolling-failed-done","phase":"final_answer","role":"assistant","status":"completed","content":[{"type":"output_text","text":"partial"}]}}"""),
+            Sse("response.failed", """{"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"code":"upstream_error","message":"generated detail"}}}"""),
+        };
+
+        var ledger = new NativeResponsesEventLedger();
+        var t3 = new ResponsesToAnthropicStream(
+            Model, preserveNativeEvents: true, nativeLedger: ledger);
+        var ir = new List<SseItem<string>>();
+        var failure = Assert.Throws<UpstreamResponseFailedException>(() =>
+        {
+            foreach (var evt in source)
+                ir.AddRange(t3.Translate(evt));
+        });
+
+        var t4 = new AnthropicToResponsesStream(Model, nativeLedger: ledger);
+        var emitted = ir.SelectMany(t4.Translate).ToList();
+        emitted.AddRange(t4.FlushTerminal(failed: true, failureCode: failure.Code));
+
+        Assert.Equal(["opaque-failed-added"],
+            MessageIds(emitted, outputIndex: 0).Distinct(StringComparer.Ordinal));
+        var terminal = emitted.Single(evt => evt.EventType == "response.failed");
+        Assert.Equal(
+            "opaque-failed-added",
+            JsonNode.Parse(terminal.Data)!["response"]!["output"]![0]!["id"]!.GetValue<string>());
+        Assert.Equal(0, ledger.Count);
     }
 
     [Fact]
@@ -211,7 +251,7 @@ public class CodexMessageItemIdStabilityTests
                     ids.Add(lifecycleId);
             }
 
-            if (type is "response.completed" or "response.incomplete"
+            if (type is "response.completed" or "response.incomplete" or "response.failed"
                 && root["response"]?["output"] is JsonArray output
                 && outputIndex < output.Count
                 && output[outputIndex] is JsonObject terminalItem
@@ -241,7 +281,7 @@ public class CodexMessageItemIdStabilityTests
                     item["id"] = IdentitySentinel;
             }
 
-            if (type is "response.completed" or "response.incomplete"
+            if (type is "response.completed" or "response.incomplete" or "response.failed"
                 && root["response"]?["output"] is JsonArray output
                 && outputIndex < output.Count
                 && output[outputIndex] is JsonObject terminalItem
