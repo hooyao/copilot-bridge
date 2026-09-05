@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-09-05T12:32:02.2060363Z",
+  "seq": 1,
+  "kind": "inbound-req",
+  "method": "POST",
+  "target": "/codex/responses",
+  "headers": {
+    "User-Agent": "Codex Desktop/0.153.3",
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "model": "gpt-5.6-sol-fast",
+    "instructions": "Process external tool events before the user turn.",
+    "input": [
+      {
+        "type": "message",
+        "id": "msg_capture_developer",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Standalone named outputs retain tool-tier authority."
+          }
+        ]
+      },
+      {
+        "type": "function_call_output",
+        "id": "fco_capture_1",
+        "name": "automation_update",
+        "namespace": "codex_app",
+        "output": "<heartbeat><automation_id>capture</automation_id><instructions>Continue.</instructions></heartbeat>"
+      },
+      {
+        "type": "function_call_output",
+        "id": "fco_capture_2",
+        "name": "automation_update",
+        "namespace": "codex_app",
+        "output": "<heartbeat><automation_id>capture</automation_id><instructions>Continue once.</instructions></heartbeat>",
+        "future_metadata": {
+          "source": "scheduler"
+        }
+      },
+      {
+        "type": "message",
+        "id": "msg_capture_user",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Resume the task."
+          }
+        ]
+      }
+    ],
+    "reasoning": {
+      "effort": "low",
+      "context": "all_turns"
+    },
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "stream": true,
+    "store": false
+  },
+  "error": null
+}

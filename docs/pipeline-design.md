@@ -152,9 +152,19 @@ full set:
 > an exact match between the detector-approved semantic sequence and the recorded
 > expansion authorizes the original event; any drop/rewrite/abort prevents blind
 > restoration and uses the detector-owned replacement/failure path. This preserves
-> reasoning summaries and encrypted content, message phases, response/item ids,
-> full usage details, unknown event/field extensions and terminal metadata without
-> growing the frozen Anthropic IR for every Responses feature. The ledger is
+> reasoning summaries and encrypted content, message phases, full usage details,
+> unknown event/field extensions and terminal metadata without growing the frozen
+> Anthropic IR for every Responses feature. Item identity is value-faithful except
+> at two explicit client-compatibility boundaries. Custom-tool lifecycle ids are
+> made `ctc`-prefixed for safe next-turn echo. A message output index adopts its
+> `output_item.added` id as the canonical identity across every content/text event,
+> `output_item.done`, and the terminal output copy (with a deterministic non-`msg`
+> fallback only when the added item has no id). Copilot can emit a different opaque
+> id at each event, while Codex 0.153 keys its streamed and completed UI items by id
+> and otherwise renders the same text twice. The request translator strips an opaque
+> or fallback non-`msg` id if Codex echoes it, while an already-valid stable `msg_...`
+> id retains its existing replay behavior. Reasoning and every other item id remain native.
+> The ledger is
 > allocated only for a native `/codex` streaming route, removes entries as T4
 > consumes them. Source ordinals live in the FIFO ledger and are checked on add/take;
 > the ledger is cleared on normal completion, fault and cancellation. The
@@ -210,6 +220,19 @@ full set:
 > every JSON value and `input[]` position; every departure is a narrow, live-proven
 > and observable destination mutation. This is the request-side realization of
 > the frozen source-push/destination-pull rule, not a raw-body side channel.
+
+> **2026-09 — standalone named function outputs.** Codex 0.153.3 expanded its
+> `ResponseItem::FunctionCallOutput` union for external tool events injected through
+> `thread/inject_items`: a normal paired result has `call_id`; a standalone event has
+> no preceding model call and instead carries a non-empty `name` plus optional
+> `namespace`. The app-server contract says this second shape retains tool-tier
+> authority. T1 therefore keeps paired outputs on the semantic IR `tool_result` path
+> but carries standalone outputs, including the intentional absence of `call_id`, in
+> the existing ordered OpenAI provider lane. T2 re-inserts the complete item without
+> inventing a call or lowering it to a message. A function output with neither a
+> usable `call_id` nor a name is invalid. Copilot acceptance is model-dependent:
+> the bridge preserves the requested model and item and never hides a rejection by
+> synthesizing an id or an implicit route.
 
 > In ordinary streaming, T4 consumes each FIFO entry as soon as its carrier
 > arrives, so the ledger holds at most one source event. There are two deliberate
@@ -1104,12 +1127,17 @@ block and emits `response.failed` without fabricating tool-argument `.done`,
 already cancelled, writing stops and endpoint accounting records client
 cancellation instead.
 
-On the native Codex request side, `function_call_output.output` is provider-native
-opaque JSON. T1 pushes its string/object/array value into the IR block unchanged;
-T2 pulls and writes that same JSON kind and value. A paired replay of real captured
+On the native Codex request side, `function_call_output` has two source-defined
+shapes. A paired result has a non-empty `call_id`; its `output` is provider-native
+opaque JSON, so T1 pushes the string/object/array value into the IR block unchanged
+and T2 writes that same JSON kind and value. A paired replay of real captured
 `input_text[]` output returned 200 from `gpt-5.6-sol`, so flattening it would be an
 unnecessary silent rewrite. Function-output `id`/`status` and future siblings ride
-the same part-level provider record.
+the same part-level provider record. A standalone named result has no `call_id`, a
+non-empty `name`, optional `namespace`, and tool-tier authority; because the frozen
+IR has no honest unpaired-tool-result form, the entire item uses the request-level
+ordered provider carrier and is restored by T2. It is never converted to a user
+message or paired with a fabricated call.
 
 Responses message items and developer/system placement use the same rule. T1 keeps
 message text semantically visible to stages but records provider metadata and the

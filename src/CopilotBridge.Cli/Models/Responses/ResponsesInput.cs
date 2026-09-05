@@ -100,13 +100,24 @@ internal sealed class ResponsesFunctionCallItem : ResponsesInputItem
 }
 
 /// <summary>
-/// A tool result. Maps to IR <c>tool_result</c>: <c>call_id</c> ↔ <c>tool_use_id</c>,
-/// <c>output</c> ↔ the tool-result content. <c>output</c> may be a string or a
-/// structured value, held opaque.
+/// A Codex function output. Paired outputs carry <c>call_id</c> and map to IR
+/// <c>tool_result</c>. Codex 0.153.3+ also emits standalone named outputs for
+/// external tool events injected through <c>thread/inject_items</c>; those omit
+/// <c>call_id</c>, require <c>name</c>, retain tool-tier authority, and therefore
+/// ride the ordered OpenAI provider carrier rather than a fictitious IR tool result.
+/// <c>output</c> may be a string or a structured value, held opaque.
 /// </summary>
 internal sealed class ResponsesFunctionCallOutputItem : ResponsesInputItem
 {
-    public required string CallId { get; init; }
+    /// <summary>
+    /// A preceding model tool call for a paired output. Absent only for a
+    /// standalone named external-tool event (openai/codex #39782).
+    /// </summary>
+    public string? CallId { get; init; }
+    /// <summary>Required when <see cref="CallId"/> is absent; optional otherwise.</summary>
+    public string? Name { get; init; }
+    /// <summary>Optional tool namespace for a named standalone or paired output.</summary>
+    public string? Namespace { get; init; }
     public required JsonElement Output { get; init; }
     public string? Id { get; init; }
     public string? Status { get; init; }

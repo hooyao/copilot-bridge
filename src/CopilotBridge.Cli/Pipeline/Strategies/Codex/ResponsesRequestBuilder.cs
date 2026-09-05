@@ -554,6 +554,7 @@ internal static class ResponsesRequestBuilder
                     w.WriteStartObject();
                     w.WriteString("type", "function_call_output");
                     w.WriteString("call_id", tr.ToolUseId);
+                    WriteFunctionOutputIdentity(w, tr.ProviderExtensions);
                     w.WritePropertyName("output");
                     // Responses function output is string | content-items[]. T2 pulls
                     // what the IR holds: a block the source marked opaque keeps the
@@ -1229,6 +1230,30 @@ internal static class ResponsesRequestBuilder
         && bag.ValueKind == JsonValueKind.Object
         && bag.TryGetProperty("opaque_tool_output", out var opaque)
         && opaque.ValueKind == JsonValueKind.True;
+
+    /// <summary>
+    /// Restore optional name/namespace carried by a paired Codex 0.153.3 function
+    /// output. Standalone outputs bypass this semantic writer through the ordered
+    /// provider passthrough; this helper covers the valid shape that has both a
+    /// call id and the optional named identity.
+    /// </summary>
+    private static void WriteFunctionOutputIdentity(
+        Utf8JsonWriter writer,
+        Models.Common.ProviderExtensions? extensions)
+    {
+        if (!TryGetOpenAiBag(extensions, out var bag))
+            return;
+        if (bag.TryGetProperty("function_output_name", out var name)
+            && name.ValueKind == JsonValueKind.String)
+        {
+            writer.WriteString("name", name.GetString());
+        }
+        if (bag.TryGetProperty("function_output_namespace", out var toolNamespace)
+            && toolNamespace.ValueKind == JsonValueKind.String)
+        {
+            writer.WriteString("namespace", toolNamespace.GetString());
+        }
+    }
 
     /// <summary>
     /// Re-emit opaque Responses reasoning fields T1 stored on the redacted-thinking

@@ -393,6 +393,41 @@ These are destination wire facts, not a license for source↔destination couplin
 the Responses source pushes provider data and positions into IR extensions; the
 Responses destination pulls them and applies the invalid-id rule independently.
 
+### 3.4.2 Codex 0.153.3 standalone named function outputs (2026-09-06)
+
+Codex commit `763787d061` / PR #39782 (“Support standalone named function call
+outputs”), present in `rust-v0.153.3`, deliberately widened the internal
+`ResponseItem::FunctionCallOutput` shape:
+
+- a paired output has `call_id` and corresponds to a preceding model tool call;
+- a standalone external-tool event omits `call_id`, requires a non-empty `name`,
+  may carry `namespace`, and is injected through app-server `thread/inject_items`;
+- the app-server contract says the standalone shape retains **tool-tier authority**
+  and must be persisted and included in subsequent model requests.
+
+This is not a serialization loss. A real Desktop 0.153.3 rollout created the item
+as `{type:"function_call_output",name:"automation_update",namespace:"codex_app",
+output:"<heartbeat>..."}` before HTTP serialization. The matching 999,702-byte
+capture contained 103 such persisted heartbeat items and no `call_id`; bridge 0.5.14
+rejected the first one at source-generated deserialization because its DTO still
+declared `call_id` required.
+
+`ResponsesProbe.StandaloneNamedFunctionOutput_AcceptanceMatrix` established the
+current Copilot backend contract with the same minimal item on every bridge profile:
+
+- **accepted (200):** `gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`,
+  `gpt-5.6-luna`, `gpt-5.6-sol-fast`, `gpt-5.6-terra`;
+- **rejected (400, “Function call output requires call_id”):** `gpt-5.6-sol`,
+  `gpt-5-mini`, `mai-code-1-flash-picker`.
+
+Adding an arbitrary compatibility id is not valid: all three rejecting models then
+returned `No tool call found for function call output with call_id ...`. A sanitized
+Desktop heartbeat body with two persisted standalone events returned 200 on
+`gpt-5.6-sol-fast`. Therefore the bridge preserves the native item and requested
+model for every target. It neither fabricates history nor silently lowers the event
+to a message; a backend-specific rejection remains visible, and an operator may use
+an explicit routing location to select a supporting target.
+
 ### 3.5 Tool shapes Codex emits
 `ToolSpec` enum, serialized `#[serde(tag="type")]` (`tools/src/tool_spec.rs:15-64`).
 `create_tools_json_for_responses_api` just `serde_json::to_value`s each (`:78-89`).
@@ -434,6 +469,7 @@ What Codex sends (Track B) × what Copilot `/responses` accepts (Track A) → br
 | `tool_choice` | `"auto"` (§3.2) | 200 | passthrough |
 | message `id` / `phase` | valid `msg*` ids plus commentary/final phase; older message history may use `item_0` | valid metadata 200; assistant and developer `item_0` id 400 (§3.4.1) | preserve valid metadata; omit only rejected id on every message path and report coercion |
 | `function_call_output.output` array | ordered native content items (0.147 desktop) | real captured array 200 (§3.4.1) | passthrough unchanged; never use Claude flattening |
+| standalone named `function_call_output` | 0.153.3 external tool event: no `call_id`, non-empty `name`, optional `namespace` (§3.4.2) | model-dependent: seven current profiles accept; `gpt-5.6-sol`, `gpt-5-mini`, and MAI picker require a real paired call | preserve item, authority, model, and order; never invent an id/call/message/route |
 | `stream` | always `true` (§3.2) | streams cleanly (§2.5) | passthrough |
 | SSE response | parser tolerant, needs terminal `response.completed`, no `[DONE]` handling (§3.3) | ends at `response.completed`, **no `[DONE]`** (§2.5) | **passthrough — no DONE-filter needed** |
 | headers `x-codex-*` | sent (§3.2) | not probed for rejection; Copilot generally ignores unknowns | passthrough; bridge adds its own official Copilot headers (replace, like `/cc`) |

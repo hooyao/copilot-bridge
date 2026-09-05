@@ -1,4 +1,6 @@
 using System.Net.ServerSentEvents;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CopilotBridge.Cli.Copilot;
@@ -332,6 +334,8 @@ internal sealed class AnthropicToResponsesStream
     private readonly Dictionary<int, NativeCustomToolCall> _nativeCustomToolsByOutput = [];
     private readonly Dictionary<string, NativeCustomToolCall> _nativeCustomToolsByCallId =
         new(StringComparer.Ordinal);
+    private readonly Dictionary<int, string> _nativeMessageIdsByOutput = [];
+    private string _nativeResponseId = "";
 
     public AnthropicToResponsesStream(
         string model,
@@ -391,7 +395,7 @@ internal sealed class AnthropicToResponsesStream
 
             if (unchanged)
             {
-                var restored = RewriteNativeCustomToolIds(original);
+                var restored = RewriteNativeProtocolIds(original);
                 restored = ApplyNativeModelOverride(restored, _nativeModelOverride);
                 yield return restored;
                 if (IsResponsesTerminal(restored))
@@ -557,10 +561,17 @@ internal sealed class AnthropicToResponsesStream
         if (!_created)
         {
             _created = true;
-            yield return Ev("response.created", ResponseEnvelope("response.created", "in_progress"));
-            yield return Ev("response.in_progress", ResponseEnvelope("response.in_progress", "in_progress"));
+            yield return RewriteNativeProtocolIds(
+                Ev("response.created", ResponseEnvelope("response.created", "in_progress")));
+            yield return RewriteNativeProtocolIds(
+                Ev("response.in_progress", ResponseEnvelope("response.in_progress", "in_progress")));
         }
-        foreach (var s in Flush()) yield return s;
+        // A native response.failed throws in T3 before its carrier is recorded, so
+        // Flush must synthesize the terminal from semantic state. Route that generated
+        // terminal through the same identity correction as restored native terminals;
+        // otherwise a message already sent with its output_item.added id reappears in
+        // response.failed.output as generated item_N and Codex creates a duplicate item.
+        foreach (var s in Flush()) yield return RewriteNativeProtocolIds(s);
     }
 
     private static bool SemanticSequenceEquals(
@@ -638,13 +649,12 @@ internal sealed class AnthropicToResponsesStream
     }
 
     /// <summary>
-    /// Preserve the historical custom-tool echo contract while restoring native
-    /// Responses events. Copilot's output-item ids can be rolling opaque blobs;
-    /// the stable echo-safe id appears on custom_tool_call_input events. Codex may
-    /// persist either lifecycle copy, so added uses a deterministic ctc synthesis
-    /// and done/terminal use the observed stable ctc id when available.
+    /// Apply the two declared identity corrections while restoring native Responses
+    /// events. Custom tools need an echo-safe ctc id. Messages need one stable id
+    /// across their lifecycle because Codex merges the streamed and completed item by
+    /// id, while Copilot may emit a different opaque value on every event.
     /// </summary>
-    private SseItem<string> RewriteNativeCustomToolIds(in SseItem<string> original)
+    private SseItem<string> RewriteNativeProtocolIds(in SseItem<string> original)
     {
         JsonObject? root;
         try { root = JsonNode.Parse(original.Data) as JsonObject; }
@@ -653,55 +663,99 @@ internal sealed class AnthropicToResponsesStream
             return original;
 
         var changed = false;
+        if (type == "response.created"
+            && root["response"]?["id"]?.GetValue<string>() is { Length: > 0 } responseId)
+            _nativeResponseId = responseId;
+
         if (type == "response.output_item.added"
             && root["output_index"]?.GetValue<int>() is { } addedIndex
-            && root["item"] is JsonObject added
-            && added["type"]?.GetValue<string>() == "custom_tool_call"
-            && added["call_id"]?.GetValue<string>() is { Length: > 0 } callId)
+            && root["item"] is JsonObject added)
         {
-            var state = new NativeCustomToolCall(callId, SynthesizeCtcId(callId));
-            _nativeCustomToolsByOutput[addedIndex] = state;
-            _nativeCustomToolsByCallId[callId] = state;
-            added["id"] = state.SynthesizedId;
-            changed = true;
+            if (added["type"]?.GetValue<string>() == "custom_tool_call"
+                && added["call_id"]?.GetValue<string>() is { Length: > 0 } callId)
+            {
+                var state = new NativeCustomToolCall(callId, SynthesizeCtcId(callId));
+                _nativeCustomToolsByOutput[addedIndex] = state;
+                _nativeCustomToolsByCallId[callId] = state;
+                changed |= SetStringIfDifferent(added, "id", state.SynthesizedId);
+            }
+            else if (added["type"]?.GetValue<string>() == "message")
+            {
+                var canonicalId = added["id"]?.GetValue<string>() is { Length: > 0 } addedId
+                    ? addedId
+                    : SynthesizeMessageId(_nativeResponseId, addedIndex, original.Data);
+                _nativeMessageIdsByOutput[addedIndex] = canonicalId;
+                changed |= SetStringIfDifferent(added, "id", canonicalId);
+            }
         }
-        else if (type is "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done"
+
+        if (type is "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done"
             && root["output_index"]?.GetValue<int>() is { } inputIndex
             && _nativeCustomToolsByOutput.TryGetValue(inputIndex, out var inputState))
         {
             if (root["item_id"]?.GetValue<string>() is { Length: > 0 } observed
                 && observed.StartsWith("ctc", StringComparison.Ordinal))
                 inputState.StableId = observed;
-            root["item_id"] = inputState.StableId ?? inputState.SynthesizedId;
-            changed = true;
+            changed |= SetStringIfDifferent(
+                root, "item_id", inputState.StableId ?? inputState.SynthesizedId);
         }
-        else if (type == "response.output_item.done"
+
+        if (type == "response.output_item.done"
             && root["output_index"]?.GetValue<int>() is { } doneIndex
-            && _nativeCustomToolsByOutput.TryGetValue(doneIndex, out var doneState)
-            && root["item"] is JsonObject done
-            && done["type"]?.GetValue<string>() == "custom_tool_call")
+            && root["item"] is JsonObject done)
         {
-            done["id"] = doneState.StableId ?? doneState.SynthesizedId;
-            changed = true;
+            if (done["type"]?.GetValue<string>() == "custom_tool_call"
+                && _nativeCustomToolsByOutput.TryGetValue(doneIndex, out var doneState))
+                changed |= SetStringIfDifferent(
+                    done, "id", doneState.StableId ?? doneState.SynthesizedId);
+            else if (done["type"]?.GetValue<string>() == "message"
+                     && _nativeMessageIdsByOutput.TryGetValue(doneIndex, out var messageId))
+                changed |= SetStringIfDifferent(done, "id", messageId);
         }
-        else if (type is "response.completed" or "response.incomplete"
+
+        if (root["output_index"]?.GetValue<int>() is { } eventOutputIndex
+            && _nativeMessageIdsByOutput.TryGetValue(eventOutputIndex, out var eventMessageId)
+            && root.ContainsKey("item_id"))
+            changed |= SetStringIfDifferent(root, "item_id", eventMessageId);
+
+        if (type is "response.completed" or "response.incomplete" or "response.failed"
             && root["response"]?["output"] is JsonArray output)
         {
-            foreach (var node in output)
+            for (var outputIndex = 0; outputIndex < output.Count; outputIndex++)
             {
+                var node = output[outputIndex];
                 if (node is not JsonObject item
-                    || item["type"]?.GetValue<string>() != "custom_tool_call"
-                    || item["call_id"]?.GetValue<string>() is not { } terminalCallId
-                    || !_nativeCustomToolsByCallId.TryGetValue(terminalCallId, out var terminalState))
+                    || item["type"]?.GetValue<string>() is not { } itemType)
                     continue;
-                item["id"] = terminalState.StableId ?? terminalState.SynthesizedId;
-                changed = true;
+                if (itemType == "custom_tool_call"
+                    && item["call_id"]?.GetValue<string>() is { } terminalCallId
+                    && _nativeCustomToolsByCallId.TryGetValue(terminalCallId, out var terminalState))
+                    changed |= SetStringIfDifferent(
+                        item, "id", terminalState.StableId ?? terminalState.SynthesizedId);
+                else if (itemType == "message"
+                         && _nativeMessageIdsByOutput.TryGetValue(outputIndex, out var terminalMessageId))
+                    changed |= SetStringIfDifferent(item, "id", terminalMessageId);
             }
         }
 
         return changed
             ? new SseItem<string>(root.ToJsonString(), original.EventType)
             : original;
+    }
+
+    private static bool SetStringIfDifferent(JsonObject owner, string property, string value)
+    {
+        if (owner[property]?.GetValue<string>() == value)
+            return false;
+        owner[property] = value;
+        return true;
+    }
+
+    private static string SynthesizeMessageId(string responseId, int outputIndex, string addedEvent)
+    {
+        var material = $"{responseId}\u001f{outputIndex}\u001f{addedEvent}";
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(material));
+        return "item_" + Convert.ToHexString(digest).ToLowerInvariant();
     }
 
     private sealed class NativeCustomToolCall(string callId, string synthesizedId)
