@@ -19,8 +19,9 @@ namespace CopilotBridge.UnitTests.Invariant;
 /// <para>OFFLINE — this exercises the exact layer where the production 400 happens
 /// (STJ polymorphic deserialization of <c>ResponsesRequest.Input</c>, then the T1→T2
 /// round trip), WITHOUT calling Copilot. It's opt-in: set
-/// <c>CODEX_CORPUS_DIR</c> to a request-traces directory. Skips (passes) when unset so
-/// CI stays green; run it locally against the real captures.</para>
+/// <c>CODEX_CORPUS_DIR</c> to a request-traces directory. CI always replays the
+/// committed, de-identified Codex 0.153.3 standalone-output capture; the environment
+/// variable adds the operator's larger local corpus.</para>
 /// <para>It also ENUMERATES every distinct <c>input[]</c> item type in the corpus and
 /// prints them, so a reviewer can see the coverage the fix must hold — including the
 /// types the bridge doesn't model (which must route through the unknown-item
@@ -34,17 +35,17 @@ public class CodexInboundCorpusReplayTests
     [Fact]
     public void EveryCapturedCodexInbound_DeserializesAndRoundTrips_WithoutPolymorphism400()
     {
+        var committedCapture = Path.Combine(
+            AppContext.BaseDirectory, "Fixtures", "codex-standalone-function-output-inbound-req.json");
+        var files = new List<string> { committedCapture };
         var dir = Environment.GetEnvironmentVariable("CODEX_CORPUS_DIR");
-        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
-        {
-            _output.WriteLine($"CODEX_CORPUS_DIR not set or missing ('{dir}') — skipping corpus replay.");
-            return; // opt-in; CI-safe
-        }
-
-        var files = Directory.EnumerateFiles(dir, "*-inbound-req.json").ToList();
-        _output.WriteLine($"scanning {files.Count} inbound files under {dir}");
+        if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+            files.AddRange(Directory.EnumerateFiles(dir, "*-inbound-req.json"));
+        files = files.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        _output.WriteLine($"scanning {files.Count} inbound files (committed capture + local corpus '{dir}')");
 
         var itemTypes = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        var standaloneNamedOutputCount = 0;
         var codexCount = 0;
         var failures = new List<string>();
 
@@ -93,6 +94,13 @@ public class CodexInboundCorpusReplayTests
                 {
                     var t = n?["type"]?.GetValue<string>() ?? "<none>";
                     itemTypes[t] = itemTypes.TryGetValue(t, out var c) ? c + 1 : 1;
+                    if (t == "function_call_output"
+                        && n is JsonObject item
+                        && item["call_id"] is null
+                        && item["name"]?.GetValue<string>() is { Length: > 0 })
+                    {
+                        standaloneNamedOutputCount++;
+                    }
                 }
                 req = new ResponsesRequestShim(parsed);
             }
@@ -114,6 +122,7 @@ public class CodexInboundCorpusReplayTests
         }
 
         _output.WriteLine($"codex inbound replayed: {codexCount}");
+        _output.WriteLine($"standalone named function outputs replayed: {standaloneNamedOutputCount}");
         _output.WriteLine("distinct input[] item types seen:");
         foreach (var kv in itemTypes) _output.WriteLine($"  {kv.Key,-24} {kv.Value}");
 
@@ -124,6 +133,8 @@ public class CodexInboundCorpusReplayTests
         }
 
         Assert.True(codexCount > 0, "corpus contained no codex /responses inbound bodies — check CODEX_CORPUS_DIR");
+        Assert.True(standaloneNamedOutputCount > 0,
+            "corpus did not exercise a call-id-less standalone named function output");
         Assert.Empty(failures);
     }
 

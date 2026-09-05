@@ -293,7 +293,10 @@ public sealed class CredentialServiceMigrationTests : IDisposable
         using var service = new CredentialService(
             factory,
             store,
-            TimeProvider.System,
+            // This contract covers one forced post-rejection rotation, not expiry-
+            // driven refresh. Pin the clock before the fixture's access-token expiry
+            // so the test remains deterministic after 2026-09-01.
+            new ManualTimeProvider(DateTimeOffset.Parse("2026-08-01T00:00:00Z")),
             NullLogger<CredentialService>.Instance);
         var rejected = await service.GetUsableAsync(CancellationToken.None);
         IAsyncDisposable? heldLock = await store.AcquireLockAsync(
@@ -478,5 +481,10 @@ public sealed class CredentialServiceMigrationTests : IDisposable
                     "application/json"),
             });
         }
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
     }
 }

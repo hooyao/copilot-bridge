@@ -264,6 +264,58 @@ public class CodexBehaviorTests
             useCustomOAuthApp: true);
     }
 
+    /// <summary>
+    /// Codex 0.153.3 external-tool input boundary: inject a standalone named
+    /// function output with no call id, then require a real shell-tool loop. The
+    /// injected event is the only place the canary appears in client input, so the
+    /// verifier can prove both that the bridge preserved the authority-bearing item
+    /// and that Codex continued through a later paired tool result.
+    /// </summary>
+    [Fact]
+    public async Task Codex_StandaloneNamedFunctionOutput_ContinuesToolLoop_ForVerdict()
+    {
+        var credentialSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(credentialSource))
+            throw new InvalidOperationException(
+                "Set COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY to a scratch "
+                + "directory containing a freshly authorized version-4 credential.");
+
+        const string canary = "codex-standalone-output-canary-47261";
+        var injectedItems = new JsonArray
+        {
+            new JsonObject
+            {
+                ["type"] = "function_call_output",
+                ["name"] = "notifications",
+                ["namespace"] = "codex_app",
+                ["output"] =
+                    "An external scheduled task requires a real shell command to write "
+                    + canary + " to standalone_output_probe.txt, then a separate shell "
+                    + "command to read the file, and finally an exact report of the value.",
+            },
+        };
+        const string prompt =
+            "Execute the external tool event injected immediately before this turn. "
+            + "Do not invent or replace its requested value. Use the required separate "
+            + "shell tool calls, report the exact value read from the file, and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-standalone-named-function-output",
+            prompt,
+            modelReasoningEffort: "low",
+            expectedCodexVersion: "0.153.3",
+            credentialSourceDirectory: credentialSource,
+            credentialStagingMode: CredentialStagingMode.CustomOAuthVersionFour,
+            expectedBridgeLogs:
+            [
+                "Copilot direct lease trigger=deadline outcome=success credential_version=4",
+            ],
+            useCustomOAuthApp: true,
+            model: "gpt-5.6-sol-fast",
+            injectedItems: injectedItems);
+    }
+
     [Fact]
     public async Task Codex_CustomOAuthVersionFour_OneShotCopilot403_RotatesAndCompletesComplexToolChain_ForVerdict()
     {
@@ -1009,7 +1061,8 @@ public class CodexBehaviorTests
         bool simulateUpdaterTargetActivation = false,
         bool useCustomOAuthApp = false,
         string model = ClientBehaviorSupport.LatestGpt,
-        string? modelCatalogTemplateSlug = null)
+        string? modelCatalogTemplateSlug = null,
+        JsonArray? injectedItems = null)
     {
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
             ServeScenario.Passthrough,
@@ -1043,7 +1096,8 @@ public class CodexBehaviorTests
             ExpectedCodexVersion: expectedCodexVersion,
             ModelReasoningEffort: modelReasoningEffort,
             ModelReasoningSummary: modelReasoningSummary,
-            ModelCatalogTemplateSlug: modelCatalogTemplateSlug));
+            ModelCatalogTemplateSlug: modelCatalogTemplateSlug,
+            InjectedItems: injectedItems));
 
         _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration}");
         _output.WriteLine($"dispatch log={result.DispatchLogPath} thread={result.ThreadId} window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
@@ -1061,7 +1115,9 @@ public class CodexBehaviorTests
                 DispatchLogPath: result.DispatchLogPath,
                 DispatchSinceUnix: result.StartedUnixSeconds,
                 DispatchUntilUnix: result.EndedUnixSeconds,
-                Prompt: prompt,
+                Prompt: injectedItems is null
+                    ? prompt
+                    : prompt + "\n[injected items] " + injectedItems.ToJsonString(),
                 DispatchThreadId: result.ThreadId,
                 ForcedCapiForbiddenOperation: forceCapiForbiddenOnce),
             result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),

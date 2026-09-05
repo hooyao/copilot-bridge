@@ -63,10 +63,12 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
         var messages = new List<MessageParam>();
         // ── passthrough items: opaque input[] items the bridge forwards verbatim,
         // never interprets — additional_tools (gpt-5.6 harness tool-registration
-        // preamble), agent_message (inter-agent messages), and any UNKNOWN type. They
-        // must keep their ORDER relative to the conversation messages (and each other),
-        // so each records the count of IR messages emitted BEFORE it (afterMessageIndex);
-        // T2 re-inserts each at that position via a single ordered mechanism. ──
+        // preamble), agent_message (inter-agent messages), standalone named function
+        // outputs (external tool events with no preceding call), and any UNKNOWN type.
+        // They must keep their ORDER relative to the conversation messages (and each
+        // other), so each records the count of IR messages emitted BEFORE it
+        // (afterMessageIndex); T2 re-inserts each at that position via a single ordered
+        // mechanism. ──
         var passthroughItems = new List<(int AfterMessageIndex, JsonElement Raw, int? SystemGroup)>();
         var nextSystemGroup = 0;
         foreach (var item in clientBody.Input)
@@ -131,7 +133,8 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                     });
                     break;
 
-                case ResponsesFunctionCallOutputItem fco:
+                case ResponsesFunctionCallOutputItem fco
+                    when fco.CallId is { Length: > 0 } callId:
                     // Tool result → a user message carrying a tool_result block. The
                     // `output` value is Codex's OWN Responses payload (string, object,
                     // or Responses content items) — it is NOT an Anthropic content-block
@@ -144,11 +147,27 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
                         Role = Role.User,
                         Content = [new ToolResultBlockParam
                         {
-                            ToolUseId = fco.CallId,
+                            ToolUseId = callId,
                             Content = fco.Output,
                             ProviderExtensions = BuildOpaqueToolOutputBag(fco),
                         }],
                     });
+                    break;
+
+                case ResponsesFunctionCallOutputItem standalone:
+                    // Codex 0.153.3+ supports a second, deliberately UNPAIRED shape for
+                    // external tool events injected through thread/inject_items:
+                    // {type:function_call_output,name,namespace?,output}, with no
+                    // call_id because the model never made a preceding call. The app-
+                    // server contract says this retains tool-tier authority. The frozen
+                    // Anthropic IR has no honest semantic representation for it, so carry
+                    // the complete item through the ordered OpenAI provider bag. Turning
+                    // it into a user message would lower authority; inventing a call id
+                    // is rejected by Copilot as "No tool call found".
+                    passthroughItems.Add((
+                        messages.Count,
+                        SerializeKnownInputItem(standalone),
+                        null));
                     break;
 
                 case ResponsesReasoningItem reasoning:
@@ -558,6 +577,14 @@ internal sealed class ResponsesToIrInboundAdapter : IClientInboundAdapter<Respon
         {
             w.WriteStartObject();
             w.WriteBoolean("opaque_tool_output", true);
+            // Codex 0.153.3 widened the same item shape with optional name/namespace.
+            // A paired output may still carry them, so keep them outside
+            // responses_item_extra (whose reserved-name filter intentionally blocks
+            // semantic keys) and let T2 restore them explicitly.
+            if (item.Name is not null)
+                w.WriteString("function_output_name", item.Name);
+            if (item.Namespace is not null)
+                w.WriteString("function_output_namespace", item.Namespace);
             WriteItemExtras(w, item.Id, item.Status, phase: null, item.ExtensionData);
             w.WriteEndObject();
         }

@@ -73,6 +73,7 @@ internal sealed class ResponsesInputItemListConverter : JsonConverter<IReadOnlyL
                 // exactly as the default path would (no behavior change).
                 var known = element.Deserialize(typeInfo)
                     ?? throw new JsonException($"input[] item of type '{type}' deserialized to null.");
+                ValidateKnownItem(known);
                 list.Add(known);
             }
             else
@@ -106,5 +107,27 @@ internal sealed class ResponsesInputItemListConverter : JsonConverter<IReadOnlyL
                 JsonSerializer.Serialize(writer, item, typeInfo);
         }
         writer.WriteEndArray();
+    }
+
+    /// <summary>
+    /// Enforce the discriminated invariant that Codex's Rust <c>ResponseItem</c>
+    /// type cannot express in JSON Schema: a function output is either paired by
+    /// a non-empty call id, or standalone and identified by a non-empty name.
+    /// A present-but-empty call id is neither shape and must not be silently
+    /// reinterpreted as standalone.
+    /// </summary>
+    private static void ValidateKnownItem(ResponsesInputItem item)
+    {
+        if (item is not ResponsesFunctionCallOutputItem output)
+            return;
+
+        var paired = !string.IsNullOrWhiteSpace(output.CallId);
+        var standalone = output.CallId is null && !string.IsNullOrWhiteSpace(output.Name);
+        if (!paired && !standalone)
+        {
+            throw new JsonException(
+                "input[] function_call_output requires a non-empty 'call_id' or 'name'; "
+                + "standalone named outputs must omit 'call_id'.");
+        }
     }
 }

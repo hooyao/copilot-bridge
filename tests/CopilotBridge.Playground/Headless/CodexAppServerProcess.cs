@@ -26,7 +26,8 @@ internal sealed record CodexAppServerInvocation(
     long? StreamIdleTimeoutMs = null,
     int? RequestMaxRetries = null,
     int? StreamMaxRetries = null,
-    string? ModelCatalogTemplateSlug = null);
+    string? ModelCatalogTemplateSlug = null,
+    JsonArray? InjectedItems = null);
 
 internal sealed record CodexAppServerResult(
     int ExitCode,
@@ -223,6 +224,26 @@ internal static class CodexAppServerProcess
                         $"Codex thread/start reasoningEffort was '{actualEffort ?? "<null>"}', expected '{expectedEffort}'.");
             }
 
+            var nextRequestId = 3;
+            if (invocation.InjectedItems is { Count: > 0 } injectedItems)
+            {
+                var injectRequestId = nextRequestId++;
+                await SendAsync(process, new JsonObject
+                {
+                    ["method"] = "thread/inject_items",
+                    ["id"] = injectRequestId,
+                    ["params"] = new JsonObject
+                    {
+                        ["threadId"] = threadId,
+                        // A JsonNode may have only one parent. Clone the caller-owned
+                        // array before attaching it to the JSON-RPC request.
+                        ["items"] = injectedItems.DeepClone(),
+                    },
+                }, token);
+                _ = await ReadUntilAsync(process, stdout,
+                    message => ResponseId(message) == injectRequestId, token);
+            }
+
             async Task<string> RunTurnAsync(int id, string prompt)
             {
                 await SendAsync(process, new JsonObject
@@ -249,9 +270,9 @@ internal static class CodexAppServerProcess
                         "Codex turn/completed notification did not include status.");
             }
 
-            var turnStatus = await RunTurnAsync(3, invocation.Prompt);
+            var turnStatus = await RunTurnAsync(nextRequestId++, invocation.Prompt);
             if (invocation.FollowUpPrompt is { Length: > 0 } followUpPrompt)
-                turnStatus = await RunTurnAsync(4, followUpPrompt);
+                turnStatus = await RunTurnAsync(nextRequestId, followUpPrompt);
 
             process.StandardInput.Close();
             var remaining = await process.StandardOutput.ReadToEndAsync(token);
