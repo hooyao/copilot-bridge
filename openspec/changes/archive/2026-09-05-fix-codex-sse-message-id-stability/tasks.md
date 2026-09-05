@@ -25,7 +25,12 @@
 - [x] 4.3 Drive the real current `codex.exe` through a bridge subprocess on a non-8765 port; require three matching tool call/output pairs, the final canary exactly once, stable final-message ids in the per-run trace, no message start/completion mismatch, no abort, and zero router/dispatch fatal in the client's own log.
 - [x] 4.4 Confirm the production bridge on port 8765 was never stopped, all scratch processes were stopped by verified PID/path, and no test-created credential copy remains outside its source directory.
 
-Validation note: the full non-integration run reported 1,735 passes and one unrelated existing `CredentialServiceMigrationTests.Refresh_does_not_reenter_migration_when_legacy_file_reappears_while_locked` failure (expected 8, actual 9); the same test failed when rerun alone and no auth source/test file is changed. Re-running the remaining suite with that case excluded passed 1,735/1,735. Windows Native AOT publish succeeded at 14,828,032 bytes.
+Validation note: the latest full non-integration run after PR review follow-ups passed
+1,744/1,744. The earlier date-sensitive
+`CredentialServiceMigrationTests.Refresh_does_not_reenter_migration_when_legacy_file_reappears_while_locked`
+failure was made deterministic by pinning its test clock before the fixture expiry;
+product authentication code is unchanged. The final combined Windows Native AOT
+publish succeeded at 14,831,616 bytes, and the cross-platform CI publish jobs passed.
 
 ## 5. PR review follow-ups
 

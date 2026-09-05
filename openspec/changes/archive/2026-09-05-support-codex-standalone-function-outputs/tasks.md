@@ -19,7 +19,7 @@
 ## 4. Documentation and Verification
 
 - [x] 4.1 Update `docs/pipeline-design.md` and `docs/codex-protocol-research.md` with the standalone-output contract, authority semantics, validation, and backend evidence.
-- [x] 4.2 Run focused tests, the full non-integration solution suite, `AgentRepositoryCompatibilityTests`, and relevant ApiContract tests. PASS: 1739 non-integration tests, 14 standalone backend probes, 4 repository-compatibility tests.
+- [x] 4.2 Run focused tests, the full non-integration solution suite, `AgentRepositoryCompatibilityTests`, and relevant ApiContract tests. PASS after review follow-ups: 1744 non-integration tests, 14 standalone backend probes, 4 repository-compatibility tests, Windows Native AOT at 14,831,616 bytes, and all cross-platform CI publish jobs.
 - [x] 4.3 Add and run a real Codex app-server ClientBehavior case using `thread/inject_items`, then judge its trace, stdout, and `logs_2.sqlite` under the real-client-verification rubric. PASS: manifest `codex-standalone-named-function-output-20260905-164042-528.json`; two custom-exec call/output loops, injected-only canary, router/ERROR/retry rows all zero.
 - [x] 4.4 Reconcile every task with actual evidence and prepare only this change's paths for OpenSpec archive/sync and the current PR.
 
