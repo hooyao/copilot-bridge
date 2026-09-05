@@ -152,9 +152,19 @@ full set:
 > an exact match between the detector-approved semantic sequence and the recorded
 > expansion authorizes the original event; any drop/rewrite/abort prevents blind
 > restoration and uses the detector-owned replacement/failure path. This preserves
-> reasoning summaries and encrypted content, message phases, response/item ids,
-> full usage details, unknown event/field extensions and terminal metadata without
-> growing the frozen Anthropic IR for every Responses feature. The ledger is
+> reasoning summaries and encrypted content, message phases, full usage details,
+> unknown event/field extensions and terminal metadata without growing the frozen
+> Anthropic IR for every Responses feature. Item identity is value-faithful except
+> at two explicit client-compatibility boundaries. Custom-tool lifecycle ids are
+> made `ctc`-prefixed for safe next-turn echo. A message output index adopts its
+> `output_item.added` id as the canonical identity across every content/text event,
+> `output_item.done`, and the terminal output copy (with a deterministic non-`msg`
+> fallback only when the added item has no id). Copilot can emit a different opaque
+> id at each event, while Codex 0.153 keys its streamed and completed UI items by id
+> and otherwise renders the same text twice. The request translator strips an opaque
+> or fallback non-`msg` id if Codex echoes it, while an already-valid stable `msg_...`
+> id retains its existing replay behavior. Reasoning and every other item id remain native.
+> The ledger is
 > allocated only for a native `/codex` streaming route, removes entries as T4
 > consumes them. Source ordinals live in the FIFO ledger and are checked on add/take;
 > the ledger is cleared on normal completion, fault and cancellation. The

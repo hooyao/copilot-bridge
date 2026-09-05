@@ -227,6 +227,43 @@ public class CodexBehaviorTests
             useCustomOAuthApp: true);
     }
 
+    /// <summary>
+    /// Current-client actuator for the native message-id compatibility boundary.
+    /// Reasoning is disabled so any item start/completion mismatch belongs to the
+    /// final visible message rather than a separate reasoning item. The semantic
+    /// verdict is rendered by real-client-verify from this run's trace/stdout/log.
+    /// </summary>
+    [Fact]
+    public async Task Codex_CurrentClient_StableMessageLifecycle_ProducesDispatchLogForVerdict()
+    {
+        var credentialSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(credentialSource))
+            throw new InvalidOperationException(
+                "Set COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY to a scratch "
+                + "directory containing a freshly authorized version-4 credential.");
+
+        const string canary = "codex-message-id-canary-61937";
+        var prompt =
+            "Use three separate shell command tool calls in order; do not use apply_patch and do not fabricate output:\n"
+            + "1. Write first-message-id-line to message_id_probe.txt.\n"
+            + $"2. Append {canary} as the second line.\n"
+            + "3. Read the file. Then report only its exact second line and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-message-id-stability",
+            prompt,
+            modelReasoningEffort: "none",
+            expectedCodexVersion: "0.153.3",
+            credentialSourceDirectory: credentialSource,
+            credentialStagingMode: CredentialStagingMode.CustomOAuthVersionFour,
+            expectedBridgeLogs:
+            [
+                "Copilot direct lease trigger=deadline outcome=success credential_version=4",
+            ],
+            useCustomOAuthApp: true);
+    }
+
     [Fact]
     public async Task Codex_CustomOAuthVersionFour_OneShotCopilot403_RotatesAndCompletesComplexToolChain_ForVerdict()
     {
