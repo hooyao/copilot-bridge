@@ -745,11 +745,7 @@ internal sealed class AnthropicToResponsesStream
                         item, "id", terminalState.StableId ?? terminalState.SynthesizedId);
                 else if (itemType == "message"
                          && _nativeMessageIdsByOutput.TryGetValue(
-                             type == "response.failed"
-                                 && outputIndex < _completedItems.Count
-                                 && _completedItems[outputIndex].NativeOutputIndex is { } nativeOutputIndex
-                                     ? nativeOutputIndex
-                                     : outputIndex,
+                             NativeOutputIndexForTerminalItem(type, outputIndex),
                              out var terminalMessageId))
                     changed |= SetStringIfDifferent(item, "id", terminalMessageId);
             }
@@ -758,6 +754,15 @@ internal sealed class AnthropicToResponsesStream
         return changed
             ? new SseItem<string>(root.ToJsonString(), original.EventType)
             : original;
+    }
+
+    private int NativeOutputIndexForTerminalItem(string terminalType, int terminalOrdinal)
+    {
+        if (terminalType == "response.failed"
+            && terminalOrdinal < _completedItems.Count
+            && _completedItems[terminalOrdinal].NativeOutputIndex is { } nativeOutputIndex)
+            return nativeOutputIndex;
+        return terminalOrdinal;
     }
 
     private static bool SetStringIfDifferent(JsonObject owner, string property, string value)
