@@ -4,7 +4,8 @@
 #   Usage: pr-status.sh <owner>/<repo> <pr-number>
 #
 # Prints machine-readable lines the caller acts on:
-#   OPEN_COMMENTS=<n>     unresolved Copilot review threads — the ONE source of truth
+#   OPEN_COMMENTS=<n>     unresolved threads + current-head suppressed-review signal
+#   SUPPRESSED_FINDINGS=<0|1> latest current-head Copilot review has body-only findings
 #   CI=<pending|pass|fail|none>
 #   MERGE_STATE=<CLEAN|BLOCKED|UNKNOWN|...>
 #   PR_STATE=<OPEN|MERGED|CLOSED>
@@ -68,18 +69,18 @@ if ! echo "$THREADS_JSON" | jq -e '
 ' >/dev/null 2>&1; then
   fail "reviewThreads response missing expected shape — treating as error, not zero"
 fi
-OPEN="$(echo "$THREADS_JSON" | jq '[.[].data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length')" \
+OPEN_THREADS="$(echo "$THREADS_JSON" | jq '[.[].data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length')" \
   || fail "could not count unresolved threads"
-echo "OPEN_COMMENTS=${OPEN}"
 
 # --- 2. CI + merge + PR state (one call) ---------------------------------------
 VIEW_JSON="$(gh pr view "$PR" --repo "$REPO" \
-  --json mergeable,mergeStateStatus,state,statusCheckRollup,headRefName 2>/dev/null)" \
+  --json mergeable,mergeStateStatus,state,statusCheckRollup,headRefName,headRefOid 2>/dev/null)" \
   || fail "gh pr view failed — cannot read CI/merge state"
 
 MERGE_STATE="$(echo "$VIEW_JSON" | jq -r '.mergeStateStatus // "UNKNOWN"')" || fail "jq parse of mergeStateStatus failed"
 PR_STATE="$(echo "$VIEW_JSON" | jq -r '.state // "UNKNOWN"')" || fail "jq parse of state failed"
 HEAD_BRANCH="$(echo "$VIEW_JSON" | jq -r '.headRefName // ""')" || fail "jq parse of headRefName failed"
+HEAD_SHA="$(echo "$VIEW_JSON" | jq -r '.headRefOid // ""')" || fail "jq parse of headRefOid failed"
 
 # CI: fail if any check concluded non-success; pending if any not COMPLETED; else pass.
 # none if there are no checks at all. Two entry shapes coexist in statusCheckRollup:
@@ -95,11 +96,43 @@ CI="$(echo "$VIEW_JSON" | jq -r '
     elif any($progress[]; (.=="QUEUED" or .=="IN_PROGRESS" or .=="PENDING" or .=="WAITING" or .=="EXPECTED" or .=="")) then "pending"
     else "pass" end')" \
   || fail "could not derive CI state"
+# --- 3. Current-head body-only Copilot findings --------------------------------
+# Copilot sometimes suppresses an inline comment and puts the actionable finding
+# only in the review BODY ("Needs a closer look" / "Suppressed comments (N)"). Such
+# a finding has no reviewThread, so a thread-only count incorrectly reports all-clear.
+# Inspect only the latest Copilot review for the CURRENT head: after a fix push, old
+# findings belong to the superseded SHA; a later clean re-review of the same SHA also
+# supersedes an earlier body. The API/query is fail-loud for the same reason as the
+# reviewThreads query — an unreadable body signal must never look like zero.
+REVIEWS_JSON="$(gh api "repos/${REPO}/pulls/${PR}/reviews" \
+  --paginate --slurp 2>/dev/null)" \
+  || fail "pull-request reviews query failed — NOT zero suppressed findings"
+
+if ! echo "$REVIEWS_JSON" | jq -e '
+  type=="array" and all(.[]; type=="array")
+' >/dev/null 2>&1; then
+  fail "reviews response missing expected shape — treating as error, not zero"
+fi
+
+SUPPRESSED_FINDINGS="$(echo "$REVIEWS_JSON" | jq --arg head "$HEAD_SHA" '
+  ([.[][]
+    | select(.commit_id == $head)
+    | select((.user.login // "") | test("copilot"; "i"))]
+   | sort_by(.submitted_at)
+   | last // {}) as $latest
+  | if (($latest.body // "")
+      | test("Suppressed comments \\([1-9][0-9]*\\)|Needs a closer look"; "i"))
+    then 1 else 0 end')" \
+  || fail "could not classify current-head Copilot review body"
+
+OPEN=$((OPEN_THREADS + SUPPRESSED_FINDINGS))
+echo "OPEN_COMMENTS=${OPEN}"
+echo "SUPPRESSED_FINDINGS=${SUPPRESSED_FINDINGS}"
 echo "CI=${CI}"
 echo "MERGE_STATE=${MERGE_STATE}"
 echo "PR_STATE=${PR_STATE}"
 
-# --- 3. Copilot review round hint ----------------------------------------------
+# --- 4. Copilot review round hint ----------------------------------------------
 # Copilot review submissions show as `reviewed` timeline events. Counting them is
 # the round number; >=5 means we've exhausted Copilot's review budget.
 #
@@ -115,7 +148,7 @@ REVIEWS="${REVIEWS:-0}"
 echo "COPILOT_REVIEWS=${REVIEWS}"
 echo "ROUND_HINT=${REVIEWS}"
 
-# --- 4. Copilot review-workflow health (deadlock guard) -------------------------
+# --- 5. Copilot review-workflow health (deadlock guard) -------------------------
 # The review loop otherwise waits on TWO signals: a new open comment, or ROUND_HINT
 # going up. Neither arrives if Copilot's *review workflow run itself* fails/cancels
 # (observed: a run that hung ~15min then went to `cancelled/failure` and produced no

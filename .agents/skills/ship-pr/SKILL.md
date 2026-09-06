@@ -8,9 +8,10 @@ description: >-
   a beta", "bump a release", or otherwise wants the whole finish-a-branch dance —
   even if they only name one part (e.g. "just merge and release"). This encodes a
   GOLDEN PATH with hard-won guardrails: OpenSpec is archived BEFORE the PR so
-  Copilot reviews the archived spec too, review-comment polling is done through an
-  idempotent status script (never ad-hoc `gh` in a bare loop), and every review
-  comment is resolved after reply so the open-count is the single source of truth.
+  Copilot reviews the archived spec too, review-finding polling is done through an
+  idempotent status script (never ad-hoc `gh` in a bare loop), every review thread
+  is resolved after reply, and body-only suppressed findings remain visible in the
+  combined open count.
 compatibility: >-
   Requires `gh` authenticated to the repo (push + PR + release scopes), a clean
   feature branch ready to ship, and OpenSpec (`openspec` CLI) if the change is
@@ -111,7 +112,7 @@ the PR. Run `pr-status.sh` first thing and let its output tell you what to do:
 proceed to merge. The whole skill is designed so any step can be re-derived from
 GitHub state, which is what makes it safe to re-enter on every wake-up.
 
-### The single source of truth is the OPEN (unresolved) comment count
+### The single source of truth is the combined OPEN finding count
 
 Get status with the bundled script — **never** ad-hoc `gh` in a bare loop:
 
@@ -119,13 +120,15 @@ Get status with the bundled script — **never** ad-hoc `gh` in a bare loop:
 bash .agents/skills/ship-pr/scripts/pr-status.sh <owner>/<repo> <N>
 ```
 
-It prints `OPEN_COMMENTS=<n>`, `CI=<pending|pass|fail>`, `MERGE_STATE=<...>`,
-`ROUND_HINT=<n>`, and `COPILOT_RUN=<success|running|failure|none>` (the health of
+It prints `OPEN_COMMENTS=<n>`, `SUPPRESSED_FINDINGS=<0|1>`,
+`CI=<pending|pass|fail>`, `MERGE_STATE=<...>`, `ROUND_HINT=<n>`, and
+`COPILOT_RUN=<success|running|failure|none>` (the health of
 Copilot's review *workflow run*). Decision table — **evaluate positive signals
 first** (a real comment or a completed round always wins over run health):
 
 | pr-status says | do |
 | --- | --- |
+| `SUPPRESSED_FINDINGS>0` | the latest current-head Copilot review has a body-only finding → read that review body and fix/refute it; there is no thread to resolve |
 | `OPEN_COMMENTS>0` | there are unresolved review comments → go fix/refute them (regardless of `COPILOT_RUN` — a run can post comments and still end up cancelled) |
 | `OPEN_COMMENTS=0` and `ROUND_HINT` went up since your last push | Copilot reviewed with no new findings → satisfied → proceed to step 5 |
 | `OPEN_COMMENTS=0`, `ROUND_HINT` unchanged, `COPILOT_RUN=running` | genuinely still reviewing → loop again |
@@ -150,9 +153,10 @@ fabricates a false all-clear.
 The last row is a real trap: a failed `gh` call must never be silently read as
 "0 open comments / all clear". The script exits non-zero and prints
 `STATUS_ERROR=1` precisely so a green-looking `OPEN_COMMENTS=0` can't come from a
-swallowed error. If you ever find yourself waiting on a field like `reviews`
-length that stays `0` forever, you're polling the wrong signal — Copilot reviews
-surface as inline comments + a `reviewed` timeline event, not `reviews[]` bodies.
+swallowed error. Never poll the raw `reviews[]` length as a completion signal.
+The script uses review bodies only for one narrow exception: an explicit
+`Needs a closer look` / positive `Suppressed comments (N)` marker on the latest
+Copilot review whose immutable review `commit_id` equals the current head.
 
 ### After you handle each comment: reply, then RESOLVE it
 
@@ -170,6 +174,11 @@ guessing "which of these is new?" by timestamp — which is unreliable because
 GitHub re-anchors old comments onto new commits (their `commit_id` changes but
 `created_at` doesn't). Don't rely on timestamps or `commit_id`; rely on
 resolved-vs-open. See the pitfalls doc.
+
+A suppressed body-only finding has no reply or resolve endpoint. Read the latest
+current-head Copilot review body, fix or refute it honestly, then push the fix and
+request another review. A new head drops the old review-body signal; a later clean
+review of the same head supersedes an earlier body.
 
 ### Push fixes, then re-request review
 
@@ -237,7 +246,7 @@ no further confirmation, but a major/minor jump or a non-obvious version does.
 - **Read the synced spec** — `openspec archive` leaves a `TBD` Purpose + can drift scope.
 - **Never sweep unrelated working-tree changes** into the ship commit.
 - **Wait with `/loop` / ScheduleWakeup**, not a `sleep` loop or a guessed timeout.
-- **Poll OPEN (unresolved) comment count**, via `pr-status.sh` — not `reviews[]` length, not timestamps.
+- **Poll the combined OPEN finding count**, via `pr-status.sh`: unresolved threads plus the latest current-head suppressed-review signal — never raw `reviews[]` length or timestamps.
 - **A failed `gh` call ≠ "all clear"** — `STATUS_ERROR=1` means loop again, never merge.
 - **Reply THEN resolve every comment** — so the open-count stays the source of truth.
 - **Re-request review after each fix push**; **bound at ~5 rounds** then escalate.

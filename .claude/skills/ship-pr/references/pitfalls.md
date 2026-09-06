@@ -19,8 +19,9 @@ loop is driven by `/loop`, not a background poller.
 **What happened:** waited on the length of the reviews collection to go up. It never
 did — Copilot posts inline comments + a `reviewed` timeline event, not a reviews[]
 body. Infinite wait.
-**Fix:** poll unresolved `reviewThreads`. Count `reviewed` timeline events only as a
-round hint.
+**Fix:** poll unresolved `reviewThreads`, plus only the explicit suppressed-finding
+marker on the latest current-head review body. Count `reviewed` timeline events only
+as a round hint; never use raw review-array length as completion.
 
 ## 3. Timestamp / commit_id filtering to find "new" comments
 
@@ -28,8 +29,10 @@ round hint.
 request time" or "commit_id == my HEAD". GitHub re-anchors old comments onto the new
 commit on push (commit_id changes, created_at doesn't), so old already-addressed
 comments looked new, and the filter was unreliable in both directions.
-**Fix:** resolve every comment after replying; poll unresolved count. Never filter by
-time or SHA.
+**Fix:** resolve every inline comment after replying; poll unresolved count. Never
+filter inline comments by time or SHA. The narrow review-body guard is different: a
+review submission's own `commit_id` is immutable provenance, so it is safe to require
+that the latest reviewed head still equals the PR head.
 
 ## 4. Declaring "no comments" too early
 
@@ -78,6 +81,17 @@ after the stuck run is terminal (a re-request during `running` is a no-op). Boun
 the re-triggers (~2) then escalate to the user. Evaluate positive signals (open
 comment, ROUND_HINT) BEFORE run health: a run can post comments and still end
 cancelled, so a `failure` conclusion doesn't mean "no review happened".
+
+## 9. A suppressed finding has no review thread
+
+**What happened:** Copilot reported `Comments generated: 0 new`, but its review body
+contained `Needs a closer look` and `Suppressed comments (1)` with a real message-ID
+defect. GraphQL returned zero unresolved threads, so the old status script declared
+all-clear and the PR merged with the defect.
+**Fix:** `pr-status.sh` fail-loud fetches review submissions and checks the latest
+Copilot review for the current head for an explicit suppressed-finding marker. It
+prints `SUPPRESSED_FINDINGS=1` and folds that signal into `OPEN_COMMENTS`; a fix push
+or later clean same-head review supersedes the body-only finding.
 
 ## Meta-lesson
 

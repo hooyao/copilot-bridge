@@ -937,8 +937,9 @@ public class CodexBehaviorTests
     }
 
     /// <summary>
-    /// Real Codex retry scope: the bridge ends the first sampling stream after one
-    /// silent second and emits a retryable <c>response.failed</c>. With isolated
+    /// Real Codex retry scope: the first sampling stream completes reasoning[0] and
+    /// message[1], then goes silent so the bridge emits a retryable
+    /// <c>response.failed</c> whose compacted output keeps message identity. With isolated
     /// provider values (request retries 1, stream retries 2), Codex must begin a new
     /// sampling attempt, execute the returned custom exec tool, echo its output, and
     /// finish. Client-owned SQLite is the semantic verdict.
@@ -1033,8 +1034,9 @@ public class CodexBehaviorTests
             + $"window=[{result.StartedUnixSeconds},{result.EndedUnixSeconds}]");
         _output.WriteLine($"[manifest] {manifestPath}");
         _output.WriteLine(
-            "[verdict] require one bridge stream_idle failure followed by a new sampling request, "
-            + "custom_tool_call + matching output, final canary, no abort, and zero router fatals "
+            "[verdict] require one reasoning[0]+message[1] bridge stream_idle failure whose "
+            + "response.failed.output[0] keeps the message-added id, followed by a new sampling "
+            + "request, custom_tool_call + matching output, final canary, no abort, and zero router fatals "
             + "in Codex's own SQLite window (request retries=1, stream retries=2).");
 
         ClientBehaviorSupport.AssertHarnessProducedEvidence(

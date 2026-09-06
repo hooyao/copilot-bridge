@@ -154,6 +154,49 @@ public class CodexMessageItemIdStabilityTests
     }
 
     [Fact]
+    public void Synthesized_failed_terminal_uses_native_message_index_after_omitted_reasoning()
+    {
+        // Contract: terminal array position is not native output identity. T4 drops
+        // the hidden reasoning carrier from synthesized output, so the message from
+        // native index 1 occupies failed.output[0] but must keep the id already sent
+        // for index 1. Looking the id up by failed.output ordinal creates a duplicate.
+        var source = new List<SseItem<string>>
+        {
+            Sse("response.created", """{"type":"response.created","response":{"id":"resp_reasoning_failed","status":"in_progress","model":"gpt-5.6-sol"}}"""),
+            Sse("response.output_item.added", """{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"reasoning-added","encrypted_content":"stale","summary":[]}}"""),
+            Sse("response.output_item.done", """{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"reasoning-done","encrypted_content":"opaque-reasoning","summary":[{"type":"summary_text","text":"brief"}]}}"""),
+            Sse("response.output_item.added", """{"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"opaque-after-reasoning-added","phase":"final_answer","role":"assistant","status":"in_progress","content":[]}}"""),
+            Sse("response.output_text.delta", """{"type":"response.output_text.delta","item_id":"rolling-after-reasoning-delta","output_index":1,"content_index":0,"delta":"partial"}"""),
+            Sse("response.output_item.done", """{"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"rolling-after-reasoning-done","phase":"final_answer","role":"assistant","status":"completed","content":[{"type":"output_text","text":"partial"}]}}"""),
+            Sse("response.failed", """{"type":"response.failed","response":{"id":"resp_reasoning_failed","status":"failed","error":{"code":"upstream_error","message":"generated detail"}}}"""),
+        };
+
+        var ledger = new NativeResponsesEventLedger();
+        var t3 = new ResponsesToAnthropicStream(
+            Model, preserveNativeEvents: true, nativeLedger: ledger);
+        var ir = new List<SseItem<string>>();
+        var failure = Assert.Throws<UpstreamResponseFailedException>(() =>
+        {
+            foreach (var evt in source)
+                ir.AddRange(t3.Translate(evt));
+        });
+
+        var t4 = new AnthropicToResponsesStream(Model, nativeLedger: ledger);
+        var emitted = ir.SelectMany(t4.Translate).ToList();
+        emitted.AddRange(t4.FlushTerminal(failed: true, failureCode: failure.Code));
+
+        Assert.Equal(
+            ["opaque-after-reasoning-added"],
+            MessageIds(emitted, outputIndex: 1).Distinct(StringComparer.Ordinal));
+        var terminal = emitted.Single(evt => evt.EventType == "response.failed");
+        var output = JsonNode.Parse(terminal.Data)!["response"]!["output"]!.AsArray();
+        var failedMessage = Assert.IsType<JsonObject>(Assert.Single(output));
+        Assert.Equal("message", failedMessage["type"]!.GetValue<string>());
+        Assert.Equal("opaque-after-reasoning-added", failedMessage["id"]!.GetValue<string>());
+        Assert.Equal(0, ledger.Count);
+    }
+
+    [Fact]
     public void Unmapped_and_non_message_identities_are_not_normalized()
     {
         var source = new List<SseItem<string>>

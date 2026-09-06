@@ -12,7 +12,7 @@ Insignificant SSE framing or JSON serialization differences are allowed, but eve
 Two protocol-corrective identity exceptions are required:
 
 1. A `custom_tool_call` item id: every client-facing lifecycle/output copy SHALL use a `ctc`-prefixed id derived from the call id until T3 observes Copilot's stable `ctc` input-event id, after which completed/terminal copies SHALL use that stable id.
-2. A streaming `message` item id: once Copilot adds a message output item, every client-facing lifecycle reference for that output index SHALL use the added item's id as one canonical identity. If the added item has no usable id, the bridge SHALL use one deterministic, client-only, non-`msg` fallback. This includes the added and done item objects, every top-level `item_id` on message content/text events, and the corresponding terminal output item. A conforming stream that already uses one stable id SHALL remain identity-value-faithful. The correction SHALL NOT change event order, count, timing, content, phase, annotations, status, unknown siblings, or any non-message item identity. If Codex echoes an opaque or fallback non-`msg` identity, the existing request-side correction SHALL remove it before the Copilot request; a legitimate canonical `msg_...` identity SHALL retain the existing replay behavior.
+2. A streaming `message` item id: once Copilot adds a message output item, every client-facing lifecycle reference for that output index SHALL use the added item's id as one canonical identity. If the added item has no usable id, the bridge SHALL use one deterministic, client-only, non-`msg` fallback. This includes the added and done item objects, every top-level `item_id` on message content/text events, and the corresponding terminal output item. When the bridge synthesizes a failed terminal and omits native output items that have no safe semantic reconstruction, it SHALL associate each retained message with its original native output index rather than infer identity from the retained item's terminal array position. A conforming stream that already uses one stable id SHALL remain identity-value-faithful. The correction SHALL NOT change event order, count, timing, content, phase, annotations, status, unknown siblings, or any non-message item identity. If Codex echoes an opaque or fallback non-`msg` identity, the existing request-side correction SHALL remove it before the Copilot request; a legitimate canonical `msg_...` identity SHALL retain the existing replay behavior.
 
 #### Scenario: Detailed reasoning survives a same-protocol stream
 - **WHEN** Codex requests a reasoning summary and Copilot emits reasoning item lifecycle events, reasoning-summary events, encrypted reasoning content, and a completed terminal
@@ -24,6 +24,11 @@ Two protocol-corrective identity exceptions are required:
 - **THEN** Codex receives the added item's id at every message-id path for that output index
 - **AND** receives each original event exactly once and in its original position
 - **AND** every non-id JSON value remains unchanged.
+
+#### Scenario: Failed terminal retains message identity after omitted reasoning
+- **WHEN** Copilot completes a reasoning item at output index 0 and a message at output index 1 before the stream fails, and the bridge omits the reasoning item from its synthesized failed terminal
+- **THEN** the retained message in `response.failed.output[0]` uses the canonical id already streamed for native output index 1
+- **AND** the bridge does not create a second message identity from terminal array position 0.
 
 #### Scenario: Message phase and future fields survive
 - **WHEN** Copilot emits a message item with `phase: "commentary"` or `phase: "final_answer"`, delta metadata, and an unmodeled sibling field
