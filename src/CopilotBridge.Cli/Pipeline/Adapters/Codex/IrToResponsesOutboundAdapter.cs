@@ -322,8 +322,11 @@ internal sealed class AnthropicToResponsesStream
     // the Responses usage *_details so Codex's prompt-cache telemetry is honest.
     private long _cachedInputTokens;
     private long _reasoningOutputTokens;
-    // Accumulated completed output items, for the response.completed `output[]`.
-    private readonly List<string> _completedItems = [];
+    // Accumulated completed output items, for a synthesized terminal `output[]`.
+    // Keep the native output index separately: hidden reasoning carriers are omitted
+    // from this list, so list position is not necessarily the source output_index.
+    private readonly List<CompletedOutputItem> _completedItems = [];
+    private int? _nativeOutputIndexForOpenBlock;
     private bool _nativeMode;
     private bool _nativeTerminalDelivered;
     private bool _nativeMutationFailed;
@@ -541,6 +544,7 @@ internal sealed class AnthropicToResponsesStream
         _blockIsWebSearch = false;
         _blockIsReasoning = false;
         _webSearchItemAdded = "";
+        _nativeOutputIndexForOpenBlock = null;
     }
 
     /// <summary>
@@ -671,6 +675,13 @@ internal sealed class AnthropicToResponsesStream
             && root["output_index"]?.GetValue<int>() is { } addedIndex
             && root["item"] is JsonObject added)
         {
+            // The semantic content_block_start is consumed immediately before its
+            // native carrier. Bind that open generated block to the authoritative
+            // Responses output_index so a later synthesized terminal does not infer
+            // provenance from its compacted output[] position.
+            if (_currentBlockType is not null && !_blockIsReasoning)
+                _nativeOutputIndexForOpenBlock = addedIndex;
+
             if (added["type"]?.GetValue<string>() == "custom_tool_call"
                 && added["call_id"]?.GetValue<string>() is { Length: > 0 } callId)
             {
@@ -733,7 +744,13 @@ internal sealed class AnthropicToResponsesStream
                     changed |= SetStringIfDifferent(
                         item, "id", terminalState.StableId ?? terminalState.SynthesizedId);
                 else if (itemType == "message"
-                         && _nativeMessageIdsByOutput.TryGetValue(outputIndex, out var terminalMessageId))
+                         && _nativeMessageIdsByOutput.TryGetValue(
+                             type == "response.failed"
+                                 && outputIndex < _completedItems.Count
+                                 && _completedItems[outputIndex].NativeOutputIndex is { } nativeOutputIndex
+                                     ? nativeOutputIndex
+                                     : outputIndex,
+                             out var terminalMessageId))
                     changed |= SetStringIfDifferent(item, "id", terminalMessageId);
             }
         }
@@ -765,6 +782,8 @@ internal sealed class AnthropicToResponsesStream
         internal string? StableId { get; set; }
     }
 
+    private readonly record struct CompletedOutputItem(string Json, int? NativeOutputIndex);
+
     private static bool IsResponsesTerminal(in SseItem<string> item) =>
         item.EventType is "response.completed" or "response.incomplete" or "response.failed";
 
@@ -780,6 +799,7 @@ internal sealed class AnthropicToResponsesStream
         _blockIsWebSearch = false;
         _blockIsReasoning = false;
         _webSearchItemAdded = "";
+        _nativeOutputIndexForOpenBlock = null;
 
         // A reasoning carrier: T3 pushed the Responses reasoning item into the IR as a
         // hidden redacted_thinking block so any client edge can pull what it needs. THIS
@@ -933,20 +953,23 @@ internal sealed class AnthropicToResponsesStream
                     $"{{\"type\":\"response.web_search_call.searching\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item_id\":{Enc(_itemId)}}}");
                 yield return Ev("response.web_search_call.completed",
                     $"{{\"type\":\"response.web_search_call.completed\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item_id\":{Enc(_itemId)}}}");
-                _completedItems.Add(completedItem);
+                _completedItems.Add(new CompletedOutputItem(
+                    completedItem, _nativeOutputIndexForOpenBlock));
                 yield return Ev("response.output_item.done",
                     $"{{\"type\":\"response.output_item.done\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{completedItem}}}");
             }
             else if (_webSearchItemAdded.Length > 0)
             {
                 // Interrupted search: close the item as-is (in-progress), no .completed.
-                _completedItems.Add(_webSearchItemAdded);
+                _completedItems.Add(new CompletedOutputItem(
+                    _webSearchItemAdded, _nativeOutputIndexForOpenBlock));
                 yield return Ev("response.output_item.done",
                     $"{{\"type\":\"response.output_item.done\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{_webSearchItemAdded}}}");
             }
             _currentBlockType = null;
             _blockIsWebSearch = false;
             _webSearchItemAdded = "";
+            _nativeOutputIndexForOpenBlock = null;
             yield break;
         }
         if (_currentBlockType == "tool_use")
@@ -981,7 +1004,8 @@ internal sealed class AnthropicToResponsesStream
                     $"{{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":{_seq++},\"item_id\":{Enc(completedItemId)},\"output_index\":{_outputIndex},\"arguments\":{Enc(_argsBuffer)}}}");
             }
             var toolItem = ToolCallItem(status: "completed", itemId: completedItemId);
-            _completedItems.Add(toolItem);
+            _completedItems.Add(new CompletedOutputItem(
+                toolItem, _nativeOutputIndexForOpenBlock));
             yield return Ev("response.output_item.done",
                 $"{{\"type\":\"response.output_item.done\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{toolItem}}}");
         }
@@ -993,7 +1017,8 @@ internal sealed class AnthropicToResponsesStream
             yield return Ev("response.content_part.done",
                 $"{{\"type\":\"response.content_part.done\",\"sequence_number\":{_seq++},\"item_id\":{Enc(_itemId)},\"output_index\":{_outputIndex},\"content_index\":0,\"part\":{{\"type\":\"output_text\",\"text\":{Enc(_textBuffer)},\"annotations\":[]}}}}");
             var msgItem = MessageItem(status: "completed", text: _textBuffer);
-            _completedItems.Add(msgItem);
+            _completedItems.Add(new CompletedOutputItem(
+                msgItem, _nativeOutputIndexForOpenBlock));
             yield return Ev("response.output_item.done",
                 $"{{\"type\":\"response.output_item.done\",\"sequence_number\":{_seq++},\"output_index\":{_outputIndex},\"item\":{msgItem}}}");
         }
@@ -1003,6 +1028,7 @@ internal sealed class AnthropicToResponsesStream
         _toolNamespace = "";
         _toolIsCustom = false;
         _customToolCallId = "";
+        _nativeOutputIndexForOpenBlock = null;
     }
 
     private string MessageItem(string status, string? text)
@@ -1060,7 +1086,7 @@ internal sealed class AnthropicToResponsesStream
 
     private string CompletedEnvelope()
     {
-        var output = "[" + string.Join(",", _completedItems) + "]";
+        var output = "[" + string.Join(",", _completedItems.Select(static item => item.Json)) + "]";
         return $"{{\"type\":\"response.completed\",\"sequence_number\":{_seq++},\"response\":{{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":{Enc(MapStatus())},\"model\":{Enc(_model)},\"output\":{output},\"usage\":{UsageJson()}}}}}";
     }
 
@@ -1068,7 +1094,7 @@ internal sealed class AnthropicToResponsesStream
     {
         // Honest failure terminal. Codex's parser models response.failed; carry
         // whatever output was assembled before the failure plus an error object.
-        var output = "[" + string.Join(",", _completedItems) + "]";
+        var output = "[" + string.Join(",", _completedItems.Select(static item => item.Json)) + "]";
         return $"{{\"type\":\"response.failed\",\"sequence_number\":{_seq++},\"response\":{{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":\"failed\",\"model\":{Enc(_model)},\"output\":{output},\"error\":{{\"code\":{Enc(_failureCode)},\"message\":\"the upstream model backend failed mid-stream\"}},\"usage\":{UsageJson()}}}}}";
     }
 

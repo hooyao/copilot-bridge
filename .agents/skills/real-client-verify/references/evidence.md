@@ -13,16 +13,17 @@ how to read each source and what signatures decide PASS / FAIL.
 - `route` — `/codex` | `/cc` | `/cc->gpt`
 - `model`, `scenario`, `clientExitCode`, `durationSeconds`, `prompt`
 - `traceDir` — the bridge's four-file audit for this run
-- `dispatchLogPath` / `dispatchSinceUnix` / `dispatchUntilUnix` — codex only: the codex
-  dispatch DB and a Unix-second lower/upper window. **The path is the real
-  `~/.codex/logs_2.sqlite`, NOT anything under `CODEX_HOME`** (codex logs to the real user
-  home regardless of the override; an isolated home's `logs_2.sqlite` stays empty). The
-  window is a **coarse narrowing, NOT a clean run isolator**: it is second-resolution, and
-  codex multiplexes back-to-back `codex exec` runs onto a **shared, long-lived worker
-  process**, so a window can overlap an adjacent run and the log has no reliable per-run
-  key (the `process_uuid` column is that shared worker's pid, not this run's). That is why
-  the **per-run bridge trace is the authoritative execution evidence** and the log window
-  is only the router-fatal check within it (see the note below the rubric).
+- `dispatchLogPath` / `dispatchSinceUnix` / `dispatchUntilUnix` — codex only: the exact
+  dispatch DB selected by the harness and a Unix-second lower/upper window. Current
+  app-server behavior cases isolate it with `CODEX_SQLITE_HOME` (distinct from
+  `CODEX_HOME`) and explicitly flush the sink by deleting only their temporary thread
+  after the completed turn. Older/shared-client cases can instead point at the real
+  `~/.codex/logs_2.sqlite`; for those, the second-resolution window can overlap adjacent
+  work because Codex may multiplex runs onto a long-lived worker. Always trust the
+  manifest path, never guess a home directory. In either form the **per-run bridge trace
+  is the authoritative execution evidence** and the log is the router-fatal check.
+  An empty window is INCONCLUSIVE and means the run did not capture usable dispatch
+  evidence.
 - `stdoutPath` / `stderrPath` — the saved client stdout/stderr (claude transcript /
   codex JSONL)
 - `forcedCapiForbiddenOperation` / `bridgeLogPath` — forced-403 cases only: the
@@ -80,17 +81,12 @@ and a recent tail — plus a summary with the fatal count.
 Any missing tool round-trip, a stdout abort, a fatal row, or a missing canary = **FAIL**,
 regardless of the bridge's 200 and regardless of exit code.
 
-> **The bridge trace is per-run; the log window is NOT.** The four-file trace lives in
-> THIS run's own `traceDir`, so the tool round-trip read from it is unambiguously this
-> run's — that is why it is the **authoritative** "did the tool execute" signal. The
-> `logs_2.sqlite` window, by contrast, is carved out of the shared long-lived `~/.codex`
-> by second-resolution timestamp, and codex multiplexes sequential `codex exec` runs onto
-> one shared worker process (its `process_uuid` is that worker's pid, shared across runs —
-> so there is no reliable per-run key in the log). A window can therefore overlap an
-> adjacent run. Treat the log strictly as a **router-fatal check** (an `incompatible
-> payload` / router-ERROR row is a real problem worth surfacing even if attribution is
-> fuzzy), and the per-run **trace** as the source of truth for execution — if the two ever
-> disagree, trust the trace.
+> **The bridge trace is always the per-run execution authority.** The four-file trace
+> lives in THIS run's own `traceDir`, so its tool round-trip is unambiguous. A current
+> app-server behavior run also has an isolated, explicitly flushed SQLite home; an older
+> manifest may instead point at a shared long-lived database whose second-resolution
+> window overlaps adjacent runs. Treat either log as the **router-fatal check** and the
+> per-run trace as the source of truth for execution — if they disagree, trust the trace.
 
 > **Empty window ≠ PASS.** If the reader finds essentially no rows in the window (the
 > tail is empty), the verdict is **INCONCLUSIVE, not clean** — the run may not have

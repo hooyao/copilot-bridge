@@ -118,11 +118,11 @@ Apply the client-owned tool verdict as usual, plus the recovery evidence in
 - **Codex** → PASS requires (a) a real tool round-trip on THIS run's **bridge trace** — a
   `function_call`/`custom_tool_call` and its matching `*_output` (the authoritative
   execution signal; the stdout canary alone is echo-able from the prompt), (b) **no**
-  `aborted` in stdout, and (c) **zero** router fatals in the real `~/.codex/logs_2.sqlite`
+  `aborted` in stdout, and (c) **zero** router fatals in the manifest-selected `logs_2.sqlite`
   (`[ERROR] codex_core::tools::router` / `incompatible payload` / `Missing namespace` /
-  `Polymorphism_`). Read the log with `scripts/read-codex-log.cs` (codex logs to the real
-  home, NOT `CODEX_HOME`). The log window is a coarse router-fatal check only — codex
-  reuses a shared worker across runs, so the trace, not the log window, isolates this run.
+  `Polymorphism_`). Read the exact `dispatchLogPath` with `scripts/read-codex-log.cs`.
+  Current app-server cases isolate it with `CODEX_SQLITE_HOME`; older/shared-client cases
+  may point at the real Codex home. The trace, not the log window, isolates execution.
 - **Claude Code** → the behavior tests capture `--output-format stream-json --verbose`,
   so the manifest's `stdoutPath` carries the INTERMEDIATE assistant / `tool_use` /
   `tool_result` events (not just the final result envelope), cross-checked against the
@@ -151,10 +151,10 @@ A bridge-side 200 alone is **INCONCLUSIVE**, never PASS.
    or, equivalently, select the manifest files whose mtime is after this run started
    (e.g. the newest N for the cases you ran). For each such manifest: read it, then read
    the client's own evidence it points at — for codex, run the log reader against the
-   real `~/.codex/logs_2.sqlite` windowed to the run (`dispatchLogPath` +
-   `dispatchSinceUnix` + `dispatchUntilUnix` — codex logs to the real home, NOT
-   `CODEX_HOME`; and note the log window is only a coarse fatal-check, the per-run trace
-   is authoritative — see `references/evidence.md`):
+   manifest's exact `dispatchLogPath`, windowed by `dispatchSinceUnix` and
+   `dispatchUntilUnix`. Do not substitute a guessed `CODEX_HOME` or real-home path; the
+   current app-server harness uses isolated `CODEX_SQLITE_HOME`. The per-run trace remains
+   authoritative for execution — see `references/evidence.md`:
    ```powershell
    dotnet run .claude/skills/real-client-verify/scripts/read-codex-log.cs -- "<dispatchLogPath>" <dispatchSinceUnix> <dispatchUntilUnix> "<out.txt>"
    ```

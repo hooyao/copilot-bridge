@@ -161,7 +161,11 @@ full set:
 > `output_item.done`, and the terminal output copy (with a deterministic non-`msg`
 > fallback only when the added item has no id). Copilot can emit a different opaque
 > id at each event, while Codex 0.153 keys its streamed and completed UI items by id
-> and otherwise renders the same text twice. The request translator strips an opaque
+> and otherwise renders the same text twice. If T4 must synthesize a failed terminal,
+> each retained output item carries its original native `output_index` provenance;
+> identity lookup never infers that index from the compacted terminal-array position,
+> because hidden reasoning carriers are deliberately omitted there. The request
+> translator strips an opaque
 > or fallback non-`msg` id if Codex echoes it, while an already-valid stable `msg_...`
 > id retains its existing replay behavior. Reasoning and every other item id remain native.
 > The ledger is

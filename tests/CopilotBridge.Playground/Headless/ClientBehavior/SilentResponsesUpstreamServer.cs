@@ -6,11 +6,11 @@ using System.Text.Json;
 namespace CopilotBridge.Playground.Headless;
 
 /// <summary>
-/// Deterministic native Responses upstream for the Codex keepalive behavior case.
-/// It opens the first response, emits no bytes past the client's configured parsed-
-/// event idle timeout, then resumes with a real custom <c>exec</c> call. The exec
-/// performs two nested shell operations (write then read); only a later request that
-/// echoes the call output receives the final canary response.
+/// Deterministic native Responses upstream for the Codex keepalive/retry behavior
+/// cases. It can hold a stream silent before a real custom <c>exec</c> call, or emit a
+/// reasoning/message prefix and then stall so the bridge synthesizes a failed terminal.
+/// The exec performs two nested shell operations (write then read); only a later
+/// request that echoes the call output receives the final canary response.
 /// </summary>
 internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
 {
@@ -184,6 +184,19 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
 
     private async Task WriteFirstSamplingStallAsync(HttpListenerResponse response)
     {
+        const string prefixMessage = "A transient retry is required.";
+        const string prefixAddedId = "opaque-retry-prefix-added";
+        const string prefixDoneId = "opaque-retry-prefix-done";
+        var reasoning = new
+        {
+            type = "reasoning",
+            id = "rs_retryable_stream_timeout",
+            encrypted_content = new string('R', 256),
+            summary = new[]
+            {
+                new { type = "summary_text", text = "Prepared the retryable prefix." },
+            },
+        };
         await WriteEventAsync(response, "response.created", JsonSerializer.Serialize(new
         {
             type = "response.created",
@@ -195,6 +208,97 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
                 status = "in_progress",
                 model = "gpt-5.6-sol",
                 output = Array.Empty<object>(),
+            },
+        }));
+        await WriteEventAsync(response, "response.output_item.added", JsonSerializer.Serialize(new
+        {
+            type = "response.output_item.added",
+            sequence_number = 2,
+            output_index = 0,
+            item = reasoning,
+        }));
+        await WriteEventAsync(response, "response.output_item.done", JsonSerializer.Serialize(new
+        {
+            type = "response.output_item.done",
+            sequence_number = 3,
+            output_index = 0,
+            item = reasoning,
+        }));
+        await WriteEventAsync(response, "response.output_item.added", JsonSerializer.Serialize(new
+        {
+            type = "response.output_item.added",
+            sequence_number = 4,
+            output_index = 1,
+            item = new
+            {
+                type = "message",
+                id = prefixAddedId,
+                role = "assistant",
+                status = "in_progress",
+                content = Array.Empty<object>(),
+            },
+        }));
+        await WriteEventAsync(response, "response.content_part.added", JsonSerializer.Serialize(new
+        {
+            type = "response.content_part.added",
+            sequence_number = 5,
+            item_id = "rolling-retry-prefix-part",
+            output_index = 1,
+            content_index = 0,
+            part = new { type = "output_text", text = "", annotations = Array.Empty<object>() },
+        }));
+        await WriteEventAsync(response, "response.output_text.delta", JsonSerializer.Serialize(new
+        {
+            type = "response.output_text.delta",
+            sequence_number = 6,
+            item_id = "rolling-retry-prefix-delta",
+            output_index = 1,
+            content_index = 0,
+            delta = prefixMessage,
+        }));
+        await WriteEventAsync(response, "response.output_text.done", JsonSerializer.Serialize(new
+        {
+            type = "response.output_text.done",
+            sequence_number = 7,
+            item_id = "rolling-retry-prefix-text-done",
+            output_index = 1,
+            content_index = 0,
+            text = prefixMessage,
+        }));
+        await WriteEventAsync(response, "response.content_part.done", JsonSerializer.Serialize(new
+        {
+            type = "response.content_part.done",
+            sequence_number = 8,
+            item_id = "rolling-retry-prefix-part-done",
+            output_index = 1,
+            content_index = 0,
+            part = new
+            {
+                type = "output_text",
+                text = prefixMessage,
+                annotations = Array.Empty<object>(),
+            },
+        }));
+        await WriteEventAsync(response, "response.output_item.done", JsonSerializer.Serialize(new
+        {
+            type = "response.output_item.done",
+            sequence_number = 9,
+            output_index = 1,
+            item = new
+            {
+                type = "message",
+                id = prefixDoneId,
+                role = "assistant",
+                status = "completed",
+                content = new[]
+                {
+                    new
+                    {
+                        type = "output_text",
+                        text = prefixMessage,
+                        annotations = Array.Empty<object>(),
+                    },
+                },
             },
         }));
         await Task.Delay(_firstFailureSilence, _stop.Token);
@@ -407,9 +511,9 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
             $"Set-Content -LiteralPath 'codex_keepalive_probe.txt' -Value '{_canary}'");
         var read = JsonSerializer.Serialize(
             "Get-Content -Raw -LiteralPath 'codex_keepalive_probe.txt'");
-        return $"const writeResult = await tools.shell_command({{command:{write},workdir:{workdir}}});\n"
+        return $"const writeResult = await tools.exec_command({{cmd:{write},workdir:{workdir}}});\n"
             + "text(writeResult);\n"
-            + $"const readResult = await tools.shell_command({{command:{read},workdir:{workdir}}});\n"
+            + $"const readResult = await tools.exec_command({{cmd:{read},workdir:{workdir}}});\n"
             + "text(readResult);";
     }
 
@@ -442,14 +546,27 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
                 || !item.TryGetProperty("tools", out var tools)
                 || tools.ValueKind != JsonValueKind.Array)
                 continue;
-            foreach (var tool in tools.EnumerateArray())
-            {
-                if (tool.TryGetProperty("type", out var toolType)
-                    && toolType.GetString() == "custom"
-                    && tool.TryGetProperty("name", out var name)
-                    && name.GetString() == "exec")
-                    return true;
-            }
+            if (ContainsCustomExecTool(tools)) return true;
+        }
+        return false;
+    }
+
+    private static bool ContainsCustomExecTool(JsonElement tools)
+    {
+        foreach (var tool in tools.EnumerateArray())
+        {
+            if (!tool.TryGetProperty("type", out var toolType)
+                || toolType.ValueKind != JsonValueKind.String)
+                continue;
+            if (toolType.GetString() == "custom"
+                && tool.TryGetProperty("name", out var name)
+                && name.GetString() == "exec")
+                return true;
+            if (toolType.GetString() == "namespace"
+                && tool.TryGetProperty("tools", out var nested)
+                && nested.ValueKind == JsonValueKind.Array
+                && ContainsCustomExecTool(nested))
+                return true;
         }
         return false;
     }

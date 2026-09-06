@@ -22,18 +22,26 @@ returns to waiting. The dynamic-pacing variant (ScheduleWakeup) works too when y
 want to self-pace. Either way there's no sleep loop, no swallowed error, no guessed
 timeout, and each tick can actually DO something.
 
-## Poll the right signal: unresolved review threads
+## Poll the right signals: unresolved threads plus suppressed body findings
 
-Copilot's review does NOT reliably show up as an entry in the `reviews` REST/GraphQL
-collection with a body — that collection stays empty and if you poll its length you
-wait forever. What Copilot actually produces:
+Copilot normally produces:
 
 - **inline review comments** (these are what you read and address), and
 - a **`reviewed` timeline event** (useful only as a round counter).
 
-So the signal to poll is **the count of unresolved review threads**, via GraphQL
-`reviewThreads { isResolved }`. `pr-status.sh` does exactly this and nothing else
-as its primary output.
+It can also suppress an inline comment and place the actionable text only inside the
+review body under **`Needs a closer look` / `Suppressed comments (N)`**. That finding
+has no GraphQL review thread. `pr-status.sh` therefore combines the unresolved-thread
+count with a boolean body-only signal from the latest Copilot review whose immutable
+review `commit_id` matches the current PR head. It never treats the raw reviews-array
+length as progress; `reviewed` timeline events remain the round hint.
+
+## Body-only findings have no thread to resolve
+
+When `SUPPRESSED_FINDINGS=1`, read the latest current-head Copilot review body and
+fix or refute the finding honestly. There is no reply/resolve API for its suppressed
+comment. Push the fix and request a new review: the prior review belongs to the old
+head, while a later clean review of the same head supersedes an earlier body.
 
 ## Resolve after every reply — or the count lies
 

@@ -135,6 +135,8 @@ internal static class CodexAppServerProcess
         start.Environment["CODEX_HOME"] = invocation.CodexHome;
         start.Environment["CODEX_SQLITE_HOME"] = dispatchHome;
         start.Environment["BRIDGE_DUMMY_KEY"] = "dummy-bridge-bypass";
+        // Keep stderr bounded. The SQLite layer has its own TRACE target filter;
+        // thread/delete below explicitly flushes that independent sink.
         start.Environment["RUST_LOG"] = "warn";
         start.Environment.Remove("CODEX_THREAD_ID");
         start.Environment.Remove("CODEX_INTERNAL_ORIGINATOR_OVERRIDE");
@@ -273,6 +275,21 @@ internal static class CodexAppServerProcess
             var turnStatus = await RunTurnAsync(nextRequestId++, invocation.Prompt);
             if (invocation.FollowUpPrompt is { Length: > 0 } followUpPrompt)
                 turnStatus = await RunTurnAsync(nextRequestId, followUpPrompt);
+
+            // app-server's log sink batches asynchronously, while an ordinary stdio
+            // shutdown does not expose a flush handshake. thread/delete explicitly
+            // flushes LogDbLayer before removing the thread. This thread and its home
+            // are test-isolated, so use that lifecycle endpoint to make the client-owned
+            // SQLite verdict complete before the process exits.
+            const int cleanupRequestId = 1_000_000;
+            await SendAsync(process, new JsonObject
+            {
+                ["method"] = "thread/delete",
+                ["id"] = cleanupRequestId,
+                ["params"] = new JsonObject { ["threadId"] = threadId },
+            }, token);
+            _ = await ReadUntilAsync(process, stdout,
+                message => ResponseId(message) == cleanupRequestId, token);
 
             process.StandardInput.Close();
             var remaining = await process.StandardOutput.ReadToEndAsync(token);
