@@ -41,3 +41,7 @@
 
 - [x] 7.1 Add `ultra` to the permanent Responses B2/B3 vocabulary and snapshot, and reconfirm its rejection on real Astra client bytes.
 - [x] 7.2 Hide a validated cross-model alias when its target limits are missing or inconsistent, while preserving the direct-model and unavailable-overlay baseline behavior; mutation-check the new contract test.
+
+## 8. PR Review Round 3 Follow-up
+
+- [x] 8.1 Record the repository owner's explicit authorization for the fresh-install default route and confirm that existing installations retain their user-owned Locations array; no product change is required.

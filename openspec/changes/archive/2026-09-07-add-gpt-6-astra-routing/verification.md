@@ -49,6 +49,10 @@ Verdict: **PASS** under both real-client gates.
 - Final post-fix real Codex rerun: six Astra/low requests accumulated five matching custom-tool outputs; stdout completed with `7260` and the canary and no abort; the manifest-selected SQLite window contained 284 rows with zero router/dispatch fatals, ERROR rows, or retries.
 - Final unit suite: 1,770 passed. The no-regeneration 11-model Responses sweep passed in 4:27 with the `ultra` cells included.
 
+## PR review round 3
+
+Copilot produced no code finding and requested final human confirmation because the stock route changes fresh-install behavior. The repository owner explicitly requested the `gpt-5.6-sol` to `gpt-6-astra` configuration route and the complete ship workflow. Existing installations remain protected because updater config migration preserves their complete user-owned `Routing.Locations` array; clearing the single exact rule restores direct Sol behavior. No product change was required.
+
 ## Native AOT
 
 - `copilot-bridge.exe`: 14,853,120 bytes; `--version` executed successfully.
