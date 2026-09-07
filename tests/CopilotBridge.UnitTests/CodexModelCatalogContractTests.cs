@@ -1,10 +1,12 @@
 using System.Text.Json;
 using CopilotBridge.Cli.Catalogs.Codex;
+using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Models.Codex;
 using CopilotBridge.Cli.Models.Copilot;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace CopilotBridge.UnitTests;
@@ -270,7 +272,7 @@ public sealed class CodexModelCatalogContractTests
     }
 
     [Fact]
-    public void ResponsesRouteToAnotherSlugCannotEnableTheRequestedModel()
+    public void ResponsesRouteToUnprofiledSlugCannotEnableTheRequestedModel()
     {
         var baseline = LoadBaseline();
         var projector = new CodexCatalogProjector(
@@ -288,7 +290,106 @@ public sealed class CodexModelCatalogContractTests
         Assert.Equal("hide", model.GetProperty("visibility").GetString());
     }
 
+    [Fact]
+    public void ExactAliasedResponsesTargetKeepsSourceInstructionsAndUsesTargetLimits()
+    {
+        var baseline = LoadBaseline();
+        var source = Find(baseline.Models, "gpt-5.6-sol");
+        var profiles = new CodexModelProfileCatalog([
+            new CodexModelProfile
+            {
+                CanonicalId = "gpt-5.6-sol",
+                AcceptedEfforts = ["none", "low", "medium", "high", "xhigh", "max"],
+                DefaultEffort = "xhigh",
+            },
+            new CodexModelProfile
+            {
+                CanonicalId = "gpt-6-astra",
+                AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
+                DefaultEffort = "low",
+            },
+        ]);
+        var projector = new CodexCatalogProjector(
+            profiles,
+            new ExactAliasRegistry("gpt-5.6-sol", "gpt-6-astra"),
+            NullLogger<CodexCatalogProjector>.Instance);
+
+        var result = projector.Project(
+            baseline,
+            [Live("gpt-6-astra", 1_000_000, 872_000, 128_000)],
+            liveOverlayValidated: true);
+        var alias = Find(result.Models, "gpt-5.6-sol");
+
+        Assert.True(alias.GetProperty("supported_in_api").GetBoolean());
+        Assert.True(JsonElement.DeepEquals(
+            source.GetProperty("base_instructions"), alias.GetProperty("base_instructions")));
+        Assert.Equal(1_000_000, alias.GetProperty("context_window").GetInt32());
+        Assert.Equal(1_000_000, alias.GetProperty("max_context_window").GetInt32());
+        Assert.Equal(850_000, alias.GetProperty("auto_compact_token_limit").GetInt32());
+    }
+
+    [Fact]
+    public void ConfiguredModelLocationProjectsResolvedAstraLimitsUnderGpt56Slug()
+    {
+        var projector = ConfiguredAstraProjector();
+
+        var result = projector.Project(
+            LoadBaseline(),
+            [Live("gpt-6-astra", 1_000_000, 872_000, 128_000)],
+            liveOverlayValidated: true);
+        var alias = Find(result.Models, "gpt-5.6-sol");
+
+        Assert.True(alias.GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal(1_000_000, alias.GetProperty("context_window").GetInt32());
+        Assert.Equal(850_000, alias.GetProperty("auto_compact_token_limit").GetInt32());
+    }
+
+    [Fact]
+    public void ConfiguredModelLocationHidesAliasWhenValidatedAstraIsAbsent()
+    {
+        var result = ConfiguredAstraProjector().Project(
+            LoadBaseline(),
+            [Live("gpt-5.6-sol", 1_050_000, 922_000, 128_000)],
+            liveOverlayValidated: true);
+        var alias = Find(result.Models, "gpt-5.6-sol");
+
+        Assert.False(alias.GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal("hide", alias.GetProperty("visibility").GetString());
+    }
+
+    [Fact]
+    public void ConfiguredModelLocationKeepsReviewedBaselineWhenOverlayIsUnavailable()
+    {
+        var result = ConfiguredAstraProjector().Project(
+            LoadBaseline(), [], liveOverlayValidated: false);
+        var alias = Find(result.Models, "gpt-5.6-sol");
+
+        Assert.True(alias.GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal(372_000, alias.GetProperty("context_window").GetInt32());
+    }
+
     private static CodexCatalogBaseline LoadBaseline() => CodexCatalogTestFixtures.LoadCapturedBaseline();
+
+    private static CodexCatalogProjector ConfiguredAstraProjector()
+    {
+        var routes = new RoutesConfig
+        {
+            Locations =
+            [
+                new RouteLocation
+                {
+                    When = new MatchExpression { Model = "gpt-5.6-sol" },
+                    Use = new LocationUse { Model = "gpt-6-astra" },
+                },
+            ],
+        };
+        return new CodexCatalogProjector(
+            new CodexModelProfileCatalog(),
+            new CopilotModelRegistry(),
+            Options.Create(routes),
+            NullLogger<ModelRouteResolverLog>.Instance,
+            NullLogger<CodexCatalogProjector>.Instance);
+    }
 
     private static CodexCatalogProjection Project(CodexCatalogBaseline baseline, IReadOnlyList<CopilotModel> live) =>
         new CodexCatalogProjector(
@@ -342,5 +443,14 @@ public sealed class CodexModelCatalogContractTests
     {
         public RouteTarget Resolve(string requestedModelId) =>
             new(BackendVendor.CopilotResponses, "/responses", "different-model");
+    }
+
+    private sealed class ExactAliasRegistry(string source, string target) : IModelRegistry
+    {
+        public RouteTarget Resolve(string requestedModelId) =>
+            new(
+                BackendVendor.CopilotResponses,
+                "/responses",
+                string.Equals(requestedModelId, source, StringComparison.Ordinal) ? target : requestedModelId);
     }
 }

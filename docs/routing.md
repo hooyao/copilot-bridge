@@ -170,19 +170,42 @@ startup (exit code 2) with a message naming the offending `Routing.Locations[i]`
 
 ## Shipped configuration
 
-The bundled `appsettings.json` ships an **empty** active location list
-(`"Locations": []`) — no rewrites by default. It also carries a **disabled**
-example under `_Locations_disabled`, a key the config binder ignores (the same
-leading-underscore convention used for `_comment` fields). To enable it, rename
-`_Locations_disabled` to `Locations` (and rename the active empty `Locations` to
-something else — exactly one `Locations` key may be active):
+On a fresh install, the bundled `appsettings.json` actively routes the exact
+flagship Codex identity `gpt-5.6-sol` to `gpt-6-astra`:
+
+```jsonc
+"Locations": [
+  {
+    "When": { "Model": "gpt-5.6-sol" },
+    "Use": {
+      "Model": "gpt-6-astra",
+      "EffortMap": { "none": "low", "minimal": "low" }
+    }
+  }
+]
+```
+
+OpenAI's Astra migration guide and live Copilot probes agree that Astra accepts
+`low/medium/high/xhigh/max` and rejects `none/minimal`, hence the explicit map.
+The exact match leaves Luna, Terra, and Sol Fast direct. `GET /codex/models`
+retains the source slug/instructions but projects Astra's live 1,000,000 total /
+872,000 prompt limit, so the client compacts for the backend it actually reaches.
+
+Config migration treats the complete Locations array as user-owned. An upgraded
+installation therefore retains its old array (including `[]`) and must add this
+entry explicitly. Clearing the array rolls the alias back to literal gpt-5.6-sol.
+
+The file also carries an **alternative disabled** Claude Code → GPT example under
+`_Locations_disabled`, a key the config binder ignores. To use it alone, rename
+that key to `Locations` and rename the active array; to keep both, merge the entry
+into the active array. Exactly one `Locations` key may exist:
 
 ```jsonc
 "_Locations_disabled": [
   {
     "When": { "Model": "claude-opus-5" },
     "Use": { "Model": "gpt-5.6-sol", "EffortMap": { "max": "xhigh" } },
-    "Note": "Route Claude Code's claude-opus-5 traffic to Copilot gpt-5.6-sol (the newest Codex model). EffortMap max->xhigh is an OPTIONAL down-tier here: unlike gpt-5.5, gpt-5.6-sol accepts 'max' natively, so without the map Claude Code's 'max' passes through verbatim; the map caps it at xhigh instead. Drop the EffortMap to send 'max' through unchanged. Still a cross-model substitution — enable only when you intend Copilot's gpt-5.6-sol to serve Claude Code traffic."
+    "Note": "Route Claude Code's claude-opus-5 traffic to the reviewed gpt-5.6-sol Codex client model. EffortMap max->xhigh is an OPTIONAL down-tier here: unlike gpt-5.5, gpt-5.6-sol accepts 'max' natively, so without the map Claude Code's 'max' passes through verbatim; the map caps it at xhigh instead. Drop the EffortMap to send 'max' through unchanged. Still a cross-model substitution — enable only when you intend Copilot's gpt-5.6-sol to serve Claude Code traffic."
   }
 ]
 ```
@@ -197,8 +220,9 @@ something else — exactly one `Locations` key may be active):
 > `model_context_window` override to evade Codex's bundled 272k-era cap. Do not
 > re-add that alias for context discovery. Current `config codex` enables
 > command-auth model discovery, and `GET /codex/models?client_version=...`
-> returns the exact live limit for the real model slug. Locations remain useful
-> for intentional model/effort/header preferences, not for advertising capacity.
+> returns the exact live limit for the real model slug. A Location is no longer
+> needed solely to advertise capacity; when an intentional substitution changes
+> the target, catalog projection follows that resolved target's live limits.
 
 ### Retired: the opus 1M redirects
 

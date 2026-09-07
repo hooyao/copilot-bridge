@@ -59,6 +59,13 @@
   output tokens, and a real Codex-shaped request reported 310,465 input tokens
   with HTTP 200. Select it explicitly; it is absent from the official Codex
   catalog and the bridge does not invent a model-catalog entry for it.
+- **Astra's Copilot deployment is smaller than OpenAI's public deployment**:
+  Copilot advertises `gpt-6-astra` at 1,000,000 total / 872,000 prompt /
+  128,000 output, while OpenAI Docs lists 1,050,000 / 922,000 / 128,000 for the
+  public API. The fresh-install `gpt-5.6-sol → gpt-6-astra` route keeps the source
+  Codex catalog entry but projects Astra's live limits under it; this yields an
+  850,000-token auto-compact threshold instead of letting the client approach the
+  source model's higher prompt ceiling.
 
 ## 1. Where the context window comes from — the client, not the server
 

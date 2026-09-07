@@ -58,15 +58,28 @@ OpenAI-Chat translation" assumption (§4.4).
 >   `mai-code-1-flash-picker` returned 200 but answered `blue`, so only that exact
 >   profile retains the compatibility string fallback.
 
+> **Addendum — 2026-09-07 GPT-6 Astra.** Copilot now exposes exact
+> `gpt-6-astra` on `/responses` with 1,000,000 total / 872,000 prompt / 128,000
+> output tokens. Direct probes establish a fourth effort profile:
+> `low/medium/high/xhigh/max` accepted; `none/minimal` rejected. Function, custom,
+> web-search, and structured multimodal function output work; store/service-tier/
+> image-generation keep the existing uniform rejection facts. A real Codex 0.153.3
+> run requested `gpt-5.6-sol` with effort `none`, resolved to Astra/`low`, completed
+> seven matching custom-exec call/output rounds, and recorded zero router/dispatch
+> fatals. Replaying its 79 KB final request unchanged returned 200; changing only
+> effort to `none` or `minimal` returned 400. Sync and async custom tools retain the
+> existing `custom_tool_call` item and SSE families.
+
 > **Addendum — 2026-08-28 Codex model-catalog metadata and large-context confirmation.**
 > `ResponsesProbe.CaptureBridgeResponsesModelCapabilities` captured the complete
-> live `/models` entries for all ten exact `CodexModelProfileCatalog.KnownIds`
+> live `/models` entries for all eleven exact `CodexModelProfileCatalog.KnownIds`
 > into `docs/copilot-codex-model-capabilities-snapshot.json` (Enterprise account;
 > no bridge profile was missing). The advertised limits are:
 >
 > | models | total context | max prompt | max output |
 > | --- | ---: | ---: | ---: |
 > | `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,sol-fast,terra}` | 1,050,000 | 922,000 | 128,000 |
+> | `gpt-6-astra` | 1,000,000 | 872,000 | 128,000 |
 > | `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 |
 > | `gpt-5-mini` | 264,000 | 128,000 | 64,000 |
 > | `mai-code-1-flash-picker` | 256,000 | 128,000 | 128,000 |

@@ -30,7 +30,8 @@ namespace CopilotBridge.Playground.Headless;
 /// <c>src/CopilotBridge.Cli/appsettings.json</c>, we copy the build output into a
 /// per-run scratch dir and <b>patch the copied appsettings in place</b> — flipping
 /// <c>Tracing.Enabled</c> on and, for the cc-to-gpt scenario, promoting the bundled
-/// <c>_Locations_disabled</c> route to active <c>Locations</c>. Patching the real file
+/// <c>_Locations_disabled</c> route to active <c>Locations</c>, or retaining the
+/// stock gpt-5.6-sol-to-Astra route. Patching the real file
 /// (rather than shipping a hand-written duplicate) keeps the whole <c>Pipeline</c>
 /// block — runaway/leak guards, detectors — byte-identical to production, so the
 /// flywheel can never drift from what ships. Credentials are never inherited from the
@@ -90,6 +91,10 @@ internal enum ServeScenario
     /// <summary>No routing rewrites (empty <c>Locations</c>), tracing on. Native /cc
     /// (Claude Code) and native /codex (Codex CLI) scenarios.</summary>
     Passthrough,
+
+    /// <summary>The stock <c>gpt-5.6-sol → gpt-6-astra</c> Location remains
+    /// active, tracing on. Used by the route-specific real Codex acceptance leg.</summary>
+    Gpt56ToAstra,
 
     /// <summary>The <c>claude-opus-5 → gpt-5.6-sol</c> location active (promoted from
     /// the shipped <c>_Locations_disabled</c> example), tracing on. The CC→gpt leg.</summary>
@@ -527,7 +532,8 @@ internal static class ServeProcess
     /// Patch the copied production <c>appsettings.json</c> to the scenario shape: force
     /// <c>Tracing.Enabled=true</c> always; make <c>Routing.Locations</c> match the
     /// scenario EXPLICITLY — empty for <see cref="ServeScenario.Passthrough"/>, the
-    /// promoted <c>_Locations_disabled</c> example for <see cref="ServeScenario.CcToGpt"/>.
+    /// stock active route for <see cref="ServeScenario.Gpt56ToAstra"/>, or the promoted
+    /// <c>_Locations_disabled</c> example for <see cref="ServeScenario.CcToGpt"/>.
     /// Everything else (the whole <c>Pipeline</c> block) is left exactly as production
     /// ships it, so a behavior run never drifts from the real detector/timeout config.
     /// Throws if the source shape the patch depends on is missing (a drifted appsettings
@@ -592,6 +598,28 @@ internal static class ServeProcess
             // Move the disabled example into the active Locations slot (deep-clone so
             // we don't share nodes across the tree).
             routing["Locations"] = JsonNode.Parse(disabled.ToJsonString());
+        }
+        else if (scenario is ServeScenario.Gpt56ToAstra)
+        {
+            var locations = routing["Locations"]?.AsArray()
+                ?? throw new ServeStartupException(
+                    "Gpt56ToAstra scenario needs the stock Routing.Locations array.");
+            var hasExpectedRoute = locations.OfType<JsonObject>().Any(location =>
+                string.Equals(
+                    location["When"]?["Model"]?.GetValue<string>(),
+                    "gpt-5.6-sol",
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    location["Use"]?["Model"]?.GetValue<string>(),
+                    "gpt-6-astra",
+                    StringComparison.Ordinal));
+            if (!hasExpectedRoute)
+            {
+                throw new ServeStartupException(
+                    "Gpt56ToAstra scenario needs the stock gpt-5.6-sol → "
+                    + "gpt-6-astra Location, but appsettings.json drifted.");
+            }
+            // Keep the copied stock Locations exactly as shipped.
         }
         else
         {

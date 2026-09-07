@@ -1,9 +1,13 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using CopilotBridge.Cli.Models.Copilot;
+using CopilotBridge.Cli.Models.Anthropic.Request;
+using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Catalogs.Codex;
 
@@ -18,15 +22,34 @@ internal sealed class CodexCatalogProjector
     private const string ResponsesEndpoint = "/responses";
     private readonly CodexModelProfileCatalog _profiles;
     private readonly IModelRegistry _routes;
+    private readonly RoutesConfig _configuredRoutes;
+    private readonly ILogger<ModelRouteResolverLog> _routeLog;
     private readonly ILogger<CodexCatalogProjector> _log;
 
     public CodexCatalogProjector(
         CodexModelProfileCatalog profiles,
         IModelRegistry routes,
         ILogger<CodexCatalogProjector> log)
+        : this(
+            profiles,
+            routes,
+            Options.Create(new RoutesConfig()),
+            NullLogger<ModelRouteResolverLog>.Instance,
+            log)
+    {
+    }
+
+    public CodexCatalogProjector(
+        CodexModelProfileCatalog profiles,
+        IModelRegistry routes,
+        IOptions<RoutesConfig> configuredRoutes,
+        ILogger<ModelRouteResolverLog> routeLog,
+        ILogger<CodexCatalogProjector> log)
     {
         _profiles = profiles;
         _routes = routes;
+        _configuredRoutes = configuredRoutes.Value;
+        _routeLog = routeLog;
         _log = log;
     }
 
@@ -39,8 +62,12 @@ internal sealed class CodexCatalogProjector
             .Where(model => !string.IsNullOrWhiteSpace(model.Id))
             .GroupBy(model => model.Id, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var resolvedRoutes = baseline.Models
+            .Select(model => ResolveConfiguredTarget(GetSlug(model)))
+            .ToArray();
         var effective = baseline.Models
-            .Select(model => IsEffective(GetSlug(model), liveById, liveOverlayValidated))
+            .Select((model, index) => IsEffective(
+                GetSlug(model), resolvedRoutes[index], liveById, liveOverlayValidated))
             .ToArray();
         var effectiveSlugs = baseline.Models
             .Where((_, index) => effective[index])
@@ -58,7 +85,10 @@ internal sealed class CodexCatalogProjector
                 ["visibility"] = writer => writer.WriteStringValue(effective[index] ? ReadVisibility(source) : "hide"),
             };
 
-            if (effective[index] && liveById.TryGetValue(slug, out var live) && TryMapLimits(live, out var total, out var compact))
+            var resolved = resolvedRoutes[index];
+            if (effective[index] && resolved is not null &&
+                liveById.TryGetValue(resolved.ModelId, out var live) &&
+                TryMapLimits(live, out var total, out var compact))
             {
                 replacements["context_window"] = writer => writer.WriteNumberValue(total);
                 replacements["max_context_window"] = writer => writer.WriteNumberValue(total);
@@ -92,17 +122,38 @@ internal sealed class CodexCatalogProjector
         return new CodexCatalogProjection { Models = output, ETag = $"\"{hash}\"" };
     }
 
-    private bool IsEffective(string slug, IReadOnlyDictionary<string, CopilotModel> live, bool validated)
+    private RouteTarget? ResolveConfiguredTarget(string slug)
     {
-        var route = _routes.Resolve(slug);
+        var ctx = new BridgeContext<MessagesRequest>
+        {
+            Request = new BridgeRequest<MessagesRequest>
+            {
+                Method = "GET",
+                Path = "/codex/models",
+                Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                Body = new MessagesRequest { Model = slug, Messages = [] },
+            },
+            Response = new BridgeResponse(),
+        };
+        ModelRouteResolver.Apply(ctx, _configuredRoutes, _routeLog);
+        return _routes.Resolve(ctx.Request.Body.Model);
+    }
+
+    private bool IsEffective(
+        string slug,
+        RouteTarget? route,
+        IReadOnlyDictionary<string, CopilotModel> live,
+        bool validated)
+    {
         return _profiles.Get(slug) is not null &&
+            route is not null &&
+            _profiles.Get(route.ModelId) is not null &&
             route is
             {
                 Vendor: BackendVendor.CopilotResponses,
                 Endpoint: ResponsesEndpoint,
             } &&
-            string.Equals(route.ModelId, slug, StringComparison.Ordinal) &&
-            (!validated || live.TryGetValue(slug, out var model) &&
+            (!validated || live.TryGetValue(route.ModelId, out var model) &&
                 model.SupportedEndpoints?.Contains(ResponsesEndpoint, StringComparer.Ordinal) == true);
     }
 

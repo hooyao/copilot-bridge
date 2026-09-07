@@ -94,7 +94,8 @@ internal sealed class CodexModelProfileCatalog
     /// <c>docs/copilot-responses-contract-snapshot.json</c> (seeded 2026-06-15,
     /// Enterprise), with <c>mai-code-1-flash-picker</c> re-probed directly 2026-07
     /// (see its row) and the <c>gpt-5.6</c> codename slots probed directly 2026-07/08
-    /// (see their rows). Three effort profiles:
+    /// (see their rows), and <c>gpt-6-astra</c> probed directly 2026-09-07.
+    /// Four effort profiles:
     /// <list type="bullet">
     ///   <item><b>large</b> — <c>gpt-5.3-codex</c>, <c>gpt-5.4</c>,
     ///         <c>gpt-5.4-mini</c>, <c>gpt-5.5</c>: accept
@@ -109,6 +110,9 @@ internal sealed class CodexModelProfileCatalog
     ///         <c>mai-code-1-flash-picker</c>: accept
     ///         <c>minimal/low/medium/high</c>, reject <c>none</c> AND <c>xhigh</c>
     ///         (the inverse of large at the boundaries).</item>
+    ///   <item><b>Astra</b> — accepts <c>low/medium/high/xhigh/max</c>, rejects
+    ///         both <c>none</c> and <c>minimal</c>, and falls back to
+    ///         <c>low</c> per the official migration guidance.</item>
     /// </list>
     /// No current model rejects custom tools; the flag remains available for a
     /// future model-specific backend constraint.
@@ -177,6 +181,23 @@ internal sealed class CodexModelProfileCatalog
             SupportsMultimodalFunctionOutput = true,
         };
         yield return new CodexModelProfile { CanonicalId = "gpt-5.6-terra", AcceptedEfforts = xlarge, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
+
+        // ── Astra profile: accept low/medium/high/xhigh/max; reject none+minimal ──
+        // Every effort was live-probed directly 2026-09-07
+        // (ResponsesProbe.Gpt6Astra_Effort_ReProbe): null/low/medium/high/xhigh/max
+        // → 200; none/minimal/ultra → 400. DefaultEffort=low is deliberate:
+        // OpenAI's Astra migration guide says legacy none/minimal callers should
+        // start at low, and the live endpoint accepts it. Function/custom/web-search
+        // tools are accepted; image_generation remains the catalog-wide rejection
+        // (Gpt6Astra_Tool_ReProbe). The exact two-turn structured image-output
+        // probe returned 200/200 and identified the image as red.
+        yield return new CodexModelProfile
+        {
+            CanonicalId = "gpt-6-astra",
+            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
+            DefaultEffort = "low",
+            SupportsMultimodalFunctionOutput = true,
+        };
 
         // ── "small" effort profile: accept minimal/low/medium/high, reject none+xhigh ──
         // DefaultEffort=high: small rejects xhigh, so its fallback is 'high' (its

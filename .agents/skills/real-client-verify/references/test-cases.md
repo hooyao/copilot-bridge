@@ -10,7 +10,8 @@ Every case names: **route**, **client**, **scenario** (`ServeProcess` appsetting
 `evidence.md`). The `Kind=ClientBehavior` tests already implement the flagship cases;
 this table is the menu — including cases the CLI can and cannot drive.
 
-Latest ids under test live in `models.md` (`claude-opus-5`, `gpt-5.6-sol` today).
+Latest ids under test live in `models.md` (`claude-opus-5`; reviewed Codex client
+identity `gpt-5.6-sol`; routed backend `gpt-6-astra` today).
 
 ---
 
@@ -61,6 +62,7 @@ Client `codex.exe` (`codex exec`), scenario `Passthrough`, route `/codex`.
 | B15 MAI custom-tool reconciliation | `Codex_MaiFlash_CustomTool_ProducesDispatchLogForVerdict` uses the exact client's bundled `gpt-5.5` behavior entry under the `mai-code-1-flash-picker` slug, disables deferred/plugin tools, and requires `apply_patch` followed by a shell read | trace: wire model remains `mai-code-1-flash-picker`, custom `apply_patch` declaration is present, and a matching `custom_tool_call`/`custom_tool_call_output` pair is followed by the matching shell call/output. Client: file change and read both complete, final canary present, no abort; SQLite: zero router/dispatch fatal, ERROR, or retry rows. The local catalog alias supplies client-owned tool metadata only; it does not rewrite the backend model id. |
 | B16 stable message lifecycle | `Codex_CurrentClient_StableMessageLifecycle_ProducesDispatchLogForVerdict` runs current Codex with reasoning disabled, performs three separate shell calls, and ends in one visible canary message | trace: every event belonging to the final message output index uses one id from `output_item.added` through deltas/done and the terminal output; three tool calls have matching outputs. Client: canary occurs exactly once, no `item completed without a recorded start timestamp` for the message, no abort; SQLite: zero router/dispatch fatal, ERROR, or retry rows. |
 | B17 standalone named output | `Codex_StandaloneNamedFunctionOutput_ContinuesToolLoop_ForVerdict` uses real Codex 0.153.3 app-server `thread/inject_items` to inject a named `function_call_output` with no `call_id`, then requires separate shell write/read calls on `gpt-5.6-sol-fast` | trace: the first request retains the standalone item with absent `call_id`, exact name/namespace/output, then later requests contain a real paired tool call/output loop. Client: injected-only canary reaches final output, no abort; SQLite: zero missing-property/router/error rows. |
+| B18 GPT-5.6→Astra route | `Codex_Gpt56RoutedToAstra_ComplexToolLoop_ProducesDispatchLogForVerdict` keeps the reviewed `gpt-5.6-sol` client catalog identity at effort `none`, uses the stock route to `gpt-6-astra`, then requires code computation and separate write/append/read operations | every upstream request names `gpt-6-astra` with effort `low`; client-facing response models remain `gpt-5.6-sol`; trace contains matching custom/function call outputs across the multi-turn task. Client: exact numeric result and canary, no abort; SQLite: zero router/dispatch fatal or ERROR rows. |
 
 > **codex picks its tool per run — B1b biases, it does not guarantee.** The same task
 > can be serviced by a plain `function_call` shell tool (which the exec bug never

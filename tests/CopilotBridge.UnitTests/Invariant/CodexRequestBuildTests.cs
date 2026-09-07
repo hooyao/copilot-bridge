@@ -94,6 +94,11 @@ public class CodexRequestBuildTests
     [InlineData("gpt-5.6-luna",  "minimal", "xhigh")]   // per-row DefaultEffort guard: NOT max (the documented footgun)
     [InlineData("gpt-5.6-terra", "minimal", "xhigh")]   // per-row DefaultEffort guard: NOT max
     [InlineData("gpt-5.6-sol",   "none", "none")]       // accepted → kept
+    // Astra accepts low..max and rejects both GPT-5.6-era boundary values.
+    [InlineData("gpt-6-astra", "none", "low")]
+    [InlineData("gpt-6-astra", "minimal", "low")]
+    [InlineData("gpt-6-astra", "low", "low")]
+    [InlineData("gpt-6-astra", "max", "max")]
     // small profile (gpt-5-mini): accepts minimal/low/medium/high; DefaultEffort=high.
     [InlineData("gpt-5-mini", "max", "high")]         // unaccepted → small default high
     [InlineData("gpt-5-mini", "xhigh", "high")]       // unaccepted (small rejects xhigh) → default high
