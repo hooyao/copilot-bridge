@@ -101,6 +101,39 @@ regardless of the bridge's 200 and regardless of exit code.
 > `function_call` in the upstream `input[]`); if you're verifying the exec fix
 > specifically, require a run that actually took the `custom_tool_call` path.
 
+## Codex Astra vision
+
+B19/B20 add `visionEvidencePath` to the ordinary run manifest. Open that JSON and
+its saved `imagePath`: it contains the original PNG digest, delivery mode, expected
+five-line answer, the client-written answer and its saved path, and client turn status.
+The expected answer is persisted only after the real client exits. The random code
+and color positions are present only in image pixels during the task.
+
+Apply all ordinary Codex checks, plus:
+
+- **B19 attached image:** the app-server user input contains `localImage`, and the
+  first inference request contains its image. A later tool reading the image cannot
+  substitute for this initial-image check.
+- **B20 image tool:** the first inference contains no image; the client actually
+  executes `view_image` and returns image content on a later request. If invoked
+  through custom `exec`, require that enclosing call's matching output as well as
+  the image-bearing continuation and client tool evidence.
+- **Visual content:** inspect the saved image, then compare its six-digit code and
+  all four color positions with both the saved `observedAnswer` and the final
+  completed client message. Normalize line endings only. Missing/wrong values fail;
+  do not accept a color mentioned somewhere in the transcript as the final answer.
+- **Transport and routing:** compare the actual image content in inbound and upstream
+  requests, require `copilot-vision-request=true` on image-bearing upstream requests,
+  and require every upstream model/effort to be `gpt-6-astra`/`low`. The source image
+  digest identifies the fixture; Codex can re-encode an image before the bridge sees it.
+- **Execution:** require separate file write/read tool calls with matching outputs,
+  a completed client turn, no abort, and a nonempty manifest-selected SQLite window
+  with zero router/dispatch fatal or ERROR rows.
+
+The xUnit cases intentionally remain harness actuators. Their green status alone
+never establishes that vision worked. A missing path or evidence is unverified;
+an incorrect observed answer is a failed visual run.
+
 ## Claude Code — the transcript
 
 The saved stdout is captured with `--output-format stream-json --verbose`, so it is a

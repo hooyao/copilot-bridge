@@ -369,6 +369,93 @@ public class CodexImageTests
         Assert.False(downgraded);
     }
 
+    // Contract: native tool-output images are actual vision input even when the
+    // source requires opaque forwarding. The real Codex 0.153.4 view_image capture
+    // exposed a missing Copilot-Vision-Request flag on custom-tool output arrays.
+    [Fact]
+    public void NativeToolOutput_CapturedCodexViewImage_PreservesOutputAndEnablesVision()
+    {
+        var fixture = JsonNode.Parse(File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "Fixtures", "Codex", "native-vision-tool-output.json")))!;
+        var body = fixture["body"]!;
+        var expected = body["input"]!.AsArray()
+            .Single(item => item!["type"]!.GetValue<string>() == "custom_tool_call_output");
+        var ir = CodexRoundTrip.ToIr(CodexRoundTrip.ParseRequest(body.ToJsonString()));
+
+        var (wire, vision, _) = ResponsesRequestBuilder.Build(ir, Profiles);
+
+        var actual = JsonNode.Parse(wire)!["input"]!.AsArray()
+            .Single(item => item!["type"]!.GetValue<string>() == "custom_tool_call_output");
+        Assert.True(JsonNode.DeepEquals(expected, actual));
+        Assert.True(vision, "the real view_image output must activate Copilot-Vision-Request");
+    }
+
+    [Theory]
+    [InlineData("function_call_output", true)]
+    [InlineData("function_call_output", false)]
+    [InlineData("custom_tool_call_output", true)]
+    public void NativeToolOutput_InputImage_IsPreservedAndEnablesVision(string type, bool paired)
+    {
+        var output = JsonNode.Parse("""
+            [
+              {"type":"input_text","text":"The requested image follows."},
+              {"type":"input_image","image_url":"data:image/png;base64,aGVsbG8=","detail":"original"},
+              {"type":"input_text","text":"End of tool result."}
+            ]
+            """)!;
+        var item = new JsonObject { ["type"] = type, ["output"] = output.DeepClone() };
+        if (paired) item["call_id"] = "call_native_vision";
+        else item["name"] = "view_image";
+        var request = new JsonObject
+        {
+            ["model"] = "gpt-6-astra",
+            ["input"] = new JsonArray(item),
+            ["stream"] = true,
+        };
+        var ir = CodexRoundTrip.ToIr(CodexRoundTrip.ParseRequest(request.ToJsonString()));
+
+        var (wire, vision, _) = ResponsesRequestBuilder.Build(ir, Profiles);
+
+        var emitted = JsonNode.Parse(wire)!["input"]!.AsArray()
+            .Single(value => value!["type"]!.GetValue<string>() == type);
+        Assert.True(JsonNode.DeepEquals(item, emitted), "native image output must remain value-identical");
+        Assert.True(vision, "native tool-output input_image must activate Copilot-Vision-Request");
+    }
+
+    [Theory]
+    [InlineData("function_call_output")]
+    [InlineData("custom_tool_call_output")]
+    public void NativeToolOutput_ImageShapedTextAndMetadata_DoNotClaimVision(string type)
+    {
+        JsonNode[] outputs =
+        [
+            JsonValue.Create("[{\"type\":\"input_image\",\"image_url\":\"https://example.com/image.png\"}]")!,
+            JsonNode.Parse("""[{"type":"input_text","text":"input_image","metadata":{"type":"input_image","image_url":"https://example.com/image.png"}}]""")!,
+            JsonNode.Parse("""{"type":"input_image","image_url":"https://example.com/image.png"}""")!,
+        ];
+        foreach (var output in outputs)
+        {
+            var item = new JsonObject
+            {
+                ["type"] = type,
+                ["call_id"] = "call_text_only",
+                ["output"] = output.DeepClone(),
+            };
+            var request = new JsonObject
+            {
+                ["model"] = "gpt-6-astra",
+                ["input"] = new JsonArray(item),
+                ["stream"] = true,
+            };
+            var ir = CodexRoundTrip.ToIr(CodexRoundTrip.ParseRequest(request.ToJsonString()));
+
+            var (wire, vision, _) = ResponsesRequestBuilder.Build(ir, Profiles);
+
+            Assert.True(JsonNode.DeepEquals(item, JsonNode.Parse(wire)!["input"]![0]));
+            Assert.False(vision, "opaque text or metadata is not a native image content part");
+        }
+    }
+
     private static MessagesRequest ToolResultImageRequest(string model, string content) =>
         new()
         {

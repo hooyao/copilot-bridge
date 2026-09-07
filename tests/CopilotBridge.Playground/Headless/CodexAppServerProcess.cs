@@ -27,7 +27,8 @@ internal sealed record CodexAppServerInvocation(
     int? RequestMaxRetries = null,
     int? StreamMaxRetries = null,
     string? ModelCatalogTemplateSlug = null,
-    JsonArray? InjectedItems = null);
+    JsonArray? InjectedItems = null,
+    IReadOnlyList<string>? LocalImagePaths = null);
 
 internal sealed record CodexAppServerResult(
     int ExitCode,
@@ -246,8 +247,27 @@ internal static class CodexAppServerProcess
                     message => ResponseId(message) == injectRequestId, token);
             }
 
-            async Task<string> RunTurnAsync(int id, string prompt)
+            async Task<string> RunTurnAsync(
+                int id, string prompt, IReadOnlyList<string>? localImagePaths = null)
             {
+                var input = new JsonArray
+                {
+                    new JsonObject { ["type"] = "text", ["text"] = prompt },
+                };
+                if (localImagePaths is not null)
+                {
+                    foreach (var path in localImagePaths)
+                    {
+                        // Native app-server input: Codex owns loading the image and
+                        // constructing the model-visible Responses content.
+                        // https://developers.openai.com/codex/app-server#turns
+                        input.Add(new JsonObject
+                        {
+                            ["type"] = "localImage",
+                            ["path"] = Path.GetFullPath(path, Path.GetFullPath(invocation.WorkingDirectory)),
+                        });
+                    }
+                }
                 await SendAsync(process, new JsonObject
                 {
                     ["method"] = "turn/start",
@@ -255,10 +275,7 @@ internal static class CodexAppServerProcess
                     ["params"] = new JsonObject
                     {
                         ["threadId"] = threadId,
-                        ["input"] = new JsonArray
-                        {
-                            new JsonObject { ["type"] = "text", ["text"] = prompt },
-                        },
+                        ["input"] = input,
                     },
                 }, token);
                 _ = await ReadUntilAsync(process, stdout,
@@ -272,7 +289,8 @@ internal static class CodexAppServerProcess
                         "Codex turn/completed notification did not include status.");
             }
 
-            var turnStatus = await RunTurnAsync(nextRequestId++, invocation.Prompt);
+            var turnStatus = await RunTurnAsync(
+                nextRequestId++, invocation.Prompt, invocation.LocalImagePaths);
             if (invocation.FollowUpPrompt is { Length: > 0 } followUpPrompt)
                 turnStatus = await RunTurnAsync(nextRequestId, followUpPrompt);
 

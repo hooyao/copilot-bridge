@@ -5,7 +5,7 @@ using System.Text;
 namespace CopilotBridge.Playground;
 
 /// <summary>
-/// Minimal in-memory PNG generator for vision probes/tests — solid-color RGB
+/// Minimal in-memory PNG generator for vision probes/tests — RGB
 /// truecolor PNGs with no external image deps. Shared by <see cref="VisionTests"/>
 /// (Anthropic <c>image</c> blocks) and <see cref="ResponsesProbe"/> (Responses
 /// <c>input_image</c> data URLs).
@@ -15,7 +15,11 @@ internal static class PngGen
     private static readonly uint[] CrcTable = BuildCrcTable();
     private const uint Crc32Polynomial = 0xEDB88320u;
 
-    public static byte[] SolidRgbPng(int width, int height, byte r, byte g, byte b)
+    public static byte[] SolidRgbPng(int width, int height, byte r, byte g, byte b) =>
+        RgbPng(width, height, (_, _) => (r, g, b));
+
+    internal static byte[] RgbPng(
+        int width, int height, Func<int, int, (byte R, byte G, byte B)> pixel)
     {
         using var ms = new MemoryStream();
         // PNG signature
@@ -40,6 +44,7 @@ internal static class PngGen
             for (int x = 0; x < width; x++)
             {
                 int p = rowStart + 1 + x * 3;
+                var (r, g, b) = pixel(x, y);
                 raw[p] = r;
                 raw[p + 1] = g;
                 raw[p + 2] = b;
