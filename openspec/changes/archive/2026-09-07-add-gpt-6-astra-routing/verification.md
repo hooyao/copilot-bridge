@@ -36,8 +36,14 @@
 
 Verdict: **PASS** under both real-client gates.
 
+## PR review round 1
+
+- Added a contract test for an earlier effort-dependent route shadowing a later Astra fallback. It failed on the reviewed implementation because the catalog incorrectly advertised Astra limits, then passed after fixed-model tri-state analysis made the ambiguous alias hidden.
+- Changed the Astra >272k probe to select its own routed model capture instead of whichever GPT-5.6 request happened to be newest. The focused live run returned 200 with 310,307 reported input tokens.
+- Re-ran the route-specific real Codex case after the catalog fix: seven Astra/low requests accumulated six matching custom-tool outputs; stdout completed with `7260` and the canary and no abort; the manifest-selected SQLite window contained 308 rows with zero router/dispatch fatals, ERROR rows, or retries.
+
 ## Native AOT
 
-- `copilot-bridge.exe`: 14,844,416 bytes; `--version` executed successfully.
+- `copilot-bridge.exe`: 14,852,608 bytes; `--version` executed successfully.
 - `copilot-updater.exe`: 5,019,136 bytes.
 - Both win-x64 publishes completed with zero trimming/AOT warnings; `publish/` contains both executables and `appsettings.json`.

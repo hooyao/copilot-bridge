@@ -46,7 +46,7 @@ Directly advertising only `gpt-6-astra` was rejected because the exact Codex cat
 
 ### Route-aware catalog limits
 
-`CodexCatalogProjector` will resolve each baseline slug through the same model-only route plan used by inference. With a validated live overlay, a routed source remains visible only when both source and target have exact bridge profiles and the target is live on `/responses`; overlay failure keeps the existing reviewed-baseline fallback. The source catalog entry keeps its slug/instructions, while context and compaction limits come from the resolved target's live Copilot metadata. Conditional effort/header rules that do not match the catalog's empty synthetic context leave the source mapping unchanged.
+`CodexCatalogProjector` statically evaluates Locations with the source model fixed and effort/header axes unknown. Only a first potentially matching Location that is unconditional for that model proves an invariant target. If an earlier request-dependent rule could match, a validated catalog hides the source alias rather than using a later fallback's capacity; overlay failure keeps the existing reviewed-baseline fallback. For an invariant route, the source catalog entry keeps its slug/instructions while context and compaction limits come from the resolved target's live Copilot metadata.
 
 Leaving source limits untouched was rejected because Codex would compact against the 922,000-token gpt-5.6 prompt budget while Copilot Astra currently accepts only 872,000 prompt tokens.
 
@@ -59,7 +59,7 @@ No Astra-only request/response translator is added. A full real gpt-5.6 Codex re
 - [Copilot changes Astra's contract after release] → The live B2 snapshot and B3 catalog comparison fail on effort, fields, tools, or multimodal behavior before a future reconciliation ships.
 - [A fresh install expected literal gpt-5.6-sol] → The route is documented as a fresh-install default and is removable by clearing `Routing.Locations`; Luna, Terra, and Sol Fast remain literal.
 - [Existing installations do not acquire the new route automatically] → Config migration intentionally preserves the old complete Locations array; release notes and routing docs provide the exact opt-in block.
-- [Catalog routing cannot represent request-dependent rules] → Catalog projection uses an empty synthetic request and only changes limits when the configured rule actually matches that context; inference remains authoritative per real request.
+- [Catalog routing cannot represent request-dependent rules] → Fixed-model tri-state analysis applies target limits only for a provably invariant first match and hides ambiguous aliases from validated catalogs.
 - [Astra emits a client-incompatible tool payload despite bridge 200s] → Acceptance requires a real client tool round-trip and zero router/dispatch fatal rows in the manifest-selected `logs_2.sqlite`.
 
 ## Migration Plan

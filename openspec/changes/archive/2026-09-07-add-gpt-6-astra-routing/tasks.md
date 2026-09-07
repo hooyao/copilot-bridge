@@ -31,3 +31,8 @@
 - [x] 5.2 Run the mandatory `CODEX_SMOKE_MODEL=gpt-6-astra` real-client load-task smoke and verify its wire tool loop.
 - [x] 5.3 Run the route-specific real Codex behavior case on a complex multi-tool task, then read its exact manifest, trace, stdout, and `logs_2.sqlite`; require a matching tool output, canary, no abort, and zero router/dispatch fatals.
 - [x] 5.4 Publish the Windows Native AOT binaries with `build-aot.bat`, confirm both executables and the expected size range, then leave the tree ready for OpenSpec archive and `ship-pr`.
+
+## 6. PR Review Follow-ups
+
+- [x] 6.1 Make catalog limit projection require an invariant first route and hide aliases shadowed by earlier request-dependent Locations; add a mutation-proven contract test.
+- [x] 6.2 Make the Astra large-context probe select a model-specific real-client capture and confirm 310,307 input tokens return 200.

@@ -1,6 +1,5 @@
 using System.Text.Json;
 using CopilotBridge.Cli.Catalogs.Codex;
-using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Models.Codex;
 using CopilotBridge.Cli.Models.Copilot;
 using CopilotBridge.Cli.Pipeline;
@@ -368,6 +367,38 @@ public sealed class CodexModelCatalogContractTests
         Assert.Equal(372_000, alias.GetProperty("context_window").GetInt32());
     }
 
+    [Fact]
+    public void EarlierRequestDependentRouteHidesAliasInsteadOfAdvertisingLaterFallbackLimits()
+    {
+        var routes = new RoutesConfig
+        {
+            Locations =
+            [
+                new RouteLocation
+                {
+                    When = new MatchExpression { Model = "gpt-5.6-sol", Effort = "low" },
+                    Use = new LocationUse { Model = "gpt-5-mini" },
+                },
+                new RouteLocation
+                {
+                    When = new MatchExpression { Model = "gpt-5.6-sol" },
+                    Use = new LocationUse { Model = "gpt-6-astra" },
+                },
+            ],
+        };
+        var result = ConfiguredProjector(routes).Project(
+            LoadBaseline(),
+            [
+                Live("gpt-5-mini", 264_000, 128_000, 64_000),
+                Live("gpt-6-astra", 1_000_000, 872_000, 128_000),
+            ],
+            liveOverlayValidated: true);
+        var alias = Find(result.Models, "gpt-5.6-sol");
+
+        Assert.False(alias.GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal("hide", alias.GetProperty("visibility").GetString());
+    }
+
     private static CodexCatalogBaseline LoadBaseline() => CodexCatalogTestFixtures.LoadCapturedBaseline();
 
     private static CodexCatalogProjector ConfiguredAstraProjector()
@@ -383,11 +414,15 @@ public sealed class CodexModelCatalogContractTests
                 },
             ],
         };
+        return ConfiguredProjector(routes);
+    }
+
+    private static CodexCatalogProjector ConfiguredProjector(RoutesConfig routes)
+    {
         return new CodexCatalogProjector(
             new CodexModelProfileCatalog(),
             new CopilotModelRegistry(),
             Options.Create(routes),
-            NullLogger<ModelRouteResolverLog>.Instance,
             NullLogger<CodexCatalogProjector>.Instance);
     }
 

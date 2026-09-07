@@ -190,6 +190,10 @@ OpenAI's Astra migration guide and live Copilot probes agree that Astra accepts
 The exact match leaves Luna, Terra, and Sol Fast direct. `GET /codex/models`
 retains the source slug/instructions but projects Astra's live 1,000,000 total /
 872,000 prompt limit, so the client compacts for the backend it actually reaches.
+Catalog projection applies a routed target only when the first potentially matching
+Location is unconditional for that source model. If an earlier effort/header rule
+could select another target, the validated catalog hides the alias instead of
+advertising the later fallback's possibly larger window.
 
 Config migration treats the complete Locations array as user-owned. An upgraded
 installation therefore retains its old array (including `[]`) and must add this

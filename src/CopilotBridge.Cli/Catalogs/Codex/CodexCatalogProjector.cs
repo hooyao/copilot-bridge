@@ -1,12 +1,9 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using CopilotBridge.Cli.Models.Copilot;
-using CopilotBridge.Cli.Models.Anthropic.Request;
-using CopilotBridge.Cli.Hosting;
 using CopilotBridge.Cli.Pipeline;
 using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Catalogs.Codex;
@@ -23,7 +20,6 @@ internal sealed class CodexCatalogProjector
     private readonly CodexModelProfileCatalog _profiles;
     private readonly IModelRegistry _routes;
     private readonly RoutesConfig _configuredRoutes;
-    private readonly ILogger<ModelRouteResolverLog> _routeLog;
     private readonly ILogger<CodexCatalogProjector> _log;
 
     public CodexCatalogProjector(
@@ -34,7 +30,6 @@ internal sealed class CodexCatalogProjector
             profiles,
             routes,
             Options.Create(new RoutesConfig()),
-            NullLogger<ModelRouteResolverLog>.Instance,
             log)
     {
     }
@@ -43,13 +38,11 @@ internal sealed class CodexCatalogProjector
         CodexModelProfileCatalog profiles,
         IModelRegistry routes,
         IOptions<RoutesConfig> configuredRoutes,
-        ILogger<ModelRouteResolverLog> routeLog,
         ILogger<CodexCatalogProjector> log)
     {
         _profiles = profiles;
         _routes = routes;
         _configuredRoutes = configuredRoutes.Value;
-        _routeLog = routeLog;
         _log = log;
     }
 
@@ -86,8 +79,8 @@ internal sealed class CodexCatalogProjector
             };
 
             var resolved = resolvedRoutes[index];
-            if (effective[index] && resolved is not null &&
-                liveById.TryGetValue(resolved.ModelId, out var live) &&
+            if (effective[index] && resolved.IsInvariant && resolved.Target is { } target &&
+                liveById.TryGetValue(target.ModelId, out var live) &&
                 TryMapLimits(live, out var total, out var compact))
             {
                 replacements["context_window"] = writer => writer.WriteNumberValue(total);
@@ -122,29 +115,61 @@ internal sealed class CodexCatalogProjector
         return new CodexCatalogProjection { Models = output, ETag = $"\"{hash}\"" };
     }
 
-    private RouteTarget? ResolveConfiguredTarget(string slug)
+    /// <summary>
+    /// Resolve a catalog slug only when its target is invariant across every
+    /// request carrying that slug. The first Location that could match controls
+    /// first-match-wins routing: an unconditional match proves one target, while
+    /// an effort/header-dependent match means the catalog cannot safely advertise
+    /// any later fallback's capacity.
+    /// </summary>
+    private CatalogTargetResolution ResolveConfiguredTarget(string slug)
     {
-        var ctx = new BridgeContext<MessagesRequest>
+        foreach (var location in _configuredRoutes.Locations)
         {
-            Request = new BridgeRequest<MessagesRequest>
+            switch (EvaluateForModel(location.When, slug))
             {
-                Method = "GET",
-                Path = "/codex/models",
-                Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
-                Body = new MessagesRequest { Model = slug, Messages = [] },
-            },
-            Response = new BridgeResponse(),
-        };
-        ModelRouteResolver.Apply(ctx, _configuredRoutes, _routeLog);
-        return _routes.Resolve(ctx.Request.Body.Model);
+                case FixedModelMatch.Never:
+                    continue;
+                case FixedModelMatch.Conditional:
+                    return new CatalogTargetResolution(Target: null, IsInvariant: false);
+                case FixedModelMatch.Always:
+                    var targetId = string.IsNullOrWhiteSpace(location.Use.Model)
+                        ? slug
+                        : location.Use.Model;
+                    return new CatalogTargetResolution(
+                        _routes.Resolve(targetId), IsInvariant: true);
+                default:
+                    throw new InvalidOperationException("Unknown fixed-model route state.");
+            }
+        }
+
+        return new CatalogTargetResolution(_routes.Resolve(slug), IsInvariant: true);
     }
 
     private bool IsEffective(
         string slug,
-        RouteTarget? route,
+        CatalogTargetResolution resolution,
         IReadOnlyDictionary<string, CopilotModel> live,
         bool validated)
     {
+        var route = resolution.Target;
+        if (!resolution.IsInvariant)
+        {
+            if (validated)
+            {
+                _log.LogWarning(
+                    "Codex catalog model {Model} hidden because an earlier request-dependent "
+                    + "Routing.Location can resolve it to different targets.",
+                    slug);
+                return false;
+            }
+
+            // A missing live overlay already falls back to the reviewed source
+            // catalog. Preserve that degradation contract without claiming any
+            // request-dependent target capacity.
+            route = _routes.Resolve(slug);
+        }
+
         return _profiles.Get(slug) is not null &&
             route is not null &&
             _profiles.Get(route.ModelId) is not null &&
@@ -155,6 +180,71 @@ internal sealed class CodexCatalogProjector
             } &&
             (!validated || live.TryGetValue(route.ModelId, out var model) &&
                 model.SupportedEndpoints?.Contains(ResponsesEndpoint, StringComparer.Ordinal) == true);
+    }
+
+    /// <summary>
+    /// Evaluate a match tree with the model fixed and all request-dependent axes
+    /// unknown. The result is deliberately conservative: correlations between
+    /// effort/header leaves that are not provably impossible remain Conditional.
+    /// </summary>
+    private static FixedModelMatch EvaluateForModel(MatchExpression expression, string model)
+    {
+        var result = FixedModelMatch.Always;
+
+        if (expression.AllOf is { Count: > 0 } all)
+        {
+            var allResult = FixedModelMatch.Always;
+            foreach (var child in all)
+                allResult = And(allResult, EvaluateForModel(child, model));
+            result = And(result, allResult);
+        }
+
+        if (expression.AnyOf is { Count: > 0 } any)
+        {
+            var anyResult = FixedModelMatch.Never;
+            foreach (var child in any)
+                anyResult = Or(anyResult, EvaluateForModel(child, model));
+            result = And(result, anyResult);
+        }
+
+        if (expression.Model is { Length: > 0 } expectedModel)
+        {
+            result = And(
+                result,
+                string.Equals(expectedModel, model, StringComparison.OrdinalIgnoreCase)
+                    ? FixedModelMatch.Always
+                    : FixedModelMatch.Never);
+        }
+
+        if (expression.Effort is { Length: > 0 })
+            result = And(result, FixedModelMatch.Conditional);
+        if (expression.Header is not null)
+            result = And(result, FixedModelMatch.Conditional);
+
+        return result;
+    }
+
+    private static FixedModelMatch And(FixedModelMatch left, FixedModelMatch right) =>
+        left is FixedModelMatch.Never || right is FixedModelMatch.Never
+            ? FixedModelMatch.Never
+            : left is FixedModelMatch.Always && right is FixedModelMatch.Always
+                ? FixedModelMatch.Always
+                : FixedModelMatch.Conditional;
+
+    private static FixedModelMatch Or(FixedModelMatch left, FixedModelMatch right) =>
+        left is FixedModelMatch.Always || right is FixedModelMatch.Always
+            ? FixedModelMatch.Always
+            : left is FixedModelMatch.Never && right is FixedModelMatch.Never
+                ? FixedModelMatch.Never
+                : FixedModelMatch.Conditional;
+
+    private readonly record struct CatalogTargetResolution(RouteTarget? Target, bool IsInvariant);
+
+    private enum FixedModelMatch
+    {
+        Never,
+        Conditional,
+        Always,
     }
 
     private static bool TryMapLimits(CopilotModel model, out int total, out int compact)

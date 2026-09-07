@@ -41,7 +41,7 @@ The stock configuration SHALL contain an active exact-model Location that rewrit
 
 ### Requirement: Client catalog limits follow the resolved route target
 
-When a Codex catalog source slug resolves through a configured model-only route, the bridge SHALL retain the source slug and official client instructions while deriving context-window and auto-compaction limits from the resolved live Copilot target. When the live overlay is validated, the routed source SHALL remain effective only when the source and resolved target both have exact bridge profiles and the target is currently advertised for `/responses`; an unavailable overlay SHALL retain the existing reviewed-baseline fallback behavior.
+When a Codex catalog source slug has one statically provable target for every request—because its first potentially matching Location is unconditional for that model—the bridge SHALL retain the source slug and official client instructions while deriving context-window and auto-compaction limits from the resolved live Copilot target. When an earlier effort/header-dependent Location could match that source, a validated catalog SHALL hide the alias rather than advertising a later fallback target's capacity. When the live overlay is validated, an invariant routed source SHALL remain effective only when the source and resolved target both have exact bridge profiles and the target is currently advertised for `/responses`; an unavailable overlay SHALL retain the existing reviewed-baseline fallback behavior.
 
 #### Scenario: GPT-5.6 Sol alias receives Astra limits
 
@@ -53,6 +53,11 @@ When a Codex catalog source slug resolves through a configured model-only route,
 
 - **WHEN** a configured target has no exact bridge profile or validated live `/responses` capability
 - **THEN** the routed source is not advertised as an effective Codex model
+
+#### Scenario: Earlier conditional route makes capacity ambiguous
+
+- **WHEN** an effort- or header-dependent Location for a source model precedes a model-only fallback to another target
+- **THEN** a validated `/codex/models` response hides the source alias instead of advertising the fallback target's limits
 
 ### Requirement: Existing Codex Responses shapes remain native across the route
 
