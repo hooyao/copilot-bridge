@@ -194,6 +194,12 @@ live re-probe returned 200. `service_tier` / `store:true` strip plus the
 > = `[none,low,medium,high,xhigh]` — omitting `max` — yet `max` live-probes 200;
 > the advertised list lies, the probe is ground truth.
 
+> **2026-09 update — Astra is a fourth profile.** `gpt-6-astra` accepts
+> `low/medium/high/xhigh/max` and rejects `none`, `minimal`, and `ultra`; unsupported
+> effort falls back to `low`, matching OpenAI's migration guidance and live Copilot.
+> Function/custom/web-search tools and structured image function output are accepted;
+> the existing catalog-wide store/service-tier/image-generation removals still apply.
+
 ---
 
 ## 6. Routing / vendor dispatch
@@ -209,6 +215,8 @@ Change: route the Codex/Responses model ids (`gpt-5.3-codex`, `gpt-5.4`,
 > reconciliation retired `mai-code-1-flash-internal` (→ `mai-code-1-flash-picker`)
 > and the 2026-07/08 reconciliations added the four `gpt-5.6` codenames
 > (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-sol-fast` / `gpt-5.6-terra`). The live
+> set also includes exact `gpt-6-astra`; fresh installs keep the current Codex
+> catalog identity by routing `gpt-5.6-sol` to Astra in `Routing.Locations`.
 > `CopilotModelRegistry.ResponsesModelIds` allowlist is the source of truth;
 > membership is still an explicit list, never a `gpt-` prefix takeover.
 

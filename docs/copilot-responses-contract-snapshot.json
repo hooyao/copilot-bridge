@@ -3,7 +3,7 @@
     "backend": "copilot-responses",
     "endpoint": "/responses",
     "account_type": "enterprise",
-    "models_probed": 10,
+    "models_probed": 11,
     "note": "Live wire-truth of what Copilot\u0027s /responses accepts per model. The shipping Codex profile catalog is checked against every rewrite-driving fact in B3. Drift (B2) fails B_ResponsesContract_SweepAssertAndDetectDrift; regenerate with BRIDGE_REGEN_CONTRACT_SNAPSHOT=1 and review."
   },
   "models": {
@@ -18,7 +18,8 @@
         ],
         "rejected": [
           "minimal",
-          "max"
+          "max",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -41,7 +42,8 @@
         ],
         "rejected": [
           "minimal",
-          "max"
+          "max",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -64,7 +66,8 @@
         ],
         "rejected": [
           "minimal",
-          "max"
+          "max",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -87,7 +90,8 @@
         ],
         "rejected": [
           "minimal",
-          "max"
+          "max",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -110,7 +114,8 @@
           "max"
         ],
         "rejected": [
-          "minimal"
+          "minimal",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -133,7 +138,8 @@
           "max"
         ],
         "rejected": [
-          "minimal"
+          "minimal",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -156,7 +162,8 @@
           "max"
         ],
         "rejected": [
-          "minimal"
+          "minimal",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -179,7 +186,32 @@
           "max"
         ],
         "rejected": [
-          "minimal"
+          "minimal",
+          "ultra"
+        ]
+      },
+      "fields_rejected": [
+        "store_true",
+        "service_tier"
+      ],
+      "tools_rejected": [
+        "image_generation"
+      ],
+      "supports_multimodal_function_output": true
+    },
+    "gpt-6-astra": {
+      "effort": {
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "rejected": [
+          "minimal",
+          "none",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -202,7 +234,8 @@
         "rejected": [
           "none",
           "xhigh",
-          "max"
+          "max",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -225,7 +258,8 @@
         "rejected": [
           "none",
           "xhigh",
-          "max"
+          "max",
+          "ultra"
         ]
       },
       "fields_rejected": [

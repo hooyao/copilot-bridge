@@ -37,7 +37,8 @@ internal sealed record BehaviorManifest(
     long DispatchUntilUnix,  // codex: upper bound (0 for claude → treated as no upper bound)
     string Prompt,
     string? DispatchThreadId = null, // app-server: exact thread id for log filtering
-    ForcedCapiForbiddenOperation? ForcedCapiForbiddenOperation = null);
+    ForcedCapiForbiddenOperation? ForcedCapiForbiddenOperation = null,
+    string? ResolvedModel = null);
     // NOTE: the saved-stdout/stderr file paths are NOT fields here — they are DERIVED by
     // BehaviorRun.Write from CaseId + utcStamp (the code that owns the write), and
     // returned to the caller via its out params. Putting them on the record invited a
@@ -83,6 +84,7 @@ internal static class BehaviorRun
             ["client"] = manifest.Client,
             ["route"] = manifest.Route,
             ["model"] = manifest.Model,
+            ["resolvedModel"] = manifest.ResolvedModel,
             ["scenario"] = manifest.Scenario.ToString(),
             ["clientExitCode"] = manifest.ClientExitCode,
             ["durationSeconds"] = manifest.DurationSeconds,

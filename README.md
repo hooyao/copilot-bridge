@@ -24,10 +24,12 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   at `/codex`; both bill against your Copilot plan, not an Anthropic/OpenAI account.
 - **The full Claude line-up, with native 1M context.** opus-4.6/4.7/4.8/**5**,
   sonnet-4.6/**5**, haiku-4.5 — 1M on everything except haiku-4.5. Codex runs on
-  Copilot's gpt-5.x, up to the newest **gpt-5.6**
+  Copilot's gpt-5.x plus **GPT-6 Astra**. Fresh installs route the reviewed
+  `gpt-5.6-sol` Codex client identity to `gpt-6-astra`; the gpt-5.6 profiles remain
   (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-sol-fast` /
-  `gpt-5.6-terra`), with live model-catalog discovery instead of Codex's older
-  bundled context ceiling.
+  `gpt-5.6-terra`), with Luna/Terra/Sol Fast direct and Sol restored to direct by
+  clearing the route. Live model-catalog discovery replaces Codex's older bundled
+  context ceiling.
 - **Run Claude Code on a GPT model.** One `Routing.Locations` rule points
   `claude-opus-5` at `gpt-5.6-sol`; the bridge translates the full Anthropic
   tool-use protocol to and from the Responses API, so an agentic session runs end
@@ -247,30 +249,32 @@ only touch it to tune. Each detector row is toggled by its own `Enabled` flag
 | **`Pipeline:Detectors:RunawayGuard`** | on | Circuit-breaker for degenerate output; forces a retryable `overloaded_error`. Thresholds: `MaxDeltaBytes` (12 MiB), `MaxDeltaCount` (20000), `RepetitionWindow`/`RepetitionMinUniqueRatio` (500 / 0.05), `RepetitionMaxConsecutiveRepeat` (50). Fix a false trip by **raising** the threshold, not disabling. |
 | **`Pipeline:UpstreamTimeout`** | on | Exact independent bridge values: `FirstByteTimeoutSeconds` (240) bounds response headers per send; `StreamIdleTimeoutSeconds` (240) bounds each parsed upstream SSE event gap; `KeepAliveIntervalSeconds` (15) schedules downstream pings after the first upstream event. `<= 0` disables that timer. No margin, clamp, fallback, coarse HTTP cap, or client-config rewrite is applied. `StreamIdleAction` (`Retry`/`Truncate`) and `StreamIdleSignal` (`OverloadedError`/`ApiError`) govern mid-stream surfacing. See [Long-thinking timeouts](#long-thinking-timeouts). |
 | **`Pipeline:Detectors:ToolInputValidation`** | observe-only | Validates `tool_use` input against the tool schema and flags `tool_input_invalid=true`, but does **not** abort — Claude Code self-heals. Set `MalformedJsonAction` / `SchemaViolationAction` to `AbortOverloaded`/`AbortApiError` only for a backend that doesn't; `PreserveStream` then picks delta-before-error (`true`) vs buffer-for-a-real-HTTP-error (`false`). |
-| **`Routing.Locations`** | `[]` | nginx-style per-request model/header rewrites. See below. |
+| **`Routing.Locations`** | `gpt-5.6-sol → gpt-6-astra` | nginx-style per-request model/header rewrites. Fresh installs use Astra for the flagship Codex identity and map legacy `none`/`minimal` effort to `low`; upgraded installations retain their existing whole array. See below. |
 
 Catalog resolution is visible in the always-on bridge log as one structured line
 containing the exact version, `cache=memory|disk|source-200|source-304|stale`,
 freshness, source/validation outcome, elapsed time, and abbreviated digest/ETag.
 Catalog bodies and GitHub/Copilot authorization values are never logged.
 
-**`Routing.Locations`** ships empty. `appsettings.json` carries a disabled example
-under `_Locations_disabled` (a key the binder ignores). To enable it, rename
-`_Locations_disabled` to `Locations` **and** rename the existing active
-`"Locations": []` to something else (e.g. `_Locations_off`) — exactly one
-`Locations` key may be active, or the config provider rejects the file:
+**`Routing.Locations`** on a fresh install routes the exact flagship client identity
+to Astra. OpenAI's migration guide and live Copilot agree that Astra rejects
+`none`/`minimal`, so both map to `low`; the other accepted efforts pass unchanged:
 
 ```jsonc
 {
-  "When": { "Model": "claude-opus-5" },
-  "Use":  { "Model": "gpt-5.6-sol", "EffortMap": { "max": "xhigh" } }
+  "When": { "Model": "gpt-5.6-sol" },
+  "Use":  {
+    "Model": "gpt-6-astra",
+    "EffortMap": { "none": "low", "minimal": "low" }
+  }
 }
 ```
 
-This routes Claude Code's `claude-opus-5` to Copilot's `gpt-5.6-sol`. The
-`EffortMap` down-tiers `max` → `xhigh` (gpt-5.6-sol accepts `max`, so drop the map
-to pass it through). Full match/rewrite syntax in
-[`docs/routing.md`](docs/routing.md).
+Luna, Terra, and Sol Fast remain direct. Update config migration preserves the
+existing complete Locations array, so an upgraded installation with `[]` must add
+this block explicitly. The alternative disabled `_Locations_disabled` example still
+shows Claude Code → GPT routing; replace the active array or merge that entry if you
+want both. Full syntax is in [`docs/routing.md`](docs/routing.md).
 
 ## Long-thinking timeouts
 

@@ -8,7 +8,7 @@ namespace CopilotBridge.UnitTests;
 
 /// <summary>
 /// Codex routing + profile catalog (change 3, tasks 2.1/2.3; extended 2026-07/08 with
-/// the gpt-5.6 codename slots). Asserts that the ten Codex/Responses model
+/// the gpt-5.6 codename slots and gpt-6-astra). Asserts that the exact Codex/Responses model
 /// ids resolve to the native <c>/responses</c> backend (not the legacy
 /// <c>/chat/completions</c>), that <c>Normalize</c> no-ops on them (so the
 /// snapshot-keyed lookups hit), and that the <see cref="CodexModelProfileCatalog"/>
@@ -29,6 +29,7 @@ public class CodexRoutingAndCatalogTests
         new object[] { "gpt-5.6-sol" },
         new object[] { "gpt-5.6-sol-fast" },
         new object[] { "gpt-5.6-terra" },
+        new object[] { "gpt-6-astra" },
         new object[] { "gpt-5-mini" },
         new object[] { "mai-code-1-flash-picker" },
     };
@@ -107,6 +108,8 @@ public class CodexRoutingAndCatalogTests
     [InlineData("gpt-5.6-sol",   "none,low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-5.6-sol-fast", "none,low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-5.6-terra", "none,low,medium,high,xhigh,max", false, true)]
+    // Astra rejects both none and minimal; all remaining public tiers are accepted live.
+    [InlineData("gpt-6-astra",    "low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-5-mini",    "minimal,low,medium,high", false, true)]
     [InlineData("mai-code-1-flash-picker", "minimal,low,medium,high", false, false)]
     public void Catalog_ProfilesMatchLiveContract(
@@ -124,20 +127,19 @@ public class CodexRoutingAndCatalogTests
     }
 
     /// <summary>
-    /// The gpt-5.6 codenames are the ONLY Codex profiles that accept <c>max</c>
-    /// (<c>Gpt56_Effort_ReProbe</c>). This pins the distinguishing fact: every
-    /// large/small profile rejects <c>max</c>, so a regression that merged the
-    /// codenames into the "large" set (dropping max) would flip an assertion here.
+    /// Pins exact live <c>max</c> acceptance. The gpt-5.6 codenames and Astra
+    /// accept it; every older large/small profile rejects it.
     /// </summary>
     [Theory]
     [InlineData("gpt-5.6-luna", true)]
     [InlineData("gpt-5.6-sol", true)]
     [InlineData("gpt-5.6-sol-fast", true)]
     [InlineData("gpt-5.6-terra", true)]
+    [InlineData("gpt-6-astra", true)]
     [InlineData("gpt-5.5", false)]         // large — rejects max
     [InlineData("gpt-5-mini", false)]      // small — rejects max
     [InlineData("gpt-5.3-codex", false)]   // large — rejects max
-    public void Catalog_OnlyGpt56_AcceptsMax(string id, bool acceptsMax)
+    public void Catalog_MaxAcceptanceMatchesLiveContract(string id, bool acceptsMax)
     {
         var profile = new CodexModelProfileCatalog().Get(id);
         Assert.NotNull(profile);
@@ -145,14 +147,23 @@ public class CodexRoutingAndCatalogTests
     }
 
     [Fact]
-    public void Catalog_HasAllTenModels_AndUniformCoercions()
+    public void Catalog_HasAllElevenModels_AndUniformCoercions()
     {
         var catalog = new CodexModelProfileCatalog();
-        Assert.Equal(10, catalog.Count);
+        Assert.Equal(11, catalog.Count);
         // The three uniform coercions are catalog-level facts (apply to every model).
         Assert.True(CodexModelProfileCatalog.StripsServiceTier);
         Assert.True(CodexModelProfileCatalog.StripsStoreTrue);
         Assert.True(CodexModelProfileCatalog.DropsImageGenerationTool);
+    }
+
+    [Fact]
+    public void Catalog_AstraUsesLowForUnsupportedLegacyEfforts()
+    {
+        var profile = Assert.IsType<CodexModelProfile>(
+            new CodexModelProfileCatalog().Get("gpt-6-astra"));
+
+        Assert.Equal("low", profile.DefaultEffort);
     }
 
     [Fact]

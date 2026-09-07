@@ -31,9 +31,10 @@ public partial class ResponsesProbe
     [InlineData("gpt-5.6-sol")]
     [InlineData("gpt-5.6-sol-fast")]
     [InlineData("gpt-5.6-terra")]
+    [InlineData("gpt-6-astra")]
     public async Task OneMillionClass_RealCodexBytes_AcceptBeyondFormer272kCeiling(string model)
     {
-        var (capturePath, body) = string.Equals(model, "gpt-5.6-sol-fast", StringComparison.Ordinal)
+        var (capturePath, body) = model is "gpt-5.6-sol-fast" or "gpt-6-astra"
             ? LoadNewestRealCodexBodyForModel(model)
             : LoadNewestRealCodexBody();
         body["model"] = model;

@@ -558,6 +558,40 @@ public class CodexBehaviorTests
         await DriveAndRecordAsync("codex-code-exec", prompt);
     }
 
+    /// <summary>
+    /// Route-specific Astra acceptance: the real client keeps its reviewed
+    /// gpt-5.6-sol catalog identity while the copied stock appsettings resolves
+    /// every inference request to gpt-6-astra. The task biases custom exec and
+    /// then requires separate shell write/read calls, so the verifier can require
+    /// both a client-owned dispatch verdict and a multi-turn wire round-trip.
+    /// </summary>
+    [Fact]
+    public async Task Codex_Gpt56RoutedToAstra_ComplexToolLoop_ProducesDispatchLogForVerdict()
+    {
+        var credentialSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(credentialSource))
+            throw new InvalidOperationException(
+                "Set COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY to a scratch "
+                + "directory containing a freshly authorized version-3 credential.");
+
+        const string canary = "codex-astra-route-canary-69073";
+        var prompt =
+            "Use your code-execution tool to calculate the sum of the integers from 1 through 120; "
+            + "run actual code and do not calculate it by hand. Then use separate shell command tool calls "
+            + "to write the numeric result as the first line of astra_route_probe.txt, append the exact suffix "
+            + canary + " as the second line, and read the file. Report both exact lines and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-gpt56-to-astra-route",
+            prompt,
+            modelReasoningEffort: "none",
+            credentialSourceDirectory: credentialSource,
+            credentialStagingMode: CredentialStagingMode.CopilotPluginVersionThree,
+            scenario: ServeScenario.Gpt56ToAstra,
+            resolvedModel: ClientBehaviorSupport.LatestGptBackend);
+    }
+
     [Fact]
     public async Task Codex_XhighReasoningAndCustomExec_PreservesNativeResponse_ForVerdict()
     {
@@ -1064,10 +1098,12 @@ public class CodexBehaviorTests
         bool useCustomOAuthApp = false,
         string model = ClientBehaviorSupport.LatestGpt,
         string? modelCatalogTemplateSlug = null,
-        JsonArray? injectedItems = null)
+        JsonArray? injectedItems = null,
+        ServeScenario scenario = ServeScenario.Passthrough,
+        string? resolvedModel = null)
     {
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
-            ServeScenario.Passthrough,
+            scenario,
             ForceCapiForbiddenOnce: forceCapiForbiddenOnce,
             CredentialSourceDirectory: credentialSourceDirectory,
             CredentialStagingMode: credentialStagingMode,
@@ -1110,7 +1146,7 @@ public class CodexBehaviorTests
                 Client: "codex",
                 Route: "/codex",
                 Model: model,
-                Scenario: ServeScenario.Passthrough,
+                Scenario: scenario,
                 ClientExitCode: result.ExitCode,
                 DurationSeconds: result.Duration.TotalSeconds,
                 TraceDir: bridge.TraceDir,
@@ -1121,7 +1157,8 @@ public class CodexBehaviorTests
                     ? prompt
                     : prompt + "\n[injected items] " + injectedItems.ToJsonString(),
                 DispatchThreadId: result.ThreadId,
-                ForcedCapiForbiddenOperation: forceCapiForbiddenOnce),
+                ForcedCapiForbiddenOperation: forceCapiForbiddenOnce,
+                ResolvedModel: resolvedModel),
             result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(),
             out _, out _,
             bridgeLog: forceCapiForbiddenOnce is null

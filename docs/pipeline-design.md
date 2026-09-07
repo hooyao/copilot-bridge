@@ -802,7 +802,14 @@ Ownership is strict:
 - **Copilot owns backend capacity.** Only exact bridge Responses profiles that
   are also advertised live with `/responses` remain API-supported. Valid live
   `max_context_window_tokens` raises `context_window` and
-  `max_context_window`; `auto_compact_token_limit` is the lower of 85% total
+    `max_context_window`; for a configured model alias these limits come from the
+    exact resolved live target while the source Codex slug/instructions remain.
+    This projection requires a provably invariant first Location for that source;
+    an earlier effort/header-dependent rule makes capacity ambiguous and hides the
+    alias from a validated catalog rather than advertising a later fallback's limit.
+    A validated cross-model target with missing or inconsistent limits is likewise
+    hidden; only direct models retain reviewed source limits when live limits cannot map.
+    `auto_compact_token_limit` is the lower of 85% total
   and 97.5% maximum prompt, rounded down to 1,000. Invalid or missing limits do
   not raise the validated exact-version baseline.
 - **The bridge owns the safe join.** Live-only models are never synthesized,
@@ -1768,18 +1775,22 @@ typo can't produce silent 401s. Identity-header overrides thread through
 `BridgeContext.CopilotHeaderOverrides` into `CopilotHeaderFactory`;
 `anthropic-beta` add/remove flows through `HeadersOutboundStage`.
 
-Today's `appsettings.json` ships an **empty** active location list
-(`"Locations": []`) — no rewrites by default — plus a **disabled** example under
-`_Locations_disabled` (a key the config binder ignores; enable by renaming it to
-`Locations`):
+Today's `appsettings.json` ships one active exact-model compatibility route plus
+an alternative disabled Claude Code → GPT example:
 
-| `When` model | `Use.Model` | `Use.EffortMap` |
-| --- | --- | --- |
-| `claude-opus-5` | `gpt-5.6-sol` | `max` → `xhigh` |
+| `When` model | `Use.Model` | `Use.EffortMap` | State |
+| --- | --- | --- | --- |
+| `gpt-5.6-sol` | `gpt-6-astra` | `none` → `low`, `minimal` → `low` | active on fresh installs |
+| `claude-opus-5` | `gpt-5.6-sol` | `max` → `xhigh` | `_Locations_disabled` alternative |
 
 Note:
-- The example routes Claude Code's `claude-opus-5` to Copilot's newest Codex
-  model `gpt-5.6-sol`. The `EffortMap max→xhigh` is an **optional down-tier**:
+- The active route keeps the reviewed `gpt-5.6-sol` Codex client catalog identity
+  while resolving upstream to Astra. Live probes establish Astra's narrower effort
+  set and 1,000,000/872,000 Copilot context/prompt limits; catalog projection uses
+  those target limits under the source slug. Config migration preserves an existing
+  installation's complete Locations array, so upgrades opt in by adding the block.
+- The alternative example routes Claude Code's `claude-opus-5` to the reviewed
+  Codex client model `gpt-5.6-sol`. The `EffortMap max→xhigh` is an **optional down-tier**:
   unlike gpt-5.5, gpt-5.6-sol (the "xlarge" effort profile) accepts `max`
   natively, so without the map Claude Code's `max` passes through verbatim — the
   map caps it at `xhigh` instead (drop the `EffortMap` to send `max` through). It
@@ -1788,8 +1799,9 @@ Note:
 - Earlier releases used a `gpt-5.5-1m → gpt-5.5` alias plus a manual
   `model_context_window` override to evade Codex's bundled 272k-era cap. That
   workaround is retired. `config codex` now enables command-auth discovery and
-  Codex obtains exact live limits from `GET /codex/models`; routing aliases are
-  no longer part of context-window negotiation.
+  Codex obtains exact live limits from `GET /codex/models`. A routing alias is no
+  longer needed solely to advertise capacity; an intentional model substitution
+  makes the projector use the resolved target's live limits under the source slug.
 
 **Retired: the opus 1M redirects.** Earlier releases shipped
 `"opus 4.x + 1M beta → dedicated 1M model id"` redirects (opus-4.7/4.8 →
