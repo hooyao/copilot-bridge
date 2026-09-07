@@ -183,7 +183,7 @@ internal static class ResponsesRequestBuilder
             var ptIdx = 0;
             var emittedMsgs = 0;
             ptIdx = WritePassthroughUpTo(
-                w, passthrough, systemGroups, ptIdx, emittedMsgs, ref mutations);
+                w, passthrough, systemGroups, ptIdx, emittedMsgs, ref vision, ref mutations);
             foreach (var msg in ir.Messages)
             {
                 WriteInputItem(
@@ -195,7 +195,7 @@ internal static class ResponsesRequestBuilder
                     ref mutations);
                 emittedMsgs++;
                 ptIdx = WritePassthroughUpTo(
-                    w, passthrough, systemGroups, ptIdx, emittedMsgs, ref mutations);
+                    w, passthrough, systemGroups, ptIdx, emittedMsgs, ref vision, ref mutations);
             }
             // Any remaining passthrough items whose `after` exceeds the message count
             // (e.g. trailing agent_message) — emit them at the end. Raw-value, not
@@ -203,7 +203,7 @@ internal static class ResponsesRequestBuilder
             // re-escape, e.g. an encrypted_content blob; GetRawText keeps them verbatim).
             while (ptIdx < passthrough.Count)
             {
-                WritePassthroughItem(w, passthrough[ptIdx], systemGroups, ref mutations);
+                WritePassthroughItem(w, passthrough[ptIdx], systemGroups, ref vision, ref mutations);
                 ptIdx++;
             }
             w.WriteEndArray();
@@ -365,11 +365,12 @@ internal static class ResponsesRequestBuilder
         IReadOnlyDictionary<int, IReadOnlyList<string>> systemGroups,
         int ptIdx,
         int emittedMsgs,
+        ref bool vision,
         ref ResponsesRequestMutation mutations)
     {
         while (ptIdx < passthrough.Count && passthrough[ptIdx].After <= emittedMsgs)
         {
-            WritePassthroughItem(w, passthrough[ptIdx], systemGroups, ref mutations);
+            WritePassthroughItem(w, passthrough[ptIdx], systemGroups, ref vision, ref mutations);
             ptIdx++;
         }
         return ptIdx;
@@ -379,8 +380,19 @@ internal static class ResponsesRequestBuilder
         Utf8JsonWriter w,
         PassthroughItem item,
         IReadOnlyDictionary<int, IReadOnlyList<string>> systemGroups,
+        ref bool vision,
         ref ResponsesRequestMutation mutations)
     {
+        // Custom-tool outputs and standalone named function outputs ride the
+        // opaque input bag. Their native image parts still require the Copilot
+        // vision header; observing that flag must not rewrite the raw payload.
+        if (!vision && item.Raw.ValueKind == JsonValueKind.Object
+            && item.Raw.TryGetProperty("type", out var type)
+            && type.ValueKind == JsonValueKind.String
+            && type.GetString() is "function_call_output" or "custom_tool_call_output"
+            && item.Raw.TryGetProperty("output", out var output))
+            vision = HasNativeInputImage(output);
+
         if (item.SystemGroup is not { } group
             || !systemGroups.TryGetValue(group, out var texts))
         {
@@ -566,7 +578,10 @@ internal static class ResponsesRequestBuilder
                     if (sourceWantsOpaque)
                     {
                         if (tr.Content is { } nativeOutput)
+                        {
+                            vision |= HasNativeInputImage(nativeOutput);
                             nativeOutput.WriteTo(w);
+                        }
                         else
                             w.WriteStringValue("");
                     }
@@ -896,6 +911,20 @@ internal static class ResponsesRequestBuilder
         // content.WriteTo for the common string case, and keeps a Codex structured
         // output object intact.
         c.WriteTo(w);
+    }
+
+    private static bool HasNativeInputImage(JsonElement output)
+    {
+        if (output.ValueKind != JsonValueKind.Array) return false;
+        foreach (var part in output.EnumerateArray())
+        {
+            if (part.ValueKind == JsonValueKind.Object
+                && part.TryGetProperty("type", out var type)
+                && type.ValueKind == JsonValueKind.String
+                && type.GetString() == "input_image")
+                return true;
+        }
+        return false;
     }
 
     private static bool IsSupportedMultimodalToolResult(JsonElement content)

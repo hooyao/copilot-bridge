@@ -17,7 +17,7 @@ Single source of truth in code: `ClientBehaviorSupport` in
 | `LatestClaude` | `claude-opus-5` | CC-native `/cc` cases, and the CC→gpt client-facing id |
 | `LatestGpt` | `gpt-5.6-sol` | Reviewed Codex client-catalog identity used by native `/codex` cases |
 | `LatestGptBackend` | `gpt-6-astra` | Resolved backend for the stock GPT-5.6→Astra route case |
-| `CodexVersion` | `0.153.3` | Reviewed Codex app-server build used by native `/codex` cases |
+| `CodexVersion` | `0.153.4` | Reviewed Codex app-server build used by native `/codex` cases |
 
 ## Bumping when Copilot ships a newer model
 

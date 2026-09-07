@@ -1176,6 +1176,13 @@ for every current OpenAI Responses profile, while `mai-code-1-flash-picker`
 returned 200 but misidentified the red test image as blue and keeps the
 compatibility string path. Fuzzy-nearest and unprobed models also keep that path.
 
+Native Responses tool outputs retain their original content even when marked
+opaque. The request builder still detects `input_image` parts in the output
+content arrays of `function_call_output` and `custom_tool_call_output`, including
+standalone named outputs, and activates `Copilot-Vision-Request: true`. This is
+header bookkeeping only: it never translates the native output, scans literal
+JSON inside text, or interprets unrelated nested metadata as image content.
+
 Responses reasoning items follow the same push/pull split. T3 pushes the whole
 item into the IR unconditionally — a hidden `redacted_thinking` block carrying
 the opaque blob plus a `bridge_reasoning_item` marker holding the original item

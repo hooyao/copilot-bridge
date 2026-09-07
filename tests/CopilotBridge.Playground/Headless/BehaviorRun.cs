@@ -38,7 +38,8 @@ internal sealed record BehaviorManifest(
     string Prompt,
     string? DispatchThreadId = null, // app-server: exact thread id for log filtering
     ForcedCapiForbiddenOperation? ForcedCapiForbiddenOperation = null,
-    string? ResolvedModel = null);
+    string? ResolvedModel = null,
+    string? VisionEvidencePath = null);
     // NOTE: the saved-stdout/stderr file paths are NOT fields here — they are DERIVED by
     // BehaviorRun.Write from CaseId + utcStamp (the code that owns the write), and
     // returned to the caller via its out params. Putting them on the record invited a
@@ -98,6 +99,7 @@ internal static class BehaviorRun
             ["stdoutPath"] = stdoutPath,
             ["stderrPath"] = stderrPath,
             ["bridgeLogPath"] = bridgeLogPath,
+            ["visionEvidencePath"] = manifest.VisionEvidencePath,
             ["prompt"] = manifest.Prompt,
             ["utcStamp"] = utcStamp,
         };

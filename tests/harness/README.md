@@ -1,9 +1,38 @@
 # copilot-bridge harness
 
-This harness drives **real headless Claude Code** against the bridge to verify
-end-to-end protocol compatibility with GitHub Copilot. It is driven by Claude
-Code (the chat session) — there is no test runner, no assertion DSL.
-Run a prompt, read the logs, reason about what worked.
+This directory contains the legacy manual headless Claude Code prompt corpus.
+Current real-client cases live in `tests/CopilotBridge.Playground/Headless/ClientBehavior/`:
+xUnit drives the real client and captures evidence, then the
+[`real-client-verify` skill](../../.agents/skills/real-client-verify/SKILL.md)
+judges the client's execution and logs.
+
+## Codex Astra vision
+
+The two `CodexVisionBehaviorTests` cases exercise the stock
+`gpt-5.6-sol -> gpt-6-astra` route with real Codex app-server 0.153.4:
+
+- Native `localImage` attachment in the first turn.
+- Text-only input followed by actual `view_image` tool execution.
+
+Each run generates a PNG with a random six-digit code and four shuffled color
+tiles, then requires Codex to write its visual reading and read it back with a
+separate tool call. Expected answers are saved only after the client exits.
+
+```pwsh
+dotnet build src/CopilotBridge.Cli
+$env:COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY = '<scratch directory with an authorized version-3 credential>'
+dotnet test tests/CopilotBridge.Playground --filter "Kind=ClientBehavior&FullyQualifiedName~CodexVisionBehaviorTests" --logger "console;verbosity=detailed"
+```
+
+Read only the `[manifest]` paths printed by this invocation. Each manifest's
+`visionEvidencePath` points to the preserved image, expected answer, and actual
+client-written output. Follow the skill's B19/B20 verdict: require the correct
+image-delivery path, all five answer fields, matching write/read tool outputs,
+Astra routing and the vision header, a completed client turn, and a nonempty
+client-owned SQLite log without dispatch fatals or errors. A green xUnit run or
+HTTP 200 alone is not a visual PASS.
+
+The remaining sections document the older manual Claude harness.
 
 ## Files
 
