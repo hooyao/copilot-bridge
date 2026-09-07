@@ -53,6 +53,10 @@ Verdict: **PASS** under both real-client gates.
 
 Copilot produced no code finding and requested final human confirmation because the stock route changes fresh-install behavior. The repository owner explicitly requested the `gpt-5.6-sol` to `gpt-6-astra` configuration route and the complete ship workflow. Existing installations remain protected because updater config migration preserves their complete user-owned `Routing.Locations` array; clearing the single exact rule restores direct Sol behavior. No product change was required.
 
+## PR review round 4
+
+Copilot reviewed the authorization-record head, generated zero code comments, and repeated the same final-human-confirmation note. The owner's explicit request and the preserved-upgrade behavior remain unchanged; there is no technical finding to fix. A fifth and final review round is requested under the bounded review policy.
+
 ## Native AOT
 
 - `copilot-bridge.exe`: 14,853,120 bytes; `--version` executed successfully.
