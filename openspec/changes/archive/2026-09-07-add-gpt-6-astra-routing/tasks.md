@@ -36,3 +36,8 @@
 
 - [x] 6.1 Make catalog limit projection require an invariant first route and hide aliases shadowed by earlier request-dependent Locations; add a mutation-proven contract test.
 - [x] 6.2 Make the Astra large-context probe select a model-specific real-client capture and confirm 310,307 input tokens return 200.
+
+## 7. PR Review Round 2 Follow-ups
+
+- [x] 7.1 Add `ultra` to the permanent Responses B2/B3 vocabulary and snapshot, and reconfirm its rejection on real Astra client bytes.
+- [x] 7.2 Hide a validated cross-model alias when its target limits are missing or inconsistent, while preserving the direct-model and unavailable-overlay baseline behavior; mutation-check the new contract test.

@@ -195,7 +195,7 @@ live re-probe returned 200. `service_tier` / `store:true` strip plus the
 > the advertised list lies, the probe is ground truth.
 
 > **2026-09 update — Astra is a fourth profile.** `gpt-6-astra` accepts
-> `low/medium/high/xhigh/max` and rejects both `none` and `minimal`; unsupported
+> `low/medium/high/xhigh/max` and rejects `none`, `minimal`, and `ultra`; unsupported
 > effort falls back to `low`, matching OpenAI's migration guidance and live Copilot.
 > Function/custom/web-search tools and structured image function output are accepted;
 > the existing catalog-wide store/service-tier/image-generation removals still apply.

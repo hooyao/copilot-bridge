@@ -807,6 +807,8 @@ Ownership is strict:
     This projection requires a provably invariant first Location for that source;
     an earlier effort/header-dependent rule makes capacity ambiguous and hides the
     alias from a validated catalog rather than advertising a later fallback's limit.
+    A validated cross-model target with missing or inconsistent limits is likewise
+    hidden; only direct models retain reviewed source limits when live limits cannot map.
     `auto_compact_token_limit` is the lower of 85% total
   and 97.5% maximum prompt, rounded down to 1,000. Invalid or missing limits do
   not raise the validated exact-version baseline.

@@ -18,7 +18,8 @@
         ],
         "rejected": [
           "minimal",
-          "max"
+          "max",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -41,7 +42,8 @@
         ],
         "rejected": [
           "minimal",
-          "max"
+          "max",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -64,7 +66,8 @@
         ],
         "rejected": [
           "minimal",
-          "max"
+          "max",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -87,7 +90,8 @@
         ],
         "rejected": [
           "minimal",
-          "max"
+          "max",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -110,7 +114,8 @@
           "max"
         ],
         "rejected": [
-          "minimal"
+          "minimal",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -133,7 +138,8 @@
           "max"
         ],
         "rejected": [
-          "minimal"
+          "minimal",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -156,7 +162,8 @@
           "max"
         ],
         "rejected": [
-          "minimal"
+          "minimal",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -179,7 +186,8 @@
           "max"
         ],
         "rejected": [
-          "minimal"
+          "minimal",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -202,7 +210,8 @@
         ],
         "rejected": [
           "minimal",
-          "none"
+          "none",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -225,7 +234,8 @@
         "rejected": [
           "none",
           "xhigh",
-          "max"
+          "max",
+          "ultra"
         ]
       },
       "fields_rejected": [
@@ -248,7 +258,8 @@
         "rejected": [
           "none",
           "xhigh",
-          "max"
+          "max",
+          "ultra"
         ]
       },
       "fields_rejected": [

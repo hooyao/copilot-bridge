@@ -2,7 +2,7 @@
 
 ### Requirement: Astra is an exact Copilot Responses target
 
-The bridge SHALL resolve canonical `gpt-6-astra` to Copilot's native `/responses` endpoint through an explicit registry entry and an exact live-probed model profile. The profile SHALL accept only `low`, `medium`, `high`, `xhigh`, and `max` unchanged; SHALL use `low` when an unsupported effort must be coerced; SHALL retain custom grammar tools; and SHALL enable structured multimodal function output. The catalog-wide removals for `store:true`, `service_tier`, and image-generation tools SHALL apply to Astra because current live Copilot rejects those shapes.
+The bridge SHALL resolve canonical `gpt-6-astra` to Copilot's native `/responses` endpoint through an explicit registry entry and an exact live-probed model profile. The profile SHALL accept only `low`, `medium`, `high`, `xhigh`, and `max` unchanged; SHALL reject and use `low` when `none`, `minimal`, `ultra`, or another unsupported effort must be coerced; SHALL retain custom grammar tools; and SHALL enable structured multimodal function output. The catalog-wide removals for `store:true`, `service_tier`, and image-generation tools SHALL apply to Astra because current live Copilot rejects those shapes.
 
 #### Scenario: Direct Astra request resolves to Responses
 
@@ -48,6 +48,11 @@ When a Codex catalog source slug has one statically provable target for every re
 
 - **WHEN** a configured target has no exact bridge profile or validated live `/responses` capability
 - **THEN** the routed source is not advertised as an effective Codex model
+
+#### Scenario: Alias target limits cannot be mapped safely
+
+- **WHEN** a validated cross-model target advertises missing or internally inconsistent context, prompt, or output limits
+- **THEN** the catalog hides the source alias instead of retaining that source model's reviewed capacity
 
 #### Scenario: Earlier conditional route makes capacity ambiguous
 

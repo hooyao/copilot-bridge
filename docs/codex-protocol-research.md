@@ -61,13 +61,13 @@ OpenAI-Chat translation" assumption (§4.4).
 > **Addendum — 2026-09-07 GPT-6 Astra.** Copilot now exposes exact
 > `gpt-6-astra` on `/responses` with 1,000,000 total / 872,000 prompt / 128,000
 > output tokens. Direct probes establish a fourth effort profile:
-> `low/medium/high/xhigh/max` accepted; `none/minimal` rejected. Function, custom,
+> `low/medium/high/xhigh/max` accepted; `none/minimal/ultra` rejected. Function, custom,
 > web-search, and structured multimodal function output work; store/service-tier/
 > image-generation keep the existing uniform rejection facts. A real Codex 0.153.3
 > run requested `gpt-5.6-sol` with effort `none`, resolved to Astra/`low`, completed
 > seven matching custom-exec call/output rounds, and recorded zero router/dispatch
 > fatals. Replaying its 79 KB final request unchanged returned 200; changing only
-> effort to `none` or `minimal` returned 400. Sync and async custom tools retain the
+> effort to `none`, `minimal`, or `ultra` returned 400. Sync and async custom tools retain the
 > existing `custom_tool_call` item and SSE families.
 
 > **Addendum — 2026-08-28 Codex model-catalog metadata and large-context confirmation.**

@@ -357,6 +357,19 @@ public sealed class CodexModelCatalogContractTests
     }
 
     [Fact]
+    public void CrossModelAliasWithUnmappableTargetLimitsIsHidden()
+    {
+        var result = ConfiguredAstraProjector().Project(
+            LoadBaseline(),
+            [Live("gpt-6-astra", 1_000_000, null, 128_000)],
+            liveOverlayValidated: true);
+        var alias = Find(result.Models, "gpt-5.6-sol");
+
+        Assert.False(alias.GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal("hide", alias.GetProperty("visibility").GetString());
+    }
+
+    [Fact]
     public void ConfiguredModelLocationKeepsReviewedBaselineWhenOverlayIsUnavailable()
     {
         var result = ConfiguredAstraProjector().Project(

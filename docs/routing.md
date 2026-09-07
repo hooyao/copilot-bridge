@@ -194,6 +194,9 @@ Catalog projection applies a routed target only when the first potentially match
 Location is unconditional for that source model. If an earlier effort/header rule
 could select another target, the validated catalog hides the alias instead of
 advertising the later fallback's possibly larger window.
+An invariant cross-model alias is also hidden when its validated target omits or
+contradicts the three required limit fields; source-model limits are never reused
+for a different target.
 
 Config migration treats the complete Locations array as user-owned. An upgraded
 installation therefore retains its old array (including `[]`) and must add this

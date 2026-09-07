@@ -29,8 +29,10 @@ public partial class ResponsesProbe
     // profiles: "large" reject minimal; "small" reject none + xhigh; "xlarge"
     // (the gpt-5.6 codenames) additionally ACCEPT max — the only distinguishing
     // capability, so max must be in the swept vocabulary or B2 can't detect a
-    // model gaining/losing it.
-    private static readonly string[] EffortVocabulary = ["minimal", "none", "low", "medium", "high", "xhigh", "max"];
+    // model gaining/losing it. Ultra is also swept because Astra rejects it and
+    // T2 therefore rewrites it to the profile default; if that backend boundary
+    // disappears, B2/B3 must detect the now-unnecessary silent downgrade.
+    private static readonly string[] EffortVocabulary = ["minimal", "none", "low", "medium", "high", "xhigh", "max", "ultra"];
 
     [Fact]
     public async Task B_ResponsesContract_SweepAssertAndDetectDrift()

@@ -108,7 +108,8 @@ public partial class ResponsesProbe
     [Theory]
     [InlineData("none")]
     [InlineData("minimal")]
-    public async Task Gpt6Astra_RealCodexBytes_RejectLegacyEffort(string rejectedEffort)
+    [InlineData("ultra")]
+    public async Task Gpt6Astra_RealCodexBytes_RejectUnsupportedEffort(string rejectedEffort)
     {
         var (capturePath, captured) = LoadNewestRealCodexBodyForModel(Gpt6Astra);
         Assert.Equal(Gpt6Astra, captured["model"]?.GetValue<string>());
@@ -133,7 +134,7 @@ public partial class ResponsesProbe
 
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, rejectedStatus);
         Assert.Contains(rejectedEffort, rejectedBody, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("not supported", rejectedBody, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("invalid_request_body", rejectedBody, StringComparison.OrdinalIgnoreCase);
     }
 
     private static (string Path, JsonObject Body) LoadNewestLivePassthroughGpt56Body()

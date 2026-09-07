@@ -5,7 +5,7 @@ Copilot discovery on 2026-09-07 exposes `gpt-6-astra` at `/responses` and `ws:/r
 The [OpenAI Astra migration guide](https://developers.openai.com/api/docs/guides/latest-model/gpt-6-astra) says Responses tool calling is required, `none` and `minimal` must move to `low`, and `temperature`, `top_p`, `top_logprobs`, and Responses `message.output_text.logprobs` are unsupported. The existing bridge already sends Codex through `/responses` and preserves target-owned unknown fields. Live Copilot probes establish the bridge-specific facts:
 
 - liveness and real Codex 0.153.3 request replay return 200;
-- `low`/`medium`/`high`/`xhigh`/`max` return 200, while `none`/`minimal` return 400;
+- `low`/`medium`/`high`/`xhigh`/`max` return 200, while `none`/`minimal`/`ultra` return 400;
 - function, custom grammar, web-search, encrypted-reasoning include, prompt cache key, and reasoning summary are accepted;
 - `store:true`, `service_tier`, and image generation are rejected exactly like the existing catalog-wide rules;
 - synchronous and `async:true` custom tools retain the existing `custom_tool_call` item and SSE event families;
@@ -46,7 +46,7 @@ Directly advertising only `gpt-6-astra` was rejected because the exact Codex cat
 
 ### Route-aware catalog limits
 
-`CodexCatalogProjector` statically evaluates Locations with the source model fixed and effort/header axes unknown. Only a first potentially matching Location that is unconditional for that model proves an invariant target. If an earlier request-dependent rule could match, a validated catalog hides the source alias rather than using a later fallback's capacity; overlay failure keeps the existing reviewed-baseline fallback. For an invariant route, the source catalog entry keeps its slug/instructions while context and compaction limits come from the resolved target's live Copilot metadata.
+`CodexCatalogProjector` statically evaluates Locations with the source model fixed and effort/header axes unknown. Only a first potentially matching Location that is unconditional for that model proves an invariant target. If an earlier request-dependent rule could match, a validated catalog hides the source alias rather than using a later fallback's capacity; overlay failure keeps the existing reviewed-baseline fallback. For an invariant route, the source catalog entry keeps its slug/instructions while context and compaction limits come from the resolved target's live Copilot metadata. A cross-model alias whose validated target limits are missing or inconsistent is hidden instead of retaining potentially larger source limits; a direct model keeps the existing reviewed-baseline fallback.
 
 Leaving source limits untouched was rejected because Codex would compact against the 922,000-token gpt-5.6 prompt budget while Copilot Astra currently accepts only 872,000 prompt tokens.
 

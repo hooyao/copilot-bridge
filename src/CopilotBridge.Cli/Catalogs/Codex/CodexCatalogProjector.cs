@@ -170,16 +170,32 @@ internal sealed class CodexCatalogProjector
             route = _routes.Resolve(slug);
         }
 
-        return _profiles.Get(slug) is not null &&
-            route is not null &&
-            _profiles.Get(route.ModelId) is not null &&
-            route is
+        if (_profiles.Get(slug) is null ||
+            route is null ||
+            _profiles.Get(route.ModelId) is null ||
+            route is not
             {
                 Vendor: BackendVendor.CopilotResponses,
                 Endpoint: ResponsesEndpoint,
-            } &&
-            (!validated || live.TryGetValue(route.ModelId, out var model) &&
-                model.SupportedEndpoints?.Contains(ResponsesEndpoint, StringComparer.Ordinal) == true);
+            })
+            return false;
+
+        if (!validated) return true;
+        if (!live.TryGetValue(route.ModelId, out var model) ||
+            model.SupportedEndpoints?.Contains(ResponsesEndpoint, StringComparer.Ordinal) != true)
+            return false;
+
+        if (!string.Equals(route.ModelId, slug, StringComparison.Ordinal) &&
+            !TryMapLimits(model, out _, out _))
+        {
+            _log.LogWarning(
+                "Codex catalog alias {SourceModel} -> {TargetModel} hidden because the "
+                + "validated target limits were missing or inconsistent.",
+                slug, route.ModelId);
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
