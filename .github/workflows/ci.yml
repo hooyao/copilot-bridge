@@ -144,6 +144,15 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      # These tests use real NamedPipe endpoints. On Unix, .NET implements them
+      # as Unix-domain sockets, so running on both Linux and macOS guards the
+      # short absolute socket-path contract (including macOS's lower path limit).
+      - name: Test update IPC (unix)
+        if: runner.os != 'Windows'
+        run: >
+          dotnet test tests/CopilotBridge.UnitTests/CopilotBridge.UnitTests.csproj
+          -c Debug --filter "FullyQualifiedName~UpdatePipeTransportTests"
+
       # Publish only the CLI project for this RID. A bare `dotnet publish` drives
       # the AOT native link: clang+binutils on ubuntu, Xcode CLT on macos-14, and
       # the MSVC toolchain (incl. native ARM64) on windows-11-arm are all present

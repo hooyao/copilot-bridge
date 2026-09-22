@@ -161,6 +161,14 @@ The install is a recoverable transaction:
 2. **Hand off**: the updater signals `Prepared`; the bridge authorizes cutover
    over a per-attempt authenticated named pipe and then exits without ever
    starting Kestrel.
+
+   On Windows this uses a normal named-pipe name. On Linux and macOS the .NET
+   named-pipe implementation uses Unix-domain sockets; capabilities therefore
+   use a short absolute `/tmp/cbup-*` socket path. A relative name would make
+   .NET prepend `$TMPDIR/CoreFxPipe_`, which can exceed macOS's socket-path
+   limit on otherwise normal installations. The pipe remains opened with
+   `CurrentUserOnly`, and the peer must still present the independent 256-bit
+   role capability token; the shorter path does not weaken authentication.
 3. **Cutover**: after the exact parent exits and a final drift re-check, rename
    the original `appsettings.json` to `appsettings.json.bak.<attempt-id>`,
    install the new binaries, and write the merged config.
