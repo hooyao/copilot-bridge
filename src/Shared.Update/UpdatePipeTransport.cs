@@ -20,6 +20,10 @@ internal static class UpdatePipeTransport
     public static async Task<string?> ServerReceiveLineAsync(
         string pipeName, TimeSpan timeout, CancellationToken ct)
     {
+        if (string.IsNullOrEmpty(pipeName))
+        {
+            return null;
+        }
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(timeout);
         try
@@ -38,9 +42,9 @@ internal static class UpdatePipeTransport
         {
             return null; // timeout
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or ArgumentOutOfRangeException)
         {
-            return null; // disconnect
+            return null; // invalid platform path or disconnect
         }
     }
 
@@ -52,6 +56,10 @@ internal static class UpdatePipeTransport
     public static async Task<string?> ServerSendLineAsync(
         string pipeName, string line, bool expectReply, TimeSpan timeout, CancellationToken ct)
     {
+        if (string.IsNullOrEmpty(pipeName))
+        {
+            return null;
+        }
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(timeout);
         try
@@ -73,9 +81,9 @@ internal static class UpdatePipeTransport
         {
             return null;
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or ArgumentOutOfRangeException)
         {
-            return null;
+            return null; // invalid platform path or disconnect
         }
     }
 
@@ -87,6 +95,10 @@ internal static class UpdatePipeTransport
     public static async Task<bool> ClientSendLineAsync(
         string pipeName, string line, TimeSpan timeout, CancellationToken ct)
     {
+        if (string.IsNullOrEmpty(pipeName))
+        {
+            return false;
+        }
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(timeout);
         try
@@ -101,7 +113,8 @@ internal static class UpdatePipeTransport
         {
             throw;
         }
-        catch (Exception ex) when (ex is OperationCanceledException or IOException or TimeoutException)
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or TimeoutException
+            or ArgumentOutOfRangeException)
         {
             return false;
         }
@@ -118,6 +131,10 @@ internal static class UpdatePipeTransport
     public static async Task<string?> ClientExchangeAsync(
         string pipeName, Func<string, string?> makeReply, TimeSpan timeout, CancellationToken ct)
     {
+        if (string.IsNullOrEmpty(pipeName))
+        {
+            return null;
+        }
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(timeout);
         try
@@ -142,7 +159,8 @@ internal static class UpdatePipeTransport
         {
             throw;
         }
-        catch (Exception ex) when (ex is OperationCanceledException or IOException or TimeoutException)
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or TimeoutException
+            or ArgumentOutOfRangeException)
         {
             return null;
         }

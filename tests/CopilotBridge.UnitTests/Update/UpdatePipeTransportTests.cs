@@ -16,6 +16,72 @@ public class UpdatePipeTransportTests
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
 
     [Fact]
+    public void Capability_uses_a_platform_appropriate_endpoint_name()
+    {
+        var cap = UpdateCapability.Create("an-attempt-with-a-long-id", "handoff");
+
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.StartsWith(
+                "copilot-bridge-update-handoff-an-attempt-with-a-long-id-",
+                cap.PipeName,
+                StringComparison.Ordinal);
+            return;
+        }
+
+        Assert.StartsWith("/tmp/cbup-h-", cap.PipeName, StringComparison.Ordinal);
+        Assert.True(Path.IsPathRooted(cap.PipeName));
+        // Leave headroom for the native sockaddr_un limit and its terminator.
+        Assert.InRange(System.Text.Encoding.UTF8.GetByteCount(cap.PipeName), 1, 80);
+    }
+
+    [Fact]
+    public async Task Overlong_platform_pipe_path_fails_open_for_all_transport_operations()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var overlongPath = "/tmp/" + new string('x', 200);
+        var received = await UpdatePipeTransport.ServerReceiveLineAsync(
+            overlongPath, TimeSpan.FromMilliseconds(100), CancellationToken.None);
+        var reply = await UpdatePipeTransport.ServerSendLineAsync(
+            overlongPath, "line", expectReply: true,
+            TimeSpan.FromMilliseconds(100), CancellationToken.None);
+        var sent = await UpdatePipeTransport.ClientSendLineAsync(
+            overlongPath, "line", TimeSpan.FromMilliseconds(100), CancellationToken.None);
+        var exchanged = await UpdatePipeTransport.ClientExchangeAsync(
+            overlongPath, static _ => "reply",
+            TimeSpan.FromMilliseconds(100), CancellationToken.None);
+
+        Assert.Null(received);
+        Assert.Null(reply);
+        Assert.False(sent);
+        Assert.Null(exchanged);
+    }
+
+    [Fact]
+    public async Task Empty_pipe_name_fails_open_for_all_transport_operations()
+    {
+        var received = await UpdatePipeTransport.ServerReceiveLineAsync(
+            "", TimeSpan.FromMilliseconds(100), CancellationToken.None);
+        var reply = await UpdatePipeTransport.ServerSendLineAsync(
+            "", "line", expectReply: true,
+            TimeSpan.FromMilliseconds(100), CancellationToken.None);
+        var sent = await UpdatePipeTransport.ClientSendLineAsync(
+            "", "line", TimeSpan.FromMilliseconds(100), CancellationToken.None);
+        var exchanged = await UpdatePipeTransport.ClientExchangeAsync(
+            "", static _ => "reply",
+            TimeSpan.FromMilliseconds(100), CancellationToken.None);
+
+        Assert.Null(received);
+        Assert.Null(reply);
+        Assert.False(sent);
+        Assert.Null(exchanged);
+    }
+
+    [Fact]
     public async Task Handoff_prepared_then_authorized_round_trips()
     {
         var cap = UpdateCapability.Create("att1", "handoff");

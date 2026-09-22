@@ -17,12 +17,31 @@ internal sealed record UpdateCapability(string PipeName, string Token)
     public static UpdateCapability Create(string attemptId, string role)
     {
         // A short random suffix keeps the pipe name unique per attempt+role while
-        // staying within the platform pipe-name length limits.
+        // staying within the platform pipe-name length limits. On Unix, .NET's
+        // NamedPipe*Stream implementation maps a relative name to
+        // <temp>/CoreFxPipe_<name>. macOS has a much shorter Unix-domain-socket
+        // path limit than Windows has for named-pipe names, and a normal $TMPDIR
+        // can already consume most of that budget. Use a compact absolute path
+        // under /tmp so the runtime does not prepend the (possibly very long)
+        // temp directory or CoreFxPipe_ prefix. The 256-bit token still provides
+        // capability authentication and the random suffix provides collision
+        // resistance; attemptId is carried and authenticated in the wire
+        // message/plan.
         var suffix = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(8));
-        var pipe = $"copilot-bridge-update-{role}-{attemptId}-{suffix}";
+        var pipe = OperatingSystem.IsWindows()
+            ? $"copilot-bridge-update-{role}-{attemptId}-{suffix}"
+            : $"/tmp/cbup-{RoleTag(role)}-{suffix}";
         var token = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
         return new UpdateCapability(pipe, token);
     }
+
+    private static string RoleTag(string role) => role switch
+    {
+        "handoff" => "h",
+        UpdateWire.RoleTarget => "t",
+        UpdateWire.RoleRollback => "r",
+        _ => "x",
+    };
 }
 
 /// <summary>
