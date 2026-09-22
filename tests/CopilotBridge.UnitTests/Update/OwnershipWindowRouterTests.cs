@@ -7,9 +7,10 @@ namespace CopilotBridge.UnitTests.Update;
 /// Contract tests for <see cref="OwnershipWindowRouter"/> — the policy for the
 /// span after the parent bridge has authorized cutover (and so has already
 /// returned WITHOUT building its listener). The governing invariant, stated in
-/// words: once authorization is granted there is soon, or already, NO bridge
-/// serving, so <b>every</b> outcome must resolve to a service-restoring action —
-/// never a plain fail-open (process exit with no relaunch). Which restoring action
+/// words: once authorization is granted there is soon, or already, no confirmed
+/// healthy bridge serving, so <b>every</b> outcome must resolve to a
+/// service-restoring action — never a plain fail-open (process exit with no
+/// relaunch). Which restoring action
 /// depends only on whether the transaction had begun MUTATING the install:
 ///  - nothing mutated  → relaunch the OLD bridge (its config is untouched);
 ///  - anything mutated  → rollback (restore binaries AND the exact original config).
@@ -49,6 +50,7 @@ public class OwnershipWindowRouterTests
         // No mutation has happened at these outcomes, regardless of the flag.
         Assert.Equal(RecoveryAction.RecoverOldBridge, OwnershipWindowRouter.Route(OwnershipOutcome.ParentExitUnconfirmed, transactionMutating: false));
         Assert.Equal(RecoveryAction.RecoverOldBridge, OwnershipWindowRouter.Route(OwnershipOutcome.DriftAfterHandoff, transactionMutating: false));
+        Assert.Equal(RecoveryAction.RecoverOldBridge, OwnershipWindowRouter.Route(OwnershipOutcome.ConcurrentBridgeAfterHandoff, transactionMutating: false));
     }
 
     // --- Fix #2: a throw AFTER the config rename must rollback, not recover. -----

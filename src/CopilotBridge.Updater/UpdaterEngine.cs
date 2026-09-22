@@ -73,7 +73,7 @@ internal sealed class UpdaterEngine
         // any OTHER process at that exact path makes in-place replacement unsafe.
         // Check before download, backup, staging, or any install-dir probe so the
         // common race-defense path has no filesystem side effects to clean up.
-        var conflictingPid = FindConflictingBridgeProcess();
+        var conflictingPid = FindConflictingBridgeProcess(excludeInitiatingParent: true);
         if (conflictingPid is not null)
         {
             return await FailConcurrentBridgeAsync(conflictingPid.Value, ct).ConfigureAwait(false);
@@ -169,7 +169,7 @@ internal sealed class UpdaterEngine
         // Close the long download/prepare window: another instance may have
         // started after the first guard. It must be rejected while the initiating
         // parent still serves, before Prepared transfers ownership.
-        conflictingPid = FindConflictingBridgeProcess();
+        conflictingPid = FindConflictingBridgeProcess(excludeInitiatingParent: true);
         if (conflictingPid is not null)
         {
             return await FailConcurrentBridgeAsync(conflictingPid.Value, ct).ConfigureAwait(false);
@@ -186,9 +186,10 @@ internal sealed class UpdaterEngine
         // ---- OWNERSHIP-TRANSFER WINDOW ----------------------------------------
         // Authorization has been granted: the parent has ALREADY returned without
         // constructing Kestrel and is exiting (or gone), so from here there is soon
-        // NO bridge serving. EVERY outcome past this point must RECOVER service or
-        // report an explicit unrecovered state — never a plain fail-open, which
-        // would exit the updater and relaunch nothing.
+        // NO confirmed healthy initiating bridge serving. EVERY outcome past this
+        // point must RECOVER service or report an explicit unrecovered state —
+        // never a plain fail-open, which would exit the updater and relaunch
+        // nothing. An unknown sibling process is not proof of listener health.
         //
         // The engine only classifies WHAT happened (an OwnershipOutcome) and whether
         // the transaction has begun MUTATING the install; OwnershipWindowRouter owns
@@ -224,11 +225,11 @@ internal sealed class UpdaterEngine
             // debug, or another command), so abort before mutation without
             // relaunching or terminating it. Every installed byte stays intact.
             // Cutover repeats this check adjacent to its first rename.
-            conflictingPid = FindConflictingBridgeProcess();
+            conflictingPid = FindConflictingBridgeProcess(excludeInitiatingParent: false);
             if (conflictingPid is not null)
             {
-                return await FailConcurrentBridgeAsync(conflictingPid.Value, CancellationToken.None)
-                    .ConfigureAwait(false);
+                return await RecoverConcurrentBridgeAsync(
+                    install, conflictingPid.Value).ConfigureAwait(false);
             }
 
             // Parent confirmed gone: service is DOWN. Any failure below recovers.
@@ -250,7 +251,7 @@ internal sealed class UpdaterEngine
             var cutover = install.Cutover(
                 beforeFirstMutation: () =>
                 {
-                    cutoverConflictPid = FindConflictingBridgeProcess();
+                    cutoverConflictPid = FindConflictingBridgeProcess(excludeInitiatingParent: false);
                     return cutoverConflictPid is null
                         ? UpdateStepResult.Success()
                         : UpdateStepResult.Fail(UpdateWire.ConcurrentBridgeReason);
@@ -260,8 +261,8 @@ internal sealed class UpdaterEngine
             {
                 if (cutoverConflictPid is not null)
                 {
-                    return await FailConcurrentBridgeAsync(
-                        cutoverConflictPid.Value, CancellationToken.None).ConfigureAwait(false);
+                    return await RecoverConcurrentBridgeAsync(
+                        install, cutoverConflictPid.Value).ConfigureAwait(false);
                 }
                 _journal.Write("cutover.failed", cutover.Reason);
                 return await ExecuteRecoveryAsync(
@@ -358,9 +359,9 @@ internal sealed class UpdaterEngine
     /// Recover service when the authorizing parent has already exited but cutover
     /// has NOT installed anything yet (e.g. config/binary drift detected after
     /// handoff). No managed file was replaced, so there is nothing to restore —
-    /// but there is also no bridge serving, so the old bridge must be relaunched
-    /// and confirmed Ready. If the drift was a managed-BINARY change (someone
-    /// replaced the installed exe out-of-band), do not execute that unplanned
+    /// but there is also no confirmed healthy bridge serving, so the old bridge
+    /// must be relaunched and confirmed Ready. If the drift was a managed-BINARY
+    /// change (someone replaced the installed exe out-of-band), do not execute that unplanned
     /// file: report unrecovered with manual-recovery guidance.
     /// </summary>
     private async Task<UpdaterExit> RecoverOldBridgeAsync(ManagedInstallManager install, string reason)
@@ -613,14 +614,43 @@ internal sealed class UpdaterEngine
         return UpdaterExit.PreflightFailed;
     }
 
-    private int? FindConflictingBridgeProcess()
-        => ProcessIdentity.FindOtherProcessAtPath(_plan.BridgeExePath, _plan.ParentPid);
+    private int? FindConflictingBridgeProcess(bool excludeInitiatingParent)
+        => ProcessIdentity.FindOtherProcessAtPath(
+            _plan.BridgeExePath,
+            excludeInitiatingParent ? _plan.ParentPid : null,
+            excludeInitiatingParent ? _plan.ParentStartTicks : null);
 
     private Task<UpdaterExit> FailConcurrentBridgeAsync(int pid, CancellationToken ct)
     {
         var reason = $"{UpdateWire.ConcurrentBridgeReason} (PID {pid})";
         _stderr.WriteLine($"copilot-updater: ERROR: {reason}; update skipped.");
         return FailPreflightAsync(reason, ct);
+    }
+
+    private async Task<UpdaterExit> RecoverConcurrentBridgeAsync(
+        ManagedInstallManager install, int pid)
+    {
+        var reason = $"{UpdateWire.ConcurrentBridgeReason} (PID {pid})";
+        _journal.Write("ownership.concurrent-bridge", reason);
+        _stderr.WriteLine($"copilot-updater: ERROR: {reason}; restoring the current version.");
+
+        // Authorization already transferred ownership and the initiating parent
+        // is gone. The sibling may be auth/debug, or a serve that never became
+        // healthy, so it cannot justify a plain preflight exit. Route through the
+        // same service-restoring policy as every other pre-mutation ownership
+        // failure. Never terminate the sibling.
+        var outcome = await ExecuteRecoveryAsync(
+            OwnershipOutcome.ConcurrentBridgeAfterHandoff,
+            transactionMutating: false,
+            install,
+            reason).ConfigureAwait(false);
+        if (outcome == UpdaterExit.RolledBack)
+        {
+            // No install mutation occurred; once the old bridge reports Ready,
+            // preparation artifacts and backups have no recovery value.
+            install.CleanupAfterPreflightFailure();
+        }
+        return outcome;
     }
 
     private void ReportUnrecovered(ManagedInstallManager install, string reason)

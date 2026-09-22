@@ -24,9 +24,9 @@ internal static class ProcessIdentity
 {
     /// <summary>
     /// Find another live process whose main module is the same canonical
-    /// executable path. The caller supplies the one process that is expected to
-    /// be running (the current bridge in the startup gate, or the recorded parent
-    /// in the updater); that PID is never reported as a conflict.
+    /// executable path. The caller may supply the one process expected to be
+    /// running (the current bridge in the startup gate, or the recorded parent in
+    /// the updater); it is excluded only while PID and start time both match.
     /// </summary>
     /// <remarks>
     /// This deliberately compares executable paths, never process names. Two
@@ -34,7 +34,10 @@ internal static class ProcessIdentity
     /// <c>copilot-bridge</c>, while only a second process holding this exact
     /// installation's executable can make an in-place update unsafe.
     /// </remarks>
-    public static int? FindOtherProcessAtPath(string expectedExePath, int excludedPid)
+    public static int? FindOtherProcessAtPath(
+        string expectedExePath,
+        int? excludedPid = null,
+        long? excludedStartTicks = null)
     {
         Process[] processes;
         try
@@ -55,7 +58,18 @@ internal static class ProcessIdentity
             {
                 try
                 {
-                    if (process.Id == excludedPid || process.HasExited)
+                    if (process.HasExited)
+                    {
+                        continue;
+                    }
+
+                    // A PID alone is not an identity: after the original process
+                    // exits, the OS may reuse that number for a new same-install
+                    // process. Exclude only while PID AND start time still identify
+                    // the exact process the caller expects.
+                    if (process.Id == excludedPid
+                        && excludedStartTicks is not null
+                        && StartTicks(process) == excludedStartTicks.Value)
                     {
                         continue;
                     }

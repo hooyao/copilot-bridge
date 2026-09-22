@@ -169,6 +169,12 @@ to eliminate) the
 irreducible interval between a process snapshot and a filesystem operation. No
 check selects or terminates a process by image name.
 
+If a conflict appears only after handoff authorization, the initiating bridge is
+already exiting and cannot simply continue serving. The updater therefore routes
+that conflict through the ownership-window recovery policy and requires a
+confirmed `Ready` from a relaunched current-version bridge; it never treats the
+unknown sibling process as proof that service is healthy.
+
 1. **Prepare** (old bridge still serving): download + verify digest, extract
    into a private staging tree (rejecting traversal/symlink/duplicate entries),
    snapshot the installed config **once** into an immutable hashed byte

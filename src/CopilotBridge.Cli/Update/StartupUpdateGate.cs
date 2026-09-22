@@ -192,7 +192,8 @@ internal sealed class StartupUpdateGate
         // attempt directory, plan, updater copy, or any installation temporary.
         // Do not match by image name: another installation is independent and
         // must not block this one.
-        var conflictingPid = ProcessIdentity.FindOtherProcessAtPath(exePath, Environment.ProcessId);
+        var conflictingPid = ProcessIdentity.FindOtherProcessAtPath(
+            exePath, Environment.ProcessId, ProcessIdentity.CurrentStartTicks());
         if (conflictingPid is not null)
         {
             Log.Error(

@@ -410,13 +410,17 @@ public sealed class RealProcessUpdateTests : IDisposable
 
         // The parent fixture launches a second process from the exact installed
         // bridge path after it receives Prepared and before it authorizes cutover.
-        // Contract: the updater must treat that as a preflight failure, never
-        // rename appsettings, never replace a binary, and clean preparation files.
+        // Contract: because ownership transfers with authorization, the updater
+        // must recover the current version, never rename appsettings or replace a
+        // binary, and clean preparation files after authenticated Ready.
         var exit = await RunFullTransactionAsync(
             attemptDir, "update.zip", size, sha,
             startSiblingBeforeAuthorization: true);
 
-        Assert.Equal((int)UpdaterExitCodes.PreflightFailed, exit);
+        // Authorization already transferred ownership before the sibling was
+        // launched, so this cannot be a plain preflight exit. The updater must
+        // relaunch the current version and require its authenticated Ready.
+        Assert.Equal((int)UpdaterExitCodes.RolledBack, exit);
         AssertInstallMatches(installBefore);
         Assert.False(Directory.Exists(Path.Combine(attemptDir, "staging")));
         Assert.False(Directory.Exists(Path.Combine(attemptDir, "backup")));

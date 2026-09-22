@@ -100,6 +100,21 @@ public class InstallationLockAndIdentityTests
     }
 
     [Fact]
+    public void Wrong_start_time_does_not_exclude_a_reused_pid_from_sibling_scan()
+    {
+        var path = Environment.ProcessPath
+            ?? throw new InvalidOperationException("test process path unavailable");
+
+        // Model PID reuse with the current live process: the numeric PID matches
+        // the excluded PID, but the supplied start time belongs to a different
+        // process, so this executable must still be reported as a conflict.
+        var found = ProcessIdentity.FindOtherProcessAtPath(
+            path, Environment.ProcessId, excludedStartTicks: 1);
+
+        Assert.NotNull(found);
+    }
+
+    [Fact]
     public void Executable_path_comparison_resolves_directory_symlink_aliases()
     {
         var root = TempDir();
@@ -126,6 +141,52 @@ public class InstallationLockAndIdentityTests
         }
         finally
         {
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public void Executable_path_comparison_resolves_windows_junction_aliases()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var root = TempDir();
+        var realDir = Path.Combine(root, "real");
+        var aliasDir = Path.Combine(root, "junction");
+        Directory.CreateDirectory(realDir);
+        var executable = Path.Combine(realDir, "bridge.exe");
+        File.WriteAllText(executable, "fixture");
+
+        try
+        {
+            var start = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            start.ArgumentList.Add("/d");
+            start.ArgumentList.Add("/c");
+            start.ArgumentList.Add("mklink");
+            start.ArgumentList.Add("/J");
+            start.ArgumentList.Add(aliasDir);
+            start.ArgumentList.Add(realDir);
+            using var mklink = Process.Start(start)!;
+            mklink.WaitForExit();
+            var output = mklink.StandardOutput.ReadToEnd() + mklink.StandardError.ReadToEnd();
+            Assert.True(mklink.ExitCode == 0, output);
+
+            Assert.True(ProcessIdentity.PathsEqual(
+                executable, Path.Combine(aliasDir, Path.GetFileName(executable))));
+        }
+        finally
+        {
+            try { if (Directory.Exists(aliasDir)) Directory.Delete(aliasDir); } catch { /* best effort */ }
             try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
         }
     }
