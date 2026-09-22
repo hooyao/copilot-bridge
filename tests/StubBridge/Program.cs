@@ -32,6 +32,34 @@ if (!string.IsNullOrEmpty(parentPipe))
         {
             var msg = UpdatePipeCodec.DecodeControl(line);
             if (msg is null || msg.Kind != UpdateWire.MsgPrepared) return null;
+
+            // Race-defense fixture: start a second ordinary bridge from the same
+            // installed executable after Prepared but before authorizing cutover.
+            // The updater must observe it at its final pre-mutation guard and
+            // leave the installation untouched.
+            if (Environment.GetEnvironmentVariable("STUB_START_SIBLING_BEFORE_AUTH") == "1")
+            {
+                var siblingStart = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = Environment.ProcessPath!,
+                    UseShellExecute = false,
+                };
+                siblingStart.Environment.Remove("COPILOT_BRIDGE_PARENT_PIPE");
+                siblingStart.Environment.Remove("COPILOT_BRIDGE_PARENT_TOKEN");
+                siblingStart.Environment.Remove("COPILOT_BRIDGE_PARENT_ATTEMPT");
+                siblingStart.Environment["STUB_HOLD_OPEN"] = "1";
+                var sibling = System.Diagnostics.Process.Start(siblingStart)!;
+                var pidFile = Environment.GetEnvironmentVariable("STUB_SIBLING_PID_FILE");
+                if (!string.IsNullOrEmpty(pidFile))
+                {
+                    var startTicks = ProcessIdentity.StartTicks(sibling);
+                    File.WriteAllText(
+                        pidFile,
+                        $"{sibling.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)}|{startTicks.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+                }
+                sibling.Dispose();
+            }
+
             var authorize = new UpdateControlMessage
             {
                 Kind = UpdateWire.MsgCutoverAuthorized,
@@ -49,6 +77,10 @@ if (!string.IsNullOrEmpty(parentPipe))
 var ctx = UpdateLaunchContext.FromEnvironment(Environment.GetEnvironmentVariable);
 if (ctx is null)
 {
+    if (Environment.GetEnvironmentVariable("STUB_HOLD_OPEN") == "1")
+    {
+        await Task.Delay(TimeSpan.FromMinutes(2));
+    }
     return 0;
 }
 

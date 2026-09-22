@@ -64,7 +64,12 @@ load appsettings.json
      Install this update now? [y/N]
           │
      ├── no / non-interactive ──────► start the current version
-     └── yes ─────────────────────► hand off to copilot-updater
+     └── yes
+          │
+     another bridge from this install running?
+          │
+     ├── yes ── error ──────────────► start the current version
+     └── no ───────────────────────► hand off to copilot-updater
 ```
 
 The check has three bounds so it can never keep the proxy from starting: a
@@ -152,6 +157,17 @@ executor — it queries no releases, picks no version, prompts no one, and holds
 no secret.
 
 The install is a recoverable transaction:
+
+Before creating an attempt directory or launching the updater, the startup gate
+checks for another live process whose canonical executable path is this
+installation's `copilot-bridge` executable. If one exists, it logs an error and
+continues with the current version; a bridge from a different installation does
+not block the update. The updater repeats the exact-path check before preparation,
+immediately before `Prepared`, after the initiating parent exits, and again inside
+cutover immediately before its first rename. This minimizes (but does not pretend
+to eliminate) the
+irreducible interval between a process snapshot and a filesystem operation. No
+check selects or terminates a process by image name.
 
 1. **Prepare** (old bridge still serving): download + verify digest, extract
    into a private staging tree (rejecting traversal/symlink/duplicate entries),

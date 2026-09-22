@@ -98,4 +98,59 @@ public class InstallationLockAndIdentityTests
         // No such process → AbsentOrReused.
         Assert.Equal(IdentityCheck.AbsentOrReused, ProcessIdentity.Check(999_999_999, expectedStartTicks: 123, expectedExePath: null));
     }
+
+    [Fact]
+    public void Executable_path_comparison_resolves_directory_symlink_aliases()
+    {
+        var root = TempDir();
+        var realDir = Path.Combine(root, "real");
+        var aliasDir = Path.Combine(root, "alias");
+        Directory.CreateDirectory(realDir);
+        var executable = Path.Combine(realDir, OperatingSystem.IsWindows() ? "bridge.exe" : "bridge");
+        File.WriteAllText(executable, "fixture");
+
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(aliasDir, realDir);
+            }
+            catch (UnauthorizedAccessException) when (OperatingSystem.IsWindows())
+            {
+                // Windows requires symlink privilege unless Developer Mode is on.
+                // Linux/macOS CI exercise the alias contract unconditionally.
+                return;
+            }
+
+            Assert.True(ProcessIdentity.PathsEqual(executable, Path.Combine(aliasDir, Path.GetFileName(executable))));
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public void Executable_path_comparison_keeps_distinct_installations_separate()
+    {
+        var root = TempDir();
+        var installA = Path.Combine(root, "a");
+        var installB = Path.Combine(root, "b");
+        Directory.CreateDirectory(installA);
+        Directory.CreateDirectory(installB);
+        var name = OperatingSystem.IsWindows() ? "copilot-bridge.exe" : "copilot-bridge";
+        var a = Path.Combine(installA, name);
+        var b = Path.Combine(installB, name);
+        File.WriteAllText(a, "same bytes");
+        File.WriteAllText(b, "same bytes");
+
+        try
+        {
+            Assert.False(ProcessIdentity.PathsEqual(a, b));
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
+        }
+    }
 }

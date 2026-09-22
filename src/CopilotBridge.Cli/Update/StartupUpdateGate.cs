@@ -187,6 +187,20 @@ internal sealed class StartupUpdateGate
             return UpdateGateDecision.ContinueCurrentVersion;
         }
 
+        // A second bridge running from this exact installation holds the same
+        // managed executable that cutover must replace. Abort before creating an
+        // attempt directory, plan, updater copy, or any installation temporary.
+        // Do not match by image name: another installation is independent and
+        // must not block this one.
+        var conflictingPid = ProcessIdentity.FindOtherProcessAtPath(exePath, Environment.ProcessId);
+        if (conflictingPid is not null)
+        {
+            Log.Error(
+                "Auto-update skipped: another copilot-bridge process from this installation is running (PID {Pid}). Stop it and restart to update.",
+                conflictingPid.Value);
+            return UpdateGateDecision.ContinueCurrentVersion;
+        }
+
         var attemptId = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(8));
         var attemptRoot = Path.Combine(UpdateRoot(), attemptId);
         CreateOwnerOnlyDirectory(attemptRoot);
@@ -313,7 +327,14 @@ internal sealed class StartupUpdateGate
         {
             // Preflight failed / updater exited / timeout — stay on current version.
             var detail = prepared?.Kind == UpdateWire.MsgPreflightFailed ? prepared.Detail : "no cutover-ready signal";
-            Log.Warning("Auto-update did not reach cutover ({Reason}); continuing with the current version.", detail);
+            if (detail?.StartsWith(UpdateWire.ConcurrentBridgeReason, StringComparison.Ordinal) == true)
+            {
+                Log.Error("Auto-update skipped: {Reason}. Stop the other process and restart to update.", detail);
+            }
+            else
+            {
+                Log.Warning("Auto-update did not reach cutover ({Reason}); continuing with the current version.", detail);
+            }
             return UpdateGateDecision.ContinueCurrentVersion;
         }
 

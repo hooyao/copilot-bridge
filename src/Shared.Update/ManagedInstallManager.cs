@@ -252,9 +252,13 @@ internal sealed class ManagedInstallManager
     /// renamed bytes still match the snapshot, then atomically move each pre-staged
     /// replacement into place. No writes happen here — only renames — so a failure
     /// cannot leave a half-written managed file. Assumes the parent has exited and
-    /// <see cref="RevalidateNoDrift"/> already passed.
+    /// <see cref="RevalidateNoDrift"/> already passed. The optional guard runs
+    /// immediately before the first rename, and <paramref name="mutationStarting"/>
+    /// fires only after that guard succeeds and immediately before mutation.
     /// </summary>
-    public UpdateStepResult Cutover()
+    public UpdateStepResult Cutover(
+        Func<UpdateStepResult>? beforeFirstMutation = null,
+        Action? mutationStarting = null)
     {
         if (_configSnapshot is null)
         {
@@ -269,6 +273,17 @@ internal sealed class ManagedInstallManager
             {
                 return UpdateStepResult.Fail("transaction backup name already exists");
             }
+
+            // Keep this guard adjacent to the first mutating operation. Polling
+            // cannot make process launch and rename atomic, but checking here
+            // leaves the smallest practical race window without introducing a
+            // cross-process lock that older bridge versions do not participate in.
+            var guarded = beforeFirstMutation?.Invoke() ?? UpdateStepResult.Success();
+            if (!guarded.Ok)
+            {
+                return guarded;
+            }
+            mutationStarting?.Invoke();
             File.Move(_plan.ConfigPath, _configBakPath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

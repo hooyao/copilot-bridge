@@ -22,6 +22,63 @@ internal enum IdentityCheck
 /// </summary>
 internal static class ProcessIdentity
 {
+    /// <summary>
+    /// Find another live process whose main module is the same canonical
+    /// executable path. The caller supplies the one process that is expected to
+    /// be running (the current bridge in the startup gate, or the recorded parent
+    /// in the updater); that PID is never reported as a conflict.
+    /// </summary>
+    /// <remarks>
+    /// This deliberately compares executable paths, never process names. Two
+    /// independent installations may both run a process named
+    /// <c>copilot-bridge</c>, while only a second process holding this exact
+    /// installation's executable can make an in-place update unsafe.
+    /// </remarks>
+    public static int? FindOtherProcessAtPath(string expectedExePath, int excludedPid)
+    {
+        Process[] processes;
+        try
+        {
+            processes = Process.GetProcesses();
+        }
+        catch
+        {
+            // Enumeration failure is not evidence that another instance exists.
+            // The updater repeats this guard at each mutation boundary, and the
+            // existing filesystem/drift checks remain the final safety net.
+            return null;
+        }
+
+        foreach (var process in processes)
+        {
+            using (process)
+            {
+                try
+                {
+                    if (process.Id == excludedPid || process.HasExited)
+                    {
+                        continue;
+                    }
+
+                    var actualPath = SafeMainModulePath(process);
+                    if (actualPath is not null && PathsEqual(actualPath, expectedExePath))
+                    {
+                        return process.Id;
+                    }
+                }
+                catch
+                {
+                    // Processes owned by another account commonly deny module
+                    // inspection. They cannot be identified as this executable,
+                    // so skip them; a same-user sibling is readable on the target
+                    // platforms and is caught by the exact-path comparison.
+                }
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Capture the start-time ticks of a process for later comparison.</summary>
     public static long StartTicks(Process process)
     {
@@ -120,7 +177,13 @@ internal static class ProcessIdentity
         }
     }
 
-    private static bool PathsEqual(string a, string b)
+    /// <summary>
+    /// Compare existing executable paths after resolving symlink/junction
+    /// components. <see cref="Path.GetFullPath(string)"/> alone is only lexical:
+    /// an installation reached through a directory junction could otherwise look
+    /// different from the canonical main-module path reported by the OS.
+    /// </summary>
+    internal static bool PathsEqual(string a, string b)
     {
         // Conservative containment/identity comparison: case-insensitive only on
         // Windows. On case-sensitive macOS/Linux volumes, a case-folded compare
@@ -129,6 +192,66 @@ internal static class ProcessIdentity
         var comparison = OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
-        return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), comparison);
+        return string.Equals(CanonicalizeExistingPath(a), CanonicalizeExistingPath(b), comparison);
+    }
+
+    private static string CanonicalizeExistingPath(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        try
+        {
+            var root = Path.GetPathRoot(fullPath);
+            if (string.IsNullOrEmpty(root))
+            {
+                return fullPath;
+            }
+
+            var current = root;
+            var remainder = fullPath[root.Length..];
+            foreach (var component in remainder.Split(
+                         [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                         StringSplitOptions.RemoveEmptyEntries))
+            {
+                current = Path.Combine(current, component);
+                FileSystemInfo entry = Directory.Exists(current)
+                    ? new DirectoryInfo(current)
+                    : new FileInfo(current);
+                var resolved = entry.ResolveLinkTarget(returnFinalTarget: true);
+                if (resolved is not null)
+                {
+                    current = Path.GetFullPath(resolved.FullName);
+                }
+            }
+
+            return NormalizeWindowsDevicePath(current);
+        }
+        catch (Exception ex) when (ex is IOException
+            or UnauthorizedAccessException
+            or System.Security.SecurityException
+            or ArgumentException
+            or NotSupportedException)
+        {
+            // An unreadable unrelated process must not block startup. Falling
+            // back to a lexical absolute path preserves the old fail-open
+            // behavior while aliases for readable same-user executables resolve.
+            return NormalizeWindowsDevicePath(fullPath);
+        }
+    }
+
+    private static string NormalizeWindowsDevicePath(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return path;
+        }
+        if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+        {
+            return @"\\" + path[8..];
+        }
+        if (path.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+        {
+            return path[4..];
+        }
+        return path;
     }
 }

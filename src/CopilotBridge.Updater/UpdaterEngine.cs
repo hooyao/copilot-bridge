@@ -69,6 +69,16 @@ internal sealed class UpdaterEngine
         var install = new ManagedInstallManager(_plan, _journal);
         _install = install;
 
+        // The initiating parent is expected to be running from BridgeExePath;
+        // any OTHER process at that exact path makes in-place replacement unsafe.
+        // Check before download, backup, staging, or any install-dir probe so the
+        // common race-defense path has no filesystem side effects to clean up.
+        var conflictingPid = FindConflictingBridgeProcess();
+        if (conflictingPid is not null)
+        {
+            return await FailConcurrentBridgeAsync(conflictingPid.Value, ct).ConfigureAwait(false);
+        }
+
         // 2. Download + verify + extract. If the archive is already present and
         //    already verifies against the plan's size+digest (e.g. a re-run after
         //    an interrupted transaction), skip re-downloading — the bytes are the
@@ -156,6 +166,15 @@ internal sealed class UpdaterEngine
             return await FailPreflightAsync("install drifted during preparation", ct).ConfigureAwait(false);
         }
 
+        // Close the long download/prepare window: another instance may have
+        // started after the first guard. It must be rejected while the initiating
+        // parent still serves, before Prepared transfers ownership.
+        conflictingPid = FindConflictingBridgeProcess();
+        if (conflictingPid is not null)
+        {
+            return await FailConcurrentBridgeAsync(conflictingPid.Value, ct).ConfigureAwait(false);
+        }
+
         _journal.Write("handoff.prepared");
         if (!await SendPreparedAndAwaitAuthorizationAsync(ct).ConfigureAwait(false))
         {
@@ -178,9 +197,9 @@ internal sealed class UpdaterEngine
         // user; recovering without config restores a bridge with no appsettings),
         // so it lives as a pure, unit-tested function rather than inline branches.
         //
-        // `transactionMutating` flips true immediately BEFORE Cutover(), which turns
-        // destructive the instant it renames the live appsettings.json — so a throw
-        // *inside* Cutover (e.g. an I/O race hashing the renamed .bak) routes to
+        // `transactionMutating` flips true inside Cutover immediately before its
+        // first rename of the live appsettings.json — so a pre-mutation guard can
+        // still abort cleanly, while a throw after mutation begins routes to
         // rollback (config restored), not recover-without-config.
         var transactionMutating = false;
         try
@@ -199,6 +218,19 @@ internal sealed class UpdaterEngine
                         : "parent did not exit before cutover").ConfigureAwait(false);
             }
 
+            // Early post-exit race defense. The original
+            // parent is now gone, so any process at BridgeExePath is necessarily a
+            // second same-install instance. Its role is unknown (serve, auth,
+            // debug, or another command), so abort before mutation without
+            // relaunching or terminating it. Every installed byte stays intact.
+            // Cutover repeats this check adjacent to its first rename.
+            conflictingPid = FindConflictingBridgeProcess();
+            if (conflictingPid is not null)
+            {
+                return await FailConcurrentBridgeAsync(conflictingPid.Value, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
             // Parent confirmed gone: service is DOWN. Any failure below recovers.
             if (!install.RevalidateNoDrift())
             {
@@ -210,13 +242,27 @@ internal sealed class UpdaterEngine
 
             // 6. Cutover (rename original config to .bak, atomically move the
             //    pre-staged replacements into place — no writes here). Mark the
-            //    transaction destructive BEFORE the call: Cutover mutates the
-            //    install as soon as it renames the config, so a throw partway
-            //    through must roll back, not recover-without-config.
-            transactionMutating = true;
-            var cutover = install.Cutover();
+            //    transaction destructive immediately before Cutover's first
+            //    rename. Its callback performs the strongest possible sibling
+            //    check adjacent to that mutation; polling cannot make a later
+            //    process launch and the rename atomic.
+            int? cutoverConflictPid = null;
+            var cutover = install.Cutover(
+                beforeFirstMutation: () =>
+                {
+                    cutoverConflictPid = FindConflictingBridgeProcess();
+                    return cutoverConflictPid is null
+                        ? UpdateStepResult.Success()
+                        : UpdateStepResult.Fail(UpdateWire.ConcurrentBridgeReason);
+                },
+                mutationStarting: () => transactionMutating = true);
             if (!cutover.Ok)
             {
+                if (cutoverConflictPid is not null)
+                {
+                    return await FailConcurrentBridgeAsync(
+                        cutoverConflictPid.Value, CancellationToken.None).ConfigureAwait(false);
+                }
                 _journal.Write("cutover.failed", cutover.Reason);
                 return await ExecuteRecoveryAsync(
                     OwnershipOutcome.CutoverFailed, transactionMutating, install,
@@ -565,6 +611,16 @@ internal sealed class UpdaterEngine
         // filesystem policy; the engine just invokes it.)
         _install?.CleanupAfterPreflightFailure();
         return UpdaterExit.PreflightFailed;
+    }
+
+    private int? FindConflictingBridgeProcess()
+        => ProcessIdentity.FindOtherProcessAtPath(_plan.BridgeExePath, _plan.ParentPid);
+
+    private Task<UpdaterExit> FailConcurrentBridgeAsync(int pid, CancellationToken ct)
+    {
+        var reason = $"{UpdateWire.ConcurrentBridgeReason} (PID {pid})";
+        _stderr.WriteLine($"copilot-updater: ERROR: {reason}; update skipped.");
+        return FailPreflightAsync(reason, ct);
     }
 
     private void ReportUnrecovered(ManagedInstallManager install, string reason)
