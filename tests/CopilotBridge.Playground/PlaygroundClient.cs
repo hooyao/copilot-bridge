@@ -63,7 +63,7 @@ internal sealed class PlaygroundClient : IDisposable
         var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages");
-        _headers.ApplyTo(req, token, vision);
+        _headers.ApplyTo(req, token, vision, integrationId: lease.IntegrationId);
         if (anthropicBeta is not null)
             req.Headers.TryAddWithoutValidation("anthropic-beta", anthropicBeta);
         req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
@@ -88,7 +88,7 @@ internal sealed class PlaygroundClient : IDisposable
         var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages/count_tokens");
-        _headers.ApplyTo(req, token);
+        _headers.ApplyTo(req, token, integrationId: lease.IntegrationId);
         req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
@@ -114,7 +114,7 @@ internal sealed class PlaygroundClient : IDisposable
         var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/responses");
-        _headers.ApplyTo(req, token, vision);
+        _headers.ApplyTo(req, token, vision, integrationId: lease.IntegrationId);
         req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
@@ -138,7 +138,7 @@ internal sealed class PlaygroundClient : IDisposable
         var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/responses");
-        _headers.ApplyTo(req, token);
+        _headers.ApplyTo(req, token, integrationId: lease.IntegrationId);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
@@ -166,7 +166,7 @@ internal sealed class PlaygroundClient : IDisposable
         var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(method, $"{baseUrl}{relativePath}");
-        _headers.ApplyTo(req, token);
+        _headers.ApplyTo(req, token, integrationId: lease.IntegrationId);
         if (jsonBody is not null)
             req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
@@ -193,7 +193,7 @@ internal sealed class PlaygroundClient : IDisposable
         var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages");
-        _headers.ApplyTo(req, token);
+        _headers.ApplyTo(req, token, integrationId: lease.IntegrationId);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
@@ -224,7 +224,7 @@ internal sealed class PlaygroundClient : IDisposable
         var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages");
-        _headers.ApplyTo(req, token);
+        _headers.ApplyTo(req, token, integrationId: lease.IntegrationId);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
