@@ -8,7 +8,8 @@ namespace CopilotBridge.Cli.Catalogs.Codex;
 /// Reviewed complete Codex model resources that may post-date the requesting
 /// client's own catalog. These are client-owned records captured byte-for-byte
 /// from one pinned official <c>openai/codex</c> revision; the projector uses them
-/// only when the exact slug is absent from the selected baseline.
+/// only for requests older than their declared minimum client version and when
+/// the exact slug is absent from the selected baseline.
 /// </summary>
 internal sealed class CodexSupplementalCatalog
 {
@@ -16,9 +17,16 @@ internal sealed class CodexSupplementalCatalog
     private const string CaptureResourceName = "CopilotBridge.Cli.Catalogs.Codex.Supplemental.capture.json";
     private static readonly string[] ReviewedSlugs = ["gpt-6-luna", "gpt-6-sol"];
 
-    private CodexSupplementalCatalog(IReadOnlyList<JsonElement> models) => Models = models;
+    private CodexSupplementalCatalog(
+        IReadOnlyList<JsonElement> models,
+        CodexClientVersion minimumClientVersion)
+    {
+        Models = models;
+        MinimumClientVersion = minimumClientVersion;
+    }
 
     public IReadOnlyList<JsonElement> Models { get; }
+    public CodexClientVersion MinimumClientVersion { get; }
 
     public static CodexSupplementalCatalog Load()
     {
@@ -51,7 +59,19 @@ internal sealed class CodexSupplementalCatalog
                 actualSlugs.Order(StringComparer.Ordinal), StringComparer.Ordinal))
             throw new InvalidDataException("Supplemental Codex catalog does not contain the exact reviewed model set.");
 
-        return new CodexSupplementalCatalog(models);
+        var minimumVersions = models
+            .Select(model => model.TryGetProperty("minimal_client_version", out var minimum) &&
+                             minimum.ValueKind == JsonValueKind.String
+                ? minimum.GetString()
+                : null)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (minimumVersions is not [{ } minimumText] ||
+            !CodexClientVersion.TryParse(minimumText, out var minimumVersion))
+            throw new InvalidDataException(
+                "Supplemental Codex catalog must declare one canonical minimum client version.");
+
+        return new CodexSupplementalCatalog(models, minimumVersion);
     }
 
     private static byte[] ReadResource(Assembly assembly, string name)

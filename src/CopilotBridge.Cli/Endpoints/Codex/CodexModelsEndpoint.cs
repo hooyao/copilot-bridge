@@ -51,7 +51,7 @@ internal static class CodexModelsEndpoint
         }
 
         var overlay = await overlays.GetAsync(httpCtx.RequestAborted);
-        var projection = projector.Project(resolution.Baseline!, overlay.Models, overlay.IsValidated);
+        var projection = projector.Project(exactVersion, resolution.Baseline!, overlay.Models, overlay.IsValidated);
         var response = new CodexModelsResponse { Models = projection.Models };
         var bytes = JsonSerializer.SerializeToUtf8Bytes(response, JsonContext.Default.CodexModelsResponse);
 

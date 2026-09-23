@@ -20,7 +20,7 @@ internal sealed class CodexCatalogProjector
     private readonly CodexModelProfileCatalog _profiles;
     private readonly IModelRegistry _routes;
     private readonly RoutesConfig _configuredRoutes;
-    private readonly IReadOnlyList<JsonElement> _supplementalModels;
+    private readonly CodexSupplementalCatalog _supplemental;
     private readonly ILogger<CodexCatalogProjector> _log;
 
     public CodexCatalogProjector(
@@ -55,11 +55,12 @@ internal sealed class CodexCatalogProjector
         _profiles = profiles;
         _routes = routes;
         _configuredRoutes = configuredRoutes.Value;
-        _supplementalModels = supplemental.Models;
+        _supplemental = supplemental;
         _log = log;
     }
 
     public CodexCatalogProjection Project(
+        CodexClientVersion requestedVersion,
         CodexCatalogBaseline baseline,
         IReadOnlyList<CopilotModel> liveModels,
         bool liveOverlayValidated)
@@ -68,7 +69,9 @@ internal sealed class CodexCatalogProjector
             .Where(model => !string.IsNullOrWhiteSpace(model.Id))
             .GroupBy(model => model.Id, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
-        var candidates = MergeReviewedSupplements(baseline.Models, _supplementalModels);
+        var candidates = requestedVersion.CompareTo(_supplemental.MinimumClientVersion) < 0
+            ? MergeReviewedSupplements(baseline.Models, _supplemental.Models)
+            : baseline.Models;
         var resolvedRoutes = candidates
             .Select(model => ResolveConfiguredTarget(GetSlug(model)))
             .ToArray();

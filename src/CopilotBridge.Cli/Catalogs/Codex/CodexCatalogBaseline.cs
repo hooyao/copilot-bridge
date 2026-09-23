@@ -28,7 +28,7 @@ internal sealed record CodexCatalogBaseline
     }
 }
 
-internal readonly record struct CodexClientVersion
+internal readonly record struct CodexClientVersion : IComparable<CodexClientVersion>
 {
     private readonly string? _canonical;
 
@@ -76,6 +76,59 @@ internal readonly record struct CodexClientVersion
     }
 
     public override string ToString() => _canonical ?? "0.0.0";
+
+    public int CompareTo(CodexClientVersion other)
+    {
+        var left = ToString();
+        var right = other.ToString();
+        var leftPrerelease = Split(left, out var leftCore);
+        var rightPrerelease = Split(right, out var rightCore);
+        var leftParts = leftCore.Split('.');
+        var rightParts = rightCore.Split('.');
+
+        for (var index = 0; index < 3; index++)
+        {
+            var comparison = int.Parse(leftParts[index], System.Globalization.CultureInfo.InvariantCulture)
+                .CompareTo(int.Parse(rightParts[index], System.Globalization.CultureInfo.InvariantCulture));
+            if (comparison != 0) return comparison;
+        }
+
+        if (leftPrerelease is null) return rightPrerelease is null ? 0 : 1;
+        if (rightPrerelease is null) return -1;
+
+        var leftIdentifiers = leftPrerelease.Split('.');
+        var rightIdentifiers = rightPrerelease.Split('.');
+        var shared = Math.Min(leftIdentifiers.Length, rightIdentifiers.Length);
+        for (var index = 0; index < shared; index++)
+        {
+            var comparison = ComparePrereleaseIdentifier(leftIdentifiers[index], rightIdentifiers[index]);
+            if (comparison != 0) return comparison;
+        }
+        return leftIdentifiers.Length.CompareTo(rightIdentifiers.Length);
+    }
+
+    private static string? Split(string version, out string core)
+    {
+        var buildSeparator = version.IndexOf('+');
+        var withoutBuild = buildSeparator < 0 ? version : version[..buildSeparator];
+        var prereleaseSeparator = withoutBuild.IndexOf('-');
+        core = prereleaseSeparator < 0 ? withoutBuild : withoutBuild[..prereleaseSeparator];
+        return prereleaseSeparator < 0 ? null : withoutBuild[(prereleaseSeparator + 1)..];
+    }
+
+    private static int ComparePrereleaseIdentifier(string left, string right)
+    {
+        var leftNumeric = left.All(char.IsAsciiDigit);
+        var rightNumeric = right.All(char.IsAsciiDigit);
+        if (leftNumeric && rightNumeric)
+        {
+            var lengthComparison = left.Length.CompareTo(right.Length);
+            return lengthComparison != 0 ? lengthComparison : string.CompareOrdinal(left, right);
+        }
+        if (leftNumeric) return -1;
+        if (rightNumeric) return 1;
+        return string.CompareOrdinal(left, right);
+    }
 }
 
 internal static class CodexCatalogRequestIdentity

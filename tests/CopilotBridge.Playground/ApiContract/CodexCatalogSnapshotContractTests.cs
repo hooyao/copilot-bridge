@@ -102,11 +102,13 @@ public sealed class CodexCatalogSnapshotContractTests
     private static CodexCatalogProjection Project(IReadOnlyList<CopilotModel> live)
     {
         var baseline = CodexCatalogTestFixtures.Load();
+        if (!CodexClientVersion.TryParse(baseline.SourceVersion, out var requestedVersion))
+            throw new InvalidDataException("Captured catalog fixture has an invalid client version.");
         return new CodexCatalogProjector(
             new CodexModelProfileCatalog(),
             new CopilotModelRegistry(),
             NullLogger<CodexCatalogProjector>.Instance)
-            .Project(baseline, live, liveOverlayValidated: true);
+            .Project(requestedVersion, baseline, live, liveOverlayValidated: true);
     }
 
     private static JsonElement Find(IReadOnlyList<JsonElement> models, string slug) =>

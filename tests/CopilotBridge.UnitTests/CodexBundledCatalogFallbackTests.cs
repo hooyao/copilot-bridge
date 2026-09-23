@@ -224,8 +224,9 @@ public sealed class CodexBundledCatalogFallbackTests
         var officialSource = new SwitchingSource(() => true);
         var official = await Cache(officialSource).ResolveAsync(UnpublishedVersion);
 
-        var bundledTag = projector.Project(bundled.Baseline!, [], false).ETag;
-        var officialTag = projector.Project(official.Baseline!, [], false).ETag;
+        Assert.True(CodexClientVersion.TryParse(UnpublishedVersion, out var requestedVersion));
+        var bundledTag = projector.Project(requestedVersion, bundled.Baseline!, [], false).ETag;
+        var officialTag = projector.Project(requestedVersion, official.Baseline!, [], false).ETag;
 
         Assert.NotEqual(bundledTag, officialTag);
     }
@@ -260,7 +261,9 @@ public sealed class CodexBundledCatalogFallbackTests
         var liveFacts = new[] { Live("gpt-5.6-sol", 1_050_000, 922_000, 128_000) };
 
         var bundled = await Cache(NotFoundSource()).ResolveAsync(UnpublishedVersion);
-        var projected = projector.Project(bundled.Baseline!, liveFacts, liveOverlayValidated: true);
+        Assert.True(CodexClientVersion.TryParse(UnpublishedVersion, out var requestedVersion));
+        var projected = projector.Project(
+            requestedVersion, bundled.Baseline!, liveFacts, liveOverlayValidated: true);
 
         var model = projected.Models.Single(
             candidate => candidate.GetProperty("slug").GetString() == "gpt-5.6-sol");

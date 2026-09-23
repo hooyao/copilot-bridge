@@ -255,7 +255,8 @@ public sealed class CodexModelCatalogContractTests
             new CopilotModelRegistry(),
             NullLogger<CodexCatalogProjector>.Instance);
 
-        var result = projector.Project(baseline, [], liveOverlayValidated: false);
+        var result = projector.Project(
+            Version(baseline.SourceVersion), baseline, [], liveOverlayValidated: false);
         var model = Find(result.Models, "gpt-5.6-sol");
 
         Assert.True(model.GetProperty("supported_in_api").GetBoolean());
@@ -297,7 +298,11 @@ public sealed class CodexModelCatalogContractTests
         var projector = new CodexCatalogProjector(
             profiles, new AllResponsesRegistry(), NullLogger<CodexCatalogProjector>.Instance);
 
-        var result = projector.Project(baseline, [Live("reviewer", 100, 90, 10)], liveOverlayValidated: true);
+        var result = projector.Project(
+            Version(baseline.SourceVersion),
+            baseline,
+            [Live("reviewer", 100, 90, 10)],
+            liveOverlayValidated: true);
 
         Assert.Equal(JsonValueKind.Null, Find(result.Models, "reviewer").GetProperty("auto_review_model_override").ValueKind);
     }
@@ -325,6 +330,7 @@ public sealed class CodexModelCatalogContractTests
             NullLogger<CodexCatalogProjector>.Instance);
 
         var result = projector.Project(
+            Version(baseline.SourceVersion),
             baseline,
             [Live("gpt-5.4", 1_050_000, 922_000, 128_000)],
             liveOverlayValidated: true);
@@ -344,6 +350,7 @@ public sealed class CodexModelCatalogContractTests
             NullLogger<CodexCatalogProjector>.Instance);
 
         var result = projector.Project(
+            Version(baseline.SourceVersion),
             baseline,
             [Live("gpt-5.4", 1_050_000, 922_000, 128_000)],
             liveOverlayValidated: true);
@@ -378,6 +385,7 @@ public sealed class CodexModelCatalogContractTests
             NullLogger<CodexCatalogProjector>.Instance);
 
         var result = projector.Project(
+            Version(baseline.SourceVersion),
             baseline,
             [Live("gpt-6-astra", 1_000_000, 872_000, 128_000)],
             liveOverlayValidated: true);
@@ -397,6 +405,7 @@ public sealed class CodexModelCatalogContractTests
         var projector = ConfiguredAstraProjector();
 
         var result = projector.Project(
+            Version("0.144.1"),
             LoadBaseline(),
             [Live("gpt-6-astra", 1_000_000, 872_000, 128_000)],
             liveOverlayValidated: true);
@@ -411,6 +420,7 @@ public sealed class CodexModelCatalogContractTests
     public void ConfiguredModelLocationHidesAliasWhenValidatedAstraIsAbsent()
     {
         var result = ConfiguredAstraProjector().Project(
+            Version("0.144.1"),
             LoadBaseline(),
             [Live("gpt-5.6-sol", 1_050_000, 922_000, 128_000)],
             liveOverlayValidated: true);
@@ -424,6 +434,7 @@ public sealed class CodexModelCatalogContractTests
     public void CrossModelAliasWithUnmappableTargetLimitsIsHidden()
     {
         var result = ConfiguredAstraProjector().Project(
+            Version("0.144.1"),
             LoadBaseline(),
             [Live("gpt-6-astra", 1_000_000, null, 128_000)],
             liveOverlayValidated: true);
@@ -437,7 +448,7 @@ public sealed class CodexModelCatalogContractTests
     public void ConfiguredModelLocationKeepsReviewedBaselineWhenOverlayIsUnavailable()
     {
         var result = ConfiguredAstraProjector().Project(
-            LoadBaseline(), [], liveOverlayValidated: false);
+            Version("0.144.1"), LoadBaseline(), [], liveOverlayValidated: false);
         var alias = Find(result.Models, "gpt-5.6-sol");
 
         Assert.True(alias.GetProperty("supported_in_api").GetBoolean());
@@ -464,6 +475,7 @@ public sealed class CodexModelCatalogContractTests
             ],
         };
         var result = ConfiguredProjector(routes).Project(
+            Version("0.144.1"),
             LoadBaseline(),
             [
                 Live("gpt-5-mini", 264_000, 128_000, 64_000),
@@ -508,7 +520,13 @@ public sealed class CodexModelCatalogContractTests
             new CodexModelProfileCatalog(),
             new CopilotModelRegistry(),
             NullLogger<CodexCatalogProjector>.Instance)
-            .Project(baseline, live, liveOverlayValidated: true);
+            .Project(Version(baseline.SourceVersion), baseline, live, liveOverlayValidated: true);
+
+    private static CodexClientVersion Version(string value)
+    {
+        Assert.True(CodexClientVersion.TryParse(value, out var version));
+        return version;
+    }
 
     private static CodexCatalogBaseline SyntheticBaseline(string json) =>
         CodexCatalogBaseline.Parse(System.Text.Encoding.UTF8.GetBytes(json), new CodexCatalogCacheMetadata

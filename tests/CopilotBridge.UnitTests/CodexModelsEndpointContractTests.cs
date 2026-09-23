@@ -137,10 +137,34 @@ public sealed class CodexModelsEndpointContractTests
         }
     }
 
+    [Theory]
+    [InlineData("0.155.0")]
+    [InlineData("0.155.0%2Blocal.1")]
+    [InlineData("0.156.0")]
+    public async Task CutoffAndNewerClientsHonorAnOmittedGpt6Resource(string clientVersion)
+    {
+        // The source cache intentionally returns the captured 0.144.1 baseline,
+        // reproducing bundled fallback for a newer requester. That old source
+        // identity must not override the requesting client's authoritative omission.
+        var result = await Invoke(
+            $"?client_version={clientVersion}",
+            Responses("gpt-6-luna", "gpt-6-sol"),
+            baselineVersion: UnseenPrerelease);
+
+        Assert.Equal(StatusCodes.Status200OK, result.Status);
+        using var document = JsonDocument.Parse(result.Body);
+        var slugs = document.RootElement.GetProperty("models").EnumerateArray()
+            .Select(model => model.GetProperty("slug").GetString())
+            .ToArray();
+        Assert.DoesNotContain("gpt-6-luna", slugs);
+        Assert.DoesNotContain("gpt-6-sol", slugs);
+    }
+
     private static async Task<Result> Invoke(
         string query,
         CopilotModelsResponse response,
-        string? userAgent = null)
+        string? userAgent = null,
+        string? baselineVersion = null)
     {
         var http = new DefaultHttpContext();
         http.Request.Method = "GET";
@@ -150,7 +174,7 @@ public sealed class CodexModelsEndpointContractTests
         http.Response.Body = new MemoryStream();
 
         var client = new FakeClient(response);
-        var source = new StaticSourceCache();
+        var source = new StaticSourceCache(baselineVersion);
         await CodexModelsEndpoint.HandleAsync(
             http,
             source,
@@ -196,7 +220,7 @@ public sealed class CodexModelsEndpointContractTests
 
     private sealed record Result(int Status, string? ETag, string Body, string? ResolvedVersion);
 
-    private sealed class StaticSourceCache : ICodexCatalogSourceCache
+    private sealed class StaticSourceCache(string? baselineVersion = null) : ICodexCatalogSourceCache
     {
         public string? ResolvedVersion { get; private set; }
 
@@ -211,7 +235,7 @@ public sealed class CodexModelsEndpointContractTests
             return ValueTask.FromResult(new CodexCatalogResolution
             {
                 Success = true,
-                Baseline = CodexCatalogTestFixtures.LoadCapturedBaseline(clientVersion!),
+                Baseline = CodexCatalogTestFixtures.LoadCapturedBaseline(baselineVersion ?? clientVersion!),
                 Outcome = "test",
             });
         }
