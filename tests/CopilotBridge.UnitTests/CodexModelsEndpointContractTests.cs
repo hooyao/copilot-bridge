@@ -113,6 +113,30 @@ public sealed class CodexModelsEndpointContractTests
         Assert.NotEqual(one.ETag, changed.ETag);
     }
 
+    [Fact]
+    public async Task OlderClientReceivesReviewedGpt6ResourcesWithLiveLimits()
+    {
+        var result = await Invoke(
+            $"?client_version={UnseenPrerelease}",
+            Responses("gpt-6-luna", "gpt-6-sol"));
+
+        Assert.Equal(StatusCodes.Status200OK, result.Status);
+        using var document = JsonDocument.Parse(result.Body);
+        var models = document.RootElement.GetProperty("models").EnumerateArray().ToArray();
+        foreach (var slug in new[] { "gpt-6-luna", "gpt-6-sol" })
+        {
+            var model = models.Single(item => item.GetProperty("slug").GetString() == slug);
+            Assert.Equal("0.155.0", model.GetProperty("minimal_client_version").GetString());
+            Assert.True(model.TryGetProperty("model_messages", out _));
+            Assert.Equal(
+                model.GetProperty("model_messages").GetProperty("instructions_template").GetString(),
+                model.GetProperty("base_instructions").GetString());
+            Assert.Equal(1_000_000, model.GetProperty("context_window").GetInt32());
+            Assert.Equal(1_000_000, model.GetProperty("max_context_window").GetInt32());
+            Assert.Equal(850_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+        }
+    }
+
     private static async Task<Result> Invoke(
         string query,
         CopilotModelsResponse response,
@@ -163,6 +187,11 @@ public sealed class CodexModelsEndpointContractTests
                 },
             },
         }],
+    };
+
+    private static CopilotModelsResponse Responses(params string[] ids) => new()
+    {
+        Data = ids.Select(id => Response(id, 1_000_000, 872_000).Data[0]).ToArray(),
     };
 
     private sealed record Result(int Status, string? ETag, string Body, string? ResolvedVersion);

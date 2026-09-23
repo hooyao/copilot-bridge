@@ -66,6 +66,12 @@
   Codex catalog entry but projects Astra's live limits under it; this yields an
   850,000-token auto-compact threshold instead of letting the client approach the
   source model's higher prompt ceiling.
+- **GPT-6 Luna and Sol use Copilot's 1M-class deployment**: live Copilot reports
+  1,000,000 total / 872,000 prompt / 128,000 output for both exact ids, and a
+  real Codex-shaped 310,101-token request succeeded. Their reviewed official
+  Codex resources are supplemented into older `/codex/models` baselines, then
+  the ordinary projector publishes 1,000,000 for both context fields and an
+  850,000-token auto-compact threshold.
 
 ## 1. Where the context window comes from — the client, not the server
 

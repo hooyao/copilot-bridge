@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using CopilotBridge.Cli.Catalogs.Codex;
 using CopilotBridge.Cli.Models.Codex;
 using CopilotBridge.Cli.Models.Copilot;
@@ -120,6 +122,68 @@ public sealed class CodexModelCatalogContractTests
         Assert.False(Find(result.Models, "gpt-5.2").GetProperty("supported_in_api").GetBoolean());
         Assert.DoesNotContain(result.Models, model => model.GetProperty("slug").GetString() == "future-gpt");
         Assert.DoesNotContain(result.Models, model => model.GetProperty("slug").GetString() == "gpt-5.3-codex");
+    }
+
+    [Fact]
+    public void ReviewedGpt6ResourcesSupplementOlderBaselineAndUseLiveCopilotLimits()
+    {
+        var result = Project(
+            LoadBaseline(),
+            [
+                Live("gpt-6-luna", 1_000_000, 872_000, 128_000),
+                Live("gpt-6-sol", 1_000_000, 872_000, 128_000),
+            ]);
+
+        foreach (var slug in new[] { "gpt-6-luna", "gpt-6-sol" })
+        {
+            var model = Find(result.Models, slug);
+            Assert.True(model.GetProperty("supported_in_api").GetBoolean());
+            Assert.Equal("list", model.GetProperty("visibility").GetString());
+            Assert.Equal("0.155.0", model.GetProperty("minimal_client_version").GetString());
+            Assert.False(string.IsNullOrWhiteSpace(
+                model.GetProperty("model_messages").GetProperty("instructions_template").GetString()));
+            Assert.Equal(
+                model.GetProperty("model_messages").GetProperty("instructions_template").GetString(),
+                model.GetProperty("base_instructions").GetString());
+            Assert.Equal(1_000_000, model.GetProperty("context_window").GetInt32());
+            Assert.Equal(1_000_000, model.GetProperty("max_context_window").GetInt32());
+            Assert.Equal(850_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+        }
+    }
+
+    [Theory]
+    [InlineData("gpt-6-luna")]
+    [InlineData("gpt-6-sol")]
+    public void NewerBaselineResourceWinsAndSupplementDoesNotDuplicateItsSlug(string slug)
+    {
+        var baseline = LoadBaseline();
+        var official = CodexSupplementalCatalog.Load().Models.Single(
+            model => model.GetProperty("slug").GetString() == slug);
+        var newer = ReplaceProperty(official, "description", "newer baseline owns this resource");
+        var newerBaseline = baseline with { Models = [.. baseline.Models, newer] };
+
+        var result = Project(newerBaseline, [Live(slug, 1_000_000, 872_000, 128_000)]);
+        var model = Assert.Single(result.Models,
+            candidate => candidate.GetProperty("slug").GetString() == slug);
+
+        Assert.Equal("newer baseline owns this resource", model.GetProperty("description").GetString());
+    }
+
+    [Fact]
+    public void SupplementalResourceValidationRejectsUnreviewedOrIncompleteContent()
+    {
+        const string unreviewed = """
+          {"models":[{"slug":"gpt-future","base_instructions":"x","context_window":100,"max_context_window":100,"auto_compact_token_limit":90,"supported_in_api":true,"visibility":"list"}]}
+          """;
+        const string incomplete = """
+          {"models":[
+            {"slug":"gpt-6-luna","context_window":100,"max_context_window":100,"auto_compact_token_limit":90,"supported_in_api":true,"visibility":"list"},
+            {"slug":"gpt-6-sol","base_instructions":"x","context_window":100,"max_context_window":100,"auto_compact_token_limit":90,"supported_in_api":true,"visibility":"list"}
+          ]}
+          """;
+
+        Assert.Throws<InvalidDataException>(() => ParseSupplement(unreviewed));
+        Assert.Throws<InvalidDataException>(() => ParseSupplement(incomplete));
     }
 
     [Fact]
@@ -459,6 +523,31 @@ public sealed class CodexModelCatalogContractTests
 
     private static JsonElement Find(IReadOnlyList<JsonElement> models, string slug) =>
         models.Single(model => model.GetProperty("slug").GetString() == slug);
+
+    private static CodexSupplementalCatalog ParseSupplement(string json)
+    {
+        var bytes = Encoding.UTF8.GetBytes(json);
+        var digest = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        return CodexSupplementalCatalog.Parse(bytes, digest);
+    }
+
+    private static JsonElement ReplaceProperty(JsonElement source, string name, string value)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            foreach (var property in source.EnumerateObject())
+            {
+                writer.WritePropertyName(property.Name);
+                if (property.NameEquals(name)) writer.WriteStringValue(value);
+                else property.Value.WriteTo(writer);
+            }
+            writer.WriteEndObject();
+        }
+        using var document = JsonDocument.Parse(buffer.ToArray());
+        return document.RootElement.Clone();
+    }
 
     private static CopilotModel Live(string id, int? total, int? prompt, int? output) => new()
     {

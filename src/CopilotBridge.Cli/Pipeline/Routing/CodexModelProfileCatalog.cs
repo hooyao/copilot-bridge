@@ -94,7 +94,8 @@ internal sealed class CodexModelProfileCatalog
     /// <c>docs/copilot-responses-contract-snapshot.json</c> (seeded 2026-06-15,
     /// Enterprise), with <c>mai-code-1-flash-picker</c> re-probed directly 2026-07
     /// (see its row) and the <c>gpt-5.6</c> codename slots probed directly 2026-07/08
-    /// (see their rows), and <c>gpt-6-astra</c> probed directly 2026-09-07.
+    /// (see their rows), <c>gpt-6-astra</c> probed directly 2026-09-07, and
+    /// <c>gpt-6-luna</c>/<c>gpt-6-sol</c> probed directly 2026-09-23.
     /// Four effort profiles:
     /// <list type="bullet">
     ///   <item><b>large</b> — <c>gpt-5.3-codex</c>, <c>gpt-5.4</c>,
@@ -196,6 +197,29 @@ internal sealed class CodexModelProfileCatalog
             CanonicalId = "gpt-6-astra",
             AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
             DefaultEffort = "low",
+            SupportsMultimodalFunctionOutput = true,
+        };
+
+        // ── GPT-6 Luna/Sol: xlarge effort profile ──
+        // Direct live probes on both exact ids (2026-09-23) accepted
+        // none/low/medium/high/xhigh/max and rejected minimal/ultra. Function,
+        // custom grammar, web-search, reasoning summary/encrypted reasoning,
+        // prompt cache, and structured multimodal function output were accepted;
+        // store:true, service_tier, and image_generation retained the uniform
+        // catalog-wide rejections. The unsupported fallback stays xhigh so an
+        // explicit max passes through while a rejected value is not promoted.
+        yield return new CodexModelProfile
+        {
+            CanonicalId = "gpt-6-luna",
+            AcceptedEfforts = xlarge,
+            DefaultEffort = "xhigh",
+            SupportsMultimodalFunctionOutput = true,
+        };
+        yield return new CodexModelProfile
+        {
+            CanonicalId = "gpt-6-sol",
+            AcceptedEfforts = xlarge,
+            DefaultEffort = "xhigh",
             SupportsMultimodalFunctionOutput = true,
         };
 

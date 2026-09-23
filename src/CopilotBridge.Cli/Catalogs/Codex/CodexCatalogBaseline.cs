@@ -173,14 +173,19 @@ internal static class CodexCatalogBaselineValidator
             metadata.ValidatedAtUtc < metadata.FetchedAtUtc ||
             metadata.SourceETag is { } etag && !EntityTagHeaderValue.TryParse(etag, out _))
             throw new InvalidDataException("Codex catalog source metadata is incomplete.");
-        if (baseline.Models.Count == 0)
+        ValidateModels(baseline.Models);
+    }
+
+    internal static void ValidateModels(IReadOnlyList<JsonElement> models)
+    {
+        if (models.Count == 0)
             throw new InvalidDataException("Codex catalog must contain at least one model.");
 
         var slugs = new HashSet<string>(StringComparer.Ordinal);
         var overrides = new List<(int Index, string Target)>();
-        for (var index = 0; index < baseline.Models.Count; index++)
+        for (var index = 0; index < models.Count; index++)
         {
-            var model = baseline.Models[index];
+            var model = models[index];
             if (model.ValueKind != JsonValueKind.Object || !model.TryGetProperty("slug", out var slugProperty) ||
                 slugProperty.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(slugProperty.GetString()))
                 throw InvalidEntry(index, "must have a non-empty slug");
