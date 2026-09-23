@@ -1233,13 +1233,14 @@ public partial class ModelProfileProbe
         _output.WriteLine($"  body: {Truncate(body, 300)}");
     }
 
-    // The migration guide says the same forbidden values are rejected by
-    // count_tokens. Confirm the Copilot route before changing its passthrough.
+    // Anthropic's migration guide says these controls fail on count_tokens,
+    // but this Copilot route accepts them. Pin the live divergence so the
+    // native count endpoint can safely preserve unknown fields and bytes.
     [Theory]
     [InlineData("auto")]
     [InlineData("any")]
     [InlineData("disabled")]
-    public async Task Opus55_CountTokens_UnsupportedControls_Probe(string axis)
+    public async Task Opus55_CountTokens_ControlsAcceptedByCopilot(string axis)
     {
         var choice = axis == "auto" ? ",\"tool_choice\":{\"type\":\"auto\"}"
             : axis == "any" ? ",\"tool_choice\":{\"type\":\"any\"}" : "";
@@ -1252,6 +1253,8 @@ public partial class ModelProfileProbe
         var (status, body) = await client.TryPostCountTokensAsync(payload);
         _output.WriteLine($"[claude-opus-5.5] count_tokens axis={axis} → {(int)status} {status}");
         _output.WriteLine($"  body: {Truncate(body, 300)}");
+        Assert.Equal(200, (int)status);
+        Assert.Contains("\"input_tokens\"", body, StringComparison.Ordinal);
     }
 
     [Theory]

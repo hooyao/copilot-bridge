@@ -1665,6 +1665,10 @@ rejections were reconfirmed by changing one field of a real Claude Code request
 with three system blocks, four tools, streaming, and its beta header. The
 official [Opus 5.5 migration guide](https://platform.claude.com/docs/en/models/opus-5-5/migration-guide)
 documents the same breaking changes.
+Copilot's `/v1/messages/count_tokens` differs from the guide's count endpoint:
+live requests with `thinking:disabled` and `tool_choice:any` returned 200.
+The native count route preserves those request bytes; an HTTP-edge contract test
+guards both controls and the successful count response.
 
 Historical findings from the earlier catalogs (retained to explain the
 general adjustment mechanisms):
