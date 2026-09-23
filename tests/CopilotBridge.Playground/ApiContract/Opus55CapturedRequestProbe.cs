@@ -7,19 +7,6 @@ namespace CopilotBridge.Playground;
 
 public partial class ModelProfileProbe
 {
-    public static IEnumerable<object[]> Opus55CaptureCases()
-    {
-        var path = Environment.GetEnvironmentVariable("OPUS55_CAPTURE_PATH");
-        if (string.IsNullOrWhiteSpace(path)) yield break;
-
-        foreach (var axis in new[]
-                 {
-                     "thinking-disabled", "thinking-enabled",
-                     "tool-choice-any", "tool-choice-tool",
-                 })
-            yield return [path, axis];
-    }
-
     /// <summary>
     /// Recheck rewrite-causing rejections on a real Claude Code request. The
     /// capture must come from a Kind=ClientBehavior Opus 5.5 run. The original
@@ -27,10 +14,18 @@ public partial class ModelProfileProbe
     /// only one axis changes. Set OPUS55_CAPTURE_PATH to an upstream-req audit.
     /// </summary>
     [Theory]
-    [MemberData(nameof(Opus55CaptureCases))]
-    public async Task Opus55_RealClientCapture_RejectedAxisStaysRejected(
-        string capturePath, string axis)
+    [InlineData("thinking-disabled")]
+    [InlineData("thinking-enabled")]
+    [InlineData("tool-choice-any")]
+    [InlineData("tool-choice-tool")]
+    public async Task Opus55_RealClientCapture_RejectedAxisStaysRejected(string axis)
     {
+        var capturePath = Environment.GetEnvironmentVariable("OPUS55_CAPTURE_PATH");
+        if (string.IsNullOrWhiteSpace(capturePath))
+        {
+            _output.WriteLine("[not run] Set OPUS55_CAPTURE_PATH to a real Opus 5.5 upstream request audit.");
+            return;
+        }
         var capture = JsonNode.Parse(await File.ReadAllTextAsync(capturePath))!.AsObject();
         var original = capture["body"]!.AsObject();
         Assert.Equal("claude-opus-5.5", original["model"]!.GetValue<string>());
@@ -83,23 +78,21 @@ public partial class ModelProfileProbe
         Assert.Contains(expectedError, response, StringComparison.Ordinal);
     }
 
-    public static IEnumerable<object[]> Opus55BridgeReplayCases()
-    {
-        var path = Environment.GetEnvironmentVariable("OPUS55_CAPTURE_PATH");
-        if (string.IsNullOrWhiteSpace(path)) yield break;
-        yield return [path, "thinking-disabled"];
-        yield return [path, "tool-choice-any"];
-    }
-
     /// <summary>
     /// Replay the same real request through the HTTP edge after changing one
     /// rejected axis. The upstream audit must show the supported shape.
     /// </summary>
     [Theory]
-    [MemberData(nameof(Opus55BridgeReplayCases))]
-    public async Task Opus55_RealClientCapture_BridgeCoercesRejectedAxis(
-        string capturePath, string axis)
+    [InlineData("thinking-disabled")]
+    [InlineData("tool-choice-any")]
+    public async Task Opus55_RealClientCapture_BridgeCoercesRejectedAxis(string axis)
     {
+        var capturePath = Environment.GetEnvironmentVariable("OPUS55_CAPTURE_PATH");
+        if (string.IsNullOrWhiteSpace(capturePath))
+        {
+            _output.WriteLine("[not run] Set OPUS55_CAPTURE_PATH to a real Opus 5.5 upstream request audit.");
+            return;
+        }
         var capture = JsonNode.Parse(await File.ReadAllTextAsync(capturePath))!.AsObject();
         var body = capture["body"]!.DeepClone().AsObject();
         Assert.Equal("claude-opus-5.5", body["model"]!.GetValue<string>());

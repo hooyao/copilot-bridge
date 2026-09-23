@@ -8,6 +8,11 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 /// </summary>
 internal sealed class ModelProfileCatalog
 {
+    // With only one live Claude family in this account's catalog, a plausible
+    // newer Sonnet id scores ~0.27 against Opus 5.5. Keep the same-vendor
+    // forward-compatible fallback while still rejecting unrelated names.
+    internal const double MinSimilarity = 0.25;
+
     private readonly Dictionary<string, ModelProfile> _byId;
     private readonly IReadOnlyList<string> _knownIds;
 
@@ -38,7 +43,7 @@ internal sealed class ModelProfileCatalog
     {
         var best = ModelNameMatcher.FindBest(canonicalId, _knownIds, out score);
         matchedId = best ?? "";
-        if (best is null || score < ModelNameMatcher.DefaultMinSimilarity) return null;
+        if (best is null || score < MinSimilarity) return null;
         return Get(best);
     }
 

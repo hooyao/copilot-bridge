@@ -1579,6 +1579,10 @@ older catalog id (haiku-4.5, sonnet-4.6/5, opus-4.6/4.7/4.8/5) returned
 Earlier sized siblings were already removed on live 400s. A request for a
 removed id retains that id on the wire even if the fuzzy safety net borrows
 Opus 5.5's request-format rules; Copilot remains the availability authority.
+The Anthropic-only similarity floor is 0.25 while the general matcher retains
+0.30: `claude-sonnet-6` still borrows Opus 5.5's wire shape at a 0.27 score,
+whereas an unrelated Claude-like typo remains a local 400. The requested id
+is never rewritten by this fallback.
 The values are sourced from the corresponding probe rows in
 `ModelProfileProbe.cs` — re-run that test after Copilot ships or changes any
 model, then reconcile.
@@ -2329,8 +2333,8 @@ location in `appsettings.json`:
 
 ```jsonc
 {
-  "When": { "Model": "claude-opus-5.5" },
-  "Use":  { "Model": "claude-opus-4.8" }
+  "When": { "Model": "claude-opus-5.6" },
+  "Use":  { "Model": "claude-opus-5.5" }
 }
 ```
 
