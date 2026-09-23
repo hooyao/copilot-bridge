@@ -38,18 +38,17 @@ public class ModelRouterStageFuzzyTests
     [Fact]
     public async Task UnknownButCloseClaudeId_Forwarded_RealIdKeptOnWire()
     {
-        // A claude model this build has no profile for. It must NOT throw; it must
-        // route to the Anthropic backend with the ORIGINAL id on the wire (Copilot
-        // has the model — only our probed profile is missing).
-        var ctx = TestCtx.Build("claude-sonnet-6");
+        // A plausible next Opus id has no profile. Fuzzy fallback must keep
+        // its original id on the wire; Copilot remains the availability authority.
+        var ctx = TestCtx.Build("claude-opus-5.6");
 
         await Stage(ctx).ApplyAsync();
 
-        Assert.Equal("claude-sonnet-6", ctx.Request.Body.Model);   // real id preserved
+        Assert.Equal("claude-opus-5.6", ctx.Request.Body.Model);
         Assert.NotNull(ctx.Target);
         Assert.Equal(BackendVendor.CopilotAnthropic, ctx.Target!.Vendor);
         Assert.Equal("/v1/messages", ctx.Target.Endpoint);
-        Assert.Equal("claude-sonnet-6", ctx.Target.ModelId);        // dispatch also uses the real id
+        Assert.Equal("claude-opus-5.6", ctx.Target.ModelId);
     }
 
     [Fact]

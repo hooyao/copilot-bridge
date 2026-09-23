@@ -4,7 +4,7 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 /// The wire-level truth for one Copilot Anthropic model: what the
 /// <c>POST /v1/messages</c> backend behind that model id <i>actually</i>
 /// accepts. A profile is an immutable fact about Copilot's API surface, learned
-/// by probing the endpoint with the Anthropic NodeJS SDK in the playground —
+/// by probing the endpoint with the Playground client —
 /// NOT derived from Copilot's <c>/models</c> response, whose advertised
 /// capabilities are incomplete and sometimes wrong (haiku-4.5 advertises
 /// adaptive thinking but rejects it at runtime).
@@ -12,18 +12,15 @@ namespace CopilotBridge.Cli.Pipeline.Routing;
 /// <remarks>
 /// <para>Users cannot override a profile — it is Copilot's behavior, not a
 /// preference. What users <i>can</i> configure (in <c>appsettings.json</c>
-/// <c>Routing.Rules</c>) is a model-redirect: "dress an inbound opus-4.9
-/// request in opus-4.8's clothes". Once the redirect picks a target model, the
+/// <c>Routing.Locations</c>) is a model redirect. Once it picks a target, the
 /// target's profile decides every body adjustment mechanically via
 /// <see cref="ProfileAdjuster"/>.</para>
-/// <para>When a model's behavior has not yet been confirmed in the playground,
-/// the catalog entry is marked with a <c>// PLAYGROUND-PENDING</c> comment.
-/// Those values are best-effort extrapolations from the nearest confirmed
-/// family member and must be verified before they are trusted.</para>
+/// <para>No unprobed model receives a catalog entry. The fuzzy nearest-profile
+/// fallback is a best-effort bridge until that id is probed.</para>
 /// </remarks>
 internal sealed record ModelProfile
 {
-    /// <summary>Canonical model id this profile describes (e.g. <c>claude-opus-5</c>).</summary>
+    /// <summary>Canonical model id this profile describes (e.g. <c>claude-opus-5.5</c>).</summary>
     public required string CanonicalId { get; init; }
 
     /// <summary>
@@ -59,6 +56,14 @@ internal sealed record ModelProfile
     public ThinkingPolicy Thinking { get; init; } = ThinkingPolicy.AdaptiveOnly;
 
     /// <summary>
+    /// Effort used when this model rejects an explicit <c>thinking:disabled</c>
+    /// and the profile must coerce it to adaptive. A lower accepted tier keeps
+    /// the request closer to the caller's intent to avoid reasoning cost.
+    /// Null preserves a caller-supplied effort during the coercion.
+    /// </summary>
+    public string? EffortWhenDisabledThinkingUnsupported { get; init; }
+
+    /// <summary>
     /// Upper bound for <c>thinking.budget_tokens</c> the backend tolerates.
     /// Used when deriving a budget from effort so we never exceed it.
     /// </summary>
@@ -66,9 +71,8 @@ internal sealed record ModelProfile
 
     /// <summary>
     /// True if the backend accepts <c>role:"system"</c> messages in non-first
-    /// positions of the <c>messages</c> array (the Anthropic 4.8+ protocol
-    /// extension). True for opus-4.8 only as of 2026-06-05; every other
-    /// Copilot Anthropic model still rejects mid-conv system unconditionally.
+    /// positions of the <c>messages</c> array in legal placements. The current
+    /// Opus 5.5 profile accepts them under the user-predecessor rule.
     /// <para>
     /// When <c>true</c>, <see cref="ProfileAdjuster"/> keeps each mid-conv
     /// <c>role:"system"</c> in place if its placement is legal under the 4.8
@@ -84,11 +88,17 @@ internal sealed record ModelProfile
     public bool AcceptsMidConversationSystem { get; init; }
 
     /// <summary>
-    /// True only for opus-4.8+: the backend accepts the top-level
-    /// <c>speed:"fast"</c> field. The bridge's DTO does not model
-    /// <c>speed</c> today (it is dropped at deserialize time), so this is a
-    /// forward-looking flag — kept so the fact is recorded even before the DTO
-    /// grows the field.
+    /// Whether <c>tool_choice:{"type":"any"}</c> and
+    /// <c>tool_choice:{"type":"tool"}</c> are accepted. When false, the
+    /// adjuster preserves the available tools but uses <c>auto</c> so the
+    /// request can reach a model that does not support forced tool selection.
+    /// </summary>
+    public bool SupportsForcedToolChoice { get; init; } = true;
+
+    /// <summary>
+    /// Whether the backend accepts top-level <c>speed:"fast"</c>. The bridge's
+    /// DTO does not model speed, so the flag remains false until both a live
+    /// Copilot probe and a client path justify supporting it.
     /// </summary>
     public bool AcceptsSpeedFast { get; init; }
 

@@ -30,7 +30,7 @@ namespace CopilotBridge.Playground.Headless;
 internal static class ClientBehaviorSupport
 {
     /// <summary>Newest Claude id under behavior test (native <c>/cc</c>).</summary>
-    public const string LatestClaude = "claude-opus-5";
+    public const string LatestClaude = "claude-opus-5-5";
 
     /// <summary>Newest reviewed Codex client-catalog identity under behavior test.
     /// The stock compatibility route resolves this id to <see cref="LatestGptBackend"/>.</summary>

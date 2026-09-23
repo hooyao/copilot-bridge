@@ -47,6 +47,7 @@ internal static class ProfileAdjuster
         // leave the field untouched, so the second pass is a no-op for them.
         profile = ApplyEffort(ctx, profile, catalog, log);
 
+        ApplyToolChoice(ctx, profile, log);
         HandleMidConversationSystem(ctx, profile, log);
         CapThinkingBudget(ctx, profile, log);
 
@@ -70,6 +71,29 @@ internal static class ProfileAdjuster
         }
 
         return profile;
+    }
+
+    private static void ApplyToolChoice(
+        BridgeContext<MessagesRequest> ctx, ModelProfile profile, ILogger? log)
+    {
+        if (profile.SupportsForcedToolChoice) return;
+
+        var choice = ctx.Request.Body.ToolChoice;
+        bool? disableParallel = choice switch
+        {
+            ToolChoiceAny any => any.DisableParallelToolUse,
+            ToolChoiceTool tool => tool.DisableParallelToolUse,
+            _ => null,
+        };
+        if (choice is not (ToolChoiceAny or ToolChoiceTool)) return;
+
+        ctx.Request.Body = ctx.Request.Body with
+        {
+            ToolChoice = new ToolChoiceAuto { DisableParallelToolUse = disableParallel },
+        };
+        log?.LogDebug(
+            "  profile/tool-choice: '{Profile}' does not accept forced tool choice → auto",
+            profile.CanonicalId);
     }
 
     private static ModelProfile ApplyEffort(
@@ -145,6 +169,14 @@ internal static class ProfileAdjuster
         {
             var derived = BudgetToEffort(withBudget.BudgetTokens);
             var oc = (body.OutputConfig ?? new OutputConfig()) with { Effort = derived };
+            body = body with { OutputConfig = oc };
+        }
+
+        if (body.Thinking is ThinkingConfigDisabled
+            && string.Equals(coerceTo, "adaptive", StringComparison.OrdinalIgnoreCase)
+            && profile.EffortWhenDisabledThinkingUnsupported is { } fallbackEffort)
+        {
+            var oc = (body.OutputConfig ?? new OutputConfig()) with { Effort = fallbackEffort };
             body = body with { OutputConfig = oc };
         }
 

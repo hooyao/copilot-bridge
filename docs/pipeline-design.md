@@ -1229,7 +1229,7 @@ Encrypted reasoning state is also model-private, so T3 stamps the producing mode
 that origin is a separate step, and deliberately NOT part of the edge: the inbound
 adapter runs before the model router, where the body still names the model the
 CLIENT asked for. On CC→gpt those differ by design — the client says
-`claude-opus-5` while routing resolves `gpt-5.6-sol` — so comparing at the edge
+`claude-opus-5-5` while routing resolves `gpt-5.6-sol` — so comparing at the edge
 would drop every valid carrier and still miss a rewrite performed later. The edge
 decodes and states the origin as a fact on the IR; `ClaudeReasoningOriginStage`,
 which runs after routing and legitimately knows the destination, pulls that fact
@@ -1571,14 +1571,14 @@ descriptive error in that case.
 
 ### 7.2 Model profile catalog — `ModelProfileCatalog`
 
-The wire-truth table. One `ModelProfile` per Copilot Anthropic model id,
-hand-curated in `Pipeline/Routing/ModelProfileCatalog.cs`. After the 2026-07
-reconciliation the catalog covers 7 models (every Claude id Copilot still
-exposes on this account: haiku-4.5, sonnet-4.6, **sonnet-5**, opus-4.6,
-opus-4.7, opus-4.8, **opus-5**). The reconciliations **retired** opus-4.5,
-opus-4.6-1m, the opus-4.7 -high/-xhigh/-1m-internal variants, and (2026-07)
-**sonnet-4.5** — all now 400 (`model_not_supported` / "not available for
-integrator"; `ModelProfileProbe.RetiredCandidate_LivenessProbe`).
+The wire-truth table. One `ModelProfile` per live Copilot Anthropic model id,
+hand-curated in `Pipeline/Routing/ModelProfileCatalog.cs`. The 2026-09
+reconciliation leaves one model on this account, **claude-opus-5.5**. Each
+older catalog id (haiku-4.5, sonnet-4.6/5, opus-4.6/4.7/4.8/5) returned
+`400 model_not_supported` in `ModelProfileProbe.RetiredCandidate_LivenessProbe`.
+Earlier sized siblings were already removed on live 400s. A request for a
+removed id retains that id on the wire even if the fuzzy safety net borrows
+Opus 5.5's request-format rules; Copilot remains the availability authority.
 The values are sourced from the corresponding probe rows in
 `ModelProfileProbe.cs` — re-run that test after Copilot ships or changes any
 model, then reconcile.
@@ -1611,12 +1611,13 @@ internal sealed record ModelProfile
 
     // Which thinking shapes the backend takes, and how to coerce the others.
     public ThinkingPolicy Thinking { get; init; } = ThinkingPolicy.AdaptiveOnly;
+    public string? EffortWhenDisabledThinkingUnsupported { get; init; }
     public int MaxThinkingBudget { get; init; } = 64000;
 
-    // opus-4.8, opus-5 and sonnet-5 accept the protocol extension in legal
-    // placements (pred=user, succ=assistant-or-end); every other model rejects
-    // it — see the cross-cutting facts below.
+    // Keep legal non-first system messages; convert illegal placements.
     public bool AcceptsMidConversationSystem { get; init; }
+    // Forced tool_choice:any/tool must become auto on Opus 5.5.
+    public bool SupportsForcedToolChoice { get; init; } = true;
     public bool AcceptsSpeedFast { get; init; }
 
     // anthropic-beta tokens to strip from the outbound header set when this
@@ -1625,7 +1626,7 @@ internal sealed record ModelProfile
     public IReadOnlyList<string> StripBetas { get; init; } = [];
 
     // CROSS-FIELD: efforts the backend rejects ONLY when thinking is disabled.
-    // Empty for every model but opus-5 — see the cross-cutting facts below.
+    // Historical opus-5 needed this; no current catalog profile does.
     public IReadOnlyList<string> EffortsRejectedWhenThinkingDisabled { get; init; } = [];
 }
 
@@ -1636,16 +1637,33 @@ internal sealed record ThinkingPolicy
     public bool DeriveBudgetFromEffortOnEnabled { get; init; }
     public bool DeriveEffortFromBudgetOnCoerce { get; init; }
 
-    // Four named presets cover today's catalog. Add more as needed.
-    public static ThinkingPolicy AdaptiveOnly       { get; } // opus-4.7, opus-4.8, sonnet-5
-    public static ThinkingPolicy AdaptiveOrDisabled { get; } // opus-5
-    public static ThinkingPolicy EnabledOnly        { get; } // haiku-4.5
-    public static ThinkingPolicy All                { get; } // sonnet-4.6, opus-4.6
+    // Presets remain for generic body coercion; the current catalog uses AdaptiveOnly.
+    public static ThinkingPolicy AdaptiveOnly       { get; }
+    public static ThinkingPolicy AdaptiveOrDisabled { get; }
+    public static ThinkingPolicy EnabledOnly        { get; }
+    public static ThinkingPolicy All                { get; }
 }
 ```
 
-Cross-cutting facts the probe surfaced and the catalog encodes (re-probed in
-the 2026 reconciliations):
+**2026-09 live catalog:** this account's `/models` list advertises only
+`claude-opus-5.5` for `/v1/messages`. Every previous Claude catalog id returned
+`400 model_not_supported` in `RetiredCandidate_LivenessProbe`, so the current
+catalog contains only Opus 5.5. Anthropic's client id `claude-opus-5-5` is
+normalized to Copilot's dotted id; both spellings work on the live Messages and
+count-tokens endpoints. Opus 5.5 accepts `low/medium/high/xhigh/max` effort,
+accepts adaptive or omitted thinking, and rejects `enabled` and `disabled`.
+When a legacy client explicitly disables thinking, the bridge converts that
+shape to adaptive at `effort:low`, following Anthropic's migration guidance
+to limit reasoning cost; an enabled budget is converted with its derived effort.
+The model rejects forced `tool_choice:any/tool`, accepting `auto/none`. Legal
+mid-conversation system placements and a 677k-token request succeed. These
+rejections were reconfirmed by changing one field of a real Claude Code request
+with three system blocks, four tools, streaming, and its beta header. The
+official [Opus 5.5 migration guide](https://platform.claude.com/docs/en/models/opus-5-5/migration-guide)
+documents the same breaking changes.
+
+Historical findings from the earlier catalogs (retained to explain the
+general adjustment mechanisms):
 
 - **Effort acceptance is per-model and non-monotonic.** opus-4.7 / opus-4.8 /
   opus-5 / sonnet-5 accept `low/medium/high/xhigh/max`; opus-4.6 / sonnet-4.6
@@ -1699,12 +1717,14 @@ applied in order:
    user's reasoning depth survives). When the coerced shape lands on
    enabled, derive `budget_tokens` from effort using the standard
    mapping (low=4096, medium=16384, high=32768, xhigh=64000).
-3. **Mid-conversation system fold.** When the profile rejects
-   `role:"system"` messages outside the first slot, collect their text
-   blocks, drop the messages from `body.messages`, and append the text to
-   `body.system`. Preserves order. Without this, 4.8 → 4.7 fallback (or
-   any 4.8 request at all on Copilot, per §7.2) would 400 on
-   `Unexpected role 'system'`.
+   On Opus 5.5, an unsupported explicit `thinking:disabled` is coerced to
+   adaptive with `effort:low`, the lowest live-accepted tier.
+3. **Tool choice and mid-conversation system.** If a profile rejects forced
+   `tool_choice:any/tool`, convert it to `auto` while preserving
+   `disable_parallel_tool_use`; Opus 5.5 otherwise returns 400. Keep legal
+   non-first `role:"system"` messages in place. Convert illegal placements
+   to `role:"user"` with the injected-context marker, preserving their
+   position and leaving the top-level `system` field unchanged.
 4. **Budget cap.** Clamp `thinking.budget_tokens` to
    `MaxThinkingBudget`.
 4b. **Cross-field effort clamp (disabled thinking).** If the FINAL thinking
@@ -1717,7 +1737,7 @@ applied in order:
    stripping preserves as much of the user's requested depth as the backend
    allows — Copilot's own error names `"effort 'high' or below"` as the
    remedy, whereas stripping would fall back to the model default. No-op for
-   every profile with an empty list, i.e. everything except opus-5.
+   every current profile; the opus-5 rule is retained for historical fixtures.
 5. **Beta strip registration.** Append the profile's `StripBetas`
    patterns to `ctx.PendingBetaStrips` so `HeadersOutboundStage` removes
    them from the outbound `anthropic-beta` header. A global
@@ -1751,7 +1771,7 @@ does not require an alias):
   "Routing": {
     "Locations": [
       {
-        "When": { "Model": "claude-opus-5" },
+        "When": { "Model": "claude-opus-5.5" },
         "Use": { "Model": "gpt-5.6-sol", "EffortMap": { "max": "xhigh" } },
         "Note": "Optional Claude Code to Codex-model substitution"
       }
@@ -1802,7 +1822,7 @@ an alternative disabled Claude Code → GPT example:
 | `When` model | `Use.Model` | `Use.EffortMap` | State |
 | --- | --- | --- | --- |
 | `gpt-5.6-sol` | `gpt-6-astra` | `none` → `low`, `minimal` → `low` | active on fresh installs |
-| `claude-opus-5` | `gpt-5.6-sol` | `max` → `xhigh` | `_Locations_disabled` alternative |
+| `claude-opus-5.5` | `gpt-5.6-sol` | `max` → `xhigh` | `_Locations_disabled` alternative |
 
 Note:
 - The active route keeps the reviewed `gpt-5.6-sol` Codex client catalog identity
@@ -1810,7 +1830,7 @@ Note:
   set and 1,000,000/872,000 Copilot context/prompt limits; catalog projection uses
   those target limits under the source slug. Config migration preserves an existing
   installation's complete Locations array, so upgrades opt in by adding the block.
-- The alternative example routes Claude Code's `claude-opus-5` to the reviewed
+- The alternative example routes Claude Code's `claude-opus-5-5` to the reviewed
   Codex client model `gpt-5.6-sol`. The `EffortMap max→xhigh` is an **optional down-tier**:
   unlike gpt-5.5, gpt-5.6-sol (the "xlarge" effort profile) accepts `max`
   natively, so without the map Claude Code's `max` passes through verbatim — the
@@ -2309,7 +2329,7 @@ location in `appsettings.json`:
 
 ```jsonc
 {
-  "When": { "Model": "claude-opus-5" },
+  "When": { "Model": "claude-opus-5.5" },
   "Use":  { "Model": "claude-opus-4.8" }
 }
 ```

@@ -6,8 +6,10 @@ using Xunit;
 namespace CopilotBridge.UnitTests;
 
 /// <summary>
-/// <see cref="ProfileAdjuster.Apply"/> body coercion against the real
-/// <see cref="ModelProfileCatalog"/>. The headline cases here guard the
+/// <see cref="ProfileAdjuster.Apply"/> body coercion against historical,
+/// test-only profiles. Those models no longer route on this Copilot account;
+/// these fixtures preserve coverage for the general adjustment algorithms.
+/// <see cref="Opus55ProfileTests"/> guards the live catalog. The headline cases guard the
 /// derived-effort bug: for adaptive-only models, <c>thinking:enabled</c> is
 /// coerced to <c>adaptive</c> and an <c>output_config.effort</c> is DERIVED
 /// from the thinking budget — that derived value must still be validated
@@ -18,7 +20,64 @@ namespace CopilotBridge.UnitTests;
 /// </summary>
 public class ProfileAdjusterTests
 {
-    private static readonly ModelProfileCatalog Catalog = new();
+    private static readonly ModelProfileCatalog LiveCatalog = new();
+    private static readonly ModelProfileCatalog Catalog = new ModelProfileCatalog(
+    [
+        new ModelProfile
+        {
+            CanonicalId = "claude-haiku-4.5",
+            AcceptedEfforts = [],
+            Thinking = ThinkingPolicy.EnabledOnly,
+            MaxThinkingBudget = 32000,
+            StripBetas = ["context-1m-*"],
+        },
+        new ModelProfile
+        {
+            CanonicalId = "claude-sonnet-4.6",
+            AcceptedEfforts = ["low", "medium", "high", "max"],
+            Thinking = ThinkingPolicy.All,
+            MaxThinkingBudget = 32000,
+        },
+        new ModelProfile
+        {
+            CanonicalId = "claude-sonnet-5",
+            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
+            Thinking = ThinkingPolicy.AdaptiveOnly,
+            MaxThinkingBudget = 32000,
+            AcceptsMidConversationSystem = true,
+        },
+        new ModelProfile
+        {
+            CanonicalId = "claude-opus-4.6",
+            AcceptedEfforts = ["low", "medium", "high", "max"],
+            Thinking = ThinkingPolicy.All,
+            MaxThinkingBudget = 32000,
+        },
+        new ModelProfile
+        {
+            CanonicalId = "claude-opus-4.7",
+            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
+            Thinking = ThinkingPolicy.AdaptiveOnly,
+            MaxThinkingBudget = 32000,
+        },
+        new ModelProfile
+        {
+            CanonicalId = "claude-opus-4.8",
+            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
+            Thinking = ThinkingPolicy.AdaptiveOnly,
+            MaxThinkingBudget = 32000,
+            AcceptsMidConversationSystem = true,
+        },
+        new ModelProfile
+        {
+            CanonicalId = "claude-opus-5",
+            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
+            Thinking = ThinkingPolicy.AdaptiveOrDisabled,
+            MaxThinkingBudget = 32000,
+            AcceptsMidConversationSystem = true,
+            EffortsRejectedWhenThinkingDisabled = ["xhigh", "max"],
+        },
+    ]);
 
     private static BridgeContext<MessagesRequest> WithThinking(
         string model, ThinkingConfig thinking, string? effort = null)
@@ -213,16 +272,10 @@ public class ProfileAdjusterTests
     /// true; every OTHER Copilot Anthropic model stays false.
     /// </summary>
     [Theory]
-    [InlineData("claude-sonnet-5", true)]
-    [InlineData("claude-opus-4.8", true)]
-    [InlineData("claude-opus-5", true)]
-    [InlineData("claude-sonnet-4.6", false)]
-    [InlineData("claude-opus-4.7", false)]
-    [InlineData("claude-opus-4.6", false)]
-    [InlineData("claude-haiku-4.5", false)]
+    [InlineData("claude-opus-5.5", true)]
     public void MidConversationSystem_AcceptanceFlag_MatchesProbedContract(string id, bool accepts)
     {
-        var profile = Catalog.Get(id);
+        var profile = LiveCatalog.Get(id);
         Assert.NotNull(profile);
         Assert.Equal(accepts, profile!.AcceptsMidConversationSystem);
     }
@@ -387,9 +440,14 @@ public class ProfileAdjusterTests
     [Fact]
     public void RetiredModels_HaveNoProfile()
     {
-        Assert.Null(Catalog.Get("claude-sonnet-4.5"));
-        Assert.Null(Catalog.Get("claude-opus-4.5"));
-        Assert.Null(Catalog.Get("claude-opus-4.6-1m"));
-        Assert.Null(Catalog.Get("claude-opus-4.7-1m-internal"));
+        foreach (var id in new[]
+                 {
+                     "claude-haiku-4.5", "claude-sonnet-4.5", "claude-sonnet-4.6",
+                     "claude-sonnet-5", "claude-opus-4.5", "claude-opus-4.6",
+                     "claude-opus-4.6-1m", "claude-opus-4.7",
+                     "claude-opus-4.7-1m-internal", "claude-opus-4.8", "claude-opus-5",
+                 })
+            Assert.Null(LiveCatalog.Get(id));
+        Assert.Equal(["claude-opus-5.5"], LiveCatalog.KnownIds);
     }
 }

@@ -19,8 +19,8 @@ namespace CopilotBridge.Playground;
 ///        (each per-model claim — "opus accepts only medium" — confirmed live;
 ///        a mismatch names the catalog row to reconcile).
 ///
-/// Axes swept per model: effort, thinking shape, mid-conversation
-/// <c>role:"system"</c>, and the <b>cross-field</b> effort × thinking:disabled
+/// Axes swept per model: effort, thinking shape, tool choice,
+/// mid-conversation <c>role:"system"</c>, and the <b>cross-field</b> effort × thinking:disabled
 /// interaction. That last one exists because single-axis sweeps are blind to a
 /// constraint that only binds on a COMBINATION — opus-5 accepts <c>max</c> and
 /// accepts <c>disabled</c>, but rejects the pair. Sweeping it here means the
@@ -101,6 +101,29 @@ public partial class ModelProfileProbe
                 () => client.TryPostMessagesAsync(midConvPayload), $"{model} mid-conv-system");
             var midConvAccepted = WireAcceptance.IsAccepted(mcStatus, mcBody, $"{model} mid-conv-system");
 
+            // Opus 5.5 rejects forced tool choice even though it accepts the
+            // same tool definition with auto/none. Sweep all four values so
+            // both a newly added restriction and a dropped restriction drift.
+            var (toolChoiceAccepted, toolChoiceRejected) = (new JsonArray(), new JsonArray());
+            foreach (var choice in new[] { "auto", "none", "any", "tool" })
+            {
+                var choiceJson = choice == "tool"
+                    ? "{\"type\":\"tool\",\"name\":\"lookup\"}"
+                    : "{\"type\":\"" + choice + "\"}";
+                var payload =
+                    "{\"model\":\"" + model + "\",\"max_tokens\":64,"
+                    + "\"messages\":[{\"role\":\"user\",\"content\":\"Use lookup.\"}],"
+                    + "\"tools\":[{\"name\":\"lookup\",\"description\":\"Look up a query\","
+                    + "\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}}],"
+                    + "\"tool_choice\":" + choiceJson + "}";
+                var (status, body) = await ProbeRetry.WithRetry(
+                    () => client.TryPostMessagesAsync(payload), $"{model} tool_choice={choice}");
+                if (WireAcceptance.IsAccepted(status, body, $"{model} tool_choice={choice}"))
+                    toolChoiceAccepted.Add(choice);
+                else
+                    toolChoiceRejected.Add(choice);
+            }
+
             // Cross-field probe: efforts that are individually accepted can still
             // be rejected when combined with thinking:disabled (opus-5 is the only
             // known case — "effort 'max' is not supported when thinking is disabled
@@ -143,6 +166,11 @@ public partial class ModelProfileProbe
                     ["rejected"] = thinkingRejected,
                 },
                 ["mid_conv_system"] = midConvAccepted,
+                ["tool_choice"] = new JsonObject
+                {
+                    ["accepted"] = toolChoiceAccepted,
+                    ["rejected"] = toolChoiceRejected,
+                },
                 // Efforts rejected ONLY in combination with thinking:disabled.
                 // Empty for every model that has no such interaction.
                 ["effort_rejected_when_thinking_disabled"] = disabledThinkingRejected,
@@ -201,6 +229,11 @@ public partial class ModelProfileProbe
         var catalog = new ModelProfileCatalog();
         var mismatches = new List<string>();
 
+        var liveIds = liveModels.Select(pair => pair.Key).OrderBy(id => id, StringComparer.Ordinal);
+        if (!catalog.KnownIds.SequenceEqual(liveIds))
+            mismatches.Add($"catalog ids=[{string.Join(",", catalog.KnownIds)}] "
+                + $"but live sweep ids=[{string.Join(",", liveIds)}]");
+
         foreach (var (model, factsNode) in liveModels)
         {
             var profile = catalog.Get(model);
@@ -216,14 +249,17 @@ public partial class ModelProfileProbe
                     $"{model}: catalog AcceptedEfforts=[{string.Join(",", catEffort)}] "
                     + $"but live accepts=[{string.Join(",", liveEffort)}]");
 
-            // Thinking: every shape the catalog claims to accept must be live-accepted.
+            // Thinking is exact-set in both directions. If Copilot starts
+            // accepting a shape the bridge still coerces, that silent rewrite
+            // must become a failing backend-fact guard.
             var liveThinking = facts["thinking"]!["accepted"]!.AsArray()
-                .Select(n => n!.GetValue<string>()).ToHashSet();
-            foreach (var shape in profile.Thinking.AcceptedShapes)
-                if (!liveThinking.Contains(shape))
-                    mismatches.Add(
-                        $"{model}: catalog Thinking accepts '{shape}' but live rejected it "
-                        + $"(live accepts=[{string.Join(",", liveThinking)}])");
+                .Select(n => n!.GetValue<string>()).OrderBy(s => s, StringComparer.Ordinal).ToList();
+            var catThinking = profile.Thinking.AcceptedShapes
+                .OrderBy(s => s, StringComparer.Ordinal).ToList();
+            if (!liveThinking.SequenceEqual(catThinking))
+                mismatches.Add(
+                    $"{model}: catalog Thinking accepts=[{string.Join(",", catThinking)}] "
+                    + $"but live accepts=[{string.Join(",", liveThinking)}]");
 
             // Mid-conv system.
             var liveMidConv = facts["mid_conv_system"]!.GetValue<bool>();
@@ -231,6 +267,15 @@ public partial class ModelProfileProbe
                 mismatches.Add(
                     $"{model}: catalog AcceptsMidConversationSystem={profile.AcceptsMidConversationSystem} "
                     + $"but live={liveMidConv}");
+
+            var liveChoices = facts["tool_choice"]!["accepted"]!.AsArray()
+                .Select(node => node!.GetValue<string>()).ToHashSet(StringComparer.Ordinal);
+            var liveForced = liveChoices.Contains("any") && liveChoices.Contains("tool");
+            if (liveChoices.Contains("any") != liveChoices.Contains("tool")
+                || profile.SupportsForcedToolChoice != liveForced)
+                mismatches.Add(
+                    $"{model}: catalog SupportsForcedToolChoice={profile.SupportsForcedToolChoice} "
+                    + $"but live accepts=[{string.Join(",", liveChoices.OrderBy(x => x, StringComparer.Ordinal))}]");
 
             // Cross-field: efforts rejected only under thinking:disabled. Compared
             // as an exact set in BOTH directions, which is the point — a catalog
