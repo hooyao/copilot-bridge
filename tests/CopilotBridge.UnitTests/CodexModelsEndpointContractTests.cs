@@ -113,10 +113,58 @@ public sealed class CodexModelsEndpointContractTests
         Assert.NotEqual(one.ETag, changed.ETag);
     }
 
+    [Fact]
+    public async Task OlderClientReceivesReviewedGpt6ResourcesWithLiveLimits()
+    {
+        var result = await Invoke(
+            $"?client_version={UnseenPrerelease}",
+            Responses("gpt-6-luna", "gpt-6-sol"));
+
+        Assert.Equal(StatusCodes.Status200OK, result.Status);
+        using var document = JsonDocument.Parse(result.Body);
+        var models = document.RootElement.GetProperty("models").EnumerateArray().ToArray();
+        foreach (var slug in new[] { "gpt-6-luna", "gpt-6-sol" })
+        {
+            var model = models.Single(item => item.GetProperty("slug").GetString() == slug);
+            Assert.Equal("0.155.0", model.GetProperty("minimal_client_version").GetString());
+            Assert.True(model.TryGetProperty("model_messages", out _));
+            Assert.Equal(
+                model.GetProperty("model_messages").GetProperty("instructions_template").GetString(),
+                model.GetProperty("base_instructions").GetString());
+            Assert.Equal(1_000_000, model.GetProperty("context_window").GetInt32());
+            Assert.Equal(1_000_000, model.GetProperty("max_context_window").GetInt32());
+            Assert.Equal(850_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+        }
+    }
+
+    [Theory]
+    [InlineData("0.155.0")]
+    [InlineData("0.155.0%2Blocal.1")]
+    [InlineData("0.156.0")]
+    public async Task CutoffAndNewerClientsHonorAnOmittedGpt6Resource(string clientVersion)
+    {
+        // The source cache intentionally returns the captured 0.144.1 baseline,
+        // reproducing bundled fallback for a newer requester. That old source
+        // identity must not override the requesting client's authoritative omission.
+        var result = await Invoke(
+            $"?client_version={clientVersion}",
+            Responses("gpt-6-luna", "gpt-6-sol"),
+            baselineVersion: UnseenPrerelease);
+
+        Assert.Equal(StatusCodes.Status200OK, result.Status);
+        using var document = JsonDocument.Parse(result.Body);
+        var slugs = document.RootElement.GetProperty("models").EnumerateArray()
+            .Select(model => model.GetProperty("slug").GetString())
+            .ToArray();
+        Assert.DoesNotContain("gpt-6-luna", slugs);
+        Assert.DoesNotContain("gpt-6-sol", slugs);
+    }
+
     private static async Task<Result> Invoke(
         string query,
         CopilotModelsResponse response,
-        string? userAgent = null)
+        string? userAgent = null,
+        string? baselineVersion = null)
     {
         var http = new DefaultHttpContext();
         http.Request.Method = "GET";
@@ -126,7 +174,7 @@ public sealed class CodexModelsEndpointContractTests
         http.Response.Body = new MemoryStream();
 
         var client = new FakeClient(response);
-        var source = new StaticSourceCache();
+        var source = new StaticSourceCache(baselineVersion);
         await CodexModelsEndpoint.HandleAsync(
             http,
             source,
@@ -165,9 +213,14 @@ public sealed class CodexModelsEndpointContractTests
         }],
     };
 
+    private static CopilotModelsResponse Responses(params string[] ids) => new()
+    {
+        Data = ids.Select(id => Response(id, 1_000_000, 872_000).Data[0]).ToArray(),
+    };
+
     private sealed record Result(int Status, string? ETag, string Body, string? ResolvedVersion);
 
-    private sealed class StaticSourceCache : ICodexCatalogSourceCache
+    private sealed class StaticSourceCache(string? baselineVersion = null) : ICodexCatalogSourceCache
     {
         public string? ResolvedVersion { get; private set; }
 
@@ -182,7 +235,7 @@ public sealed class CodexModelsEndpointContractTests
             return ValueTask.FromResult(new CodexCatalogResolution
             {
                 Success = true,
-                Baseline = CodexCatalogTestFixtures.LoadCapturedBaseline(clientVersion!),
+                Baseline = CodexCatalogTestFixtures.LoadCapturedBaseline(baselineVersion ?? clientVersion!),
                 Outcome = "test",
             });
         }

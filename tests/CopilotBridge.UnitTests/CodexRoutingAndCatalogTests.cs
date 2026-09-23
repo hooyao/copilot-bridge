@@ -30,6 +30,8 @@ public class CodexRoutingAndCatalogTests
         new object[] { "gpt-5.6-sol-fast" },
         new object[] { "gpt-5.6-terra" },
         new object[] { "gpt-6-astra" },
+        new object[] { "gpt-6-luna" },
+        new object[] { "gpt-6-sol" },
         new object[] { "gpt-5-mini" },
         new object[] { "mai-code-1-flash-picker" },
     };
@@ -110,6 +112,8 @@ public class CodexRoutingAndCatalogTests
     [InlineData("gpt-5.6-terra", "none,low,medium,high,xhigh,max", false, true)]
     // Astra rejects both none and minimal; all remaining public tiers are accepted live.
     [InlineData("gpt-6-astra",    "low,medium,high,xhigh,max", false, true)]
+    [InlineData("gpt-6-luna",     "none,low,medium,high,xhigh,max", false, true)]
+    [InlineData("gpt-6-sol",      "none,low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-5-mini",    "minimal,low,medium,high", false, true)]
     [InlineData("mai-code-1-flash-picker", "minimal,low,medium,high", false, false)]
     public void Catalog_ProfilesMatchLiveContract(
@@ -136,6 +140,8 @@ public class CodexRoutingAndCatalogTests
     [InlineData("gpt-5.6-sol-fast", true)]
     [InlineData("gpt-5.6-terra", true)]
     [InlineData("gpt-6-astra", true)]
+    [InlineData("gpt-6-luna", true)]
+    [InlineData("gpt-6-sol", true)]
     [InlineData("gpt-5.5", false)]         // large — rejects max
     [InlineData("gpt-5-mini", false)]      // small — rejects max
     [InlineData("gpt-5.3-codex", false)]   // large — rejects max
@@ -147,10 +153,10 @@ public class CodexRoutingAndCatalogTests
     }
 
     [Fact]
-    public void Catalog_HasAllElevenModels_AndUniformCoercions()
+    public void Catalog_HasAllThirteenModels_AndUniformCoercions()
     {
         var catalog = new CodexModelProfileCatalog();
-        Assert.Equal(11, catalog.Count);
+        Assert.Equal(13, catalog.Count);
         // The three uniform coercions are catalog-level facts (apply to every model).
         Assert.True(CodexModelProfileCatalog.StripsServiceTier);
         Assert.True(CodexModelProfileCatalog.StripsStoreTrue);

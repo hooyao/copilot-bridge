@@ -573,12 +573,26 @@ Copilot facts. It does not forward Copilot's `data`, `capabilities`, or
 `supported_endpoints` entry shape and does not invent Codex behavior for a
 live-only slug.
 
+Copilot has no `/resources` model endpoint. Discovery uses `GET /models`, and an
+exact Copilot model record is available at `GET /models/{id}`. These are backend
+capacity records, not complete Codex client resources. The reviewed complete
+`gpt-6-luna` and `gpt-6-sol` client records come from the official
+`openai/codex` models catalog (minimum client `0.155.0`) and are hardcoded as
+digest-pinned supplements only for requested client versions older than that
+cutoff. A `0.155.0` or later catalog omission remains authoritative even when
+source resolution uses the older bundled fallback; no Copilot metadata is
+presented as Codex-owned instructions or tool policy. For a legacy baseline
+whose client requires top-level `base_instructions`, the projector duplicates
+the official resource's exact `model_messages.instructions_template` value into
+that older field; it does not author a new prompt.
+
 Captured Copilot metadata for the current Responses models:
 
 | Models | Total context | Maximum prompt | Maximum output | Bridge auto-compact |
 | --- | ---: | ---: | ---: | ---: |
 | `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,terra}` | 1,050,000 | 922,000 | 128,000 | 892,000 |
 | `gpt-5.6-sol-fast` (internal-only; absent from official Codex catalog) | 1,050,000 | 922,000 | 128,000 | not synthesized |
+| `gpt-6-luna`, `gpt-6-sol` | 1,000,000 | 872,000 | 128,000 | 850,000 |
 | `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 | 265,000 |
 | `gpt-5-mini` | 264,000 | 128,000 | 64,000 | 124,000 |
 | `mai-code-1-flash-picker` | 256,000 | 128,000 | 128,000 | 124,000 |

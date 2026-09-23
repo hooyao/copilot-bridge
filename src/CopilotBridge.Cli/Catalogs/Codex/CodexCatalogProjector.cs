@@ -20,6 +20,7 @@ internal sealed class CodexCatalogProjector
     private readonly CodexModelProfileCatalog _profiles;
     private readonly IModelRegistry _routes;
     private readonly RoutesConfig _configuredRoutes;
+    private readonly CodexSupplementalCatalog _supplemental;
     private readonly ILogger<CodexCatalogProjector> _log;
 
     public CodexCatalogProjector(
@@ -30,6 +31,7 @@ internal sealed class CodexCatalogProjector
             profiles,
             routes,
             Options.Create(new RoutesConfig()),
+            CodexSupplementalCatalog.Load(),
             log)
     {
     }
@@ -39,14 +41,26 @@ internal sealed class CodexCatalogProjector
         IModelRegistry routes,
         IOptions<RoutesConfig> configuredRoutes,
         ILogger<CodexCatalogProjector> log)
+        : this(profiles, routes, configuredRoutes, CodexSupplementalCatalog.Load(), log)
+    {
+    }
+
+    internal CodexCatalogProjector(
+        CodexModelProfileCatalog profiles,
+        IModelRegistry routes,
+        IOptions<RoutesConfig> configuredRoutes,
+        CodexSupplementalCatalog supplemental,
+        ILogger<CodexCatalogProjector> log)
     {
         _profiles = profiles;
         _routes = routes;
         _configuredRoutes = configuredRoutes.Value;
+        _supplemental = supplemental;
         _log = log;
     }
 
     public CodexCatalogProjection Project(
+        CodexClientVersion requestedVersion,
         CodexCatalogBaseline baseline,
         IReadOnlyList<CopilotModel> liveModels,
         bool liveOverlayValidated)
@@ -55,22 +69,25 @@ internal sealed class CodexCatalogProjector
             .Where(model => !string.IsNullOrWhiteSpace(model.Id))
             .GroupBy(model => model.Id, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
-        var resolvedRoutes = baseline.Models
+        var candidates = requestedVersion.CompareTo(_supplemental.MinimumClientVersion) < 0
+            ? MergeReviewedSupplements(baseline.Models, _supplemental.Models)
+            : baseline.Models;
+        var resolvedRoutes = candidates
             .Select(model => ResolveConfiguredTarget(GetSlug(model)))
             .ToArray();
-        var effective = baseline.Models
+        var effective = candidates
             .Select((model, index) => IsEffective(
                 GetSlug(model), resolvedRoutes[index], liveById, liveOverlayValidated))
             .ToArray();
-        var effectiveSlugs = baseline.Models
+        var effectiveSlugs = candidates
             .Where((_, index) => effective[index])
             .Select(GetSlug)
             .ToHashSet(StringComparer.Ordinal);
 
-        var output = new JsonElement[baseline.Models.Count];
-        for (var index = 0; index < baseline.Models.Count; index++)
+        var output = new JsonElement[candidates.Count];
+        for (var index = 0; index < candidates.Count; index++)
         {
-            var source = baseline.Models[index];
+            var source = candidates[index];
             var slug = GetSlug(source);
             var replacements = new Dictionary<string, Action<Utf8JsonWriter>>(StringComparer.Ordinal)
             {
@@ -113,6 +130,36 @@ internal sealed class CodexCatalogProjector
         }
         var hash = Convert.ToHexStringLower(SHA256.HashData(buffer.ToArray()));
         return new CodexCatalogProjection { Models = output, ETag = $"\"{hash}\"" };
+    }
+
+    private static IReadOnlyList<JsonElement> MergeReviewedSupplements(
+        IReadOnlyList<JsonElement> baseline,
+        IReadOnlyList<JsonElement> supplemental)
+    {
+        var slugs = baseline.Select(GetSlug).ToHashSet(StringComparer.Ordinal);
+        var legacyInstructionShape = baseline.Any(model =>
+            model.TryGetProperty("base_instructions", out var instructions) &&
+            instructions.ValueKind == JsonValueKind.String);
+        var merged = new List<JsonElement>(baseline.Count + supplemental.Count);
+        merged.AddRange(baseline);
+        foreach (var model in supplemental)
+        {
+            if (!slugs.Add(GetSlug(model))) continue;
+            merged.Add(legacyInstructionShape ? AddLegacyInstructions(model) : model);
+        }
+        return merged;
+    }
+
+    private static JsonElement AddLegacyInstructions(JsonElement model)
+    {
+        if (model.TryGetProperty("base_instructions", out _)) return model;
+        var instructions = model.GetProperty("model_messages")
+            .GetProperty("instructions_template").GetString()
+            ?? throw new InvalidDataException("Reviewed supplemental model has no instruction template.");
+        return RewriteObject(model, new Dictionary<string, Action<Utf8JsonWriter>>(StringComparer.Ordinal)
+        {
+            ["base_instructions"] = writer => writer.WriteStringValue(instructions),
+        });
     }
 
     /// <summary>

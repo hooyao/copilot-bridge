@@ -200,6 +200,12 @@ live re-probe returned 200. `service_tier` / `store:true` strip plus the
 > Function/custom/web-search tools and structured image function output are accepted;
 > the existing catalog-wide store/service-tier/image-generation removals still apply.
 
+> **2026-09-23 update — GPT-6 Luna and Sol reuse the xlarge profile.** Both exact
+> ids accept `none/low/medium/high/xhigh/max`, reject `minimal` and `ultra`, and
+> route natively to `/responses`. Their reviewed official Codex resources declare
+> minimum client 0.155.0; the bridge supplements those records only for older
+> requesting clients whose selected baseline omits the exact slug.
+
 ---
 
 ## 6. Routing / vendor dispatch
@@ -214,8 +220,9 @@ Change: route the Codex/Responses model ids (`gpt-5.3-codex`, `gpt-5.4`,
 > **Current routed set (the id list above is change-3's original set).** The 2026
 > reconciliation retired `mai-code-1-flash-internal` (→ `mai-code-1-flash-picker`)
 > and the 2026-07/08 reconciliations added the four `gpt-5.6` codenames
-> (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-sol-fast` / `gpt-5.6-terra`). The live
-> set also includes exact `gpt-6-astra`; fresh installs keep the current Codex
+> (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-sol-fast` / `gpt-5.6-terra`). The
+> routed set also includes exact `gpt-6-astra`, `gpt-6-luna`, and `gpt-6-sol`;
+> fresh installs keep the current Codex
 > catalog identity by routing `gpt-5.6-sol` to Astra in `Routing.Locations`.
 > `CopilotModelRegistry.ResponsesModelIds` allowlist is the source of truth;
 > membership is still an explicit list, never a `gpt-` prefix takeover.

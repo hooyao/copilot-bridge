@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "source_repository": "https://github.com/openai/codex",
+  "source_commit": "8a3c4ea3b5a7c0e92cf24dae46ec87629a26bb7f",
+  "source_url": "https://raw.githubusercontent.com/openai/codex/8a3c4ea3b5a7c0e92cf24dae46ec87629a26bb7f/codex-rs/models-manager/models.json",
+  "source_sha256": "0178d235c589a31abd6ed0ea1e870935dc5819240eb0e813e178d3ebedf534f4",
+  "resource_sha256": "4523084c4760faf6b4c20fe87bd4e94dd5315d8d1b1b63589dcc214fc152cebe",
+  "captured_at_utc": "2026-09-23T03:24:55Z",
+  "models": [
+    "gpt-6-luna",
+    "gpt-6-sol"
+  ],
+  "note": "Complete official Codex model resources, reviewed for bridge supplementation when an older client baseline lacks these exact slugs."
+}

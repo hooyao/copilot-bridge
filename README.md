@@ -24,12 +24,13 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   at `/codex`; both bill against your Copilot plan, not an Anthropic/OpenAI account.
 - **The full Claude line-up, with native 1M context.** opus-4.6/4.7/4.8/**5**,
   sonnet-4.6/**5**, haiku-4.5 — 1M on everything except haiku-4.5. Codex runs on
-  Copilot's gpt-5.x plus **GPT-6 Astra**. Fresh installs route the reviewed
-  `gpt-5.6-sol` Codex client identity to `gpt-6-astra`; the gpt-5.6 profiles remain
+  Copilot's gpt-5.x plus **GPT-6 Astra, Luna, and Sol**. Fresh installs route the
+  reviewed `gpt-5.6-sol` Codex client identity to `gpt-6-astra`; the gpt-5.6 profiles remain
   (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-sol-fast` /
   `gpt-5.6-terra`), with Luna/Terra/Sol Fast direct and Sol restored to direct by
-  clearing the route. Live model-catalog discovery replaces Codex's older bundled
-  context ceiling.
+  clearing the route. Exact `gpt-6-luna` and `gpt-6-sol` are also available to
+  Codex clients older than 0.155.0 through reviewed official catalog supplements.
+  Live model-catalog discovery replaces Codex's older bundled context ceiling.
 - **Run Claude Code on a GPT model.** One `Routing.Locations` rule points
   `claude-opus-5` at `gpt-5.6-sol`; the bridge translates the full Anthropic
   tool-use protocol to and from the Responses API, so an agentic session runs end

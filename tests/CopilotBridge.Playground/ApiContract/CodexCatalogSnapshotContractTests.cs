@@ -18,7 +18,7 @@ public sealed class CodexCatalogSnapshotContractTests
     public void Captured_live_model_bytes_project_truthful_context_and_fail_closed_mutations()
     {
         var snapshot = LoadSnapshot();
-        Assert.Equal(10, snapshot.Count);
+        Assert.Equal(12, snapshot.Count);
         var projected = Project(snapshot);
         var reviewedBaseline = Project([]);
 
@@ -28,6 +28,19 @@ public sealed class CodexCatalogSnapshotContractTests
             Assert.Equal(1_050_000, model.GetProperty("context_window").GetInt32());
             Assert.Equal(1_050_000, model.GetProperty("max_context_window").GetInt32());
             Assert.Equal(892_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+        }
+
+        foreach (var slug in new[] { "gpt-6-luna", "gpt-6-sol" })
+        {
+            var captured = snapshot.Single(model => model.Id == slug);
+            Assert.Equal(1_000_000, captured.Capabilities!.Limits!.MaxContextWindowTokens);
+            Assert.Equal(872_000, captured.Capabilities.Limits.MaxPromptTokens);
+            Assert.Equal(128_000, captured.Capabilities.Limits.MaxOutputTokens);
+
+            var model = Find(projected.Models, slug);
+            Assert.Equal(1_000_000, model.GetProperty("context_window").GetInt32());
+            Assert.Equal(1_000_000, model.GetProperty("max_context_window").GetInt32());
+            Assert.Equal(850_000, model.GetProperty("auto_compact_token_limit").GetInt32());
         }
 
         Assert.Equal(400_000, Find(projected.Models, "gpt-5.4-mini").GetProperty("context_window").GetInt32());
@@ -102,11 +115,13 @@ public sealed class CodexCatalogSnapshotContractTests
     private static CodexCatalogProjection Project(IReadOnlyList<CopilotModel> live)
     {
         var baseline = CodexCatalogTestFixtures.Load();
+        if (!CodexClientVersion.TryParse(baseline.SourceVersion, out var requestedVersion))
+            throw new InvalidDataException("Captured catalog fixture has an invalid client version.");
         return new CodexCatalogProjector(
             new CodexModelProfileCatalog(),
             new CopilotModelRegistry(),
             NullLogger<CodexCatalogProjector>.Instance)
-            .Project(baseline, live, liveOverlayValidated: true);
+            .Project(requestedVersion, baseline, live, liveOverlayValidated: true);
     }
 
     private static JsonElement Find(IReadOnlyList<JsonElement> models, string slug) =>

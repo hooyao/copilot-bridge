@@ -38,6 +38,12 @@ internal sealed class CopilotModelRegistry : IModelRegistry
         // rejects GPT-5.6's none/minimal efforts, so its wire facts live in its
         // own catalog row rather than borrowing a gpt-5.6 profile.
         "gpt-6-astra",
+        // Copilot discovery + direct Responses probes (2026-09-23): both exact
+        // GPT-6 ids serve /responses. Their per-model wire facts are catalogued
+        // separately; explicit membership here prevents the gpt-* fallback from
+        // sending them to the unimplemented /chat/completions branch.
+        "gpt-6-luna",
+        "gpt-6-sol",
         "gpt-5-mini",
         // mai-code-1-flash-internal was RETIRED by Copilot (2026 reconciliation:
         // 400 "not available for integrator"); the live Responses id is now

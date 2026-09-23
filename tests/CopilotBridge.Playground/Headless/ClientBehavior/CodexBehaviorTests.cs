@@ -77,6 +77,41 @@ public class CodexBehaviorTests
     }
 
     /// <summary>
+    /// Candidate-targeted client evidence for the reviewed GPT-6 resources. Each
+    /// exact id must load from <c>/codex/models</c>, route natively to Responses,
+    /// preserve max effort, and complete a multi-round real tool loop.
+    /// </summary>
+    [Theory]
+    [InlineData("gpt-6-luna")]
+    [InlineData("gpt-6-sol")]
+    public async Task Codex_Gpt6ReviewedModel_MultiStepToolChain_ProducesDispatchLogForVerdict(string model)
+    {
+        var credentialSource = Environment.GetEnvironmentVariable(
+            "COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(credentialSource))
+            throw new InvalidOperationException(
+                "Set COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY to a scratch "
+                + "directory containing a freshly authorized version-3 credential.");
+
+        var canary = model.Replace("-", "_", StringComparison.Ordinal) + "_catalog_canary_92326";
+        var prompt =
+            "Perform these steps with separate shell tool calls, in order. Do not fabricate output:\n"
+            + $"1. Run `echo {model} > gpt6_catalog_probe.txt`.\n"
+            + $"2. Run `echo {canary} >> gpt6_catalog_probe.txt`.\n"
+            + "3. Run `cat gpt6_catalog_probe.txt`, report both lines verbatim, and stop.";
+
+        await DriveAndRecordAsync(
+            "codex-" + model + "-catalog-support",
+            prompt,
+            modelReasoningEffort: "max",
+            expectedCodexVersion: "0.144.1",
+            credentialSourceDirectory: credentialSource,
+            credentialStagingMode: CredentialStagingMode.CopilotPluginVersionThree,
+            model: model,
+            resolvedModel: model);
+    }
+
+    /// <summary>
     /// Candidate-targeted evidence for Copilot's internal-only Sol Fast id. This
     /// must remain separate from <see cref="ClientBehaviorSupport.LatestGpt"/>:
     /// Fast is an opt-in variant, not a replacement for the public Sol default.

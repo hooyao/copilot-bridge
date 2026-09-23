@@ -32,9 +32,11 @@ public partial class ResponsesProbe
     [InlineData("gpt-5.6-sol-fast")]
     [InlineData("gpt-5.6-terra")]
     [InlineData("gpt-6-astra")]
+    [InlineData("gpt-6-luna")]
+    [InlineData("gpt-6-sol")]
     public async Task OneMillionClass_RealCodexBytes_AcceptBeyondFormer272kCeiling(string model)
     {
-        var (capturePath, body) = model is "gpt-5.6-sol-fast" or "gpt-6-astra"
+        var (capturePath, body) = model is "gpt-5.6-sol-fast" or "gpt-6-astra" or "gpt-6-luna" or "gpt-6-sol"
             ? LoadNewestRealCodexBodyForModel(model)
             : LoadNewestRealCodexBody();
         body["model"] = model;

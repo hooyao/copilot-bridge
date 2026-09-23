@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using CopilotBridge.Cli.Catalogs.Codex;
 using CopilotBridge.Cli.Models.Codex;
 using CopilotBridge.Cli.Models.Copilot;
@@ -123,6 +125,68 @@ public sealed class CodexModelCatalogContractTests
     }
 
     [Fact]
+    public void ReviewedGpt6ResourcesSupplementOlderBaselineAndUseLiveCopilotLimits()
+    {
+        var result = Project(
+            LoadBaseline(),
+            [
+                Live("gpt-6-luna", 1_000_000, 872_000, 128_000),
+                Live("gpt-6-sol", 1_000_000, 872_000, 128_000),
+            ]);
+
+        foreach (var slug in new[] { "gpt-6-luna", "gpt-6-sol" })
+        {
+            var model = Find(result.Models, slug);
+            Assert.True(model.GetProperty("supported_in_api").GetBoolean());
+            Assert.Equal("list", model.GetProperty("visibility").GetString());
+            Assert.Equal("0.155.0", model.GetProperty("minimal_client_version").GetString());
+            Assert.False(string.IsNullOrWhiteSpace(
+                model.GetProperty("model_messages").GetProperty("instructions_template").GetString()));
+            Assert.Equal(
+                model.GetProperty("model_messages").GetProperty("instructions_template").GetString(),
+                model.GetProperty("base_instructions").GetString());
+            Assert.Equal(1_000_000, model.GetProperty("context_window").GetInt32());
+            Assert.Equal(1_000_000, model.GetProperty("max_context_window").GetInt32());
+            Assert.Equal(850_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+        }
+    }
+
+    [Theory]
+    [InlineData("gpt-6-luna")]
+    [InlineData("gpt-6-sol")]
+    public void NewerBaselineResourceWinsAndSupplementDoesNotDuplicateItsSlug(string slug)
+    {
+        var baseline = LoadBaseline();
+        var official = CodexSupplementalCatalog.Load().Models.Single(
+            model => model.GetProperty("slug").GetString() == slug);
+        var newer = ReplaceProperty(official, "description", "newer baseline owns this resource");
+        var newerBaseline = baseline with { Models = [.. baseline.Models, newer] };
+
+        var result = Project(newerBaseline, [Live(slug, 1_000_000, 872_000, 128_000)]);
+        var model = Assert.Single(result.Models,
+            candidate => candidate.GetProperty("slug").GetString() == slug);
+
+        Assert.Equal("newer baseline owns this resource", model.GetProperty("description").GetString());
+    }
+
+    [Fact]
+    public void SupplementalResourceValidationRejectsUnreviewedOrIncompleteContent()
+    {
+        const string unreviewed = """
+          {"models":[{"slug":"gpt-future","base_instructions":"x","context_window":100,"max_context_window":100,"auto_compact_token_limit":90,"supported_in_api":true,"visibility":"list"}]}
+          """;
+        const string incomplete = """
+          {"models":[
+            {"slug":"gpt-6-luna","context_window":100,"max_context_window":100,"auto_compact_token_limit":90,"supported_in_api":true,"visibility":"list"},
+            {"slug":"gpt-6-sol","base_instructions":"x","context_window":100,"max_context_window":100,"auto_compact_token_limit":90,"supported_in_api":true,"visibility":"list"}
+          ]}
+          """;
+
+        Assert.Throws<InvalidDataException>(() => ParseSupplement(unreviewed));
+        Assert.Throws<InvalidDataException>(() => ParseSupplement(incomplete));
+    }
+
+    [Fact]
     public void OneMillionClassLimitsMapTotalAndCompactAtEightyFivePercent()
     {
         var result = Project(LoadBaseline(), [Live("gpt-5.4", 1_050_000, 922_000, 128_000)]);
@@ -191,7 +255,8 @@ public sealed class CodexModelCatalogContractTests
             new CopilotModelRegistry(),
             NullLogger<CodexCatalogProjector>.Instance);
 
-        var result = projector.Project(baseline, [], liveOverlayValidated: false);
+        var result = projector.Project(
+            Version(baseline.SourceVersion), baseline, [], liveOverlayValidated: false);
         var model = Find(result.Models, "gpt-5.6-sol");
 
         Assert.True(model.GetProperty("supported_in_api").GetBoolean());
@@ -233,7 +298,11 @@ public sealed class CodexModelCatalogContractTests
         var projector = new CodexCatalogProjector(
             profiles, new AllResponsesRegistry(), NullLogger<CodexCatalogProjector>.Instance);
 
-        var result = projector.Project(baseline, [Live("reviewer", 100, 90, 10)], liveOverlayValidated: true);
+        var result = projector.Project(
+            Version(baseline.SourceVersion),
+            baseline,
+            [Live("reviewer", 100, 90, 10)],
+            liveOverlayValidated: true);
 
         Assert.Equal(JsonValueKind.Null, Find(result.Models, "reviewer").GetProperty("auto_review_model_override").ValueKind);
     }
@@ -261,6 +330,7 @@ public sealed class CodexModelCatalogContractTests
             NullLogger<CodexCatalogProjector>.Instance);
 
         var result = projector.Project(
+            Version(baseline.SourceVersion),
             baseline,
             [Live("gpt-5.4", 1_050_000, 922_000, 128_000)],
             liveOverlayValidated: true);
@@ -280,6 +350,7 @@ public sealed class CodexModelCatalogContractTests
             NullLogger<CodexCatalogProjector>.Instance);
 
         var result = projector.Project(
+            Version(baseline.SourceVersion),
             baseline,
             [Live("gpt-5.4", 1_050_000, 922_000, 128_000)],
             liveOverlayValidated: true);
@@ -314,6 +385,7 @@ public sealed class CodexModelCatalogContractTests
             NullLogger<CodexCatalogProjector>.Instance);
 
         var result = projector.Project(
+            Version(baseline.SourceVersion),
             baseline,
             [Live("gpt-6-astra", 1_000_000, 872_000, 128_000)],
             liveOverlayValidated: true);
@@ -333,6 +405,7 @@ public sealed class CodexModelCatalogContractTests
         var projector = ConfiguredAstraProjector();
 
         var result = projector.Project(
+            Version("0.144.1"),
             LoadBaseline(),
             [Live("gpt-6-astra", 1_000_000, 872_000, 128_000)],
             liveOverlayValidated: true);
@@ -347,6 +420,7 @@ public sealed class CodexModelCatalogContractTests
     public void ConfiguredModelLocationHidesAliasWhenValidatedAstraIsAbsent()
     {
         var result = ConfiguredAstraProjector().Project(
+            Version("0.144.1"),
             LoadBaseline(),
             [Live("gpt-5.6-sol", 1_050_000, 922_000, 128_000)],
             liveOverlayValidated: true);
@@ -360,6 +434,7 @@ public sealed class CodexModelCatalogContractTests
     public void CrossModelAliasWithUnmappableTargetLimitsIsHidden()
     {
         var result = ConfiguredAstraProjector().Project(
+            Version("0.144.1"),
             LoadBaseline(),
             [Live("gpt-6-astra", 1_000_000, null, 128_000)],
             liveOverlayValidated: true);
@@ -373,7 +448,7 @@ public sealed class CodexModelCatalogContractTests
     public void ConfiguredModelLocationKeepsReviewedBaselineWhenOverlayIsUnavailable()
     {
         var result = ConfiguredAstraProjector().Project(
-            LoadBaseline(), [], liveOverlayValidated: false);
+            Version("0.144.1"), LoadBaseline(), [], liveOverlayValidated: false);
         var alias = Find(result.Models, "gpt-5.6-sol");
 
         Assert.True(alias.GetProperty("supported_in_api").GetBoolean());
@@ -400,6 +475,7 @@ public sealed class CodexModelCatalogContractTests
             ],
         };
         var result = ConfiguredProjector(routes).Project(
+            Version("0.144.1"),
             LoadBaseline(),
             [
                 Live("gpt-5-mini", 264_000, 128_000, 64_000),
@@ -444,7 +520,13 @@ public sealed class CodexModelCatalogContractTests
             new CodexModelProfileCatalog(),
             new CopilotModelRegistry(),
             NullLogger<CodexCatalogProjector>.Instance)
-            .Project(baseline, live, liveOverlayValidated: true);
+            .Project(Version(baseline.SourceVersion), baseline, live, liveOverlayValidated: true);
+
+    private static CodexClientVersion Version(string value)
+    {
+        Assert.True(CodexClientVersion.TryParse(value, out var version));
+        return version;
+    }
 
     private static CodexCatalogBaseline SyntheticBaseline(string json) =>
         CodexCatalogBaseline.Parse(System.Text.Encoding.UTF8.GetBytes(json), new CodexCatalogCacheMetadata
@@ -459,6 +541,31 @@ public sealed class CodexModelCatalogContractTests
 
     private static JsonElement Find(IReadOnlyList<JsonElement> models, string slug) =>
         models.Single(model => model.GetProperty("slug").GetString() == slug);
+
+    private static CodexSupplementalCatalog ParseSupplement(string json)
+    {
+        var bytes = Encoding.UTF8.GetBytes(json);
+        var digest = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        return CodexSupplementalCatalog.Parse(bytes, digest);
+    }
+
+    private static JsonElement ReplaceProperty(JsonElement source, string name, string value)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            foreach (var property in source.EnumerateObject())
+            {
+                writer.WritePropertyName(property.Name);
+                if (property.NameEquals(name)) writer.WriteStringValue(value);
+                else property.Value.WriteTo(writer);
+            }
+            writer.WriteEndObject();
+        }
+        using var document = JsonDocument.Parse(buffer.ToArray());
+        return document.RootElement.Clone();
+    }
 
     private static CopilotModel Live(string id, int? total, int? prompt, int? output) => new()
     {

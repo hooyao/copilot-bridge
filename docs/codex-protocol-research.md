@@ -70,31 +70,45 @@ OpenAI-Chat translation" assumption (§4.4).
 > effort to `none`, `minimal`, or `ultra` returned 400. Sync and async custom tools retain the
 > existing `custom_tool_call` item and SSE families.
 
-> **Addendum — 2026-08-28 Codex model-catalog metadata and large-context confirmation.**
+> **Addendum — 2026-09-23 GPT-6 Luna and Sol.** Copilot exposes both exact ids on
+> `/responses` at 1,000,000 total / 872,000 prompt / 128,000 output tokens. Live
+> probes establish the xlarge effort contract (`none/low/medium/high/xhigh/max`
+> accepted; `minimal/ultra` rejected), native function/custom/web-search tools,
+> reasoning replay, prompt cache, and structured multimodal function output. A
+> real Codex 0.144.1 multi-tool run loaded each reviewed supplemental resource and
+> completed without router or dispatch errors.
+
+> **Addendum — 2026-09-23 Codex model-catalog metadata and large-context confirmation.**
 > `ResponsesProbe.CaptureBridgeResponsesModelCapabilities` captured the complete
-> live `/models` entries for all eleven exact `CodexModelProfileCatalog.KnownIds`
-> into `docs/copilot-codex-model-capabilities-snapshot.json` (Enterprise account;
-> no bridge profile was missing). The advertised limits are:
+> live `/models` entries for twelve of the thirteen exact
+> `CodexModelProfileCatalog.KnownIds` into
+> `docs/copilot-codex-model-capabilities-snapshot.json` (Enterprise account).
+> `mai-code-1-flash-picker` was absent from discovery; absence alone does not
+> retire its live-probed profile. The advertised limits are:
 >
 > | models | total context | max prompt | max output |
 > | --- | ---: | ---: | ---: |
 > | `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,sol-fast,terra}` | 1,050,000 | 922,000 | 128,000 |
-> | `gpt-6-astra` | 1,000,000 | 872,000 | 128,000 |
+> | `gpt-6-luna`, `gpt-6-sol` | 1,000,000 | 872,000 | 128,000 |
+> | `gpt-6-astra` | 1,050,000 | 1,050,000 | 128,000 |
 > | `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 |
 > | `gpt-5-mini` | 264,000 | 128,000 | 64,000 |
-> | `mai-code-1-flash-picker` | 256,000 | 128,000 | 128,000 |
 >
-> Because `/models` is not authoritative for request acceptance, the six
+> Astra's current hint is internally inconsistent because prompt plus output
+> exceeds total; projection therefore fails closed rather than treating it as a
+> safe capacity uplift. Because `/models` is not authoritative for request
+> acceptance, the nine
 > 1M-class models were independently re-probed by
 > `ResponsesProbe.OneMillionClass_RealCodexBytes_AcceptBeyondFormer272kCeiling`.
 > The probe replayed a real Codex 0.144.x `Kind=ClientBehavior` upstream request
 > (complete instructions, tools, metadata, streaming and headers), changing only
 > the exact model id and appending a padding input. On 2026-08-05 the original
 > five returned HTTP 200 and reported input usage around 308k; on 2026-08-28 an
-> exact `gpt-5.6-sol-fast` capture returned 200 with 310,465 input tokens. This
-> establishes that the advertised uplift is real at >272k; it
-> does not claim that a 1,050,000-token input is valid. The distinct 922,000
-> prompt ceiling remains the catalog projection's safety boundary.
+> exact `gpt-5.6-sol-fast` capture returned 200 with 310,465 input tokens, and on
+> 2026-09-23 Luna and Sol each accepted a 310,101-token real request. This
+> establishes that the advertised uplift is real at >272k; it does not claim
+> that a full-window input is valid. The coherent 922,000 and 872,000 prompt
+> ceilings remain the catalog projection's safety boundaries.
 
 > **Addendum — 2026-08-05 exact-version official catalog source.** Codex sends
 > a three-part `client_version` query value; prerelease builds retain their
