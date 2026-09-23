@@ -22,9 +22,11 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
 
 - **One Copilot subscription, two agents.** Point Claude Code at `/cc` and Codex
   at `/codex`; both bill against your Copilot plan, not an Anthropic/OpenAI account.
-- **The full Claude line-up, with native 1M context.** opus-4.6/4.7/4.8/**5**,
-  sonnet-4.6/**5**, haiku-4.5 — 1M on everything except haiku-4.5. Codex runs on
-  Copilot's gpt-5.x plus **GPT-6 Astra, Luna, and Sol**. Fresh installs route the
+- **Claude Opus 5.5 with native 1M context.** Copilot exposes
+  `claude-opus-5.5`; Claude Code's `claude-opus-5-5` normalizes to that id.
+  Other Claude ids returned `model_not_supported` on the account used for the
+  September 2026 sync. Codex runs on Copilot's gpt-5.x plus **GPT-6 Astra,
+  Luna, and Sol**. Fresh installs route the
   reviewed `gpt-5.6-sol` Codex client identity to `gpt-6-astra`; the gpt-5.6 profiles remain
   (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-sol-fast` /
   `gpt-5.6-terra`), with Luna/Terra/Sol Fast direct and Sol restored to direct by
@@ -32,7 +34,7 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   Codex clients older than 0.155.0 through reviewed official catalog supplements.
   Live model-catalog discovery replaces Codex's older bundled context ceiling.
 - **Run Claude Code on a GPT model.** One `Routing.Locations` rule points
-  `claude-opus-5` at `gpt-5.6-sol`; the bridge translates the full Anthropic
+  `claude-opus-5.5` at `gpt-5.6-sol`; the bridge translates the full Anthropic
   tool-use protocol to and from the Responses API, so an agentic session runs end
   to end. See [Configuration](#configuration-appsettingsjson).
 - **Handles the wire-shape mismatches for you.** It strips beta headers Copilot
@@ -155,8 +157,8 @@ JSON**, so it must not contain comments:
   likewise user-owned. See [`docs/context-window.md`](docs/context-window.md)
   before opting into their context-window and telemetry effects.
 
-Then pick any Claude model in Claude Code as usual — the bridge maps it to the
-matching Copilot model.
+Select `claude-opus-5-5` in Claude Code. The bridge normalizes it to Copilot's
+`claude-opus-5.5`. Other Claude models depend on Copilot account access.
 
 ## Point Codex at the bridge
 
@@ -277,9 +279,13 @@ this block explicitly. The alternative disabled `_Locations_disabled` example st
 shows Claude Code → GPT routing; replace the active array or merge that entry if you
 want both. Full syntax is in [`docs/routing.md`](docs/routing.md).
 
+The disabled example matches `claude-opus-5.5` after the client id is normalized.
+It targets `gpt-5.6-sol` directly; Locations are first-match-wins and do not
+chain through the stock GPT-5.6 → Astra rule.
+
 ## Long-thinking timeouts
 
-**Symptom:** a deep-thinking turn (`opus-5` at `effort=max`, a big analysis
+**Symptom:** a deep-thinking turn (`opus-5.5` at `effort=max`, a big analysis
 prompt) dies part-way with `API Error: Stream idle timeout - no chunks received`,
 or the bridge logs a `504` a few minutes later.
 
@@ -328,16 +334,21 @@ native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
   friendly error. **Workaround:** use a search MCP server (via `--mcp-config` or
   `.mcp.json`) and disable the built-in WebSearch tool. Other MCP tools flow
   through transparently.
-- **`max` / `xhigh` reasoning effort isn't universal.** Support is per-model and
-  non-monotonic: opus-5 / opus-4.8 / opus-4.7 / sonnet-5 accept every tier
-  (`low`–`max`, including `xhigh`); opus-4.6 / sonnet-4.6 accept `max` but reject
-  `xhigh`; haiku-4.5 takes no effort field. opus-5 adds a cross-field rule: with
-  `thinking` disabled it rejects `xhigh`/`max`, so the bridge clamps those to
-  `high` on that path only. On the Codex side it's
-  also per-model: most gpt-5.x models accept up to `xhigh` and the **gpt-5.6**
+- **Opus 5.5 thinking is always on.** Copilot accepts `low` through `max`
+  effort, including `xhigh`, but rejects `thinking:enabled` and
+  `thinking:disabled`. The bridge converts those older shapes to adaptive;
+  an explicit disabled request uses `effort:low` to limit reasoning cost.
+  Forced `tool_choice:any/tool` also becomes `auto`, preserving the parallel
+  tool setting. On the Codex side effort support is per-model: most gpt-5.x
+  models accept up to `xhigh` and the **gpt-5.6**
   models (`luna`/`sol`/`sol-fast`/`terra`) are the first to also accept `max`,
   while smaller ones like `gpt-5-mini` top out at `high` (no `xhigh`). The
   bridge strips (or clamps) an effort the target rejects instead of letting it fail.
+- **A model refusal can trigger Claude Code's fallback.** Opus 5.5 may return a
+  `refusal` stop reason even on a simple tool task. Claude Code can retry that
+  turn on `claude-opus-4-8`; if that older model is unavailable on your Copilot
+  account, its retry receives `model_not_supported`. The bridge passes through
+  the refusal and fallback request; an unavailable fallback cannot answer it.
 - **Codex 1.05M is total context, not prompt capacity.** The current backend
   maximum prompt is 922k and the bridge's safe auto-compact threshold is 898k.
   Official Codex catalogs are resolved from the exact complete client version

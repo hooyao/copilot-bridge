@@ -9,35 +9,10 @@ using Xunit.Abstractions;
 namespace CopilotBridge.Playground.Headless;
 
 /// <summary>
-/// Verifies 1M-context routing: every model Copilot still serves reaches 1M on
-/// its BASE id, with the <c>context-1m-*</c> beta passed through untouched (or
-/// stripped only where the backend genuinely can't honor it).
-/// <list type="bullet">
-///   <item>opus-4.7 / opus-4.8 / opus-5 / sonnet-4.6 + <c>context-1m-2025-08-07</c>
-///         → no model swap, beta forwarded verbatim.</item>
-///   <item>opus-5's cross-field thinking-disabled × effort clamp (the
-///         <c>Opus5_*</c> cases below).</item>
-///   <item>An unknown beta passes through verbatim (pass-through-by-default).</item>
-/// </list>
-/// Drives the test via direct <see cref="HttpClient"/> POST through the
-/// in-process bridge (same pattern as <see cref="CacheHitHeadlessTests"/> and
-/// <see cref="WebSearchRejectionTests"/>). The "1M context" toggle in Claude
-/// Code's UI surfaces as the <c>anthropic-beta</c> header on the wire; we
-/// inject it directly so the test isn't coupled to the CLI's settings storage.
+/// Live HTTP-edge checks for the currently served Claude model. The large
+/// prompt capacity itself is proven by ModelProfileProbe.Opus55_LargePrompt_*;
+/// these cases guard the bridge's model, beta, and thinking rewrites.
 /// </summary>
-/// <remarks>
-/// <b>The opus-4.7 → <c>-1m-internal</c> redirect cases were deleted in the
-/// 2026-07 reconciliation.</b> They asserted that opus-4.7 + the 1M beta was
-/// rewritten to <c>claude-opus-4.7-1m-internal</c> with the beta stripped.
-/// Copilot has since retired that id (400 —
-/// <see cref="ModelProfileProbe.RetiredCandidate_LivenessProbe"/>) and upgraded
-/// the opus-4.7 BASE id to serve 1M natively
-/// (<see cref="ModelProfileProbe.OpusBase_LargePrompt_ProbeOneMillionContextSupport"/>),
-/// so the redirect was removed from <c>appsettings.json</c>. Both the target id
-/// and the behavior are gone; <see cref="Opus47_With1mBeta_NoDowngrade_BetaPassesThrough"/>
-/// replaces them by pinning the identity-passthrough contract that holds now —
-/// which is also the guard against re-introducing a downgrade.
-/// </remarks>
 [SupportedOSPlatform("windows")]
 [Trait("Category", "Integration")]
 [Trait("Kind", "ApiContract")]
@@ -52,450 +27,128 @@ public class OneMillionContextRoutingTests : IClassFixture<BridgeFixture>
         _output = output;
     }
 
-    /// <summary>
-    /// opus-4.7 + 1M beta — identity passthrough. Replaces the deleted
-    /// redirect-to-<c>-1m-internal</c> case (see the class remarks): Copilot
-    /// retired that variant and upgraded the opus-4.7 base to serve 1M natively
-    /// (677k-token prompt → 200), so the correct contract is now "no model swap,
-    /// beta forwarded". Guards against re-introducing a downgrade.
-    /// </summary>
-    [Fact]
-    public async Task Opus47_With1mBeta_NoDowngrade_BetaPassesThrough()
-    {
-        var marker = NewMarker();
-
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
-        req.Headers.TryAddWithoutValidation("anthropic-beta", "context-1m-2025-08-07");
-        req.Content = new StringContent(
-            $$$"""{"model":"claude-opus-4-7","max_tokens":8,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}]}""",
-            Encoding.UTF8, "application/json");
-
-        using var resp = await http.SendAsync(req);
-        var respBody = await resp.Content.ReadAsStringAsync();
-        _output.WriteLine($"bridge → client: HTTP {(int)resp.StatusCode}");
-        _output.WriteLine($"body: {Truncate(respBody, 400)}");
-
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-
-        var upstreamReq = FindUpstreamRequestByMarker(marker);
-        Assert.NotNull(upstreamReq);
-
-        var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
-        var upstreamBeta = upstreamReq["headers"]?["anthropic-beta"]?.GetValue<string>() ?? "";
-        _output.WriteLine($"upstream: model={upstreamModel} anthropic-beta={upstreamBeta}");
-
-        Assert.Equal("claude-opus-4.7", upstreamModel);
-        Assert.Contains("context-1m-2025-08-07", upstreamBeta, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task Opus47_WithoutBeta_DoesNotRewrite()
-    {
-        var marker = NewMarker();
-
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
-        req.Content = new StringContent(
-            $$$"""{"model":"claude-opus-4-7","max_tokens":8,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}]}""",
-            Encoding.UTF8, "application/json");
-
-        using var resp = await http.SendAsync(req);
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-
-        var upstreamReq = FindUpstreamRequestByMarker(marker);
-        Assert.NotNull(upstreamReq);
-
-        var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
-        _output.WriteLine($"upstream: model={upstreamModel}");
-
-        // No 1M beta on the way in → no rewrite. Should be the base model id.
-        Assert.Equal("claude-opus-4.7", upstreamModel);
-    }
-
-    /// <summary>
-    /// Inbound betas the bridge does NOT have a strip rule for should land on
-    /// the upstream verbatim — that's the pass-through-by-default policy
-    /// (<c>docs/pipeline-design.md §7.5</c>).
-    /// </summary>
-    [Fact]
-    public async Task UnknownBeta_PassesThroughVerbatim()
-    {
-        var marker = NewMarker();
-
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
-        req.Headers.TryAddWithoutValidation("anthropic-beta", "extended-cache-ttl-2025-04-11");
-        req.Content = new StringContent(
-            $$$"""{"model":"claude-haiku-4-5","max_tokens":8,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}]}""",
-            Encoding.UTF8, "application/json");
-
-        using var resp = await http.SendAsync(req);
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-
-        var upstreamReq = FindUpstreamRequestByMarker(marker);
-        Assert.NotNull(upstreamReq);
-
-        var upstreamBeta = upstreamReq["headers"]?["anthropic-beta"]?.GetValue<string>() ?? "";
-        _output.WriteLine($"upstream: anthropic-beta={upstreamBeta}");
-        Assert.Contains("extended-cache-ttl-2025-04-11", upstreamBeta);
-    }
-
-    /// <summary>
-    /// opus-4.7 + 1M beta + thinking:enabled — opus-4.7 rejects
-    /// <c>thinking.type=enabled</c> ("Use thinking.type.adaptive and
-    /// output_config.effort to control thinking behavior" per
-    /// <c>CopilotGapProbes.ThinkingShape_ProbeAcceptance</c>), so the bridge must
-    /// coerce the shape to adaptive and carry the reasoning depth across as an
-    /// effort. The model id is NOT rewritten — this used to also assert a swap to
-    /// <c>-1m-internal</c>, which Copilot retired (see the class remarks); the
-    /// thinking coercion is the part that still matters and is unchanged.
-    /// </summary>
-    [Fact]
-    public async Task Opus47_WithThinkingEnabled_And1mBeta_RewritesThinkingButKeepsModel()
-    {
-        var marker = NewMarker();
-
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
-        req.Headers.TryAddWithoutValidation("anthropic-beta", "context-1m-2025-08-07");
-        req.Content = new StringContent(
-            $$$"""{"model":"claude-opus-4-7","max_tokens":32,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}],"thinking":{"type":"enabled","budget_tokens":8192}}""",
-            Encoding.UTF8, "application/json");
-
-        using var resp = await http.SendAsync(req);
-        var respBody = await resp.Content.ReadAsStringAsync();
-        _output.WriteLine($"bridge → client: HTTP {(int)resp.StatusCode}");
-        _output.WriteLine($"body: {Truncate(respBody, 300)}");
-
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-
-        var upstreamReq = FindUpstreamRequestByMarker(marker);
-        Assert.NotNull(upstreamReq);
-
-        var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
-        var upstreamThinkingType = upstreamReq["body"]?["thinking"]?["type"]?.GetValue<string>();
-        var upstreamEffort = upstreamReq["body"]?["output_config"]?["effort"]?.GetValue<string>();
-        var upstreamBeta = upstreamReq["headers"]?["anthropic-beta"]?.GetValue<string>() ?? "";
-        _output.WriteLine($"upstream: model={upstreamModel} thinking.type={upstreamThinkingType} effort={upstreamEffort} beta={upstreamBeta}");
-
-        Assert.Equal("claude-opus-4.7", upstreamModel);
-        Assert.Equal("adaptive", upstreamThinkingType);
-        Assert.NotNull(upstreamEffort);
-        // 1M is native on the base id now — the beta is forwarded, not stripped.
-        Assert.Contains("context-1m-2025-08-07", upstreamBeta, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// opus-4.8 + 1M beta — Copilot's <c>claude-opus-4.8</c> natively
-    /// supports 1M context (probed 2026-06-05: a 260k-token prompt returns
-    /// 200 with or without <c>context-1m-2025-08-07</c>), so the bridge no
-    /// longer downgrades the request to <c>claude-opus-4.7-1m-internal</c>.
-    /// Upstream model stays as <c>claude-opus-4.8</c>; the beta header
-    /// passes through verbatim (no <c>StripBetas</c> entry on the 4.8
-    /// profile — Copilot silently accepts the token).
-    /// </summary>
-    [Fact]
-    public async Task Opus48_With1mBeta_RoutesToCopilotOpus48_NoDowngrade()
-    {
-        var marker = NewMarker();
-
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
-        req.Headers.TryAddWithoutValidation("anthropic-beta", "context-1m-2025-08-07");
-        req.Content = new StringContent(
-            $$$"""{"model":"claude-opus-4-8","max_tokens":16,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}]}""",
-            Encoding.UTF8, "application/json");
-
-        using var resp = await http.SendAsync(req);
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-
-        var upstreamReq = FindUpstreamRequestByMarker(marker);
-        Assert.NotNull(upstreamReq);
-
-        var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
-        var upstreamBeta = upstreamReq["headers"]?["anthropic-beta"]?.GetValue<string>() ?? "";
-        _output.WriteLine($"upstream: model={upstreamModel} beta={upstreamBeta}");
-
-        // No model swap — opus-4.8 stays opus-4.8.
-        Assert.Equal("claude-opus-4.8", upstreamModel);
-        // Beta passes through verbatim (no per-profile strip for opus-4.8).
-        Assert.Contains("context-1m-2025-08-07", upstreamBeta, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// opus-4.8 + thinking:enabled (no 1M beta) — opus-4.8 only accepts
-    /// adaptive thinking, same constraint as opus-4.7 base. Bridge rewrites
-    /// thinking shape and derives effort from the budget. Model stays
-    /// opus-4.8.
-    /// </summary>
-    [Fact]
-    public async Task Opus48_WithThinkingEnabled_RewritesThinkingButKeepsModel()
-    {
-        var marker = NewMarker();
-
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
-        req.Content = new StringContent(
-            $$$"""{"model":"claude-opus-4-8","max_tokens":32,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}],"thinking":{"type":"enabled","budget_tokens":16384}}""",
-            Encoding.UTF8, "application/json");
-
-        using var resp = await http.SendAsync(req);
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-
-        var upstreamReq = FindUpstreamRequestByMarker(marker);
-        Assert.NotNull(upstreamReq);
-
-        var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
-        var upstreamThinkingType = upstreamReq["body"]?["thinking"]?["type"]?.GetValue<string>();
-        var upstreamEffort = upstreamReq["body"]?["output_config"]?["effort"]?.GetValue<string>();
-        _output.WriteLine($"upstream: model={upstreamModel} thinking.type={upstreamThinkingType} effort={upstreamEffort}");
-
-        Assert.Equal("claude-opus-4.8", upstreamModel);
-        Assert.Equal("adaptive", upstreamThinkingType);
-        Assert.NotNull(upstreamEffort);
-    }
-
-    /// <summary>
-    /// sonnet-4.6 + 1M beta — the bridge has NO routing rule for sonnet
-    /// (rules #1/#2 are opus-only), so the request flows through identity
-    /// passthrough exactly like opus-4.8: upstream model stays
-    /// <c>claude-sonnet-4.6</c>, beta header passes through verbatim. There
-    /// is no "fallback to 200k" — Copilot's sonnet-4.6 natively serves 1M
-    /// context (probed 2026-06-05 in
-    /// <c>ModelProfileProbe.Sonnet46_LargePrompt_ProbeOneMillionContextSupport</c>:
-    /// a 638k-token prompt returns 200 with and without the beta), so no
-    /// model swap is needed. This test guards against accidentally adding
-    /// a sonnet-4.6 → sonnet-4.6-old rule later that would silently downgrade.
-    /// </summary>
-    [Fact]
-    public async Task Sonnet46_With1mBeta_NoDowngrade_PassthroughToCopilotSonnet46()
-    {
-        var marker = NewMarker();
-
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
-        req.Headers.TryAddWithoutValidation("anthropic-beta", "context-1m-2025-08-07");
-        req.Content = new StringContent(
-            $$$"""{"model":"claude-sonnet-4-6","max_tokens":16,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}]}""",
-            Encoding.UTF8, "application/json");
-
-        using var resp = await http.SendAsync(req);
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-
-        var upstreamReq = FindUpstreamRequestByMarker(marker);
-        Assert.NotNull(upstreamReq);
-
-        var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
-        var upstreamBeta = upstreamReq["headers"]?["anthropic-beta"]?.GetValue<string>() ?? "";
-        _output.WriteLine($"upstream: model={upstreamModel} beta={upstreamBeta}");
-
-        // No model swap — sonnet-4.6 stays sonnet-4.6 (no -200k fallback,
-        // no -1m variant lookup).
-        Assert.Equal("claude-sonnet-4.6", upstreamModel);
-        // Beta passes through verbatim — no per-profile strip for sonnet-4.6.
-        Assert.Contains("context-1m-2025-08-07", upstreamBeta, StringComparison.OrdinalIgnoreCase);
-    }
-
-    // ── claude-opus-5 (2026-07) ──────────────────────────────────────────────
-
-    /// <summary>
-    /// <b>Permanent regression guard for the opus-5 cross-field constraint.</b> Copilot
-    /// rejects <c>output_config.effort</c> <c>max</c>/<c>xhigh</c> on opus-5 <i>when
-    /// <c>thinking</c> is disabled</i> — 400 <c>"output_config.effort 'max' is not
-    /// supported when thinking is disabled on this model. Use effort 'high' or below, or
-    /// enable thinking."</c> — while accepting each field on its own.
-    /// <see cref="Routing.ProfileAdjuster"/> must clamp the effort down on that path.
-    /// <para><b>This exact request shape was proven to 400 by a real
-    /// <c>claude.exe</c> run</b>: with the constraint removed from the catalog, the
-    /// client's own no-thinking internal request went upstream as
-    /// <c>disabled</c>+<c>max</c> and Copilot returned that 400 (behavior case
-    /// <c>ClaudeCode_NativeCc_MaxEffort_DisabledThinkingEffortIsClamped</c>). Replaying
-    /// it here keeps the bug found without needing a live client every run — the live
-    /// case FOUND it, this replay KEEPS it found.</para>
-    /// <para>Asserts the response is 200 <b>and</b> the clamped effort on the wire, so
-    /// the guard can't be satisfied by the bridge merely surviving.</para>
-    /// </summary>
     [Theory]
-    [InlineData("max")]
-    [InlineData("xhigh")]
-    public async Task Opus5_DisabledThinking_RejectedEffort_IsClampedNotForwarded(string effort)
+    [InlineData(null)]
+    [InlineData("context-1m-2025-08-07")]
+    public async Task Opus55_ClientIdNormalizes_AndOneMillionBetaPassesThrough(string? beta)
     {
-        var marker = NewMarker();
+        var (upstream, _) = await PostAsync(beta: beta);
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
-        req.Content = new StringContent(
-            $$$"""{"model":"claude-opus-5","max_tokens":16,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}],"thinking":{"type":"disabled"},"output_config":{"effort":"{{{effort}}}"}}""",
-            Encoding.UTF8, "application/json");
-
-        using var resp = await http.SendAsync(req);
-        var respBody = await resp.Content.ReadAsStringAsync();
-        _output.WriteLine($"bridge → client: HTTP {(int)resp.StatusCode}");
-        _output.WriteLine($"body: {Truncate(respBody, 300)}");
-
-        // Without the clamp this is the upstream 400 quoted above, surfaced to the client.
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-
-        var upstreamReq = FindUpstreamRequestByMarker(marker);
-        Assert.NotNull(upstreamReq);
-
-        var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
-        var upstreamThinking = upstreamReq["body"]?["thinking"]?["type"]?.GetValue<string>();
-        var upstreamEffort = upstreamReq["body"]?["output_config"]?["effort"]?.GetValue<string>();
-        _output.WriteLine($"upstream: model={upstreamModel} thinking={upstreamThinking} effort={upstreamEffort}");
-
-        Assert.Equal("claude-opus-5", upstreamModel);
-        // The user turned thinking OFF — the clamp resolves the conflict by lowering
-        // effort, never by silently re-enabling reasoning.
-        Assert.Equal("disabled", upstreamThinking);
-        // Clamped to the highest tier opus-5 accepts with thinking disabled.
-        Assert.Equal("high", upstreamEffort);
+        Assert.Equal("claude-opus-5.5", upstream["body"]!["model"]!.GetValue<string>());
+        var sentBeta = upstream["headers"]?["anthropic-beta"]?.GetValue<string>() ?? "";
+        if (beta is null)
+            Assert.DoesNotContain("context-1m-2025-08-07", sentBeta, StringComparison.OrdinalIgnoreCase);
+        else
+            Assert.Contains(beta, sentBeta, StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>
-    /// The other half of the contract: with thinking ON, opus-5 accepts every effort tier
-    /// (<c>ModelProfileProbe.Opus5_Effort_ReProbe</c> — 200 for all five, standalone and
-    /// with adaptive). So <c>max</c> must reach the wire UNCHANGED here. This is what
-    /// stops the cheap-but-wrong fix of narrowing the profile's accepted-effort list,
-    /// which would silently downgrade every thinking-on max request.
-    /// </summary>
     [Fact]
-    public async Task Opus5_AdaptiveThinking_MaxEffort_PassesThroughUnclamped()
+    public async Task UnrecognizedBeta_PassesThroughVerbatim()
     {
-        var marker = NewMarker();
+        const string beta = "extended-cache-ttl-2025-04-11";
+        var (upstream, _) = await PostAsync(beta: beta);
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
-        req.Content = new StringContent(
-            $$$"""{"model":"claude-opus-5","max_tokens":16,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}}""",
-            Encoding.UTF8, "application/json");
-
-        using var resp = await http.SendAsync(req);
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-
-        var upstreamReq = FindUpstreamRequestByMarker(marker);
-        Assert.NotNull(upstreamReq);
-
-        var upstreamThinking = upstreamReq["body"]?["thinking"]?["type"]?.GetValue<string>();
-        var upstreamEffort = upstreamReq["body"]?["output_config"]?["effort"]?.GetValue<string>();
-        _output.WriteLine($"upstream: thinking={upstreamThinking} effort={upstreamEffort}");
-
-        Assert.Equal("adaptive", upstreamThinking);
-        Assert.Equal("max", upstreamEffort);
+        Assert.Equal("claude-opus-5.5", upstream["body"]!["model"]!.GetValue<string>());
+        Assert.Contains(beta, upstream["headers"]!["anthropic-beta"]!.GetValue<string>());
     }
 
-    /// <summary>
-    /// opus-5 + 1M beta — identity passthrough, same as opus-4.8 / sonnet-4.6. Copilot
-    /// serves opus-5 at 1M natively (a 677k-token prompt returns 200 with and without the
-    /// beta — <c>ModelProfileProbe.Opus5_LargePrompt_ProbeOneMillionContextSupport</c>),
-    /// so there is no model swap and no <c>StripBetas</c> entry. Guards against a future
-    /// rule that would silently downgrade opus-5.
-    /// </summary>
     [Fact]
-    public async Task Opus5_With1mBeta_NoDowngrade_BetaPassesThrough()
+    public async Task Opus55_EnabledThinking_BecomesAdaptiveWithDerivedEffort()
     {
-        var marker = NewMarker();
+        var (upstream, _) = await PostAsync(thinking: new JsonObject
+        {
+            ["type"] = "enabled",
+            ["budget_tokens"] = 16384,
+        });
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
-        req.Headers.TryAddWithoutValidation("anthropic-beta", "context-1m-2025-08-07");
-        req.Content = new StringContent(
-            $$$"""{"model":"claude-opus-5","max_tokens":16,"messages":[{"role":"user","content":"reply: ok {{{marker}}}"}]}""",
-            Encoding.UTF8, "application/json");
-
-        using var resp = await http.SendAsync(req);
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-
-        var upstreamReq = FindUpstreamRequestByMarker(marker);
-        Assert.NotNull(upstreamReq);
-
-        var upstreamModel = upstreamReq["body"]?["model"]?.GetValue<string>();
-        var upstreamBeta = upstreamReq["headers"]?["anthropic-beta"]?.GetValue<string>() ?? "";
-        _output.WriteLine($"upstream: model={upstreamModel} beta={upstreamBeta}");
-
-        Assert.Equal("claude-opus-5", upstreamModel);
-        Assert.Contains("context-1m-2025-08-07", upstreamBeta, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("claude-opus-5.5", upstream["body"]!["model"]!.GetValue<string>());
+        Assert.Equal("adaptive", upstream["body"]!["thinking"]!["type"]!.GetValue<string>());
+        Assert.Equal("medium", upstream["body"]!["output_config"]!["effort"]!.GetValue<string>());
     }
 
-    /// <summary>
-    /// Finds the upstream request this test produced, correlated by a unique
-    /// marker the caller embedded in the request body.
-    /// <para><b>Why a marker and not "the newest new file":</b> the fixture's
-    /// trace dir is a FIXED path (<c>AppContext.BaseDirectory/request-traces</c>,
-    /// see <see cref="BridgeFixture"/>) shared by every test AND every prior run
-    /// — it currently holds hundreds of files going back months. A single
-    /// <c>/cc/v1/messages</c> POST can also produce more than one
-    /// <c>upstream-req</c> (the bridge retries transient connection failures,
-    /// <c>Pipeline:UpstreamRetry</c>). So "newest file since the snapshot" is not
-    /// a reliable identity for a given test's request.</para>
-    /// <para>An earlier revision of this helper filtered by model id instead and
-    /// justified it with cross-test parallelism. That rationale was wrong —
-    /// <c>AssemblyInfo.cs</c> sets <c>DisableTestParallelization = true</c>, so
-    /// sibling methods never run concurrently — and the filter was also too weak,
-    /// since several cases here share a model (three drive <c>opus-4.7</c>, three
-    /// drive <c>opus-5</c>) and would still select each other's file. Correlating
-    /// on a per-call unique marker is exact regardless of ordering, retries, or
-    /// leftovers from previous runs.</para>
-    /// <para>Returns null if no matching request appeared (e.g. early-fail path).</para>
-    /// </summary>
+    [Fact]
+    public async Task Opus55_DisabledThinking_BecomesAdaptiveAtLowEffort()
+    {
+        var (upstream, _) = await PostAsync(
+            thinking: new JsonObject { ["type"] = "disabled" },
+            effort: "max");
+
+        Assert.Equal("adaptive", upstream["body"]!["thinking"]!["type"]!.GetValue<string>());
+        Assert.Equal("low", upstream["body"]!["output_config"]!["effort"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Opus55_AdaptiveThinking_MaxEffortPassesThrough()
+    {
+        var (upstream, _) = await PostAsync(
+            thinking: new JsonObject { ["type"] = "adaptive" },
+            effort: "max");
+
+        Assert.Equal("adaptive", upstream["body"]!["thinking"]!["type"]!.GetValue<string>());
+        Assert.Equal("max", upstream["body"]!["output_config"]!["effort"]!.GetValue<string>());
+    }
+
+    private async Task<(JsonObject Upstream, HttpStatusCode Status)> PostAsync(
+        string? beta = null, JsonObject? thinking = null, string? effort = null)
+    {
+        var marker = $"probe-{Guid.NewGuid():N}";
+        var body = new JsonObject
+        {
+            ["model"] = "claude-opus-5-5", // official Claude Code id
+            ["max_tokens"] = 32768,
+            ["messages"] = new JsonArray
+            {
+                new JsonObject { ["role"] = "user", ["content"] = "reply: ok " + marker },
+            },
+        };
+        if (thinking is not null) body["thinking"] = thinking;
+        if (effort is not null)
+            body["output_config"] = new JsonObject { ["effort"] = effort };
+
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_bridge.BaseUrl}/cc/v1/messages");
+        if (beta is not null)
+            request.Headers.TryAddWithoutValidation("anthropic-beta", beta);
+        request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+
+        using var response = await http.SendAsync(request);
+        var responseBody = await response.Content.ReadAsStringAsync();
+        _output.WriteLine($"bridge → client: HTTP {(int)response.StatusCode} body={Truncate(responseBody, 200)}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var upstream = FindUpstreamRequestByMarker(marker);
+        Assert.NotNull(upstream);
+        return (upstream!, response.StatusCode);
+    }
+
     private JsonObject? FindUpstreamRequestByMarker(string marker)
     {
-        // The sink writes asynchronously, so the file appears a few ms after the
-        // response and may briefly be a partially-written prefix. Poll, and treat
-        // an unreadable OR not-yet-complete file as "retry", never as "no match".
+        // Audits are written asynchronously into a shared trace directory.
+        // Correlate by the unique user-message marker, not by file order.
         for (var attempt = 0; attempt < 50; attempt++)
         {
             var files = Directory.GetFiles(_bridge.LogDirectory, "*-upstream-req.json")
-                .OrderBy(File.GetLastWriteTimeUtc)
-                .ToList();
-
-            // Walk newest-first: the marker is unique, but this reaches it fastest.
-            for (var i = files.Count - 1; i >= 0; i--)
+                .OrderByDescending(File.GetLastWriteTimeUtc);
+            foreach (var file in files)
             {
-                var raw = ReadFileShared(files[i]);
-                if (raw is null) continue;               // locked mid-write
-                if (!raw.Contains(marker, StringComparison.Ordinal)) continue;
-
-                JsonObject? parsed;
+                string raw;
                 try
                 {
-                    parsed = JsonNode.Parse(raw)?.AsObject();
+                    using var stream = new FileStream(file, FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete);
+                    using var reader = new StreamReader(stream);
+                    raw = reader.ReadToEnd();
                 }
-                catch (JsonException)
-                {
-                    // The marker is present but the JSON is still truncated — the
-                    // sink hasn't finished flushing. Keep polling rather than
-                    // throwing out of the helper.
-                    continue;
-                }
-                if (parsed is not null) return parsed;
+                catch (IOException) { continue; }
+                if (!raw.Contains(marker, StringComparison.Ordinal)) continue;
+                try { return JsonNode.Parse(raw)?.AsObject(); }
+                catch (JsonException) { /* audit may still be flushing */ }
             }
             Thread.Sleep(50);
         }
         return null;
     }
 
-    /// <summary>
-    /// A per-call correlation token, embedded in the request's user message so it
-    /// round-trips into the upstream body the bridge writes to its trace. Kept
-    /// short and inert so it cannot change how Copilot handles the request.
-    /// </summary>
-    private static string NewMarker() => $"probe-{Guid.NewGuid():N}";
-
-    private static string? ReadFileShared(string path)
-    {
-        try
-        {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var sr = new StreamReader(fs);
-            return sr.ReadToEnd();
-        }
-        catch (IOException)
-        {
-            return null;
-        }
-    }
-
-    private static string Truncate(string s, int n) => s.Length > n ? s[..n] + "…" : s;
+    private static string Truncate(string value, int limit) =>
+        value.Length > limit ? value[..limit] + "…" : value;
 }

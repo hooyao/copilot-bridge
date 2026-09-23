@@ -1,5 +1,14 @@
 # Context windows, 1M, and Sonnet/Haiku routing
 
+> **2026-09 current status:** This account's Copilot `/models` exposes only
+> `claude-opus-5.5` on `/v1/messages`. A live 677,409-input-token request
+> succeeds with and without `context-1m-2025-08-07`, confirming native 1M
+> context. Claude Code's official `claude-opus-5-5` id normalizes to Copilot's
+> dotted id. Every older Claude profile id below returned
+> `400 model_not_supported` in the September liveness sweep and is no longer
+> in `ModelProfileCatalog`. The older Sonnet/Haiku experiments in this document
+> are preserved as dated protocol research, not current availability claims.
+
 > Why the bridge can route Sonnet/Haiku correctly but **cannot** make Claude
 > Code "know" a model's context window from a *response*, what actually happens
 > when a user enables 1M on a model Copilot caps at 200k, and how a user can
@@ -115,7 +124,7 @@ How `[1m]` reaches the wire: `parseUserSpecifiedModel` keeps `[1m]` on the
 request**. So the bridge only ever sees a bare model id plus the `context-1m`
 beta — never `[1m]`. The shipped routing locations key on exactly that signal.
 
-## 2. What Copilot actually offers
+## 2. Historical 2026-07 Copilot snapshot
 
 From Copilot's `/models` (projected through `/cc/v1/models`):
 

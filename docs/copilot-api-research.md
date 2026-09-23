@@ -1028,8 +1028,10 @@ Captured via `copilot-bridge debug list-models`: **44 models total, 11 support `
 > exposed then. Since retired by Copilot (all 400 today): `claude-sonnet-4`,
 > `claude-sonnet-4.5`, `claude-opus-4.5`, `claude-opus-4.6-1m`,
 > `claude-opus-4.7-1m-internal`, `claude-opus-4.7-high`, `claude-opus-4.7-xhigh`.
-> Added since: `claude-sonnet-5`, `claude-opus-4.8`, `claude-opus-5`. The live set
-> is whatever `debug list-models --all` prints plus a liveness probe — see
+> The 2026-09 account sweep instead found only `claude-opus-5.5` live on
+> `/v1/messages`; all prior catalogued Claude ids returned
+> `400 model_not_supported`. The live set is whatever `debug list-models --all`
+> prints plus a liveness probe — see
 > `ModelProfileProbe.RetiredCandidate_LivenessProbe`; the current catalog is
 > `pipeline-design.md` §7.2.
 

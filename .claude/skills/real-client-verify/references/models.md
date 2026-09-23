@@ -14,7 +14,7 @@ Single source of truth in code: `ClientBehaviorSupport` in
 
 | Constant | Today | Used by |
 | --- | --- | --- |
-| `LatestClaude` | `claude-opus-5` | CC-native `/cc` cases, and the CC→gpt client-facing id |
+| `LatestClaude` | `claude-opus-5-5` | CC-native `/cc` cases, and the CC→gpt client-facing id (normalized to `claude-opus-5.5`) |
 | `LatestGpt` | `gpt-5.6-sol` | Reviewed Codex client-catalog identity used by native `/codex` cases |
 | `LatestGptBackend` | `gpt-6-astra` | Resolved backend for the stock GPT-5.6→Astra route case |
 | `CodexVersion` | `0.153.4` | Reviewed Codex app-server build used by native `/codex` cases |

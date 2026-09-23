@@ -70,7 +70,7 @@ public class McpToolUseTests : IClassFixture<BridgeFixture>
             var result = await ClaudeProcess.RunAsync(new ClaudeInvocation(
                 BridgeBaseUrl: _bridge.BaseUrl,
                 Prompt: prompt,
-                Model: "claude-sonnet-4-6",
+                Model: "claude-opus-5-5",
                 Effort: null,
                 OutputFormat: "json",
                 AllowedTools: "mcp__echo__echo",

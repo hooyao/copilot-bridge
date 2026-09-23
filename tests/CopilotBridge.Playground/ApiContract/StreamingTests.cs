@@ -12,13 +12,11 @@ namespace CopilotBridge.Playground;
 public class StreamingTests
 {
     [Theory]
-    [InlineData("claude-sonnet-4.6")]
-    [InlineData("claude-haiku-4.5")]
+    [InlineData("claude-opus-5.5")]
     public async Task Stream_EmitsAnthropicEventSequence(string model)
     {
-        // No thinking — Haiku-4.5 rejects "adaptive" with HTTP 400 even though its
-        // capabilities.supports.adaptive_thinking is true. Streaming with thinking is
-        // covered by the dedicated thinking experiment (TBD).
+        // Opus 5.5 may include thinking blocks before text; the event sequence
+        // remains the Anthropic Messages SSE contract.
         var payload = $$"""
           {
             "model": "{{model}}",
@@ -64,7 +62,7 @@ public class StreamingTests
     {
         var payload = """
           {
-            "model": "claude-sonnet-4.6",
+            "model": "claude-opus-5.5",
             "messages": [{ "role": "user", "content": "Reply with the single word: ok" }],
             "max_tokens": 16,
             "stream": true

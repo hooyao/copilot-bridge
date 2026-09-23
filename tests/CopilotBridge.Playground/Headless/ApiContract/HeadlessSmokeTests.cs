@@ -25,8 +25,7 @@ public class HeadlessSmokeTests : IClassFixture<BridgeFixture>
     }
 
     [Theory]
-    [InlineData("claude-sonnet-4-6")]
-    [InlineData("claude-sonnet-5")]   // 2026 reconciliation: end-to-end through Normalize→route→profile-adjust
+    [InlineData("claude-opus-5-5")]
     public async Task ClaudeP_MinimalPrompt_ReachesCopilotAnd2xx(string model)
     {
         var reader = new BridgeLogReader(_bridge.LogDirectory);
