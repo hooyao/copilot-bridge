@@ -31,6 +31,16 @@ internal readonly record struct OtherProcessCheck(OtherProcessStatus Status, int
     public bool BlocksUpdate => Status != OtherProcessStatus.None;
 }
 
+/// <summary>Comparison of two already-canonical executable path strings.</summary>
+internal enum CanonicalPathComparison
+{
+    Equal,
+    Different,
+    /// <summary>The strings differ only by case on macOS, whose target volume may
+    /// be case-sensitive or case-insensitive. Treat as unsafe uncertainty.</summary>
+    CaseSemanticsUnknown,
+}
+
 /// <summary>
 /// Verifies a process's identity before the updater ever terminates it, so a
 /// reused PID can never cause the wrong process to be killed. Identity is the
@@ -71,7 +81,7 @@ internal static class ProcessIdentity
         }
 
         var expectedProcessName = Path.GetFileNameWithoutExtension(expectedExePath);
-        var nameComparison = OperatingSystem.IsWindows()
+        var nameComparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
@@ -271,18 +281,18 @@ internal static class ProcessIdentity
 
     private static bool TryPathsEqual(string a, string b, out bool equal)
     {
-        // Conservative containment/identity comparison: case-insensitive only on
-        // Windows. On case-sensitive macOS/Linux volumes, a case-folded compare
-        // could treat two DIFFERENT executables as the same identity and let the
-        // updater terminate the wrong process.
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
         try
         {
-            equal = string.Equals(
-                CanonicalizeExistingPath(a), CanonicalizeExistingPath(b), comparison);
-            return true;
+            var comparison = CompareCanonicalPathStrings(
+                CanonicalizeExistingPath(a), CanonicalizeExistingPath(b),
+                isWindows: OperatingSystem.IsWindows(),
+                isMacOS: OperatingSystem.IsMacOS());
+            equal = comparison == CanonicalPathComparison.Equal;
+            // A case-only difference on macOS cannot be classified safely from
+            // strings alone: APFS can be either case-sensitive or insensitive.
+            // Return "inspection failed" so callers block mutation and, crucially,
+            // never treat the ambiguity as identity authorization for a kill.
+            return comparison != CanonicalPathComparison.CaseSemanticsUnknown;
         }
         catch (Exception ex) when (ex is IOException
             or UnauthorizedAccessException
@@ -293,6 +303,24 @@ internal static class ProcessIdentity
             equal = LexicalPathsEqual(a, b);
             return false;
         }
+    }
+
+    internal static CanonicalPathComparison CompareCanonicalPathStrings(
+        string a, string b, bool isWindows, bool isMacOS)
+    {
+        if (string.Equals(a, b, StringComparison.Ordinal))
+        {
+            return CanonicalPathComparison.Equal;
+        }
+        if (isWindows && string.Equals(a, b, StringComparison.OrdinalIgnoreCase))
+        {
+            return CanonicalPathComparison.Equal;
+        }
+        if (isMacOS && string.Equals(a, b, StringComparison.OrdinalIgnoreCase))
+        {
+            return CanonicalPathComparison.CaseSemanticsUnknown;
+        }
+        return CanonicalPathComparison.Different;
     }
 
     private static string CanonicalizeExistingPath(string path)

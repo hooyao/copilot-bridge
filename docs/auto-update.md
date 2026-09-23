@@ -173,6 +173,11 @@ If an OS access failure prevents reading the executable path of a process whose
 image name matches `copilot-bridge`, the check fails closed and skips or recovers from the
 update. The name is only a conservative uncertainty filter; readable processes
 are matched by canonical path, and no process is ever terminated by name.
+On macOS, a canonical path that differs only by letter case is treated as the
+same unsafe uncertainty because APFS volumes may be either case-sensitive or
+case-insensitive. The updater aborts or recovers safely instead of guessing the
+volume semantics or using a case-folded path as authorization to terminate a
+process.
 
 If a conflict appears only after handoff authorization, the initiating bridge is
 already exiting and cannot simply continue serving. The updater therefore routes

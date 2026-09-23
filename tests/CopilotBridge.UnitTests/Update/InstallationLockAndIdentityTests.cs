@@ -137,6 +137,30 @@ public class InstallationLockAndIdentityTests
     }
 
     [Fact]
+    public void Mac_case_only_path_difference_is_unsafe_uncertainty_not_kill_identity()
+    {
+        var result = ProcessIdentity.CompareCanonicalPathStrings(
+            "/Applications/Copilot/copilot-bridge",
+            "/applications/copilot/COPILOT-BRIDGE",
+            isWindows: false,
+            isMacOS: true);
+
+        Assert.Equal(CanonicalPathComparison.CaseSemanticsUnknown, result);
+    }
+
+    [Fact]
+    public void Case_only_path_difference_remains_distinct_on_case_sensitive_platform()
+    {
+        var result = ProcessIdentity.CompareCanonicalPathStrings(
+            "/opt/Bridge/copilot-bridge",
+            "/opt/bridge/copilot-bridge",
+            isWindows: false,
+            isMacOS: false);
+
+        Assert.Equal(CanonicalPathComparison.Different, result);
+    }
+
+    [Fact]
     public void Executable_path_comparison_resolves_directory_symlink_aliases()
     {
         var root = TempDir();

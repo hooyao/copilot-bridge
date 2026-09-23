@@ -242,7 +242,7 @@ internal sealed class StartupUpdateGate
             else
             {
                 Log.Error(
-                    "Auto-update skipped: process inspection could not prove this installation is unused (PID {Pid}); continuing with the current version.",
+                    "Auto-update skipped: process inspection could not prove this installation is unused (PID {Pid}). Retry later; if this persists, verify the account can inspect local processes.",
                     siblingCheck.ProcessId);
             }
             return UpdateGateDecision.ContinueCurrentVersion;
@@ -374,10 +374,15 @@ internal sealed class StartupUpdateGate
         {
             // Preflight failed / updater exited / timeout — stay on current version.
             var detail = prepared?.Kind == UpdateWire.MsgPreflightFailed ? prepared.Detail : "no cutover-ready signal";
-            if (detail?.StartsWith(UpdateWire.ConcurrentBridgeReason, StringComparison.Ordinal) == true
-                || detail?.StartsWith(UpdateWire.ProcessInspectionFailureReason, StringComparison.Ordinal) == true)
+            if (detail?.StartsWith(UpdateWire.ConcurrentBridgeReason, StringComparison.Ordinal) == true)
             {
                 Log.Error("Auto-update skipped: {Reason}. Stop the other process and restart to update.", detail);
+            }
+            else if (detail?.StartsWith(UpdateWire.ProcessInspectionFailureReason, StringComparison.Ordinal) == true)
+            {
+                Log.Error(
+                    "Auto-update skipped: {Reason}. Retry later; if this persists, verify the account can inspect local processes.",
+                    detail);
             }
             else
             {
