@@ -69,7 +69,7 @@ public class CacheHitHeadlessTests : IClassFixture<BridgeFixture>
 
     private static string BuildBodyWithCacheControl() => new JsonObject
     {
-        ["model"] = "claude-sonnet-4-6",
+        ["model"] = "claude-opus-5-5",
         ["stream"] = true,
         ["max_tokens"] = 32,
         ["system"] = new JsonArray

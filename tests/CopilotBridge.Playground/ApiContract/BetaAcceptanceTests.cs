@@ -24,11 +24,10 @@ namespace CopilotBridge.Playground;
 [Trait("Kind", "ApiContract")]
 public class BetaAcceptanceTests
 {
-    // sonnet-4.6 exists on both sides; the probe is about header acceptance,
-    // not feature semantics, so the model choice barely matters.
+    // Compare the same currently served model on both endpoints.
     private const string CopilotPayload = """
       {
-        "model": "claude-sonnet-4.6",
+        "model": "claude-opus-5.5",
         "messages": [{"role":"user","content":"hi"}],
         "max_tokens": 16
       }
@@ -36,7 +35,7 @@ public class BetaAcceptanceTests
 
     private const string NativePayload = """
       {
-        "model": "claude-sonnet-4-6",
+        "model": "claude-opus-5-5",
         "messages": [{"role":"user","content":"hi"}],
         "max_tokens": 16
       }

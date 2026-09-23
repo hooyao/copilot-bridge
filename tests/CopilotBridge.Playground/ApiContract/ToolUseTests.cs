@@ -15,8 +15,7 @@ namespace CopilotBridge.Playground;
 public class ToolUseTests
 {
     [Theory]
-    [InlineData("claude-sonnet-4.6")]
-    [InlineData("claude-haiku-4.5")]
+    [InlineData("claude-opus-5.5")]
     public async Task ToolUseAndResult_RoundTripsToFinalAnswer(string model)
     {
         const string userPrompt = "What is 137 + 258? Use the add_numbers tool to compute it, then state the result.";

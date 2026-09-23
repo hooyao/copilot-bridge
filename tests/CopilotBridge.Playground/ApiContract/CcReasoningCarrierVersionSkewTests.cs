@@ -45,7 +45,7 @@ public class CcReasoningCarrierVersionSkewTests
 
         var body = new JsonObject
         {
-            ["model"] = "claude-opus-5",
+            ["model"] = "claude-opus-5-5",
             ["max_tokens"] = 1024,
             ["messages"] = new JsonArray
             {

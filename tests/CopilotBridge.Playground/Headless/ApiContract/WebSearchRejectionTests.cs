@@ -35,7 +35,7 @@ public class WebSearchRejectionTests : IClassFixture<BridgeFixture>
     {
         var body = $$"""
           {
-            "model": "claude-sonnet-4-6",
+            "model": "claude-opus-5-5",
             "max_tokens": 16,
             "messages": [{ "role": "user", "content": "find me something" }],
             "tools": [
@@ -70,7 +70,7 @@ public class WebSearchRejectionTests : IClassFixture<BridgeFixture>
         // Sanity: a normal request (no web_search) still works after the guard.
         var body = """
           {
-            "model": "claude-haiku-4-5",
+            "model": "claude-opus-5-5",
             "max_tokens": 8,
             "messages": [{ "role": "user", "content": "reply: ok" }]
           }

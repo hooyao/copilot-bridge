@@ -21,7 +21,7 @@ public class RawUsageShapeTests
 {
     private const string MinimalPayload = """
       {
-        "model": "claude-sonnet-4.6",
+        "model": "claude-opus-5.5",
         "messages": [{ "role": "user", "content": "Reply with the single word: ok" }],
         "max_tokens": 16
       }
@@ -29,7 +29,7 @@ public class RawUsageShapeTests
 
     private const string MinimalStreamPayload = """
       {
-        "model": "claude-sonnet-4.6",
+        "model": "claude-opus-5.5",
         "messages": [{ "role": "user", "content": "Reply with the single word: ok" }],
         "max_tokens": 16,
         "stream": true

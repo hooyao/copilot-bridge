@@ -14,7 +14,7 @@ namespace CopilotBridge.Playground;
 public class ParallelToolUseTests
 {
     [Theory]
-    [InlineData("claude-sonnet-4.6")]
+    [InlineData("claude-opus-5.5")]
     public async Task ParallelToolCalls_RoundTripBothToolsToFinalAnswer(string model)
     {
         const string userPrompt =
