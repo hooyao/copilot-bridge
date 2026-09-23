@@ -115,6 +115,22 @@ public class InstallationLockAndIdentityTests
     }
 
     [Fact]
+    public void Unknown_zero_start_time_never_excludes_matching_pid()
+    {
+        var path = Environment.ProcessPath
+            ?? throw new InvalidOperationException("test process path unavailable");
+
+        // StartTicks uses 0 to mean inspection failed/unknown. Treating that as
+        // an exact identity would skip a live same-install process solely because
+        // both observations were unknown. The scan must keep it as a blocker.
+        var found = ProcessIdentity.CheckForOtherProcessAtPath(
+            path, Environment.ProcessId, excludedStartTicks: 0);
+
+        Assert.True(found.BlocksUpdate);
+        Assert.NotEqual(OtherProcessStatus.None, found.Status);
+    }
+
+    [Fact]
     public void Unreadable_name_matching_candidate_blocks_update_without_becoming_kill_identity()
     {
         var result = ProcessIdentity.ClassifyInspectionFailure(

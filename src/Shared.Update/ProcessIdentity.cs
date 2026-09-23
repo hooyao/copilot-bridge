@@ -104,7 +104,7 @@ internal static class ProcessIdentity
                     // the exact process the caller expects.
                     processId = process.Id;
                     if (processId == excludedPid
-                        && excludedStartTicks is not null
+                        && excludedStartTicks is > 0
                         && StartTicks(process) == excludedStartTicks.Value)
                     {
                         continue;
