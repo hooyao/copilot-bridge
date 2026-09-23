@@ -51,6 +51,7 @@ public class OwnershipWindowRouterTests
         Assert.Equal(RecoveryAction.RecoverOldBridge, OwnershipWindowRouter.Route(OwnershipOutcome.ParentExitUnconfirmed, transactionMutating: false));
         Assert.Equal(RecoveryAction.RecoverOldBridge, OwnershipWindowRouter.Route(OwnershipOutcome.DriftAfterHandoff, transactionMutating: false));
         Assert.Equal(RecoveryAction.RecoverOldBridge, OwnershipWindowRouter.Route(OwnershipOutcome.ConcurrentBridgeAfterHandoff, transactionMutating: false));
+        Assert.Equal(RecoveryAction.RecoverOldBridge, OwnershipWindowRouter.Route(OwnershipOutcome.PreMutationSynchronizationFailed, transactionMutating: false));
     }
 
     // --- Fix #2: a throw AFTER the config rename must rollback, not recover. -----

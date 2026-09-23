@@ -73,10 +73,10 @@ internal sealed class UpdaterEngine
         // any OTHER process at that exact path makes in-place replacement unsafe.
         // Check before download, backup, staging, or any install-dir probe so the
         // common race-defense path has no filesystem side effects to clean up.
-        var conflictingPid = FindConflictingBridgeProcess(excludeInitiatingParent: true);
-        if (conflictingPid is not null)
+        var siblingCheck = CheckForConflictingBridgeProcess(excludeInitiatingParent: true);
+        if (siblingCheck.BlocksUpdate)
         {
-            return await FailConcurrentBridgeAsync(conflictingPid.Value, ct).ConfigureAwait(false);
+            return await FailConcurrentBridgeAsync(siblingCheck, ct).ConfigureAwait(false);
         }
 
         // 2. Download + verify + extract. If the archive is already present and
@@ -169,10 +169,10 @@ internal sealed class UpdaterEngine
         // Close the long download/prepare window: another instance may have
         // started after the first guard. It must be rejected while the initiating
         // parent still serves, before Prepared transfers ownership.
-        conflictingPid = FindConflictingBridgeProcess(excludeInitiatingParent: true);
-        if (conflictingPid is not null)
+        siblingCheck = CheckForConflictingBridgeProcess(excludeInitiatingParent: true);
+        if (siblingCheck.BlocksUpdate)
         {
-            return await FailConcurrentBridgeAsync(conflictingPid.Value, ct).ConfigureAwait(false);
+            return await FailConcurrentBridgeAsync(siblingCheck, ct).ConfigureAwait(false);
         }
 
         _journal.Write("handoff.prepared");
@@ -225,11 +225,11 @@ internal sealed class UpdaterEngine
             // debug, or another command), so abort before mutation without
             // relaunching or terminating it. Every installed byte stays intact.
             // Cutover repeats this check adjacent to its first rename.
-            conflictingPid = FindConflictingBridgeProcess(excludeInitiatingParent: false);
-            if (conflictingPid is not null)
+            siblingCheck = CheckForConflictingBridgeProcess(excludeInitiatingParent: false);
+            if (siblingCheck.BlocksUpdate)
             {
                 return await RecoverConcurrentBridgeAsync(
-                    install, conflictingPid.Value).ConfigureAwait(false);
+                    install, siblingCheck).ConfigureAwait(false);
             }
 
             // Parent confirmed gone: service is DOWN. Any failure below recovers.
@@ -244,7 +244,21 @@ internal sealed class UpdaterEngine
             // Opt-in authenticated synchronization used by the real updater race
             // regression. With no environment capability (all production runs),
             // this is a single no-op branch in every build configuration.
-            await WaitForFinalGuardTestHookAsync(ct).ConfigureAwait(false);
+            var synchronization = await WaitForFinalGuardTestHookAsync(ct).ConfigureAwait(false);
+            if (!synchronization.Ok)
+            {
+                _journal.Write("ownership.synchronization-failed", synchronization.Reason);
+                var recovered = await ExecuteRecoveryAsync(
+                    OwnershipOutcome.PreMutationSynchronizationFailed,
+                    transactionMutating: false,
+                    install,
+                    synchronization.Reason!).ConfigureAwait(false);
+                if (recovered == UpdaterExit.RolledBack)
+                {
+                    install.CleanupAfterPreflightFailure();
+                }
+                return recovered;
+            }
 
             // 6. Cutover (rename original config to .bak, atomically move the
             //    pre-staged replacements into place — no writes here). Mark the
@@ -252,22 +266,22 @@ internal sealed class UpdaterEngine
             //    rename. Its callback performs the strongest possible sibling
             //    check adjacent to that mutation; polling cannot make a later
             //    process launch and the rename atomic.
-            int? cutoverConflictPid = null;
+            var cutoverSiblingCheck = new OtherProcessCheck(OtherProcessStatus.None, null);
             var cutover = install.Cutover(
                 beforeFirstMutation: () =>
                 {
-                    cutoverConflictPid = FindConflictingBridgeProcess(excludeInitiatingParent: false);
-                    return cutoverConflictPid is null
+                    cutoverSiblingCheck = CheckForConflictingBridgeProcess(excludeInitiatingParent: false);
+                    return !cutoverSiblingCheck.BlocksUpdate
                         ? UpdateStepResult.Success()
-                        : UpdateStepResult.Fail(UpdateWire.ConcurrentBridgeReason);
+                        : UpdateStepResult.Fail(DescribeSiblingCheck(cutoverSiblingCheck));
                 },
                 mutationStarting: () => transactionMutating = true);
             if (!cutover.Ok)
             {
-                if (cutoverConflictPid is not null)
+                if (cutoverSiblingCheck.BlocksUpdate)
                 {
                     return await RecoverConcurrentBridgeAsync(
-                        install, cutoverConflictPid.Value).ConfigureAwait(false);
+                        install, cutoverSiblingCheck).ConfigureAwait(false);
                 }
                 _journal.Write("cutover.failed", cutover.Reason);
                 return await ExecuteRecoveryAsync(
@@ -619,23 +633,24 @@ internal sealed class UpdaterEngine
         return UpdaterExit.PreflightFailed;
     }
 
-    private int? FindConflictingBridgeProcess(bool excludeInitiatingParent)
-        => ProcessIdentity.FindOtherProcessAtPath(
+    private OtherProcessCheck CheckForConflictingBridgeProcess(bool excludeInitiatingParent)
+        => ProcessIdentity.CheckForOtherProcessAtPath(
             _plan.BridgeExePath,
             excludeInitiatingParent ? _plan.ParentPid : null,
             excludeInitiatingParent ? _plan.ParentStartTicks : null);
 
-    private Task<UpdaterExit> FailConcurrentBridgeAsync(int pid, CancellationToken ct)
+    private Task<UpdaterExit> FailConcurrentBridgeAsync(
+        OtherProcessCheck siblingCheck, CancellationToken ct)
     {
-        var reason = $"{UpdateWire.ConcurrentBridgeReason} (PID {pid})";
+        var reason = DescribeSiblingCheck(siblingCheck);
         _stderr.WriteLine($"copilot-updater: ERROR: {reason}; update skipped.");
         return FailPreflightAsync(reason, ct);
     }
 
     private async Task<UpdaterExit> RecoverConcurrentBridgeAsync(
-        ManagedInstallManager install, int pid)
+        ManagedInstallManager install, OtherProcessCheck siblingCheck)
     {
-        var reason = $"{UpdateWire.ConcurrentBridgeReason} (PID {pid})";
+        var reason = DescribeSiblingCheck(siblingCheck);
         _journal.Write("ownership.concurrent-bridge", reason);
         _stderr.WriteLine($"copilot-updater: ERROR: {reason}; restoring the current version.");
 
@@ -658,23 +673,48 @@ internal sealed class UpdaterEngine
         return outcome;
     }
 
+    private static string DescribeSiblingCheck(OtherProcessCheck siblingCheck)
+    {
+        var pid = siblingCheck.ProcessId is int value ? $" (PID {value})" : string.Empty;
+        return siblingCheck.Status == OtherProcessStatus.Found
+            ? $"{UpdateWire.ConcurrentBridgeReason}{pid}"
+            : $"{UpdateWire.ProcessInspectionFailureReason}{pid}";
+    }
+
     private const string TestCutoverPipeEnv = "COPILOT_BRIDGE_TEST_CUTOVER_PIPE";
     private const string TestCutoverTokenEnv = "COPILOT_BRIDGE_TEST_CUTOVER_TOKEN";
 
-    private static async Task WaitForFinalGuardTestHookAsync(CancellationToken ct)
+    private static async Task<UpdateStepResult> WaitForFinalGuardTestHookAsync(CancellationToken ct)
     {
         var pipe = Environment.GetEnvironmentVariable(TestCutoverPipeEnv);
         var token = Environment.GetEnvironmentVariable(TestCutoverTokenEnv);
+        if (string.IsNullOrEmpty(pipe) && string.IsNullOrEmpty(token))
+        {
+            return UpdateStepResult.Success();
+        }
         if (string.IsNullOrEmpty(pipe) || string.IsNullOrEmpty(token))
         {
-            return;
+            return UpdateStepResult.Fail("cutover synchronization capability is incomplete");
         }
 
-        var reply = await UpdatePipeTransport.ServerSendLineAsync(
-            pipe, token, expectReply: true, TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
-        if (!string.Equals(reply, token, StringComparison.Ordinal))
+        try
         {
-            throw new InvalidOperationException("cutover test synchronization failed");
+            var reply = await UpdatePipeTransport.ServerSendLineAsync(
+                pipe, token, expectReply: true, TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
+            return string.Equals(reply, token, StringComparison.Ordinal)
+                ? UpdateStepResult.Success()
+                : UpdateStepResult.Fail("cutover synchronization failed");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException
+            or UnauthorizedAccessException
+            or InvalidOperationException
+            or ArgumentException)
+        {
+            return UpdateStepResult.Fail($"cutover synchronization failed: {ex.GetType().Name}");
         }
     }
 

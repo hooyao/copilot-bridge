@@ -13,6 +13,24 @@ internal enum IdentityCheck
     InspectionFailed,
 }
 
+/// <summary>Outcome of scanning for another process from one installation.</summary>
+internal enum OtherProcessStatus
+{
+    None,
+    Found,
+    InspectionFailed,
+}
+
+/// <summary>
+/// A sibling scan result. Both <see cref="OtherProcessStatus.Found"/> and
+/// <see cref="OtherProcessStatus.InspectionFailed"/> block update mutation: an
+/// unreadable candidate is uncertainty, never evidence that the install is free.
+/// </summary>
+internal readonly record struct OtherProcessCheck(OtherProcessStatus Status, int? ProcessId)
+{
+    public bool BlocksUpdate => Status != OtherProcessStatus.None;
+}
+
 /// <summary>
 /// Verifies a process's identity before the updater ever terminates it, so a
 /// reused PID can never cause the wrong process to be killed. Identity is the
@@ -29,12 +47,13 @@ internal static class ProcessIdentity
     /// the updater); it is excluded only while PID and start time both match.
     /// </summary>
     /// <remarks>
-    /// This deliberately compares executable paths, never process names. Two
-    /// independent installations may both run a process named
-    /// <c>copilot-bridge</c>, while only a second process holding this exact
-    /// installation's executable can make an in-place update unsafe.
+    /// Positive matches deliberately compare executable paths, never process
+    /// names. A matching name is used only to classify an unreadable process as
+    /// unsafe uncertainty; it is never selected for termination. Thus readable
+    /// independent installations do not collide, while an inaccessible candidate
+    /// cannot silently permit mutation.
     /// </remarks>
-    public static int? FindOtherProcessAtPath(
+    public static OtherProcessCheck CheckForOtherProcessAtPath(
         string expectedExePath,
         int? excludedPid = null,
         long? excludedStartTicks = null)
@@ -46,16 +65,22 @@ internal static class ProcessIdentity
         }
         catch
         {
-            // Enumeration failure is not evidence that another instance exists.
-            // The updater repeats this guard at each mutation boundary, and the
-            // existing filesystem/drift checks remain the final safety net.
-            return null;
+            // If the process table itself cannot be inspected, there is no safe
+            // basis for mutating an executable that may still be in use.
+            return new OtherProcessCheck(OtherProcessStatus.InspectionFailed, null);
         }
+
+        var expectedProcessName = Path.GetFileNameWithoutExtension(expectedExePath);
+        var nameComparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
 
         foreach (var process in processes)
         {
             using (process)
             {
+                int? processId = null;
+                var candidateByName = false;
                 try
                 {
                     if (process.HasExited)
@@ -67,7 +92,8 @@ internal static class ProcessIdentity
                     // exits, the OS may reuse that number for a new same-install
                     // process. Exclude only while PID AND start time still identify
                     // the exact process the caller expects.
-                    if (process.Id == excludedPid
+                    processId = process.Id;
+                    if (processId == excludedPid
                         && excludedStartTicks is not null
                         && StartTicks(process) == excludedStartTicks.Value)
                     {
@@ -75,23 +101,60 @@ internal static class ProcessIdentity
                     }
 
                     var actualPath = SafeMainModulePath(process);
-                    if (actualPath is not null && PathsEqual(actualPath, expectedExePath))
+                    if (actualPath is not null
+                        && TryPathsEqual(actualPath, expectedExePath, out var pathsEqual))
                     {
-                        return process.Id;
+                        if (pathsEqual)
+                        {
+                            return new OtherProcessCheck(OtherProcessStatus.Found, processId);
+                        }
+                        continue;
+                    }
+
+                    // Only a failed module/canonical-path inspection falls back
+                    // to the name as a conservative candidate filter. A readable
+                    // different installation was already dismissed above.
+                    try
+                    {
+                        candidateByName = string.Equals(
+                            process.ProcessName, expectedProcessName, nameComparison);
+                    }
+                    catch
+                    {
+                        // Neither path nor name could be inspected. It may be the
+                        // managed executable, so fail closed.
+                        return new OtherProcessCheck(
+                            OtherProcessStatus.InspectionFailed, processId);
+                    }
+                    var uncertain = ClassifyInspectionFailure(candidateByName, processId);
+                    if (uncertain.BlocksUpdate)
+                    {
+                        return uncertain;
                     }
                 }
                 catch
                 {
-                    // Processes owned by another account commonly deny module
-                    // inspection. They cannot be identified as this executable,
-                    // so skip them; a same-user sibling is readable on the target
-                    // platforms and is caught by the exact-path comparison.
+                    if (candidateByName)
+                    {
+                        return ClassifyInspectionFailure(candidateByName, processId);
+                    }
                 }
             }
         }
 
-        return null;
+        return new OtherProcessCheck(OtherProcessStatus.None, null);
     }
+
+    /// <summary>
+    /// Policy for a process whose module/path inspection failed. A name-matching
+    /// candidate blocks mutation; an unrelated process remains irrelevant. This
+    /// never authorizes killing by name.
+    /// </summary>
+    internal static OtherProcessCheck ClassifyInspectionFailure(
+        bool candidateByName, int? processId)
+        => candidateByName
+            ? new OtherProcessCheck(OtherProcessStatus.InspectionFailed, processId)
+            : new OtherProcessCheck(OtherProcessStatus.None, null);
 
     /// <summary>Capture the start-time ticks of a process for later comparison.</summary>
     public static long StartTicks(Process process)
@@ -166,7 +229,11 @@ internal static class ProcessIdentity
                 {
                     return IdentityCheck.InspectionFailed; // could not read the module path
                 }
-                if (!PathsEqual(actual, expectedExePath))
+                if (!TryPathsEqual(actual, expectedExePath, out var pathsEqual))
+                {
+                    return IdentityCheck.InspectionFailed;
+                }
+                if (!pathsEqual)
                 {
                     return IdentityCheck.AbsentOrReused;
                 }
@@ -198,6 +265,11 @@ internal static class ProcessIdentity
     /// different from the canonical main-module path reported by the OS.
     /// </summary>
     internal static bool PathsEqual(string a, string b)
+        => TryPathsEqual(a, b, out var equal)
+            ? equal
+            : LexicalPathsEqual(a, b);
+
+    private static bool TryPathsEqual(string a, string b, out bool equal)
     {
         // Conservative containment/identity comparison: case-insensitive only on
         // Windows. On case-sensitive macOS/Linux volumes, a case-folded compare
@@ -206,38 +278,11 @@ internal static class ProcessIdentity
         var comparison = OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
-        return string.Equals(CanonicalizeExistingPath(a), CanonicalizeExistingPath(b), comparison);
-    }
-
-    private static string CanonicalizeExistingPath(string path)
-    {
-        var fullPath = Path.GetFullPath(path);
         try
         {
-            var root = Path.GetPathRoot(fullPath);
-            if (string.IsNullOrEmpty(root))
-            {
-                return fullPath;
-            }
-
-            var current = root;
-            var remainder = fullPath[root.Length..];
-            foreach (var component in remainder.Split(
-                         [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-                         StringSplitOptions.RemoveEmptyEntries))
-            {
-                current = Path.Combine(current, component);
-                FileSystemInfo entry = Directory.Exists(current)
-                    ? new DirectoryInfo(current)
-                    : new FileInfo(current);
-                var resolved = entry.ResolveLinkTarget(returnFinalTarget: true);
-                if (resolved is not null)
-                {
-                    current = Path.GetFullPath(resolved.FullName);
-                }
-            }
-
-            return NormalizeWindowsDevicePath(current);
+            equal = string.Equals(
+                CanonicalizeExistingPath(a), CanonicalizeExistingPath(b), comparison);
+            return true;
         }
         catch (Exception ex) when (ex is IOException
             or UnauthorizedAccessException
@@ -245,11 +290,49 @@ internal static class ProcessIdentity
             or ArgumentException
             or NotSupportedException)
         {
-            // An unreadable unrelated process must not block startup. Falling
-            // back to a lexical absolute path preserves the old fail-open
-            // behavior while aliases for readable same-user executables resolve.
-            return NormalizeWindowsDevicePath(fullPath);
+            equal = LexicalPathsEqual(a, b);
+            return false;
         }
+    }
+
+    private static string CanonicalizeExistingPath(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var root = Path.GetPathRoot(fullPath);
+        if (string.IsNullOrEmpty(root))
+        {
+            return fullPath;
+        }
+
+        var current = root;
+        var remainder = fullPath[root.Length..];
+        foreach (var component in remainder.Split(
+                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, component);
+            FileSystemInfo entry = Directory.Exists(current)
+                ? new DirectoryInfo(current)
+                : new FileInfo(current);
+            var resolved = entry.ResolveLinkTarget(returnFinalTarget: true);
+            if (resolved is not null)
+            {
+                current = Path.GetFullPath(resolved.FullName);
+            }
+        }
+
+        return NormalizeWindowsDevicePath(current);
+    }
+
+    private static bool LexicalPathsEqual(string a, string b)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        return string.Equals(
+            NormalizeWindowsDevicePath(Path.GetFullPath(a)),
+            NormalizeWindowsDevicePath(Path.GetFullPath(b)),
+            comparison);
     }
 
     private static string NormalizeWindowsDevicePath(string path)

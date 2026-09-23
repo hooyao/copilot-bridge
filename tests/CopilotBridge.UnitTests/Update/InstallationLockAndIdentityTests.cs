@@ -108,10 +108,32 @@ public class InstallationLockAndIdentityTests
         // Model PID reuse with the current live process: the numeric PID matches
         // the excluded PID, but the supplied start time belongs to a different
         // process, so this executable must still be reported as a conflict.
-        var found = ProcessIdentity.FindOtherProcessAtPath(
+        var found = ProcessIdentity.CheckForOtherProcessAtPath(
             path, Environment.ProcessId, excludedStartTicks: 1);
 
-        Assert.NotNull(found);
+        Assert.Equal(OtherProcessStatus.Found, found.Status);
+    }
+
+    [Fact]
+    public void Unreadable_name_matching_candidate_blocks_update_without_becoming_kill_identity()
+    {
+        var result = ProcessIdentity.ClassifyInspectionFailure(
+            candidateByName: true, processId: 12345);
+
+        Assert.Equal(OtherProcessStatus.InspectionFailed, result.Status);
+        Assert.True(result.BlocksUpdate);
+        Assert.Equal(12345, result.ProcessId);
+    }
+
+    [Fact]
+    public void Unreadable_unrelated_process_does_not_block_installation()
+    {
+        var result = ProcessIdentity.ClassifyInspectionFailure(
+            candidateByName: false, processId: 12345);
+
+        Assert.Equal(OtherProcessStatus.None, result.Status);
+        Assert.False(result.BlocksUpdate);
+        Assert.Null(result.ProcessId);
     }
 
     [Fact]

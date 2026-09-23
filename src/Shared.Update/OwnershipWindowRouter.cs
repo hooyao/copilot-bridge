@@ -24,6 +24,10 @@ internal enum OwnershipOutcome
     /// command/health is unknown and cannot substitute for restoring service.</summary>
     ConcurrentBridgeAfterHandoff,
 
+    /// <summary>An opt-in pre-mutation synchronization capability failed after
+    /// authorization. Nothing was installed, but ownership must still recover.</summary>
+    PreMutationSynchronizationFailed,
+
     /// <summary><see cref="ManagedInstallManager.Cutover"/> returned a failure
     /// (e.g. config drifted at the rename boundary). It may have partially replaced
     /// binaries.</summary>
@@ -91,6 +95,7 @@ internal static class OwnershipWindowRouter
         OwnershipOutcome.ParentExitUnconfirmed => RecoveryAction.RecoverOldBridge,
         OwnershipOutcome.DriftAfterHandoff => RecoveryAction.RecoverOldBridge,
         OwnershipOutcome.ConcurrentBridgeAfterHandoff => RecoveryAction.RecoverOldBridge,
+        OwnershipOutcome.PreMutationSynchronizationFailed => RecoveryAction.RecoverOldBridge,
 
         // Cutover started mutating (config renamed, maybe binaries replaced) →
         // rollback restores everything, including the exact original config.

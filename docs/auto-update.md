@@ -169,6 +169,11 @@ to eliminate) the
 irreducible interval between a process snapshot and a filesystem operation. No
 check selects or terminates a process by image name.
 
+If an OS access failure prevents reading the executable path of a process whose
+image name matches `copilot-bridge`, the check fails closed and skips or recovers from the
+update. The name is only a conservative uncertainty filter; readable processes
+are matched by canonical path, and no process is ever terminated by name.
+
 If a conflict appears only after handoff authorization, the initiating bridge is
 already exiting and cannot simply continue serving. The updater therefore routes
 that conflict through the ownership-window recovery policy and requires a
