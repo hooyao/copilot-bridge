@@ -52,6 +52,82 @@ public class InstallationLockAndIdentityTests
     }
 
     [Fact]
+    public void Unix_symlink_alias_contends_for_the_same_install_lock()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var root = TempDir();
+        var install = Path.Combine(root, "install");
+        var alias = Path.Combine(root, "install-link");
+        var lockRoot = Path.Combine(root, "locks");
+        Directory.CreateDirectory(install);
+        Directory.CreateSymbolicLink(alias, install);
+
+        try
+        {
+            using var first = InstallationLock.TryAcquire(install, lockRoot);
+            using var throughAlias = InstallationLock.TryAcquire(alias, lockRoot);
+            Assert.NotNull(first);
+            Assert.Null(throughAlias);
+        }
+        finally
+        {
+            try { if (Directory.Exists(alias)) Directory.Delete(alias); } catch { /* best effort */ }
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public void Windows_junction_alias_contends_for_the_same_install_lock()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var root = TempDir();
+        var install = Path.Combine(root, "install");
+        var alias = Path.Combine(root, "install-junction");
+        var lockRoot = Path.Combine(root, "locks");
+        Directory.CreateDirectory(install);
+
+        try
+        {
+            var start = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            start.ArgumentList.Add("/d");
+            start.ArgumentList.Add("/c");
+            start.ArgumentList.Add("mklink");
+            start.ArgumentList.Add("/J");
+            start.ArgumentList.Add(alias);
+            start.ArgumentList.Add(install);
+            using var mklink = Process.Start(start)!;
+            mklink.WaitForExit();
+            var output = mklink.StandardOutput.ReadToEnd() + mklink.StandardError.ReadToEnd();
+            Assert.True(mklink.ExitCode == 0, output);
+
+            using var first = InstallationLock.TryAcquire(install, lockRoot);
+            using var throughAlias = InstallationLock.TryAcquire(alias, lockRoot);
+            Assert.NotNull(first);
+            Assert.Null(throughAlias);
+        }
+        finally
+        {
+            try { if (Directory.Exists(alias)) Directory.Delete(alias); } catch { /* best effort */ }
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
     public void Current_process_matches_its_own_identity()
     {
         using var self = Process.GetCurrentProcess();

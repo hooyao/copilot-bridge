@@ -346,7 +346,12 @@ internal static class ProcessIdentity
         return CanonicalPathComparison.Different;
     }
 
-    private static string CanonicalizeExistingPath(string path)
+    /// <summary>
+    /// Resolve every existing symlink/junction component to one canonical path.
+    /// Shared with <see cref="InstallationLock"/> so process and transaction
+    /// identity cannot disagree about installation aliases.
+    /// </summary>
+    internal static string CanonicalizeExistingPath(string path)
     {
         var fullPath = Path.GetFullPath(path);
         var root = Path.GetPathRoot(fullPath);
