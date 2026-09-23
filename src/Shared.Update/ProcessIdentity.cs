@@ -93,8 +93,36 @@ internal static class ProcessIdentity
                 var candidateByName = false;
                 try
                 {
-                    if (process.HasExited)
+                    try
                     {
+                        processId = process.Id;
+                        candidateByName = string.Equals(
+                            process.ProcessName, expectedProcessName, nameComparison);
+                    }
+                    catch
+                    {
+                        // Without even a name, this process cannot be ruled out as
+                        // the managed executable. Fail closed; never select it for
+                        // termination.
+                        return new OtherProcessCheck(
+                            OtherProcessStatus.InspectionFailed, processId);
+                    }
+
+                    try
+                    {
+                        if (process.HasExited)
+                        {
+                            continue; // only a positively exited process is ignored
+                        }
+                    }
+                    catch
+                    {
+                        var livenessUncertain = ClassifyLivenessInspectionFailure(
+                            candidateByName, processId);
+                        if (livenessUncertain.BlocksUpdate)
+                        {
+                            return livenessUncertain;
+                        }
                         continue;
                     }
 
@@ -102,7 +130,6 @@ internal static class ProcessIdentity
                     // exits, the OS may reuse that number for a new same-install
                     // process. Exclude only while PID AND start time still identify
                     // the exact process the caller expects.
-                    processId = process.Id;
                     if (processId == excludedPid
                         && excludedStartTicks is > 0
                         && StartTicks(process) == excludedStartTicks.Value)
@@ -124,18 +151,6 @@ internal static class ProcessIdentity
                     // Only a failed module/canonical-path inspection falls back
                     // to the name as a conservative candidate filter. A readable
                     // different installation was already dismissed above.
-                    try
-                    {
-                        candidateByName = string.Equals(
-                            process.ProcessName, expectedProcessName, nameComparison);
-                    }
-                    catch
-                    {
-                        // Neither path nor name could be inspected. It may be the
-                        // managed executable, so fail closed.
-                        return new OtherProcessCheck(
-                            OtherProcessStatus.InspectionFailed, processId);
-                    }
                     var uncertain = ClassifyInspectionFailure(candidateByName, processId);
                     if (uncertain.BlocksUpdate)
                     {
@@ -165,6 +180,14 @@ internal static class ProcessIdentity
         => candidateByName
             ? new OtherProcessCheck(OtherProcessStatus.InspectionFailed, processId)
             : new OtherProcessCheck(OtherProcessStatus.None, null);
+
+    /// <summary>
+    /// A failed liveness probe is not proof that a name-matching candidate exited.
+    /// Keep it as unsafe uncertainty; unrelated process names remain irrelevant.
+    /// </summary>
+    internal static OtherProcessCheck ClassifyLivenessInspectionFailure(
+        bool candidateByName, int? processId)
+        => ClassifyInspectionFailure(candidateByName, processId);
 
     /// <summary>Capture the start-time ticks of a process for later comparison.</summary>
     public static long StartTicks(Process process)

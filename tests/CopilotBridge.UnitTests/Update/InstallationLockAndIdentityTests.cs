@@ -142,6 +142,17 @@ public class InstallationLockAndIdentityTests
     }
 
     [Fact]
+    public void Failed_liveness_probe_does_not_treat_name_matching_candidate_as_exited()
+    {
+        var result = ProcessIdentity.ClassifyLivenessInspectionFailure(
+            candidateByName: true, processId: 54321);
+
+        Assert.Equal(OtherProcessStatus.InspectionFailed, result.Status);
+        Assert.True(result.BlocksUpdate);
+        Assert.Equal(54321, result.ProcessId);
+    }
+
+    [Fact]
     public void Unreadable_unrelated_process_does_not_block_installation()
     {
         var result = ProcessIdentity.ClassifyInspectionFailure(
