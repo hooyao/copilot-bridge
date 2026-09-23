@@ -27,6 +27,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\CopilotBridge.Cli\CopilotBridge.Cli.csproj" />
+    <ProjectReference Include="..\StubBridge\StubBridge.csproj"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!-- Real, de-identified Claude Code request captures used as A-invariant

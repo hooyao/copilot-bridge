@@ -209,7 +209,7 @@ public sealed class RealProcessUpdateTests : IDisposable
     private async Task<int> RunFullTransactionAsync(
         string attemptDir, string archive, long size, string sha,
         bool corruptArchive = false,
-        bool startSiblingBeforeAuthorization = false)
+        bool startSiblingBeforeFinalGuard = false)
     {
         Directory.CreateDirectory(attemptDir);
 
@@ -228,12 +228,6 @@ public sealed class RealProcessUpdateTests : IDisposable
         parentPsi.Environment["COPILOT_BRIDGE_PARENT_PIPE"] = handoffPipe;
         parentPsi.Environment["COPILOT_BRIDGE_PARENT_TOKEN"] = handoffToken;
         parentPsi.Environment["COPILOT_BRIDGE_PARENT_ATTEMPT"] = attemptId;
-        var siblingPidFile = Path.Combine(_root, "sibling.pid");
-        if (startSiblingBeforeAuthorization)
-        {
-            parentPsi.Environment["STUB_START_SIBLING_BEFORE_AUTH"] = "1";
-            parentPsi.Environment["STUB_SIBLING_PID_FILE"] = siblingPidFile;
-        }
         var parent = Process.Start(parentPsi)!;
         var parentStartTicks = ProcessIdentity.StartTicks(parent);
 
@@ -260,9 +254,49 @@ public sealed class RealProcessUpdateTests : IDisposable
             UseShellExecute = false,
         };
         psi.ArgumentList.Add(planPath);
+
+        Process? hookSibling = null;
+        long hookSiblingStartTicks = 0;
+        Task<string?>? finalGuardHook = null;
+        if (startSiblingBeforeFinalGuard)
+        {
+            var capability = UpdateCapability.Create(attemptId, "cutover-test");
+            psi.Environment["COPILOT_BRIDGE_TEST_CUTOVER_PIPE"] = capability.PipeName;
+            psi.Environment["COPILOT_BRIDGE_TEST_CUTOVER_TOKEN"] = capability.Token;
+            finalGuardHook = UpdatePipeTransport.ClientExchangeAsync(
+                capability.PipeName,
+                makeReply: line =>
+                {
+                    if (!string.Equals(line, capability.Token, StringComparison.Ordinal))
+                    {
+                        return null;
+                    }
+
+                    // This signal is emitted after the updater's post-parent-exit
+                    // scan and drift check, immediately before Cutover invokes its
+                    // beforeFirstMutation guard. Start the sibling only now.
+                    var siblingStart = new ProcessStartInfo
+                    {
+                        FileName = plan.BridgeExePath,
+                        WorkingDirectory = _install,
+                        UseShellExecute = false,
+                    };
+                    siblingStart.Environment["STUB_HOLD_OPEN"] = "1";
+                    hookSibling = Process.Start(siblingStart)!;
+                    hookSiblingStartTicks = ProcessIdentity.StartTicks(hookSibling);
+                    return capability.Token;
+                },
+                TimeSpan.FromSeconds(30),
+                CancellationToken.None);
+        }
         var updater = Process.Start(psi)!;
 
         await updater.WaitForExitAsync();
+        if (finalGuardHook is not null)
+        {
+            var hookLine = await finalGuardHook;
+            Assert.NotNull(hookLine);
+        }
         if (!parent.HasExited
             && ProcessIdentity.Check(parent.Id, parentStartTicks, plan.BridgeExePath) == IdentityCheck.Matched)
         {
@@ -270,22 +304,13 @@ public sealed class RealProcessUpdateTests : IDisposable
             parent.WaitForExit(5000);
         }
 
-        // Stop only the exact test sibling PID that the parent fixture recorded;
-        // never kill a process by image name (which could hit the user's bridge).
-        if (File.Exists(siblingPidFile))
+        // Stop only the exact test sibling identity; never by image name or an
+        // unchecked PID that could have been reused.
+        if (hookSibling is not null)
         {
-            var identity = (await File.ReadAllTextAsync(siblingPidFile)).Split('|');
-            if (identity.Length == 2
-                && int.TryParse(identity[0], out var siblingPid)
-                && long.TryParse(identity[1], out var siblingStartTicks))
-            {
-                StopExactTestProcess(
-                    siblingPid, siblingStartTicks, Path.Combine(_install, BridgeName));
-            }
-            else
-            {
-                throw new InvalidOperationException("Malformed sibling process identity fixture.");
-            }
+            StopExactTestProcess(
+                hookSibling.Id, hookSiblingStartTicks, Path.Combine(_install, BridgeName));
+            hookSibling.Dispose();
         }
 
         // On an unexpected outcome, surface the updater's own journal so the
@@ -408,14 +433,13 @@ public sealed class RealProcessUpdateTests : IDisposable
         var installBefore = SnapshotInstallFiles();
         var attemptDir = Path.Combine(_root, "attempt-second-bridge");
 
-        // The parent fixture launches a second process from the exact installed
-        // bridge path after it receives Prepared and before it authorizes cutover.
-        // Contract: because ownership transfers with authorization, the updater
-        // must recover the current version, never rename appsettings or replace a
-        // binary, and clean preparation files after authenticated Ready.
+        // A debug-only authenticated pipe pauses the updater after its earlier
+        // post-exit scan and starts the sibling immediately before Cutover's final
+        // beforeFirstMutation guard. This proves that final guard itself owns the
+        // recovery contract rather than relying on the earlier scan.
         var exit = await RunFullTransactionAsync(
             attemptDir, "update.zip", size, sha,
-            startSiblingBeforeAuthorization: true);
+            startSiblingBeforeFinalGuard: true);
 
         // Authorization already transferred ownership before the sibling was
         // launched, so this cannot be a plain preflight exit. The updater must

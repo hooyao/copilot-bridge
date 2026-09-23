@@ -22,6 +22,36 @@ internal enum UpdateGateDecision
 }
 
 /// <summary>
+/// Process and filesystem facts captured by the startup gate. Tests inject an
+/// isolated installation so the handoff boundary can be exercised without a
+/// GitHub request; production captures the current process once.
+/// </summary>
+internal sealed record StartupUpdateEnvironment(
+    string InstallDir,
+    string ExePath,
+    int ProcessId,
+    long ProcessStartTicks,
+    string UpdateRoot)
+{
+    public static StartupUpdateEnvironment Capture()
+    {
+        var exePath = Environment.ProcessPath
+            ?? throw new InvalidOperationException("no process path");
+        var localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrEmpty(localData))
+        {
+            localData = Path.GetTempPath();
+        }
+        return new StartupUpdateEnvironment(
+            UpdatePaths.NormalizeInstallRoot(AppContext.BaseDirectory),
+            exePath,
+            Environment.ProcessId,
+            ProcessIdentity.CurrentStartTicks(),
+            Path.Combine(localData, "copilot-bridge", "updates"));
+    }
+}
+
+/// <summary>
 /// The serve-only startup update gate. Runs once, synchronously, BEFORE the
 /// proxy host is constructed, and only for <c>serve</c> (explicit or the
 /// parameterless default action). Every network/parse/policy failure is
@@ -42,15 +72,18 @@ internal sealed class StartupUpdateGate
     private readonly AutoUpdateOptions _options;
     private readonly IReadOnlyList<string> _originalArgs;
     private readonly IUpdateConsole _console;
+    private readonly StartupUpdateEnvironment _environment;
 
     public StartupUpdateGate(
         IOptions<AutoUpdateOptions> options,
         IReadOnlyList<string> originalArgs,
-        IUpdateConsole? console = null)
+        IUpdateConsole? console = null,
+        StartupUpdateEnvironment? environment = null)
     {
         _options = options.Value;
         _originalArgs = originalArgs;
         _console = console ?? new SystemUpdateConsole();
+        _environment = environment ?? StartupUpdateEnvironment.Capture();
     }
 
     /// <summary>Run the gate. Never throws for a discovery/policy problem — fail-open.</summary>
@@ -168,7 +201,7 @@ internal sealed class StartupUpdateGate
         }
     }
 
-    private async Task<UpdateGateDecision> HandoffAsync(
+    internal async Task<UpdateGateDecision> HandoffAsync(
         SemanticVersion installed, SelectedRelease selected, ResolvedAsset asset, string targetVersion, CancellationToken ct)
     {
         // Normalize with the root-preserving shared helper: a plain
@@ -176,9 +209,8 @@ internal sealed class StartupUpdateGate
         // invalid path ("/" -> "", "C:\" -> "C:"), so a bridge installed at a
         // volume root would resolve its updater against the wrong directory or fail
         // plan validation.
-        var installDir = UpdatePaths.NormalizeInstallRoot(AppContext.BaseDirectory);
-        var exePath = Environment.ProcessPath
-            ?? throw new InvalidOperationException("no process path");
+        var installDir = _environment.InstallDir;
+        var exePath = _environment.ExePath;
         var updaterName = OperatingSystem.IsWindows() ? "copilot-updater.exe" : "copilot-updater";
         var installedUpdater = Path.Combine(installDir, updaterName);
         if (!File.Exists(installedUpdater))
@@ -193,7 +225,7 @@ internal sealed class StartupUpdateGate
         // Do not match by image name: another installation is independent and
         // must not block this one.
         var conflictingPid = ProcessIdentity.FindOtherProcessAtPath(
-            exePath, Environment.ProcessId, ProcessIdentity.CurrentStartTicks());
+            exePath, _environment.ProcessId, _environment.ProcessStartTicks);
         if (conflictingPid is not null)
         {
             Log.Error(
@@ -203,7 +235,7 @@ internal sealed class StartupUpdateGate
         }
 
         var attemptId = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(8));
-        var attemptRoot = Path.Combine(UpdateRoot(), attemptId);
+        var attemptRoot = Path.Combine(_environment.UpdateRoot, attemptId);
         CreateOwnerOnlyDirectory(attemptRoot);
 
         // Copy the updater to the private attempt dir so Windows can replace the
@@ -223,8 +255,8 @@ internal sealed class StartupUpdateGate
         var plan = new UpdatePlan
         {
             AttemptId = attemptId,
-            ParentPid = Environment.ProcessId,
-            ParentStartTicks = ProcessIdentity.CurrentStartTicks(),
+            ParentPid = _environment.ProcessId,
+            ParentStartTicks = _environment.ProcessStartTicks,
             InstallDir = installDir,
             BridgeExePath = exePath,
             UpdaterExePath = installedUpdater,
@@ -341,16 +373,6 @@ internal sealed class StartupUpdateGate
 
         Log.Information("Auto-update: installing {Version}. copilot-bridge will restart automatically.", targetVersion);
         return UpdateGateDecision.HandedOffToUpdater;
-    }
-
-    private static string UpdateRoot()
-    {
-        var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (string.IsNullOrEmpty(baseDir))
-        {
-            baseDir = Path.GetTempPath();
-        }
-        return Path.Combine(baseDir, "copilot-bridge", "updates");
     }
 
     // Create a directory owner-only where the OS supports it. On Unix that is

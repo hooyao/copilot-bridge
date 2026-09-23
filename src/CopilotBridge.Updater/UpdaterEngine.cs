@@ -241,6 +241,12 @@ internal sealed class UpdaterEngine
                     "install drifted after handoff").ConfigureAwait(false);
             }
 
+#if DEBUG
+            // Debug-build-only cross-process synchronization used by the real
+            // updater race regression. Release/AOT binaries contain no hook.
+            await WaitForFinalGuardTestHookAsync(ct).ConfigureAwait(false);
+#endif
+
             // 6. Cutover (rename original config to .bak, atomically move the
             //    pre-staged replacements into place — no writes here). Mark the
             //    transaction destructive immediately before Cutover's first
@@ -652,6 +658,28 @@ internal sealed class UpdaterEngine
         }
         return outcome;
     }
+
+#if DEBUG
+    private const string TestCutoverPipeEnv = "COPILOT_BRIDGE_TEST_CUTOVER_PIPE";
+    private const string TestCutoverTokenEnv = "COPILOT_BRIDGE_TEST_CUTOVER_TOKEN";
+
+    private static async Task WaitForFinalGuardTestHookAsync(CancellationToken ct)
+    {
+        var pipe = Environment.GetEnvironmentVariable(TestCutoverPipeEnv);
+        var token = Environment.GetEnvironmentVariable(TestCutoverTokenEnv);
+        if (string.IsNullOrEmpty(pipe) || string.IsNullOrEmpty(token))
+        {
+            return;
+        }
+
+        var reply = await UpdatePipeTransport.ServerSendLineAsync(
+            pipe, token, expectReply: true, TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
+        if (!string.Equals(reply, token, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("cutover test synchronization failed");
+        }
+    }
+#endif
 
     private void ReportUnrecovered(ManagedInstallManager install, string reason)
     {
