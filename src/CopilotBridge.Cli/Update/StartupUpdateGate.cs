@@ -72,7 +72,7 @@ internal sealed class StartupUpdateGate
     private readonly AutoUpdateOptions _options;
     private readonly IReadOnlyList<string> _originalArgs;
     private readonly IUpdateConsole _console;
-    private readonly StartupUpdateEnvironment _environment;
+    private readonly StartupUpdateEnvironment? _environment;
 
     public StartupUpdateGate(
         IOptions<AutoUpdateOptions> options,
@@ -83,7 +83,10 @@ internal sealed class StartupUpdateGate
         _options = options.Value;
         _originalArgs = originalArgs;
         _console = console ?? new SystemUpdateConsole();
-        _environment = environment ?? StartupUpdateEnvironment.Capture();
+        // Capture lazily inside HandoffAsync, which RunAsync invokes from its
+        // fail-open try/catch. Disabled/no-update paths must not require a process
+        // path, and a rare Environment.ProcessPath failure must not block serving.
+        _environment = environment;
     }
 
     /// <summary>Run the gate. Never throws for a discovery/policy problem — fail-open.</summary>
@@ -204,13 +207,15 @@ internal sealed class StartupUpdateGate
     internal async Task<UpdateGateDecision> HandoffAsync(
         SemanticVersion installed, SelectedRelease selected, ResolvedAsset asset, string targetVersion, CancellationToken ct)
     {
+        var environment = _environment ?? StartupUpdateEnvironment.Capture();
+
         // Normalize with the root-preserving shared helper: a plain
         // TrimEnd(separator) would turn a filesystem root into a non-canonical/
         // invalid path ("/" -> "", "C:\" -> "C:"), so a bridge installed at a
         // volume root would resolve its updater against the wrong directory or fail
         // plan validation.
-        var installDir = _environment.InstallDir;
-        var exePath = _environment.ExePath;
+        var installDir = environment.InstallDir;
+        var exePath = environment.ExePath;
         var updaterName = OperatingSystem.IsWindows() ? "copilot-updater.exe" : "copilot-updater";
         var installedUpdater = Path.Combine(installDir, updaterName);
         if (!File.Exists(installedUpdater))
@@ -225,7 +230,7 @@ internal sealed class StartupUpdateGate
         // Do not match by image name: another installation is independent and
         // must not block this one.
         var conflictingPid = ProcessIdentity.FindOtherProcessAtPath(
-            exePath, _environment.ProcessId, _environment.ProcessStartTicks);
+            exePath, environment.ProcessId, environment.ProcessStartTicks);
         if (conflictingPid is not null)
         {
             Log.Error(
@@ -235,7 +240,7 @@ internal sealed class StartupUpdateGate
         }
 
         var attemptId = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(8));
-        var attemptRoot = Path.Combine(_environment.UpdateRoot, attemptId);
+        var attemptRoot = Path.Combine(environment.UpdateRoot, attemptId);
         CreateOwnerOnlyDirectory(attemptRoot);
 
         // Copy the updater to the private attempt dir so Windows can replace the
@@ -255,8 +260,8 @@ internal sealed class StartupUpdateGate
         var plan = new UpdatePlan
         {
             AttemptId = attemptId,
-            ParentPid = _environment.ProcessId,
-            ParentStartTicks = _environment.ProcessStartTicks,
+            ParentPid = environment.ProcessId,
+            ParentStartTicks = environment.ProcessStartTicks,
             InstallDir = installDir,
             BridgeExePath = exePath,
             UpdaterExePath = installedUpdater,

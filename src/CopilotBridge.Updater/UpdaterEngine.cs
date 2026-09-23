@@ -241,11 +241,10 @@ internal sealed class UpdaterEngine
                     "install drifted after handoff").ConfigureAwait(false);
             }
 
-#if DEBUG
-            // Debug-build-only cross-process synchronization used by the real
-            // updater race regression. Release/AOT binaries contain no hook.
+            // Opt-in authenticated synchronization used by the real updater race
+            // regression. With no environment capability (all production runs),
+            // this is a single no-op branch in every build configuration.
             await WaitForFinalGuardTestHookAsync(ct).ConfigureAwait(false);
-#endif
 
             // 6. Cutover (rename original config to .bak, atomically move the
             //    pre-staged replacements into place — no writes here). Mark the
@@ -659,7 +658,6 @@ internal sealed class UpdaterEngine
         return outcome;
     }
 
-#if DEBUG
     private const string TestCutoverPipeEnv = "COPILOT_BRIDGE_TEST_CUTOVER_PIPE";
     private const string TestCutoverTokenEnv = "COPILOT_BRIDGE_TEST_CUTOVER_TOKEN";
 
@@ -679,7 +677,6 @@ internal sealed class UpdaterEngine
             throw new InvalidOperationException("cutover test synchronization failed");
         }
     }
-#endif
 
     private void ReportUnrecovered(ManagedInstallManager install, string reason)
     {

@@ -50,6 +50,11 @@ if (!string.IsNullOrEmpty(parentPipe))
 var ctx = UpdateLaunchContext.FromEnvironment(Environment.GetEnvironmentVariable);
 if (ctx is null)
 {
+    var ordinaryStartMarker = Environment.GetEnvironmentVariable("STUB_ORDINARY_START_MARKER");
+    if (!string.IsNullOrEmpty(ordinaryStartMarker))
+    {
+        File.WriteAllText(ordinaryStartMarker, Environment.ProcessId.ToString());
+    }
     if (Environment.GetEnvironmentVariable("STUB_HOLD_OPEN") == "1")
     {
         await Task.Delay(TimeSpan.FromMinutes(2));

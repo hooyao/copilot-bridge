@@ -127,7 +127,12 @@ public class StartupUpdateGateTests
             File.SetUnixFileMode(bridgePath, File.GetUnixFileMode(stubHost));
         }
         var updaterName = OperatingSystem.IsWindows() ? "copilot-updater.exe" : "copilot-updater";
-        File.WriteAllText(Path.Combine(install, updaterName), "fixture updater");
+        var updaterPath = Path.Combine(install, updaterName);
+        File.Copy(stubHost, updaterPath, overwrite: true);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(updaterPath, File.GetUnixFileMode(stubHost));
+        }
 
         Process StartSibling()
         {
@@ -147,9 +152,15 @@ public class StartupUpdateGateTests
         var siblingTicks = ProcessIdentity.StartTicks(sibling);
         Assert.NotEqual(0, initiatorTicks);
         Assert.NotEqual(0, siblingTicks);
+        var updaterStartMarker = Path.Combine(root, "updater-started.marker");
+        var savedMarker = Environment.GetEnvironmentVariable("STUB_ORDINARY_START_MARKER");
 
         try
         {
+            // Set only after the two sibling fixtures are already running. If the
+            // gate accidentally launches the updater copy, that child inherits
+            // this marker and records its PID, making process creation observable.
+            Environment.SetEnvironmentVariable("STUB_ORDINARY_START_MARKER", updaterStartMarker);
             Assert.True(SemanticVersion.TryParse("0.5.19", out var installed));
             Assert.True(SemanticVersion.TryParse("0.5.20", out var target));
             var selected = new SelectedRelease(
@@ -168,6 +179,7 @@ public class StartupUpdateGateTests
 
             Assert.Equal(UpdateGateDecision.ContinueCurrentVersion, decision);
             Assert.False(Directory.Exists(updateRoot));
+            Assert.False(File.Exists(updaterStartMarker));
             Assert.DoesNotContain(
                 Directory.EnumerateFileSystemEntries(install),
                 path => Path.GetFileName(path).Contains(".new.", StringComparison.Ordinal)
@@ -175,6 +187,7 @@ public class StartupUpdateGateTests
         }
         finally
         {
+            Environment.SetEnvironmentVariable("STUB_ORDINARY_START_MARKER", savedMarker);
             StopExact(sibling, siblingTicks, bridgePath);
             StopExact(initiator, initiatorTicks, bridgePath);
             try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }

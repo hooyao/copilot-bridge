@@ -433,7 +433,7 @@ public sealed class RealProcessUpdateTests : IDisposable
         var installBefore = SnapshotInstallFiles();
         var attemptDir = Path.Combine(_root, "attempt-second-bridge");
 
-        // A debug-only authenticated pipe pauses the updater after its earlier
+        // An opt-in authenticated pipe pauses the updater after its earlier
         // post-exit scan and starts the sibling immediately before Cutover's final
         // beforeFirstMutation guard. This proves that final guard itself owns the
         // recovery contract rather than relying on the earlier scan.
