@@ -15,3 +15,5 @@ tests/Fixtures/Codex/**/capture.json text eol=lf
 # test passed and only the Windows job broke).
 src/CopilotBridge.Cli/Catalogs/Codex/Bundled/models.json -text
 src/CopilotBridge.Cli/Catalogs/Codex/Bundled/capture.json text eol=lf
+src/CopilotBridge.Cli/Catalogs/Codex/Supplemental/models.json -text
+src/CopilotBridge.Cli/Catalogs/Codex/Supplemental/capture.json text eol=lf
