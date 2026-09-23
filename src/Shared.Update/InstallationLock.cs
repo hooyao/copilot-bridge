@@ -24,11 +24,11 @@ internal sealed class InstallationLock : IDisposable
     /// </summary>
     public static InstallationLock? TryAcquire(string installDir, string lockRoot)
     {
-        Directory.CreateDirectory(lockRoot);
-        var key = DeriveKey(installDir);
-        var lockPath = Path.Combine(lockRoot, $"install-{key}.lock");
         try
         {
+            Directory.CreateDirectory(lockRoot);
+            var key = DeriveKey(installDir);
+            var lockPath = Path.Combine(lockRoot, $"install-{key}.lock");
             // FileShare.None => a second opener fails until we release.
             var handle = new FileStream(
                 lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
@@ -42,16 +42,22 @@ internal sealed class InstallationLock : IDisposable
         {
             return null;
         }
+        catch (Exception ex) when (ex is System.Security.SecurityException
+            or ArgumentException
+            or NotSupportedException)
+        {
+            return null; // identity could not be established safely
+        }
     }
 
-    // Stable, filesystem-safe key from the canonical install path. Case-folded
-    // ONLY on Windows (always case-insensitive); ordinal elsewhere, so on a
-    // case-sensitive macOS/Linux volume two genuinely different install dirs that
-    // differ only in case get distinct locks — consistent with UpdatePaths.IsInside.
+    // Stable, filesystem-safe key from the link/junction-resolved install path.
+    // Case-fold on Windows and macOS. A case-sensitive macOS volume can therefore
+    // conservatively serialize two distinct case-only directories, but can never
+    // let one case-insensitive installation acquire two locks through aliases.
     private static string DeriveKey(string installDir)
     {
-        var full = Path.GetFullPath(installDir);
-        if (OperatingSystem.IsWindows())
+        var full = ProcessIdentity.CanonicalizeExistingPath(installDir);
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
         {
             full = full.ToLowerInvariant();
         }

@@ -64,7 +64,12 @@ load appsettings.json
      Install this update now? [y/N]
           │
      ├── no / non-interactive ──────► start the current version
-     └── yes ─────────────────────► hand off to copilot-updater
+     └── yes
+          │
+     another bridge from this install running?
+          │
+     ├── yes ── error ──────────────► start the current version
+     └── no ───────────────────────► hand off to copilot-updater
 ```
 
 The check has three bounds so it can never keep the proxy from starting: a
@@ -152,6 +157,33 @@ executor — it queries no releases, picks no version, prompts no one, and holds
 no secret.
 
 The install is a recoverable transaction:
+
+Before creating an attempt directory or launching the updater, the startup gate
+checks for another live process whose canonical executable path is this
+installation's `copilot-bridge` executable. If one exists, it logs an error and
+continues with the current version; a bridge from a different installation does
+not block the update. The updater repeats the exact-path check before preparation,
+immediately before `Prepared`, after the initiating parent exits, and again inside
+cutover immediately before its first rename. This minimizes (but does not pretend
+to eliminate) the
+irreducible interval between a process snapshot and a filesystem operation. No
+check selects or terminates a process by image name.
+
+If an OS access failure prevents reading the executable path of a process whose
+image name matches `copilot-bridge`, the check fails closed and skips or recovers from the
+update. The name is only a conservative uncertainty filter; readable processes
+are matched by canonical path, and no process is ever terminated by name.
+On macOS, a canonical path that differs only by letter case is treated as the
+same unsafe uncertainty because APFS volumes may be either case-sensitive or
+case-insensitive. The updater aborts or recovers safely instead of guessing the
+volume semantics or using a case-folded path as authorization to terminate a
+process.
+
+If a conflict appears only after handoff authorization, the initiating bridge is
+already exiting and cannot simply continue serving. The updater therefore routes
+that conflict through the ownership-window recovery policy and requires a
+confirmed `Ready` from a relaunched current-version bridge; it never treats the
+unknown sibling process as proof that service is healthy.
 
 1. **Prepare** (old bridge still serving): download + verify digest, extract
    into a private staging tree (rejecting traversal/symlink/duplicate entries),

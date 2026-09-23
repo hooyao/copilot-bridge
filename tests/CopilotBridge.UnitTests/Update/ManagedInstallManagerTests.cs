@@ -113,6 +113,31 @@ public class ManagedInstallManagerTests : IDisposable
     }
 
     [Fact]
+    public void Cutover_guard_failure_happens_before_any_managed_path_is_renamed()
+    {
+        const string originalConfig = """{ "Server": { "Port": 19000 } }""";
+        SeedInstalled("old-bridge", "old-updater", originalConfig);
+        SeedStaging("new-bridge", "new-updater", """{ "Server": { "Port": 8765 } }""");
+
+        var mgr = Manager();
+        Assert.True(mgr.Prepare().Ok);
+        var merged = mgr.BuildMergedConfig(File.ReadAllText(Path.Combine(_staging, ConfigName)));
+        Assert.True(mgr.StageReplacements(merged).Ok);
+
+        var mutationStarted = false;
+        var cutover = mgr.Cutover(
+            beforeFirstMutation: () => UpdateStepResult.Fail("second bridge appeared"),
+            mutationStarting: () => mutationStarted = true);
+
+        Assert.False(cutover.Ok);
+        Assert.False(mutationStarted);
+        Assert.Equal(originalConfig, File.ReadAllText(Path.Combine(_install, ConfigName)));
+        Assert.Equal("old-bridge", File.ReadAllText(Path.Combine(_install, BridgeName)));
+        Assert.Equal("old-updater", File.ReadAllText(Path.Combine(_install, UpdaterName)));
+        Assert.False(File.Exists($"{Path.Combine(_install, ConfigName)}.bak.att1"));
+    }
+
+    [Fact]
     public void Rollback_restores_exact_original_config_including_old_only_keys()
     {
         var originalConfig = """{ "Server": { "Port": 19000 }, "RemovedLegacyOption": true }""";

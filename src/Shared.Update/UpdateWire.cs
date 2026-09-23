@@ -36,6 +36,13 @@ internal static class UpdateWire
     public const string MsgCutoverAuthorized = "cutover_authorized";
     public const string MsgPreflightFailed = "preflight_failed";
 
+    // Stable prefix used only to classify a preflight failure for error-level
+    // operator reporting. It is not a new message kind or protocol revision.
+    public const string ConcurrentBridgeReason =
+        "another copilot-bridge process is running from this installation";
+    public const string ProcessInspectionFailureReason =
+        "process inspection could not prove the bridge installation is unused";
+
     // Readiness-message kind.
     public const string MsgReady = "ready";
 }

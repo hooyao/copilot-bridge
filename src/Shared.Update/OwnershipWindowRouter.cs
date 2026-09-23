@@ -4,8 +4,9 @@ namespace CopilotBridge.Update.Wire;
 /// What happened inside the ownership-transfer window — the span after the parent
 /// bridge has authorized cutover (and therefore returned WITHOUT constructing its
 /// listener, so it is exiting/gone) until the updater has committed or restored
-/// service. Every value here means "there is soon, or already, NO bridge serving",
-/// so none of them may resolve to a plain fail-open.
+/// service. Every value here means "there is soon, or already, no confirmed
+/// healthy bridge serving" (an unknown sibling is not health evidence), so none
+/// of them may resolve to a plain fail-open.
 /// </summary>
 internal enum OwnershipOutcome
 {
@@ -17,6 +18,15 @@ internal enum OwnershipOutcome
     /// <summary>A managed file drifted after handoff; cutover was refused. Nothing
     /// was installed.</summary>
     DriftAfterHandoff,
+
+    /// <summary>A second process from the same installation appeared after
+    /// authorization but before cutover. Nothing was installed, but the sibling's
+    /// command/health is unknown and cannot substitute for restoring service.</summary>
+    ConcurrentBridgeAfterHandoff,
+
+    /// <summary>An opt-in pre-mutation synchronization capability failed after
+    /// authorization. Nothing was installed, but ownership must still recover.</summary>
+    PreMutationSynchronizationFailed,
 
     /// <summary><see cref="ManagedInstallManager.Cutover"/> returned a failure
     /// (e.g. config drifted at the rename boundary). It may have partially replaced
@@ -72,11 +82,10 @@ internal static class OwnershipWindowRouter
     /// </summary>
     /// <param name="outcome">What happened in the window.</param>
     /// <param name="transactionMutating">
-    /// True once the transaction has begun mutating the install — set immediately
-    /// BEFORE <see cref="ManagedInstallManager.Cutover"/>, because Cutover becomes
-    /// destructive the instant it renames the live config, and a throw partway
-    /// through must therefore roll back (restoring the config) rather than merely
-    /// relaunch the old bridge without it.
+    /// True once the transaction has begun mutating the install — set inside
+    /// <see cref="ManagedInstallManager.Cutover"/> immediately before its first
+    /// rename. A throw after that point must roll back (restoring the config)
+    /// rather than merely relaunch the old bridge without it.
     /// </param>
     public static RecoveryAction Route(OwnershipOutcome outcome, bool transactionMutating) => outcome switch
     {
@@ -85,6 +94,8 @@ internal static class OwnershipWindowRouter
         // so exiting the updater without relaunching would strand the user.
         OwnershipOutcome.ParentExitUnconfirmed => RecoveryAction.RecoverOldBridge,
         OwnershipOutcome.DriftAfterHandoff => RecoveryAction.RecoverOldBridge,
+        OwnershipOutcome.ConcurrentBridgeAfterHandoff => RecoveryAction.RecoverOldBridge,
+        OwnershipOutcome.PreMutationSynchronizationFailed => RecoveryAction.RecoverOldBridge,
 
         // Cutover started mutating (config renamed, maybe binaries replaced) →
         // rollback restores everything, including the exact original config.

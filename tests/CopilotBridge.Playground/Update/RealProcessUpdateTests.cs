@@ -87,6 +87,37 @@ public sealed class RealProcessUpdateTests : IDisposable
         return Convert.ToHexStringLower(sha.ComputeHash(s));
     }
 
+    private Dictionary<string, byte[]> SnapshotInstallFiles() => Directory
+        .EnumerateFiles(_install, "*", SearchOption.TopDirectoryOnly)
+        .ToDictionary(path => Path.GetFileName(path)!, File.ReadAllBytes, StringComparer.Ordinal);
+
+    private void AssertInstallMatches(Dictionary<string, byte[]> before)
+    {
+        var after = SnapshotInstallFiles();
+        Assert.Equal(before.Keys.Order(), after.Keys.Order());
+        foreach (var (name, bytes) in before)
+        {
+            Assert.Equal(bytes, after[name]);
+        }
+    }
+
+    private void StopExactTestProcess(int pid, long startTicks, string expectedExePath)
+    {
+        // Mirror the product's never-kill-the-wrong-process rule: a PID alone is
+        // insufficient because it may have been reused. Kill only after the full
+        // PID + start-time + canonical executable identity still matches.
+        var identity = ProcessIdentity.Check(pid, startTicks, expectedExePath);
+        if (identity != IdentityCheck.Matched)
+        {
+            throw new InvalidOperationException(
+                $"Refusing to stop test process {pid}: identity is {identity}.");
+        }
+
+        using var process = Process.GetProcessById(pid);
+        process.Kill();
+        process.WaitForExit(5000);
+    }
+
     // -- The stub is built with an apphost, so the managed "bridge"/"updater" ARE
     //    real native executables (the apphost locates stub-bridge.dll, still
     //    present alongside). --
@@ -176,7 +207,10 @@ public sealed class RealProcessUpdateTests : IDisposable
     /// commits or rolls back — all via real processes and real named pipes.
     /// </summary>
     private async Task<int> RunFullTransactionAsync(
-        string attemptDir, string archive, long size, string sha, bool corruptArchive = false)
+        string attemptDir, string archive, long size, string sha,
+        bool corruptArchive = false,
+        bool startSiblingBeforeFinalGuard = false,
+        bool failFinalGuardSynchronization = false)
     {
         Directory.CreateDirectory(attemptDir);
 
@@ -221,10 +255,69 @@ public sealed class RealProcessUpdateTests : IDisposable
             UseShellExecute = false,
         };
         psi.ArgumentList.Add(planPath);
+
+        Process? hookSibling = null;
+        long hookSiblingStartTicks = 0;
+        Task<string?>? finalGuardHook = null;
+        if (startSiblingBeforeFinalGuard || failFinalGuardSynchronization)
+        {
+            var capability = UpdateCapability.Create(attemptId, "cutover-test");
+            psi.Environment["COPILOT_BRIDGE_TEST_CUTOVER_PIPE"] = capability.PipeName;
+            psi.Environment["COPILOT_BRIDGE_TEST_CUTOVER_TOKEN"] = capability.Token;
+            finalGuardHook = UpdatePipeTransport.ClientExchangeAsync(
+                capability.PipeName,
+                makeReply: line =>
+                {
+                    if (!string.Equals(line, capability.Token, StringComparison.Ordinal))
+                    {
+                        return null;
+                    }
+
+                    if (startSiblingBeforeFinalGuard)
+                    {
+                        // This signal is emitted after the updater's post-parent-exit
+                        // scan and drift check, immediately before Cutover invokes its
+                        // beforeFirstMutation guard. Start the sibling only now.
+                        var siblingStart = new ProcessStartInfo
+                        {
+                            FileName = plan.BridgeExePath,
+                            WorkingDirectory = _install,
+                            UseShellExecute = false,
+                        };
+                        siblingStart.Environment["STUB_HOLD_OPEN"] = "1";
+                        hookSibling = Process.Start(siblingStart)!;
+                        hookSiblingStartTicks = ProcessIdentity.StartTicks(hookSibling);
+                    }
+                    return failFinalGuardSynchronization
+                        ? capability.Token + "-invalid"
+                        : capability.Token;
+                },
+                TimeSpan.FromSeconds(30),
+                CancellationToken.None);
+        }
         var updater = Process.Start(psi)!;
 
         await updater.WaitForExitAsync();
-        try { if (!parent.HasExited) parent.Kill(); } catch { /* best effort */ }
+        if (finalGuardHook is not null)
+        {
+            var hookLine = await finalGuardHook;
+            Assert.NotNull(hookLine);
+        }
+        if (!parent.HasExited
+            && ProcessIdentity.Check(parent.Id, parentStartTicks, plan.BridgeExePath) == IdentityCheck.Matched)
+        {
+            parent.Kill();
+            parent.WaitForExit(5000);
+        }
+
+        // Stop only the exact test sibling identity; never by image name or an
+        // unchecked PID that could have been reused.
+        if (hookSibling is not null)
+        {
+            StopExactTestProcess(
+                hookSibling.Id, hookSiblingStartTicks, Path.Combine(_install, BridgeName));
+            hookSibling.Dispose();
+        }
 
         // On an unexpected outcome, surface the updater's own journal so the
         // real-process failure is diagnosable rather than opaque.
@@ -335,6 +428,104 @@ public sealed class RealProcessUpdateTests : IDisposable
         Assert.Equal((int)UpdaterExitCodes.PreflightFailed, exit);
         Assert.Equal(originalConfig, await File.ReadAllTextAsync(Path.Combine(_install, ConfigName)));
         Assert.Equal(bridgeBefore, await File.ReadAllBytesAsync(Path.Combine(_install, BridgeName)));
+    }
+
+    [Fact]
+    public async Task Second_bridge_started_during_handoff_aborts_before_cutover_without_artifacts()
+    {
+        const string originalConfig = """{ "Server": { "Port": 19000 }, "OperatorValue": true }""";
+        SeedInstall(originalConfig);
+        var (_, size, sha) = BuildArchive("""{ "Server": { "Port": 8765 }, "NewKey": 1 }""");
+        var installBefore = SnapshotInstallFiles();
+        var attemptDir = Path.Combine(_root, "attempt-second-bridge");
+
+        // An opt-in authenticated pipe pauses the updater after its earlier
+        // post-exit scan and starts the sibling immediately before Cutover's final
+        // beforeFirstMutation guard. This proves that final guard itself owns the
+        // recovery contract rather than relying on the earlier scan.
+        var exit = await RunFullTransactionAsync(
+            attemptDir, "update.zip", size, sha,
+            startSiblingBeforeFinalGuard: true);
+
+        // Authorization already transferred ownership before the sibling was
+        // launched, so this cannot be a plain preflight exit. The updater must
+        // relaunch the current version and require its authenticated Ready.
+        Assert.Equal((int)UpdaterExitCodes.RolledBack, exit);
+        AssertInstallMatches(installBefore);
+        Assert.False(Directory.Exists(Path.Combine(attemptDir, "staging")));
+        Assert.False(Directory.Exists(Path.Combine(attemptDir, "backup")));
+        Assert.False(File.Exists(Path.Combine(attemptDir, "update.zip")));
+        Assert.DoesNotContain(
+            Directory.EnumerateFileSystemEntries(_install),
+            path => path.Contains(".bak.", StringComparison.Ordinal)
+                || path.Contains(".new.", StringComparison.Ordinal)
+                || path.Contains(".old.", StringComparison.Ordinal)
+                || Path.GetFileName(path).StartsWith(".copilot-update-probe.", StringComparison.Ordinal));
+
+        var journal = await File.ReadAllTextAsync(Path.Combine(attemptDir, "transaction.log"));
+        Assert.Contains(UpdateWire.ConcurrentBridgeReason, journal, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Existing_second_bridge_fails_preflight_without_touching_install()
+    {
+        const string originalConfig = """{ "Server": { "Port": 19000 }, "OperatorValue": true }""";
+        SeedInstall(originalConfig);
+        var (_, size, sha) = BuildArchive("""{ "Server": { "Port": 8765 }, "NewKey": 1 }""");
+        var installBefore = SnapshotInstallFiles();
+        var attemptDir = Path.Combine(_root, "attempt-existing-bridge");
+        var bridgePath = Path.Combine(_install, BridgeName);
+
+        var siblingStart = new ProcessStartInfo
+        {
+            FileName = bridgePath,
+            WorkingDirectory = _install,
+            UseShellExecute = false,
+        };
+        siblingStart.Environment["STUB_HOLD_OPEN"] = "1";
+        using var sibling = Process.Start(siblingStart)!;
+        var siblingStartTicks = ProcessIdentity.StartTicks(sibling);
+        Assert.NotEqual(0, siblingStartTicks);
+
+        try
+        {
+            var exit = await RunFullTransactionAsync(attemptDir, "update.zip", size, sha);
+
+            Assert.Equal((int)UpdaterExitCodes.PreflightFailed, exit);
+            AssertInstallMatches(installBefore);
+            Assert.False(Directory.Exists(Path.Combine(attemptDir, "staging")));
+            Assert.False(Directory.Exists(Path.Combine(attemptDir, "backup")));
+            Assert.False(File.Exists(Path.Combine(attemptDir, "update.zip")));
+            var journal = await File.ReadAllTextAsync(Path.Combine(attemptDir, "transaction.log"));
+            Assert.Contains(UpdateWire.ConcurrentBridgeReason, journal, StringComparison.Ordinal);
+        }
+        finally
+        {
+            StopExactTestProcess(sibling.Id, siblingStartTicks, bridgePath);
+        }
+    }
+
+    [Fact]
+    public async Task Failed_cutover_synchronization_recovers_service_without_mutating_install()
+    {
+        const string originalConfig = """{ "Server": { "Port": 19000 }, "OperatorValue": true }""";
+        SeedInstall(originalConfig);
+        var (_, size, sha) = BuildArchive("""{ "Server": { "Port": 8765 }, "NewKey": 1 }""");
+        var installBefore = SnapshotInstallFiles();
+        var attemptDir = Path.Combine(_root, "attempt-sync-failure");
+
+        var exit = await RunFullTransactionAsync(
+            attemptDir, "update.zip", size, sha,
+            failFinalGuardSynchronization: true);
+
+        Assert.Equal((int)UpdaterExitCodes.RolledBack, exit);
+        AssertInstallMatches(installBefore);
+        Assert.False(Directory.Exists(Path.Combine(attemptDir, "staging")));
+        Assert.False(Directory.Exists(Path.Combine(attemptDir, "backup")));
+        Assert.False(File.Exists(Path.Combine(attemptDir, "update.zip")));
+        var journal = await File.ReadAllTextAsync(Path.Combine(attemptDir, "transaction.log"));
+        Assert.Contains("ownership.synchronization-failed", journal, StringComparison.Ordinal);
+        Assert.Contains("recover.recovered", journal, StringComparison.Ordinal);
     }
 }
 
