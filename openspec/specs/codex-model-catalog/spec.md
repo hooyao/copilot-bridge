@@ -247,7 +247,7 @@ The bridge MAY carry a closed set of complete, digest-pinned Codex model records
 
 #### Scenario: Live-only model is not guessed
 
-- **WHEN** Copilot advertises a Responses model that has no entry in the exact official Codex baseline
+- **WHEN** Copilot advertises a Responses model that has no entry in the exact official Codex baseline and is outside the closed reviewed supplemental set
 - **THEN** the model is omitted from the effective catalog rather than receiving synthesized instructions or tool metadata
 
 #### Scenario: Reviewed record fills a stable baseline omission
