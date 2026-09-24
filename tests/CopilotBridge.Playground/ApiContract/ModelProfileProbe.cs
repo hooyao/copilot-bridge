@@ -30,13 +30,7 @@ public partial class ModelProfileProbe
 
     public static readonly string[] AllModels =
     [
-        "claude-haiku-4.5",
-        "claude-sonnet-4.6",
-        "claude-sonnet-5",
-        "claude-opus-4.6",
-        "claude-opus-4.7",
-        "claude-opus-4.8",
-        "claude-opus-5",
+        "claude-opus-5.5",
     ];
 
     public static IEnumerable<object[]> ThinkingMatrix() =>
@@ -666,6 +660,15 @@ public partial class ModelProfileProbe
     // catalog profile remained. Absence is NOT a delete license (see the class
     // remarks) — this probe is the ground truth for whether it still routes.
     [InlineData("claude-sonnet-4.5")]
+    // 2026-09: absent from this account's /models list. Each still needs a
+    // live rejection before its catalog profile can be removed.
+    [InlineData("claude-haiku-4.5")]
+    [InlineData("claude-sonnet-4.6")]
+    [InlineData("claude-sonnet-5")]
+    [InlineData("claude-opus-4.6")]
+    [InlineData("claude-opus-4.7")]
+    [InlineData("claude-opus-4.8")]
+    [InlineData("claude-opus-5")]
     public async Task RetiredCandidate_LivenessProbe(string model)
     {
         var payload = $$"""
@@ -1079,6 +1082,195 @@ public partial class ModelProfileProbe
         using var client = new PlaygroundClient();
         var (status, body) = await client.TryPostMessagesAsync(payload);
         _output.WriteLine($"[{model}] liveness → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
+    // The 2026-09 account advertises only claude-opus-5.5 on /v1/messages.
+    // These probes intentionally cover each axis and the combinations Claude Code
+    // sends; the older opus-5 profile is not evidence for the new id.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("adaptive")]
+    [InlineData("enabled")]
+    [InlineData("disabled")]
+    public async Task Opus55_Thinking_ProbeAcceptance(string? thinkingType)
+    {
+        var thinkingBlock = thinkingType switch
+        {
+            null => "",
+            "enabled" => ""","thinking":{"type":"enabled","budget_tokens":8192}""",
+            _ => $$$""","thinking":{"type":"{{{thinkingType}}}"}""",
+        };
+        var payload = $$"""
+          {"model":"claude-opus-5.5","max_tokens":16384,
+           "messages":[{"role":"user","content":"reply: ok"}]{{thinkingBlock}}}
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-opus-5.5] thinking={thinkingType ?? "<null>"} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 280)}");
+    }
+
+    [Theory]
+    [InlineData("low", false)]
+    [InlineData("medium", false)]
+    [InlineData("high", false)]
+    [InlineData("xhigh", false)]
+    [InlineData("max", false)]
+    [InlineData("low", true)]
+    [InlineData("medium", true)]
+    [InlineData("high", true)]
+    [InlineData("xhigh", true)]
+    [InlineData("max", true)]
+    public async Task Opus55_Effort_ReProbe(string effort, bool withAdaptiveThinking)
+    {
+        var thinkingBlock = withAdaptiveThinking ? ""","thinking":{"type":"adaptive"}""" : "";
+        var payload = $$"""
+          {"model":"claude-opus-5.5","max_tokens":64,
+           "messages":[{"role":"user","content":"reply: ok"}],
+           "output_config":{"effort":"{{effort}}"}{{thinkingBlock}}}
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-opus-5.5] effort={effort} adaptive={withAdaptiveThinking} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 280)}");
+    }
+
+    [Theory]
+    [InlineData("low")]
+    [InlineData("medium")]
+    [InlineData("high")]
+    [InlineData("xhigh")]
+    [InlineData("max")]
+    public async Task Opus55_DisabledThinking_EffortInteraction_Probe(string effort)
+    {
+        var payload = $$"""
+          {"model":"claude-opus-5.5","max_tokens":64,
+           "messages":[{"role":"user","content":"reply: ok"}],
+           "thinking":{"type":"disabled"},"output_config":{"effort":"{{effort}}"
+           }
+          }
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-opus-5.5] disabled+effort={effort} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
+    [Theory]
+    [InlineData("end-after-user",          """[{"role":"user","content":"hi"},{"role":"system","content":"S"}]""")]
+    [InlineData("between-two-users",       """[{"role":"user","content":"hi"},{"role":"system","content":"S"},{"role":"user","content":"there"}]""")]
+    [InlineData("end-after-assistant",     """[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"system","content":"S"}]""")]
+    [InlineData("between-assistant-user",  """[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"system","content":"S"},{"role":"user","content":"more"}]""")]
+    [InlineData("between-two-assistants",  """[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"system","content":"S"},{"role":"assistant","content":"world"}]""")]
+    [InlineData("end-after-user-followup", """[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"more"},{"role":"system","content":"S"}]""")]
+    public async Task Opus55_MidConversationSystem_PlacementRules(string label, string messagesJson)
+    {
+        var payload = $$"""
+          {"model":"claude-opus-5.5","max_tokens":64,"messages":{{messagesJson}}}
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-opus-5.5] placement={label} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 280)}");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("context-1m-2025-08-07")]
+    [InlineData("bogus-nonexistent-beta-99999")]
+    public async Task Opus55_ContextOneMillionBeta_ProbeAcceptance(string? beta)
+    {
+        const string payload = """
+          {"model":"claude-opus-5.5","max_tokens":16,
+           "messages":[{"role":"user","content":"reply: ok"}]}
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload, anthropicBeta: beta);
+        _output.WriteLine($"[claude-opus-5.5] beta={beta ?? "<none>"} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 280)}");
+    }
+
+    // The official Opus 5.5 migration guide says forced tool choices are a
+    // breaking change. Confirm whether Copilot enforces that rule too.
+    [Theory]
+    [InlineData("auto", "{\"type\":\"auto\"}")]
+    [InlineData("none", "{\"type\":\"none\"}")]
+    [InlineData("any", "{\"type\":\"any\"}")]
+    [InlineData("tool", "{\"type\":\"tool\",\"name\":\"lookup\"}")]
+    public async Task Opus55_ToolChoice_ProbeAcceptance(string label, string toolChoice)
+    {
+        const string template = """
+          {"model":"claude-opus-5.5","max_tokens":64,
+           "messages":[{"role":"user","content":"Use lookup for this query."}],
+           "tools":[{"name":"lookup","description":"Look up a query","input_schema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}],
+           "tool_choice":__CHOICE__}
+          """;
+        var payload = template.Replace("__CHOICE__", toolChoice, StringComparison.Ordinal);
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[claude-opus-5.5] tool_choice={label} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
+    // Anthropic documents claude-opus-5-5 while Copilot advertises the dotted
+    // claude-opus-5.5 id. Check both endpoints before relying on normalization.
+    [Theory]
+    [InlineData("claude-opus-5-5", false)]
+    [InlineData("claude-opus-5.5", false)]
+    [InlineData("claude-opus-5-5", true)]
+    [InlineData("claude-opus-5.5", true)]
+    public async Task Opus55_ClientIdAlias_LivenessProbe(string model, bool countTokens)
+    {
+        var payload = countTokens
+            ? $$"""{"model":"{{model}}","messages":[{"role":"user","content":"hi"}]}"""
+            : $$"""{"model":"{{model}}","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}""";
+        using var client = new PlaygroundClient();
+        var (status, body) = countTokens
+            ? await client.TryPostCountTokensAsync(payload)
+            : await client.TryPostMessagesAsync(payload);
+        _output.WriteLine($"[{model}] endpoint={(countTokens ? "count_tokens" : "messages")} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+    }
+
+    // Anthropic's migration guide says these controls fail on count_tokens,
+    // but this Copilot route accepts them. Pin the live divergence so the
+    // native count endpoint can safely preserve unknown fields and bytes.
+    [Theory]
+    [InlineData("auto")]
+    [InlineData("any")]
+    [InlineData("disabled")]
+    public async Task Opus55_CountTokens_ControlsAcceptedByCopilot(string axis)
+    {
+        var choice = axis == "auto" ? ",\"tool_choice\":{\"type\":\"auto\"}"
+            : axis == "any" ? ",\"tool_choice\":{\"type\":\"any\"}" : "";
+        var thinking = axis == "disabled" ? ",\"thinking\":{\"type\":\"disabled\"}" : "";
+        var payload = "{\"model\":\"claude-opus-5.5\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],"
+            + "\"tools\":[{\"name\":\"lookup\",\"description\":\"Look up a query\","
+            + "\"input_schema\":{\"type\":\"object\",\"properties\":{}}}]"
+            + choice + thinking + "}";
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostCountTokensAsync(payload);
+        _output.WriteLine($"[claude-opus-5.5] count_tokens axis={axis} → {(int)status} {status}");
+        _output.WriteLine($"  body: {Truncate(body, 300)}");
+        Assert.Equal(200, (int)status);
+        Assert.Contains("\"input_tokens\"", body, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("context-1m-2025-08-07")]
+    public async Task Opus55_LargePrompt_ProbeOneMillionContextSupport(string? beta)
+    {
+        var unit = "qZ7$%w!eL#3xR2&Vp9*Jb4@Sk6mTn1Y";
+        var padding = string.Concat(Enumerable.Repeat(unit, 600_000 / unit.Length));
+        var payload = $$"""
+          {"model":"claude-opus-5.5","max_tokens":16,
+           "messages":[{"role":"user","content":"context follows; reply: ok\n\n{{padding}}"}]}
+          """;
+        using var client = new PlaygroundClient();
+        var (status, body) = await client.TryPostMessagesAsync(payload, anthropicBeta: beta);
+        _output.WriteLine($"[claude-opus-5.5] padded-prompt beta={beta ?? "<none>"} → {(int)status} {status}");
         _output.WriteLine($"  body: {Truncate(body, 300)}");
     }
 }

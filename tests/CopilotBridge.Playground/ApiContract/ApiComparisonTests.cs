@@ -18,15 +18,8 @@ namespace CopilotBridge.Playground;
 /// Anthropic API key comes from <c>tests/CopilotBridge.Playground/appsettings.local.json</c>
 /// (gitignored). Tests skip cleanly when the key is absent or rate-limited (429).
 ///
-/// Model mapping: sonnet-4.6 / haiku-4.5 / opus-4.7 exist on both sides with
-/// the same canonical id (dot/dash format differs — Anthropic native uses
-/// <c>claude-opus-4-7</c>, Copilot uses <c>claude-opus-4.7</c>). The
-/// Copilot-only <c>-1m-internal</c> variant used to be compared here against
-/// native <c>claude-opus-4-7</c> + the <c>context-1m-2025-08-07</c> beta; that
-/// row was dropped in the 2026-07 reconciliation after Copilot retired the id
-/// (see <see cref="ModelProfileProbe.RetiredCandidate_LivenessProbe"/>) — the
-/// opus-4.7 base row already covers the same comparison now that 1M is native
-/// on the base.
+/// Current model mapping: Anthropic native uses <c>claude-opus-5-5</c>;
+/// Copilot advertises <c>claude-opus-5.5</c>. Both serve 1M context.
 /// </summary>
 [SupportedOSPlatform("windows")]
 [Trait("Category", "Integration")]
@@ -53,10 +46,8 @@ public class ApiComparisonTests
 
     [Theory]
     // model_copilot, model_native, native_betas, label
-    [InlineData("claude-sonnet-4.6", "claude-sonnet-4-6",    null,                    "sonnet-4.6 (both)")]
-    [InlineData("claude-haiku-4.5",  "claude-haiku-4-5",     null,                    "haiku-4.5 (both)")]
-    [InlineData("claude-opus-4.7",   "claude-opus-4-7",      null,                    "opus-4.7 (both)")]
-    [InlineData("claude-opus-4.7",   "claude-opus-4-7", "context-1m-2025-08-07", "opus-4.7 native 1M (base id serves 1M on both sides)")]
+    [InlineData("claude-opus-5.5", "claude-opus-5-5", null, "opus-5.5 (both)")]
+    [InlineData("claude-opus-5.5", "claude-opus-5-5", "context-1m-2025-08-07", "opus-5.5 native 1M")]
     public async Task CompareMinimalPrompt_AcrossBackends(
         string modelCopilot,
         string modelNative,
@@ -123,11 +114,7 @@ public class ApiComparisonTests
     /// of "does this model emit stop_details / inference_geo / service_tier".
     /// </summary>
     [Theory]
-    [InlineData("claude-haiku-4.5")]
-    [InlineData("claude-sonnet-4.6")]
-    [InlineData("claude-opus-4.7")]
-    [InlineData("claude-opus-4.8")]
-    [InlineData("claude-opus-5")]
+    [InlineData("claude-opus-5.5")]
     public async Task CopilotShape_ObserveAcrossModels(string model)
     {
         var body = BuildBody(model, "Reply with the single word: ok");

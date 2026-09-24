@@ -24,7 +24,7 @@ public class ExtendedCacheTtlTests
         "Match the user's terseness in your replies. ", 100));
 
     [Theory]
-    [InlineData("claude-sonnet-4.6")]
+    [InlineData("claude-opus-5.5")]
     public async Task OneHourTtl_RoundTripsAndReportsAs1hBucket(string model)
     {
         var json = BuildRequest(model).ToJsonString();

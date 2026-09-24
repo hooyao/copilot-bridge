@@ -26,7 +26,7 @@ accept. **Locations express what you want; profiles enforce what's possible.**
 
 The same Location evaluation applies independently to both
 `POST /cc/v1/messages` and `POST /cc/v1/messages/count_tokens`. This matters for
-cross-protocol routes such as `claude-opus-5 → gpt-5.6-sol`: count-tokens is also
+cross-protocol routes such as `claude-opus-5.5 → gpt-5.6-sol`: count-tokens is also
 routed to the Responses target and counts the canonical Responses T2 input, not
 the original Anthropic framing. Each request is evaluated from its own fields;
 an auxiliary count request that omits effort does not inherit effort from a main
@@ -210,17 +210,17 @@ into the active array. Exactly one `Locations` key may exist:
 ```jsonc
 "_Locations_disabled": [
   {
-    "When": { "Model": "claude-opus-5" },
+    "When": { "Model": "claude-opus-5.5" },
     "Use": { "Model": "gpt-5.6-sol", "EffortMap": { "max": "xhigh" } },
-    "Note": "Route Claude Code's claude-opus-5 traffic to the reviewed gpt-5.6-sol Codex client model. EffortMap max->xhigh is an OPTIONAL down-tier here: unlike gpt-5.5, gpt-5.6-sol accepts 'max' natively, so without the map Claude Code's 'max' passes through verbatim; the map caps it at xhigh instead. Drop the EffortMap to send 'max' through unchanged. Still a cross-model substitution — enable only when you intend Copilot's gpt-5.6-sol to serve Claude Code traffic."
+    "Note": "Route Claude Code's claude-opus-5-5 traffic to the reviewed gpt-5.6-sol Codex client model when available on your account. EffortMap max->xhigh is an optional down-tier."
   }
 ]
 ```
 
 > The `When.Model` here doubles as the CC→gpt behavior scenario's source id
 > (`ServeProcess` promotes this exact block to active `Locations`), so it tracks
-> `ClientBehaviorSupport.LatestClaude` — bumped `claude-opus-4.8` → `claude-opus-5`
-> in the 2026-07 reconciliation. Change both together or the scenario's routing
+> `ClientBehaviorSupport.LatestClaude` — now `claude-opus-5-5`, normalized to
+> the dotted id in `When.Model`. Change both together or the scenario's routing
 > silently stops matching.
 
 > Earlier releases shipped an active `gpt-5.5-1m -> gpt-5.5` alias plus a manual

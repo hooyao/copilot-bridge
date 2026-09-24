@@ -122,7 +122,8 @@ internal sealed class ModelRoutePlanner
         {
             var ex = Unknown(
                 requested, resolved, location, index,
-                _profiles.KnownIds, matchedId, score);
+                _profiles.KnownIds, matchedId, score,
+                ModelProfileCatalog.MinSimilarity);
             _log.LogError("{Message}", ex.Message);
             throw ex;
         }
@@ -145,7 +146,8 @@ internal sealed class ModelRoutePlanner
         int index,
         IReadOnlyList<string> known,
         string matchedId,
-        double score) =>
+        double score,
+        double minSimilarity = ModelNameMatcher.DefaultMinSimilarity) =>
         new(
             requestedModel: requested,
             resolvedModel: resolved,
@@ -153,5 +155,6 @@ internal sealed class ModelRoutePlanner
             appliedLocationIndex: location is null ? null : index,
             knownProfiles: known,
             bestCandidate: matchedId.Length > 0 ? matchedId : null,
-            bestScore: score);
+            bestScore: score,
+            minSimilarity: minSimilarity);
 }

@@ -23,8 +23,7 @@ public class PromptCachingTests
         "Match the user's terseness in your replies. ", 100));
 
     [Theory]
-    [InlineData("claude-sonnet-4.6")]
-    [InlineData("claude-haiku-4.5")]
+    [InlineData("claude-opus-5.5")]
     public async Task EphemeralCache_HitsOnSecondIdenticalRequest(string model)
     {
         var json = BuildRequest(model).ToJsonString();

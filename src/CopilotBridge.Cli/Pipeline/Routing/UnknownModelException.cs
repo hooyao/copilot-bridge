@@ -45,12 +45,15 @@ internal sealed class UnknownModelException : Exception
     /// when a best-effort match was attempted and the best candidate scored
     /// <b>below the similarity floor</b> (so it was rejected). Null when no
     /// candidate came close at all. Surfaced in the message so a below-floor 400
-    /// explains itself ("nearest was 'X' at 0.21, below the 0.30 floor").
+    /// explains itself ("nearest was 'X' at 0.21, below the active floor").
     /// </summary>
     public string? BestCandidate { get; }
 
     /// <summary>The Jaccard score of <see cref="BestCandidate"/> (0 when none).</summary>
     public double BestScore { get; }
+
+    /// <summary>The similarity floor applied by the selected model catalog.</summary>
+    public double MinSimilarity { get; }
 
     public UnknownModelException(
         string requestedModel,
@@ -59,8 +62,9 @@ internal sealed class UnknownModelException : Exception
         int? appliedLocationIndex,
         IReadOnlyList<string> knownProfiles,
         string? bestCandidate = null,
-        double bestScore = 0.0)
-        : base(BuildMessage(requestedModel, resolvedModel, appliedLocation, appliedLocationIndex, knownProfiles, bestCandidate, bestScore))
+        double bestScore = 0.0,
+        double minSimilarity = ModelNameMatcher.DefaultMinSimilarity)
+        : base(BuildMessage(requestedModel, resolvedModel, appliedLocation, appliedLocationIndex, knownProfiles, bestCandidate, bestScore, minSimilarity))
     {
         RequestedModel = requestedModel;
         ResolvedModel = resolvedModel;
@@ -69,6 +73,7 @@ internal sealed class UnknownModelException : Exception
         KnownProfiles = knownProfiles;
         BestCandidate = bestCandidate;
         BestScore = bestScore;
+        MinSimilarity = minSimilarity;
     }
 
     private static string BuildMessage(
@@ -78,7 +83,8 @@ internal sealed class UnknownModelException : Exception
         int? locIndex,
         IReadOnlyList<string> known,
         string? bestCandidate,
-        double bestScore)
+        double bestScore,
+        double minSimilarity)
     {
         var knownList = known.Count == 0 ? "(catalog is empty)" : string.Join(", ", known);
 
@@ -89,7 +95,7 @@ internal sealed class UnknownModelException : Exception
         var nearNote = bestCandidate is null
             ? ""
             : $"\nNearest known model was '{bestCandidate}' (similarity {bestScore:F2}), below the "
-              + $"{ModelNameMatcher.DefaultMinSimilarity:F2} fuzzy-match floor — so the bridge did "
+              + $"{minSimilarity:F2} fuzzy-match floor — so the bridge did "
               + "not borrow its contract automatically.";
 
         if (loc is null)

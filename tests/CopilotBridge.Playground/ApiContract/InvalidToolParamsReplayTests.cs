@@ -50,7 +50,7 @@ public class InvalidToolParamsReplayTests
     /// (bypassing SseParser), and report how often the upstream stream actually
     /// contains the required <c>question</c> field.
     /// </summary>
-    [Fact]
+    [Fact(Skip = "Historical Opus 4.8 forced-tool probe; Opus 5.5 rejects tool_choice:tool.")]
     public async Task ForceAskUserQuestion_RawStream_MeasureQuestionFieldRate()
     {
         // Minimal AskUserQuestion tool schema (same shape as the real one:

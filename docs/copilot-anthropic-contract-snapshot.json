@@ -3,173 +3,42 @@
     "backend": "copilot-anthropic",
     "endpoint": "/v1/messages",
     "account_type": "enterprise",
-    "models_probed": 7,
+    "models_probed": 1,
     "note": "Live wire-truth of what Copilot\u0027s /v1/messages accepts per model. Drift here (B2) fails B_AnthropicContract_SweepAssertAndDetectDrift; regenerate with BRIDGE_REGEN_CONTRACT_SNAPSHOT=1 and review. Guards ModelProfileCatalog (B3 in the same test)."
   },
   "models": {
-    "claude-haiku-4.5": {
+    "claude-opus-5.5": {
       "effort": {
-        "accepted": [],
-        "rejected": [
+        "accepted": [
           "low",
           "medium",
           "high",
           "xhigh",
           "max"
-        ]
+        ],
+        "rejected": []
       },
       "thinking": {
         "accepted": [
-          "enabled",
-          "disabled"
-        ],
-        "rejected": [
           "adaptive"
-        ]
-      },
-      "mid_conv_system": false,
-      "effort_rejected_when_thinking_disabled": []
-    },
-    "claude-sonnet-4.6": {
-      "effort": {
-        "accepted": [
-          "low",
-          "medium",
-          "high",
-          "max"
         ],
         "rejected": [
-          "xhigh"
-        ]
-      },
-      "thinking": {
-        "accepted": [
-          "adaptive",
           "enabled",
           "disabled"
-        ],
-        "rejected": []
-      },
-      "mid_conv_system": false,
-      "effort_rejected_when_thinking_disabled": []
-    },
-    "claude-sonnet-5": {
-      "effort": {
-        "accepted": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "rejected": []
-      },
-      "thinking": {
-        "accepted": [
-          "adaptive",
-          "disabled"
-        ],
-        "rejected": [
-          "enabled"
         ]
       },
       "mid_conv_system": true,
-      "effort_rejected_when_thinking_disabled": []
-    },
-    "claude-opus-4.6": {
-      "effort": {
+      "tool_choice": {
         "accepted": [
-          "low",
-          "medium",
-          "high",
-          "max"
+          "auto",
+          "none"
         ],
         "rejected": [
-          "xhigh"
+          "any",
+          "tool"
         ]
       },
-      "thinking": {
-        "accepted": [
-          "adaptive",
-          "enabled",
-          "disabled"
-        ],
-        "rejected": []
-      },
-      "mid_conv_system": false,
       "effort_rejected_when_thinking_disabled": []
-    },
-    "claude-opus-4.7": {
-      "effort": {
-        "accepted": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "rejected": []
-      },
-      "thinking": {
-        "accepted": [
-          "adaptive",
-          "disabled"
-        ],
-        "rejected": [
-          "enabled"
-        ]
-      },
-      "mid_conv_system": false,
-      "effort_rejected_when_thinking_disabled": []
-    },
-    "claude-opus-4.8": {
-      "effort": {
-        "accepted": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "rejected": []
-      },
-      "thinking": {
-        "accepted": [
-          "adaptive",
-          "disabled"
-        ],
-        "rejected": [
-          "enabled"
-        ]
-      },
-      "mid_conv_system": true,
-      "effort_rejected_when_thinking_disabled": []
-    },
-    "claude-opus-5": {
-      "effort": {
-        "accepted": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "rejected": []
-      },
-      "thinking": {
-        "accepted": [
-          "adaptive",
-          "disabled"
-        ],
-        "rejected": [
-          "enabled"
-        ]
-      },
-      "mid_conv_system": true,
-      "effort_rejected_when_thinking_disabled": [
-        "xhigh",
-        "max"
-      ]
     }
   }
 }

@@ -27,8 +27,8 @@ public class ToolUseHeadlessTests : IClassFixture<BridgeFixture>
     }
 
     [Theory]
-    [InlineData("claude-sonnet-4-6", null)]
-    [InlineData("claude-opus-4-7",   "high")]
+    [InlineData("claude-opus-5-5", null)]
+    [InlineData("claude-opus-5-5", "high")]
     public async Task BashToolRoundTrip_ReachesFinalAnswer(string claudeModel, string? effort)
     {
         const string canary = "bridge-tool-canary-7421";

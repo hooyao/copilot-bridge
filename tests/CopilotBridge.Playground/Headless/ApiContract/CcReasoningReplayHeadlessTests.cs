@@ -38,7 +38,7 @@ public class CcReasoningReplayHeadlessTests
 
         var first = await PostAsync(http, bridge.BaseUrl, new JsonObject
         {
-            ["model"] = "claude-opus-5",
+            ["model"] = "claude-opus-5-5",
             ["max_tokens"] = 4096,
             ["messages"] = new JsonArray { UserMessage(task) },
             ["stream"] = true,
@@ -54,7 +54,7 @@ public class CcReasoningReplayHeadlessTests
         // Turn 2: echo the assistant turn back verbatim, exactly as Claude Code does.
         var second = await PostAsync(http, bridge.BaseUrl, new JsonObject
         {
-            ["model"] = "claude-opus-5",
+            ["model"] = "claude-opus-5-5",
             ["max_tokens"] = 4096,
             ["messages"] = new JsonArray
             {

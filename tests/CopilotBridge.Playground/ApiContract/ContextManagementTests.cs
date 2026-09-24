@@ -18,7 +18,7 @@ public class ContextManagementTests
     private const string BetaHeader = "context-management-2025-06-27";
 
     [Theory]
-    [InlineData("claude-sonnet-4.6")]
+    [InlineData("claude-opus-5.5")]
     public async Task ContextManagementField_AcceptedWithBeta(string model)
     {
         var payload = new JsonObject

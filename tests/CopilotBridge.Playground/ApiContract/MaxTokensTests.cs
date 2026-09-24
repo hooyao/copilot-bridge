@@ -15,8 +15,7 @@ namespace CopilotBridge.Playground;
 public class MaxTokensTests
 {
     [Theory]
-    [InlineData("claude-sonnet-4.6")]
-    [InlineData("claude-haiku-4.5")]
+    [InlineData("claude-opus-5.5")]
     public async Task TightMaxTokens_TruncatesWithMaxTokensStop(string model)
     {
         // A prompt the model cannot satisfy in 16 tokens, forcing truncation.

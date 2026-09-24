@@ -18,7 +18,7 @@ namespace CopilotBridge.Playground;
 public class VisionTests
 {
     [Theory]
-    [InlineData("claude-sonnet-4.6")]
+    [InlineData("claude-opus-5.5")]
     public async Task ImageContentBlock_RoundTripsToTextResponse(string model)
     {
         // 100×100 red PNG. Anthropic's documented vision pipeline rejects very small
