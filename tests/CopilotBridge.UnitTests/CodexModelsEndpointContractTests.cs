@@ -141,11 +141,8 @@ public sealed class CodexModelsEndpointContractTests
     [InlineData("0.155.0")]
     [InlineData("0.155.0%2Blocal.1")]
     [InlineData("0.156.0")]
-    public async Task CutoffAndNewerClientsHonorAnOmittedGpt6Resource(string clientVersion)
+    public async Task StableAndNewerClientsReceiveReviewedGpt6ResourcesWhenBaselineOmitsThem(string clientVersion)
     {
-        // The source cache intentionally returns the captured 0.144.1 baseline,
-        // reproducing bundled fallback for a newer requester. That old source
-        // identity must not override the requesting client's authoritative omission.
         var result = await Invoke(
             $"?client_version={clientVersion}",
             Responses("gpt-6-luna", "gpt-6-sol"),
@@ -156,8 +153,8 @@ public sealed class CodexModelsEndpointContractTests
         var slugs = document.RootElement.GetProperty("models").EnumerateArray()
             .Select(model => model.GetProperty("slug").GetString())
             .ToArray();
-        Assert.DoesNotContain("gpt-6-luna", slugs);
-        Assert.DoesNotContain("gpt-6-sol", slugs);
+        Assert.Contains("gpt-6-luna", slugs);
+        Assert.Contains("gpt-6-sol", slugs);
     }
 
     private static async Task<Result> Invoke(

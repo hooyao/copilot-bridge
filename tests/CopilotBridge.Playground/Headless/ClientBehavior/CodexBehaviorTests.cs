@@ -104,7 +104,7 @@ public class CodexBehaviorTests
             "codex-" + model + "-catalog-support",
             prompt,
             modelReasoningEffort: "max",
-            expectedCodexVersion: "0.144.1",
+            expectedCodexVersion: "0.155.0",
             credentialSourceDirectory: credentialSource,
             credentialStagingMode: CredentialStagingMode.CopilotPluginVersionThree,
             model: model,

@@ -69,9 +69,7 @@ internal sealed class CodexCatalogProjector
             .Where(model => !string.IsNullOrWhiteSpace(model.Id))
             .GroupBy(model => model.Id, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
-        var candidates = requestedVersion.CompareTo(_supplemental.MinimumClientVersion) < 0
-            ? MergeReviewedSupplements(baseline.Models, _supplemental.Models)
-            : baseline.Models;
+        var candidates = MergeReviewedSupplements(baseline.Models, _supplemental.Models);
         var resolvedRoutes = candidates
             .Select(model => ResolveConfiguredTarget(GetSlug(model)))
             .ToArray();

@@ -578,10 +578,11 @@ exact Copilot model record is available at `GET /models/{id}`. These are backend
 capacity records, not complete Codex client resources. The reviewed complete
 `gpt-6-luna` and `gpt-6-sol` client records come from the official
 `openai/codex` models catalog (minimum client `0.155.0`) and are hardcoded as
-digest-pinned supplements only for requested client versions older than that
-cutoff. A `0.155.0` or later catalog omission remains authoritative even when
-source resolution uses the older bundled fallback; no Copilot metadata is
-presented as Codex-owned instructions or tool policy. For a legacy baseline
+digest-pinned supplements whenever the selected baseline omits either exact
+slug. This includes stable `0.155.0` and later catalogs that have not yet
+incorporated the reviewed records. A same-slug official baseline record remains
+authoritative, and no unrelated Copilot metadata is presented as Codex-owned
+instructions or tool policy. For a legacy baseline
 whose client requires top-level `base_instructions`, the projector duplicates
 the official resource's exact `model_messages.instructions_template` value into
 that older field; it does not author a new prompt.

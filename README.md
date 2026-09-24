@@ -29,7 +29,8 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-sol-fast` /
   `gpt-5.6-terra`), with Luna/Terra/Sol Fast direct and Sol restored to direct by
   clearing the route. Exact `gpt-6-luna` and `gpt-6-sol` are also available to
-  Codex clients older than 0.155.0 through reviewed official catalog supplements.
+  Codex through reviewed official catalog supplements whenever the selected
+  client catalog does not yet contain those exact slugs.
   Live model-catalog discovery replaces Codex's older bundled context ceiling.
 - **Run Claude Code on a GPT model.** One `Routing.Locations` rule points
   `claude-opus-5` at `gpt-5.6-sol`; the bridge translates the full Anthropic
