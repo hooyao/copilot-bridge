@@ -203,8 +203,9 @@ live re-probe returned 200. `service_tier` / `store:true` strip plus the
 > **2026-09-23 update — GPT-6 Luna and Sol reuse the xlarge profile.** Both exact
 > ids accept `none/low/medium/high/xhigh/max`, reject `minimal` and `ultra`, and
 > route natively to `/responses`. Their reviewed official Codex resources declare
-> minimum client 0.155.0; the bridge supplements those records only for older
-> requesting clients whose selected baseline omits the exact slug.
+> minimum client 0.155.0; the bridge supplements a missing exact slug in any
+> selected baseline, including stable 0.155.0 and later clients. A same-slug
+> official baseline record always takes precedence over the reviewed supplement.
 
 ---
 
