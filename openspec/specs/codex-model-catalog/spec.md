@@ -238,6 +238,8 @@ The bridge SHALL construct every successful response from a validated complete o
 
 For an exact model-slug match, the bridge SHALL preserve all Codex-owned fields from the resolved official baseline and SHALL modify only the explicit backend-owned allow-list: provider availability, `context_window`, `max_context_window`, `auto_compact_token_limit`, and any safety adjustment required for those limits. A baseline `auto_review_model_override` SHALL be retained only when its target is also bridge-routable; otherwise it SHALL be cleared. The bridge MUST NOT synthesize a Codex entry for an unknown Copilot slug.
 
+The bridge MAY carry a closed set of complete, digest-pinned Codex model records reviewed from one pinned official `openai/codex` revision. When an exact reviewed slug is absent from the selected baseline, its complete reviewed record SHALL fill that omission regardless of the requesting client's version. When the selected baseline contains that slug, the baseline record SHALL win unchanged before the backend-owned overlay is applied. This exception MUST NOT synthesize any unrelated live-only Copilot id.
+
 #### Scenario: Non-limit fields survive the overlay
 
 - **WHEN** a live Copilot model exactly matches a baseline model and receives a context uplift
@@ -245,8 +247,18 @@ For an exact model-slug match, the bridge SHALL preserve all Codex-owned fields 
 
 #### Scenario: Live-only model is not guessed
 
-- **WHEN** Copilot advertises a Responses model that has no entry in the exact official Codex baseline
+- **WHEN** Copilot advertises a Responses model that has no entry in the exact official Codex baseline and is outside the closed reviewed supplemental set
 - **THEN** the model is omitted from the effective catalog rather than receiving synthesized instructions or tool metadata
+
+#### Scenario: Reviewed record fills a stable baseline omission
+
+- **WHEN** a stable or later client baseline omits an exact slug in the bridge's closed, digest-pinned reviewed supplemental set
+- **THEN** the effective catalog includes the complete reviewed Codex record for that slug
+
+#### Scenario: Official same-slug record outranks the reviewed supplement
+
+- **WHEN** the selected official baseline contains the same slug as a reviewed supplemental record
+- **THEN** the effective catalog starts from the baseline's complete record and does not replace it with the supplement
 
 #### Scenario: Invalid auto-review target is cleared
 
@@ -490,4 +502,3 @@ confirmed-absence caching, client request retries, and inference behavior.
 
 - **WHEN** the configured value is below 1 or above 3600 seconds
 - **THEN** startup fails with an actionable validation error naming the key, value, and accepted range.
-

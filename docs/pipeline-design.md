@@ -797,11 +797,12 @@ Ownership is strict:
   Two reviewed exceptions, `gpt-6-luna` and `gpt-6-sol`, are embedded complete
   from pinned official `openai/codex` revision
   `8a3c4ea3b5a7c0e92cf24dae46ec87629a26bb7f` (both declare minimum client
-  `0.155.0`). They supplement only a requester whose resolved client identity is
-  older than `0.155.0`, and only when that exact slug is absent from the selected
-  baseline. At the cutoff and later, an omitted slug is authoritative even when
-  source resolution fell back to the older bundled snapshot; a baseline's
-  same-slug record always wins. When
+  `0.155.0`). They fill an absent exact slug in any selected baseline, including
+  the stable `0.155.0` catalog and later catalogs that have not yet incorporated
+  the reviewed resource. A baseline's same-slug record always wins, so an official
+  source can update the client-owned record without a bridge release. This is a
+  closed, digest-pinned exception: it does not turn live Copilot model discovery
+  into synthesis of unrelated Codex entries. When
   the selected baseline uses the legacy top-level `base_instructions` shape,
   projection copies the official resource's exact
   `model_messages.instructions_template` string into that compatibility field

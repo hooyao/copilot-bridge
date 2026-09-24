@@ -8,8 +8,8 @@ namespace CopilotBridge.Cli.Catalogs.Codex;
 /// Reviewed complete Codex model resources that may post-date the requesting
 /// client's own catalog. These are client-owned records captured byte-for-byte
 /// from one pinned official <c>openai/codex</c> revision; the projector uses them
-/// only for requests older than their declared minimum client version and when
-/// the exact slug is absent from the selected baseline.
+/// only when the exact slug is absent from the selected baseline, regardless of
+/// the requesting version. A baseline same-slug record always wins.
 /// </summary>
 internal sealed class CodexSupplementalCatalog
 {
@@ -17,16 +17,12 @@ internal sealed class CodexSupplementalCatalog
     private const string CaptureResourceName = "CopilotBridge.Cli.Catalogs.Codex.Supplemental.capture.json";
     private static readonly string[] ReviewedSlugs = ["gpt-6-luna", "gpt-6-sol"];
 
-    private CodexSupplementalCatalog(
-        IReadOnlyList<JsonElement> models,
-        CodexClientVersion minimumClientVersion)
+    private CodexSupplementalCatalog(IReadOnlyList<JsonElement> models)
     {
         Models = models;
-        MinimumClientVersion = minimumClientVersion;
     }
 
     public IReadOnlyList<JsonElement> Models { get; }
-    public CodexClientVersion MinimumClientVersion { get; }
 
     public static CodexSupplementalCatalog Load()
     {
@@ -67,11 +63,11 @@ internal sealed class CodexSupplementalCatalog
             .Distinct(StringComparer.Ordinal)
             .ToArray();
         if (minimumVersions is not [{ } minimumText] ||
-            !CodexClientVersion.TryParse(minimumText, out var minimumVersion))
+            !CodexClientVersion.TryParse(minimumText, out _))
             throw new InvalidDataException(
                 "Supplemental Codex catalog must declare one canonical minimum client version.");
 
-        return new CodexSupplementalCatalog(models, minimumVersion);
+        return new CodexSupplementalCatalog(models);
     }
 
     private static byte[] ReadResource(Assembly assembly, string name)
