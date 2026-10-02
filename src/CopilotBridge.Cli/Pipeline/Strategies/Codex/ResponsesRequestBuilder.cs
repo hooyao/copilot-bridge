@@ -19,6 +19,7 @@ internal enum ResponsesRequestMutation
     InvalidMessageIdDropped = 1 << 5,
     RecursiveAgentToolDropped = 1 << 6,
     ProviderConflictDropped = 1 << 7,
+    MinimalWebSearchEffortRaised = 1 << 8,
 }
 
 /// <summary>
@@ -43,6 +44,7 @@ internal static class ResponsesRequestBuilder
         if (mutations == ResponsesRequestMutation.None) return "";
         var codes = new List<string>(8);
         if ((mutations & ResponsesRequestMutation.EffortCoerced) != 0) codes.Add("profile.effort");
+        if ((mutations & ResponsesRequestMutation.MinimalWebSearchEffortRaised) != 0) codes.Add("profile.effort.web_search");
         if ((mutations & ResponsesRequestMutation.ServiceTierStripped) != 0) codes.Add("profile.service_tier");
         if ((mutations & ResponsesRequestMutation.StoreTrueStripped) != 0) codes.Add("profile.store_true");
         if ((mutations & ResponsesRequestMutation.ImageGenerationToolDropped) != 0) codes.Add("profile.tool.image_generation");
@@ -214,7 +216,9 @@ internal static class ResponsesRequestBuilder
             // survives. Emit a reasoning object if EITHER is present — if coercion
             // dropped effort but a summary exists, reasoning:{summary:…} still carries
             // it (WriteBagFields drops "reasoning_summary" at the top level).
-            effort = CoerceEffort(ir.OutputConfig?.Effort, profile, bag);
+            effort = CoerceEffort(ir.OutputConfig?.Effort, profile, bag, out var minimalWebSearchEffortRaised);
+            if (minimalWebSearchEffortRaised)
+                mutations |= ResponsesRequestMutation.MinimalWebSearchEffortRaised;
             if (ir.OutputConfig?.Effort is { } inboundEffort
                 && effort is { } outboundEffort
                 && !string.Equals(inboundEffort, outboundEffort, StringComparison.OrdinalIgnoreCase))
@@ -1469,10 +1473,16 @@ internal static class ResponsesRequestBuilder
     }
 
     /// <summary>
-    /// Coerce an inbound effort to what the resolved model accepts. Three cases:
+    /// Coerce an inbound effort to a value accepted by the resolved model and
+    /// the request's tool set. Four cases:
     /// <list type="number">
     ///   <item>null → null (no effort set; nothing to write).</item>
-    ///   <item>accepted (case-insensitive) → returned as-is.</item>
+    ///   <item>accepted (case-insensitive), without the web-search constraint →
+    ///         returned as-is.</item>
+    ///   <item><c>minimal</c> accepted alone, but <c>web_search</c> present →
+    ///         <c>low</c> (or the profile's accepted fallback if low is absent),
+    ///         with the tool retained and <paramref name="minimalWebSearchEffortRaised"/>
+    ///         set so the caller reports the actual reason.</item>
     ///   <item>not accepted → the model's <see cref="CodexModelProfile.DefaultEffort"/>.
     ///         E.g. Anthropic's <c>max</c> lands here for the "large"/"small"
     ///         profiles that don't accept it — but the "xlarge" profile (gpt-5.6)
@@ -1488,8 +1498,10 @@ internal static class ResponsesRequestBuilder
     /// inbound one.
     /// </summary>
     private static string? CoerceEffort(
-        string? effort, CodexModelProfile? profile, JsonElement? bag)
+        string? effort, CodexModelProfile? profile, JsonElement? bag,
+        out bool minimalWebSearchEffortRaised)
     {
+        minimalWebSearchEffortRaised = false;
         if (effort is null) return null;
         if (profile is null) return effort;
         // Copilot accepts minimal on the two small profiles in isolation, but
@@ -1500,9 +1512,14 @@ internal static class ResponsesRequestBuilder
             && string.Equals(effort, "minimal", StringComparison.OrdinalIgnoreCase)
             && profile.AcceptedEfforts.Contains("minimal", StringComparer.OrdinalIgnoreCase)
             && HasWebSearchTool(bag))
-            return profile.AcceptedEfforts.Contains("low", StringComparer.OrdinalIgnoreCase)
+        {
+            var compatible = profile.AcceptedEfforts.Contains("low", StringComparer.OrdinalIgnoreCase)
                 ? "low"
                 : profile.DefaultEffort;
+            minimalWebSearchEffortRaised =
+                !string.Equals(effort, compatible, StringComparison.OrdinalIgnoreCase);
+            return compatible;
+        }
         if (profile.AcceptedEfforts.Contains(effort, StringComparer.OrdinalIgnoreCase))
             return effort;
         // Not accepted — fall back to the model's deliberate default (never a guess).

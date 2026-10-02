@@ -89,20 +89,28 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
                 Name);
         }
 
-        // Effort coercion happens inside T2 (per-model DefaultEffort fallback) and
-        // is NOT written back to the IR body. Surface the honest wire value so the
-        // endpoint logs effort=max→xhigh, and WARN when the inbound effort was not
-        // accepted by the target and fell back to the model default — the operator
-        // can override per location with a routing EffortMap.
+        // T2 may replace a rejected effort with the profile default or raise an
+        // accepted minimal effort because web_search is present. Neither change
+        // is written back to the IR body; log the honest wire value and reason.
         var inboundEffort = ctx.Request.Body.OutputConfig?.Effort;
         ctx.Response.OutboundEffortCoerced = coercedEffort;
         if (inboundEffort is not null && coercedEffort is not null
             && !string.Equals(inboundEffort, coercedEffort, StringComparison.OrdinalIgnoreCase))
         {
-            _log.LogWarning(
-                "strategy {Name}: effort '{Inbound}' not accepted by model '{Model}'; using default '{Default}' "
-                + "(override per location with Routing.Locations[].Use.EffortMap)",
-                Name, inboundEffort, ctx.Request.Body.Model, coercedEffort);
+            if ((requestMutations & ResponsesRequestMutation.MinimalWebSearchEffortRaised) != 0)
+            {
+                _log.LogWarning(
+                    "strategy {Name}: effort '{Inbound}' is accepted by model '{Model}' alone but not "
+                    + "with web_search; using compatible effort '{Outbound}' and retaining web_search",
+                    Name, inboundEffort, ctx.Request.Body.Model, coercedEffort);
+            }
+            else
+            {
+                _log.LogWarning(
+                    "strategy {Name}: effort '{Inbound}' not accepted by model '{Model}'; using profile default '{Default}' "
+                    + "(override per location with Routing.Locations[].Use.EffortMap)",
+                    Name, inboundEffort, ctx.Request.Body.Model, coercedEffort);
+            }
         }
 
         // Stash the real wire bytes so the endpoint audits what we POSTed upstream

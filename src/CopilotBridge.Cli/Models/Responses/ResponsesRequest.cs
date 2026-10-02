@@ -40,8 +40,9 @@ internal sealed class ResponsesRequest
     /// <c>ProviderExtensions["openai"]</c> bag verbatim and T2 re-emits it,
     /// dropping <c>image_generation</c> (uniform 400). A per-profile custom-tool
     /// rejection flag remains available if a future model needs it.
-    /// Kept opaque (not a typed polymorphic union) because the bridge never reads
-    /// a tool's internals, only its <c>type</c> for the drop filter — and a typed
+    /// Kept opaque (not a typed polymorphic union) because T2 reads only each
+    /// tool's <c>type</c>: to apply the drop filters and to detect
+    /// <c>web_search</c> when minimal effort needs a compatible value. A typed
     /// union with <c>[JsonExtensionData]</c> can't bind through a record ctor
     /// under STJ anyway.
     /// </summary>
