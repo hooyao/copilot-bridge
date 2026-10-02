@@ -32,8 +32,9 @@ public class CodexRoutingAndCatalogTests
         new object[] { "gpt-6-astra" },
         new object[] { "gpt-6-luna" },
         new object[] { "gpt-6-sol" },
+        new object[] { "gpt-6.1-sol" },
         new object[] { "gpt-5-mini" },
-        new object[] { "mai-code-1-flash-picker" },
+        new object[] { "mai-code-1.1-flash" },
     };
 
     [Theory]
@@ -45,6 +46,13 @@ public class CodexRoutingAndCatalogTests
         Assert.Equal(BackendVendor.CopilotResponses, target!.Vendor);
         Assert.Equal("/responses", target.Endpoint);
         Assert.Equal(id, target.ModelId);
+    }
+
+    [Fact]
+    public void RetiredMaiPicker_HasNoRouteOrProfile()
+    {
+        Assert.Null(Registry.Resolve("mai-code-1-flash-picker"));
+        Assert.Null(new CodexModelProfileCatalog().Get("mai-code-1-flash-picker"));
     }
 
     [Theory]
@@ -114,8 +122,9 @@ public class CodexRoutingAndCatalogTests
     [InlineData("gpt-6-astra",    "low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-6-luna",     "none,low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-6-sol",      "none,low,medium,high,xhigh,max", false, true)]
+    [InlineData("gpt-6.1-sol",    "low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-5-mini",    "minimal,low,medium,high", false, true)]
-    [InlineData("mai-code-1-flash-picker", "minimal,low,medium,high", false, false)]
+    [InlineData("mai-code-1.1-flash", "minimal,low,medium,high", false, true)]
     public void Catalog_ProfilesMatchLiveContract(
         string id,
         string expectedEfforts,
@@ -142,6 +151,7 @@ public class CodexRoutingAndCatalogTests
     [InlineData("gpt-6-astra", true)]
     [InlineData("gpt-6-luna", true)]
     [InlineData("gpt-6-sol", true)]
+    [InlineData("gpt-6.1-sol", true)]
     [InlineData("gpt-5.5", false)]         // large — rejects max
     [InlineData("gpt-5-mini", false)]      // small — rejects max
     [InlineData("gpt-5.3-codex", false)]   // large — rejects max
@@ -153,10 +163,10 @@ public class CodexRoutingAndCatalogTests
     }
 
     [Fact]
-    public void Catalog_HasAllThirteenModels_AndUniformCoercions()
+    public void Catalog_HasAllFourteenModels_AndUniformCoercions()
     {
         var catalog = new CodexModelProfileCatalog();
-        Assert.Equal(13, catalog.Count);
+        Assert.Equal(14, catalog.Count);
         // The three uniform coercions are catalog-level facts (apply to every model).
         Assert.True(CodexModelProfileCatalog.StripsServiceTier);
         Assert.True(CodexModelProfileCatalog.StripsStoreTrue);

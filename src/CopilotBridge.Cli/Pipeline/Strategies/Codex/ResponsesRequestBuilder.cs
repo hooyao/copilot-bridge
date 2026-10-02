@@ -214,7 +214,7 @@ internal static class ResponsesRequestBuilder
             // survives. Emit a reasoning object if EITHER is present — if coercion
             // dropped effort but a summary exists, reasoning:{summary:…} still carries
             // it (WriteBagFields drops "reasoning_summary" at the top level).
-            effort = CoerceEffort(ir.OutputConfig?.Effort, profile);
+            effort = CoerceEffort(ir.OutputConfig?.Effort, profile, bag);
             if (ir.OutputConfig?.Effort is { } inboundEffort
                 && effort is { } outboundEffort
                 && !string.Equals(inboundEffort, outboundEffort, StringComparison.OrdinalIgnoreCase))
@@ -1433,9 +1433,8 @@ internal static class ResponsesRequestBuilder
     }
 
     /// <summary>
-    /// Re-emit the tools array, dropping <c>image_generation</c> (uniform 400),
-    /// and — for <c>mai-code-1-flash-internal</c> — dropping <c>custom</c> tools
-    /// (that model 500s on them, profile flag).
+    /// Re-emit the tools array, dropping <c>image_generation</c> (uniform 400)
+    /// and custom tools only when an exact model profile requires that policy.
     /// </summary>
     private static void WriteToolsWithDrops(
         Utf8JsonWriter w,
@@ -1488,13 +1487,43 @@ internal static class ResponsesRequestBuilder
     /// elsewhere). The caller WARN-logs when the returned value differs from the
     /// inbound one.
     /// </summary>
-    private static string? CoerceEffort(string? effort, CodexModelProfile? profile)
+    private static string? CoerceEffort(
+        string? effort, CodexModelProfile? profile, JsonElement? bag)
     {
         if (effort is null) return null;
         if (profile is null) return effort;
+        // Copilot accepts minimal on the two small profiles in isolation, but
+        // rejects a real Codex tools[] list containing web_search at minimal.
+        // Preserve minimal for tool-free and other-tool requests. When search is
+        // available, retain the tool and use the least accepted higher effort.
+        if (CodexModelProfileCatalog.MinimalWithWebSearchRequiresHigherEffort
+            && string.Equals(effort, "minimal", StringComparison.OrdinalIgnoreCase)
+            && profile.AcceptedEfforts.Contains("minimal", StringComparer.OrdinalIgnoreCase)
+            && HasWebSearchTool(bag))
+            return profile.AcceptedEfforts.Contains("low", StringComparer.OrdinalIgnoreCase)
+                ? "low"
+                : profile.DefaultEffort;
         if (profile.AcceptedEfforts.Contains(effort, StringComparer.OrdinalIgnoreCase))
             return effort;
         // Not accepted — fall back to the model's deliberate default (never a guess).
         return profile.DefaultEffort;
+    }
+
+    private static bool HasWebSearchTool(JsonElement? bag)
+    {
+        if (bag is not { ValueKind: JsonValueKind.Object } obj
+            || !obj.TryGetProperty("tools", out var tools)
+            || tools.ValueKind != JsonValueKind.Array)
+            return false;
+
+        foreach (var tool in tools.EnumerateArray())
+        {
+            if (tool.ValueKind == JsonValueKind.Object
+                && tool.TryGetProperty("type", out var type)
+                && type.ValueKind == JsonValueKind.String
+                && string.Equals(type.GetString(), "web_search", StringComparison.Ordinal))
+                return true;
+        }
+        return false;
     }
 }

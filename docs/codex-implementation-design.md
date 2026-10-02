@@ -219,10 +219,12 @@ Change: route the Codex/Responses model ids (`gpt-5.3-codex`, `gpt-5.4`,
 **`CopilotResponses` + `/responses`**.
 
 > **Current routed set (the id list above is change-3's original set).** The 2026
-> reconciliation retired `mai-code-1-flash-internal` (→ `mai-code-1-flash-picker`)
+> reconciliation retired `mai-code-1-flash-internal` (later
+> `mai-code-1-flash-picker`, then `mai-code-1.1-flash` on 2026-10-02)
 > and the 2026-07/08 reconciliations added the four `gpt-5.6` codenames
 > (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-sol-fast` / `gpt-5.6-terra`). The
-> routed set also includes exact `gpt-6-astra`, `gpt-6-luna`, and `gpt-6-sol`;
+> routed set also includes exact `gpt-6-astra`, `gpt-6-luna`, `gpt-6-sol`,
+> `gpt-6.1-sol`, and exact `mai-code-1.1-flash`;
 > fresh installs keep the current Codex
 > catalog identity by routing `gpt-5.6-sol` to Astra in `Routing.Locations`.
 > `CopilotModelRegistry.ResponsesModelIds` allowlist is the source of truth;

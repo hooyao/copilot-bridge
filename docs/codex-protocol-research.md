@@ -85,11 +85,23 @@ OpenAI-Chat translation" assumption (§4.4).
 > `docs/copilot-codex-model-capabilities-snapshot.json` (Enterprise account).
 > `mai-code-1-flash-picker` was absent from discovery; absence alone does not
 > retire its live-probed profile. The advertised limits are:
+
+> **2026-10-02 replacement:** the exact picker id now returns 400 "not
+> available for integrator `vscode-chat`". Copilot discovery lists the distinct
+> `mai-code-1.1-flash` id on `/responses`; direct liveness and the full effort,
+> field, tool, and structured image-output probes returned a working contract.
+> The new id accepts `minimal/low/medium/high` in isolation and rejects
+> `none/xhigh/max/ultra`. A real Codex request with nine tools revealed the
+> cross-field rule: `minimal` plus `web_search` returns 400, while removing only
+> `web_search` returns 200. The bridge preserves minimal without search and
+> uses low when search is available. These are current facts; the September
+> snapshot and historical picker observations below remain dated research.
 >
 > | models | total context | max prompt | max output |
 > | --- | ---: | ---: | ---: |
 > | `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,sol-fast,terra}` | 1,050,000 | 922,000 | 128,000 |
 > | `gpt-6-luna`, `gpt-6-sol` | 1,000,000 | 872,000 | 128,000 |
+> | `gpt-6.1-sol` (2026-10-02 live discovery, not in this September snapshot) | 1,050,000 | 922,000 | 128,000 |
 > | `gpt-6-astra` | 1,050,000 | 1,050,000 | 128,000 |
 > | `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 |
 > | `gpt-5-mini` | 264,000 | 128,000 | 64,000 |

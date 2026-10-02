@@ -60,6 +60,24 @@ public partial class ResponsesProbe
                     effortRejected.Add(effort);
             }
 
+            // Minimal may be accepted alone yet rejected with web_search. Both
+            // current minimal-capable models do this; probe the combination on
+            // every model where the live effort sweep found minimal accepted.
+            bool? minimalWithWebSearchRejected = null;
+            if (effortAccepted.Any(value => value?.GetValue<string>() == "minimal"))
+            {
+                var payload =
+                    "{\"model\":\"" + model + "\","
+                    + "\"instructions\":\"Reply with exactly: ok\","
+                    + "\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"reply: ok\"}]}],"
+                    + "\"stream\":false,\"store\":false,\"reasoning\":{\"effort\":\"minimal\"},"
+                    + "\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"web_search\"}]}";
+                var (status, body) = await ProbeRetry.WithRetry(
+                    () => client.TryPostResponsesAsync(payload), $"{model} minimal+web_search");
+                minimalWithWebSearchRejected = !WireAcceptance.IsAccepted(
+                    status, body, $"{model} minimal+web_search");
+            }
+
             // ── field rejections (store:true / service_tier are the verified 400s) ──
             var fieldRejected = new JsonArray();
             foreach (var (label, extra) in ResponsesFieldProbes)
@@ -101,13 +119,16 @@ public partial class ResponsesProbe
                 $"[{model}] multimodal function output first={(int)multimodal.FirstStatus} "
                 + $"second={(int?)multimodal.SecondStatus} understood={multimodal.Supported}");
 
-            models[model] = new JsonObject
+            var modelFacts = new JsonObject
             {
                 ["effort"] = new JsonObject { ["accepted"] = effortAccepted, ["rejected"] = effortRejected },
                 ["fields_rejected"] = fieldRejected,
                 ["tools_rejected"] = toolRejected,
                 ["supports_multimodal_function_output"] = multimodal.Supported,
             };
+            if (minimalWithWebSearchRejected is { } rejectedWithSearch)
+                modelFacts["minimal_with_web_search_rejected"] = rejectedWithSearch;
+            models[model] = modelFacts;
         }
 
         // ── SSE event set (one capture; the grammar is per-backend, not per-model) ──
@@ -177,6 +198,14 @@ public partial class ResponsesProbe
                 expectedAccepted.SequenceEqual(accepted, StringComparer.Ordinal),
                 $"{model}: catalog accepted efforts [{string.Join(',', expectedAccepted)}] "
                 + $"!= live [{string.Join(',', accepted)}]");
+            if (expectedAccepted.Contains("minimal", StringComparer.Ordinal))
+            {
+                var rejectedWithSearch = facts["minimal_with_web_search_rejected"]?.GetValue<bool>()
+                    ?? throw new InvalidDataException($"{model}: live facts omit minimal+web_search outcome");
+                Assert.Equal(
+                    CodexModelProfileCatalog.MinimalWithWebSearchRequiresHigherEffort,
+                    rejectedWithSearch);
+            }
 
             var fieldsRejected = Assert.IsType<JsonArray>(facts["fields_rejected"])
                 .Select(value => value!.GetValue<string>())

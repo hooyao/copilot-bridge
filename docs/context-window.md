@@ -81,6 +81,17 @@
   Codex resources are supplemented into older `/codex/models` baselines, then
   the ordinary projector publishes 1,000,000 for both context fields and an
   850,000-token auto-compact threshold.
+- **GPT-6.1 Sol is a separate live Responses id**: Copilot's `/models` advertises
+  1,050,000 total / 922,000 prompt / 128,000 output for exact `gpt-6.1-sol`.
+  The bridge has an exact request profile and `/responses` route. These limits
+  are discovery metadata; the targeted wire probes established request-shape
+  support, not a near-limit prompt admission test. The bridge does not invent
+  Codex client instructions for a model absent from an official client catalog.
+- **MAI-Code 1.1 Flash replaces the retired picker id**: Copilot advertises
+  `mai-code-1.1-flash` on `/responses` with 256,000 total / 128,000 prompt /
+  128,000 output tokens. The exact `mai-code-1-flash-picker` id now returns 400
+  for this integrator. These are discovery limits; no near-limit admission test
+  was run, and the bridge does not invent client catalog instructions for MAI.
 
 ## 1. Where the context window comes from — the client, not the server
 

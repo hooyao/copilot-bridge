@@ -594,9 +594,10 @@ Captured Copilot metadata for the current Responses models:
 | `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,terra}` | 1,050,000 | 922,000 | 128,000 | 892,000 |
 | `gpt-5.6-sol-fast` (internal-only; absent from official Codex catalog) | 1,050,000 | 922,000 | 128,000 | not synthesized |
 | `gpt-6-luna`, `gpt-6-sol` | 1,000,000 | 872,000 | 128,000 | 850,000 |
+| `gpt-6.1-sol` (2026-10-02 discovery; exact bridge request profile) | 1,050,000 | 922,000 | 128,000 | official client catalog dependent |
 | `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 | 265,000 |
 | `gpt-5-mini` | 264,000 | 128,000 | 64,000 | 124,000 |
-| `mai-code-1-flash-picker` | 256,000 | 128,000 | 128,000 | 124,000 |
+| `mai-code-1.1-flash` (2026-10-02 exact-id live replacement) | 256,000 | 128,000 | 128,000 | official client catalog dependent |
 
 The projection publishes total context as `context_window` and
 `max_context_window`, then compacts at `min(85% total, 97.5% prompt)` rounded

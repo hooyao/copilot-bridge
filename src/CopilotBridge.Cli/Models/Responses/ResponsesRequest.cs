@@ -38,8 +38,8 @@ internal sealed class ResponsesRequest
     /// (apply_patch's grammar, tool_search's execution, …) have no lossless
     /// Anthropic equivalent — so the whole array rides the IR
     /// <c>ProviderExtensions["openai"]</c> bag verbatim and T2 re-emits it,
-    /// dropping only <c>image_generation</c> (uniform 400) and — for
-    /// <c>mai-code-1-flash-internal</c> — <c>custom</c> tools (that model 500s).
+    /// dropping <c>image_generation</c> (uniform 400). A per-profile custom-tool
+    /// rejection flag remains available if a future model needs it.
     /// Kept opaque (not a typed polymorphic union) because the bridge never reads
     /// a tool's internals, only its <c>type</c> for the drop filter — and a typed
     /// union with <c>[JsonExtensionData]</c> can't bind through a record ctor

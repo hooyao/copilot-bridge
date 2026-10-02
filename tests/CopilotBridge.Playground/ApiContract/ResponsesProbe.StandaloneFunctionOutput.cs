@@ -69,13 +69,13 @@ public partial class ResponsesProbe
         ["gpt-5.6-sol-fast", true],
         ["gpt-5.6-terra", true],
         ["gpt-5-mini", false],
-        ["mai-code-1-flash-picker", false],
+        ["mai-code-1.1-flash", true],
     ];
 
     [Theory]
     [InlineData("gpt-5.6-sol")]
     [InlineData("gpt-5-mini")]
-    [InlineData("mai-code-1-flash-picker")]
+    [InlineData("mai-code-1.1-flash")]
     public async Task StandaloneNamedFunctionOutput_SyntheticCallId_AcceptanceMatrix(string model)
     {
         var payload = $$"""
