@@ -394,7 +394,7 @@ Request-side reasoning/text structs (`codex-api/src/common.rs:124-161`):
 
 **New facts only the capture gave:**
 - **Default `reasoning.effort = "medium"`**, `text.verbosity = "low"` for `gpt-5.3-codex` (CLI default, no flags).
-- **Codex's default toolset = 14 tools**, types: `function` (×10, incl. `shell_command`, `apply_patch` sibling utilities, `update_plan`), `custom` (`apply_patch`), `namespace` (`mcp__node_repl`), `tool_search`, **`web_search`**. So `apply_patch`(custom) + `web_search` are sent **by default** → both 200 on Copilot (§2.4) → clean. **`image_generation` is NOT in the default set** → the "drop image_generation" coercion (§4.2) is defensive, rarely exercised.
+- **Codex's default toolset = 14 tools**, types: `function` (×10, incl. `shell_command`, `apply_patch` sibling utilities, `update_plan`), `custom` (`apply_patch`), `namespace` (`mcp__node_repl`), `tool_search`, **`web_search`**. Both tool types are accepted in ordinary Codex requests. On the minimal-capable `gpt-5-mini` and `mai-code-1.1-flash` profiles, Copilot rejects `minimal` when `web_search` is present; T2 keeps the tool and sends `low` for that combination. **`image_generation` is NOT in the default set** → the "drop image_generation" coercion (§4.2) is defensive, rarely exercised.
 - First input item is **`role:"developer"`** (not `system`) — Codex uses the developer role for its preamble; `instructions` (~12KB) carries the system prompt separately.
 - Codex-specific **headers on the wire**: `x-codex-beta-features`, `x-codex-turn-metadata` (rich JSON: session/thread/turn ids, workspace git origin + commit + dirty flag), `x-codex-window-id`, `session-id`, `thread-id`, `x-client-request-id`, `originator: codex_exec`, `User-Agent: codex_exec/0.140.0-alpha.2 (...) WindowsTerminal`. The bridge will **replace** these with the official VS Code Copilot header set (as `/cc` does) — Copilot won't recognize `x-codex-*`.
 
@@ -499,7 +499,7 @@ What Codex sends (Track B) × what Copilot `/responses` accepts (Track A) → br
 | `prompt_cache_key` | always (§3.2) | 200 (§2.3) | passthrough |
 | `tools: function` | Responses-native shape (§3.5) | 200 (§2.4) | passthrough |
 | `tools: custom`/`apply_patch` | freeform (§3.5) | Historical `-internal` flash returned 500 (§2.4); current `mai-code-1.1-flash` accepts it (200) | passthrough; the per-profile drop remains available for a future rejecting model |
-| `tools: web_search` | (§3.5) | 200 all 6 (§2.4) | passthrough |
+| `tools: web_search` | (§3.5) | 200 in the original isolated tool probes (§2.4); `gpt-5-mini` and `mai-code-1.1-flash` return 400 for `minimal` plus `web_search` (2026-10-02) | retain the tool; coerce `minimal` to `low` only when the exact profile accepts minimal and the request carries `web_search` |
 | `tools: image_generation` | (§3.5) | **400** all 6 (§2.4) | **drop** |
 | vision `input_image` | data-URL image part | 200 on 5 vision models (§2.6) | passthrough; set `Copilot-Vision-Request: true` |
 | `tool_choice` | `"auto"` (§3.2) | 200 | passthrough |
