@@ -136,6 +136,28 @@ public class CodexBehaviorTests
             resolvedModel: model);
     }
 
+    [Fact]
+    public async Task Codex_Gpt61Sol_PickerCatalogAndMultiToolTask_ProducesDispatchLogForVerdict()
+    {
+        const string model = "gpt-6.1-sol";
+        const string canary = "gpt61_picker_canary_10226";
+        var prompt =
+            "Run three separate real shell tool calls, in order. Do not fabricate output:\n"
+            + "1. Compute 43 * 47 and write the result to gpt61_picker_probe.txt.\n"
+            + $"2. Append the exact line {canary} to gpt61_picker_probe.txt.\n"
+            + "3. Read the file and report its two lines verbatim, then stop.";
+
+        await DriveAndRecordAsync(
+            "codex-gpt-6-1-sol-picker-support",
+            prompt,
+            modelReasoningEffort: "high",
+            expectedCodexVersion: "0.159.0-alpha.12.1",
+            model: model,
+            requiredListedModel: model,
+            requiredListedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+            resolvedModel: model);
+    }
+
     /// <summary>
     /// Candidate-targeted evidence for Copilot's internal-only Sol Fast id. This
     /// must remain separate from <see cref="ClientBehaviorSupport.LatestGpt"/>:
@@ -1177,6 +1199,8 @@ public class CodexBehaviorTests
         bool useCustomOAuthApp = false,
         string model = ClientBehaviorSupport.LatestGpt,
         string? modelCatalogTemplateSlug = null,
+        string? requiredListedModel = null,
+        IReadOnlyList<string>? requiredListedReasoningEfforts = null,
         JsonArray? injectedItems = null,
         ServeScenario scenario = ServeScenario.Passthrough,
         string? resolvedModel = null)
@@ -1214,6 +1238,8 @@ public class CodexBehaviorTests
             ModelReasoningEffort: modelReasoningEffort,
             ModelReasoningSummary: modelReasoningSummary,
             ModelCatalogTemplateSlug: modelCatalogTemplateSlug,
+            RequiredListedModel: requiredListedModel,
+            RequiredListedReasoningEfforts: requiredListedReasoningEfforts,
             InjectedItems: injectedItems));
 
         _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration}");

@@ -83,10 +83,12 @@
   850,000-token auto-compact threshold.
 - **GPT-6.1 Sol is a separate live Responses id**: Copilot's `/models` advertises
   1,050,000 total / 922,000 prompt / 128,000 output for exact `gpt-6.1-sol`.
-  The bridge has an exact request profile and `/responses` route. These limits
-  are discovery metadata; the targeted wire probes established request-shape
-  support, not a near-limit prompt admission test. The bridge does not invent
-  Codex client instructions for a model absent from an official client catalog.
+  The bridge has an exact request profile and `/responses` route, and a reviewed
+  complete official Codex resource supplements client catalogs that omit the id.
+  With validated live limits, `/codex/models` advertises 1,050,000 total context
+  and a 892,000-token auto-compact threshold. These limits are discovery metadata;
+  the targeted wire probes established request-shape support, not a near-limit
+  prompt admission test. No client instructions are inferred from Copilot metadata.
 - **MAI-Code 1.1 Flash replaces the retired picker id**: Copilot advertises
   `mai-code-1.1-flash` on `/responses` with 256,000 total / 128,000 prompt /
   128,000 output tokens. The exact `mai-code-1-flash-picker` id now returns 400

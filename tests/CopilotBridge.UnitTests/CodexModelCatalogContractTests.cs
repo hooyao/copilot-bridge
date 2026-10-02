@@ -151,9 +151,37 @@ public sealed class CodexModelCatalogContractTests
         }
     }
 
+    [Fact]
+    public void Gpt61SolAppearsInPickerWithCompleteInstructionsWhenClientBaselinePredatesIt()
+    {
+        var baseline = LoadBaseline();
+        Assert.DoesNotContain(baseline.Models,
+            model => model.GetProperty("slug").GetString() == "gpt-6.1-sol");
+
+        var result = Project(baseline, [Live("gpt-6.1-sol", 1_050_000, 922_000, 128_000)]);
+        var model = Assert.Single(result.Models,
+            candidate => candidate.GetProperty("slug").GetString() == "gpt-6.1-sol");
+
+        Assert.True(model.GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal("list", model.GetProperty("visibility").GetString());
+        Assert.Equal("0.153.0", model.GetProperty("minimal_client_version").GetString());
+        var official = CodexSupplementalCatalog.Load().Models.Single(
+            candidate => candidate.GetProperty("slug").GetString() == "gpt-6.1-sol");
+        Assert.Contains(official.GetProperty("supported_reasoning_levels").EnumerateArray(),
+            level => level.GetProperty("effort").GetString() == "ultra");
+        AssertGpt61PickerEfforts(model);
+        Assert.Equal(1_050_000, model.GetProperty("context_window").GetInt32());
+        Assert.Equal(1_050_000, model.GetProperty("max_context_window").GetInt32());
+        Assert.Equal(892_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+        var template = model.GetProperty("model_messages").GetProperty("instructions_template").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(template));
+        Assert.Equal(template, model.GetProperty("base_instructions").GetString());
+    }
+
     [Theory]
     [InlineData("gpt-6-luna")]
     [InlineData("gpt-6-sol")]
+    [InlineData("gpt-6.1-sol")]
     public void NewerBaselineResourceWinsAndSupplementDoesNotDuplicateItsSlug(string slug)
     {
         var baseline = LoadBaseline();
@@ -162,11 +190,30 @@ public sealed class CodexModelCatalogContractTests
         var newer = ReplaceProperty(official, "description", "newer baseline owns this resource");
         var newerBaseline = baseline with { Models = [.. baseline.Models, newer] };
 
-        var result = Project(newerBaseline, [Live(slug, 1_000_000, 872_000, 128_000)]);
+        var live = slug == "gpt-6.1-sol"
+            ? Live(slug, 1_050_000, 922_000, 128_000)
+            : Live(slug, 1_000_000, 872_000, 128_000);
+        var result = Project(newerBaseline, [live]);
         var model = Assert.Single(result.Models,
             candidate => candidate.GetProperty("slug").GetString() == slug);
 
         Assert.Equal("newer baseline owns this resource", model.GetProperty("description").GetString());
+        if (slug == "gpt-6.1-sol")
+        {
+            AssertGpt61PickerEfforts(model);
+            Assert.Equal(1_050_000, model.GetProperty("context_window").GetInt32());
+            Assert.Equal(892_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+        }
+    }
+
+    private static void AssertGpt61PickerEfforts(JsonElement model)
+    {
+        var offered = model.GetProperty("supported_reasoning_levels").EnumerateArray()
+            .Select(level => level.GetProperty("effort").GetString()!)
+            .ToArray();
+        Assert.Equal(["low", "medium", "high", "xhigh", "max"], offered);
+        Assert.DoesNotContain("ultra", offered);
+        Assert.Equal("low", model.GetProperty("default_reasoning_level").GetString());
     }
 
     [Fact]

@@ -782,7 +782,7 @@ Codex (three-part query + corroborating complete User-Agent when prerelease)
       │    ├─ fresh/stale validated per-user disk record
       │    └─ exact official openai/codex tag (anonymous HTTPS, TTL + ETag)
       ├─ CodexCatalogOverlayService → independent bounded live Copilot /models facts
-      ├─ CodexSupplementalCatalog   → two digest-pinned reviewed GPT-6 resources
+      ├─ CodexSupplementalCatalog   → three digest-pinned reviewed GPT-6 resources
       └─ CodexCatalogProjector      → exact-slug merge + live overlay + stable ETag
 ```
 
@@ -794,13 +794,16 @@ Ownership is strict:
   exact requesting version's official
   `openai/codex/rust-v{client_version}/codex-rs/models-manager/models.json`.
   Stable and prerelease identities are never shortened or substituted.
-  Two reviewed exceptions, `gpt-6-luna` and `gpt-6-sol`, are embedded complete
-  from pinned official `openai/codex` revision
-  `8a3c4ea3b5a7c0e92cf24dae46ec87629a26bb7f` (both declare minimum client
-  `0.155.0`). They fill an absent exact slug in any selected baseline, including
-  the stable `0.155.0` catalog and later catalogs that have not yet incorporated
-  the reviewed resource. A baseline's same-slug record always wins, so an official
-  source can update the client-owned record without a bridge release. This is a
+  Three reviewed exceptions are embedded complete from pinned official
+  `openai/codex` revisions: `gpt-6-luna` and `gpt-6-sol` from
+  `8a3c4ea3b5a7c0e92cf24dae46ec87629a26bb7f` (minimum client `0.155.0`),
+  and `gpt-6.1-sol` from `a20fe6335f960a350483d0079db2ec281c68202c`
+  (minimum client `0.153.0`). They fill an absent exact slug in any selected
+  baseline that has not yet incorporated the reviewed resource. A baseline's
+  same-slug record always wins, so an official source can update the client-owned
+  record without a bridge release. The exact GPT-6.1 Sol picker effort list is
+  then filtered against its probed Copilot profile for either source: Ultra is
+  removed while low, medium, high, xhigh, and max remain. This is a
   closed, digest-pinned exception: it does not turn live Copilot model discovery
   into synthesis of unrelated Codex entries. When
   the selected baseline uses the legacy top-level `base_instructions` shape,
@@ -826,7 +829,7 @@ Ownership is strict:
     `auto_compact_token_limit` is the lower of 85% total
   and 97.5% maximum prompt, rounded down to 1,000. Invalid or missing limits do
   not raise the validated exact-version baseline.
-- **The bridge owns the safe join.** Apart from the two explicitly reviewed,
+- **The bridge owns the safe join.** Apart from the three explicitly reviewed,
   digest-pinned supplements above, live-only models are never synthesized,
   retired/baseline-only models are hidden, and review overrides are retained
   only when their target remains routable. `gpt-5.6-sol-fast` is the current

@@ -577,10 +577,10 @@ Copilot has no `/resources` model endpoint. Discovery uses `GET /models`, and an
 exact Copilot model record is available at `GET /models/{id}`. These are backend
 capacity records, not complete Codex client resources. The reviewed complete
 `gpt-6-luna` and `gpt-6-sol` client records come from the official
-`openai/codex` models catalog (minimum client `0.155.0`) and are hardcoded as
-digest-pinned supplements whenever the selected baseline omits either exact
-slug. This includes stable `0.155.0` and later catalogs that have not yet
-incorporated the reviewed records. A same-slug official baseline record remains
+`openai/codex` models catalog (minimum client `0.155.0`), and the complete
+`gpt-6.1-sol` record comes from a separately pinned official revision (minimum
+client `0.153.0`). All three are digest-pinned supplements whenever the selected
+baseline omits the exact slug. A same-slug official baseline record remains
 authoritative, and no unrelated Copilot metadata is presented as Codex-owned
 instructions or tool policy. For a legacy baseline
 whose client requires top-level `base_instructions`, the projector duplicates
@@ -594,7 +594,7 @@ Captured Copilot metadata for the current Responses models:
 | `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,terra}` | 1,050,000 | 922,000 | 128,000 | 892,000 |
 | `gpt-5.6-sol-fast` (internal-only; absent from official Codex catalog) | 1,050,000 | 922,000 | 128,000 | not synthesized |
 | `gpt-6-luna`, `gpt-6-sol` | 1,000,000 | 872,000 | 128,000 | 850,000 |
-| `gpt-6.1-sol` (2026-10-02 discovery; exact bridge request profile) | 1,050,000 | 922,000 | 128,000 | official client catalog dependent |
+| `gpt-6.1-sol` (reviewed official catalog supplement) | 1,050,000 | 922,000 | 128,000 | 892,000 |
 | `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 | 265,000 |
 | `gpt-5-mini` | 264,000 | 128,000 | 64,000 | 124,000 |
 | `mai-code-1.1-flash` (2026-10-02 exact-id live replacement) | 256,000 | 128,000 | 128,000 | official client catalog dependent |

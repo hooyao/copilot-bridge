@@ -172,11 +172,11 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    `xhigh`/`max` rejection, confirmed byte-identical (2756 B, 3 system blocks, 8
    betas) before the clamp shipped.
 
-   **Prerequisite for a brand-new model: you must create the capture first, and
-   step 7 does NOT create it for you.** Only `Kind=ClientBehavior` cases produce
-   `tests/behavior-runs/` (that path is written by `ServeProcess`); step 7's Codex
-   load-task smoke is `Kind=ApiContract` and runs on `BridgeFixture`, so it writes
-   nothing there. The behavior cases also target fixed latest-model constants
+   **Prerequisite for a brand-new model: you must create the capture first.**
+   Only `Kind=ClientBehavior` cases produce `tests/behavior-runs/` (that path is
+   written by `ServeProcess`); the older `CodexLoadTaskSmoke` is `Kind=ApiContract`
+   and runs on `BridgeFixture`, so it writes nothing there. The behavior cases
+   also target fixed latest-model constants
    (`ClientBehaviorSupport.LatestClaude` / `LatestGpt`), so a model that is not yet
    the constant produces no capture of its own. Before this step can run on a new
    id, either retarget the constant (only once the catalog knows the id — see
@@ -213,11 +213,45 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    `CopilotModelRegistry` or it falls through to the OpenAI-chat branch. Add a
    `Routing.Locations` entry in `appsettings.json` only if the model needs a
    deliberate remap (e.g. a context-window alias like `gpt-5.5-1m`).
+5a. **Codex picker catalog — MANDATORY for `gpt-*` / `mai-code-*`.** Routing and a
+   live Copilot `/responses` success prove inference only; they do not make the id
+   selectable in Codex. Inspect the exact installed Codex binary's bundled catalog
+   (`codex debug models --bundled`), its cached/remote catalog, and the bridge's
+   `GET /codex/models?client_version=...` projection. If the client's exact
+   baseline lacks the slug, capture its **complete** model resource from an
+   official `openai/codex` revision, pin the commit and SHA-256 provenance in
+   `Catalogs/Codex/Supplemental/capture.json`, and add the resource to
+   `Supplemental/models.json` and `CodexSupplementalCatalog.ReviewedSlugs`.
+   Do not invent Codex-owned instructions, tools, reasoning levels, visibility,
+   or minimum client version from a sibling or a family name. If no complete
+   official resource exists, report picker support unavailable; explicit model
+   selection can still be tested separately. The projector must expose the id
+   with `visibility=list` and `supported_in_api=true` when the exact Copilot
+   backend is live, and must preserve a newer same-slug client baseline without
+   duplication. Reconcile/remove stale supplements when the official baseline
+   later includes them; do not infer retirement from a missing picker row.
+   Reconcile picker-advertised `supported_reasoning_levels` with the **probed
+   backend** effort set. An official Codex resource may offer an effort that
+   Copilot rejects (GPT-6.1 Sol's Ultra is the worked example); apply an
+   explicit projection override to both supplemental and future same-slug
+   baseline records while keeping the pinned source resource byte-identical.
+   Do not leave an unsupported picker choice that silently coerces to another
+   effort on inference.
 6. **Tests (from the contract, not the code).** Add from-contract unit tests
    asserting the profile's behavior (see `ProfileAdjusterTests`,
    `CodexRoutingAndCatalogTests`) and **mutation-check** each new assertion:
    break the product value, confirm the test goes red. A new test that passes on
    the first run guards nothing.
+
+   For Codex ids, test `/codex/models` projection against a client baseline
+   predating the id: exactly one visible, supported row with complete official
+   instructions, reviewed limits, and **only** live-supported effort choices.
+   Also test a newer baseline containing that
+   slug: exactly one row, with the baseline's complete metadata taking precedence.
+   Assert the exact offered effort set for both cases, including the absence of
+   every probed-rejected level; the source capture itself must stay unchanged.
+   Mutation-check the visibility/availability assertion by removing the
+   supplement or disabling its merge and watching the test fail.
 
    **A rewrite rule needs a BACKEND-fact guard too, not just a behavior test.** A
    unit test pinning "the bridge clamps" stays green forever if Copilot drops the
@@ -244,28 +278,25 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    addition: probe it per model in the sweep loop, add it to the facts object, and
    assert it in `AssertCatalogMatchesLive`. Mutation-check the new assertion the
    same way (break the catalog value, watch B3 redden).
-7. **Load-task smoke — MANDATORY for a Codex (`gpt-*` / `mai-code-*`) model.** A
-   liveness/effort probe and a plain one-word turn do **not** exercise a real Codex
-   client tool loop — multi-call `function_call`/`function_call_output` round-trips
-   and reasoning echoes only appear when the real `codex.exe` runs an actual
-   multi-step **task**. That loop (plus model routing) is what this smoke guards.
-   So for every added Codex id, run the real-client load-task smoke against **that
-   id**. The repo's default shell is PowerShell (set the env var inline, then run):
-   ```powershell
-   $env:CODEX_SMOKE_MODEL="<new-id>"; dotnet test tests/CopilotBridge.Playground `
-     --filter "FullyQualifiedName~CodexLoadTaskSmoke" --logger "console;verbosity=detailed"
-   ```
-   (bash/CI equivalent: `CODEX_SMOKE_MODEL=<new-id> dotnet test … --filter "FullyQualifiedName~CodexLoadTaskSmoke"`.)
-   It must exit 0 with the canary in stdout AND the bridge audit must show the
-   model on the wire plus a real `function_call`/`function_call_output` round-trip
-   (the test asserts all of these, so a prompt-echo can't pass it). If it 400s on
+7. **Real-client picker and execution — MANDATORY for a Codex model.** Use the
+   `real-client-verify` skill and a `Kind=ClientBehavior` app-server case through
+   a bridge subprocess on a non-8765 port. With command-backed provider auth,
+   call the real client's `model/list` and require one **visible** exact-id row;
+   check that its offered reasoning efforts exclude every rejected backend level;
+   then select that id and complete a multi-step, multi-tool task. Read the
+   manifest-selected client `logs_2.sqlite` for dispatch/router fatals, and the
+   per-run trace for matching tool call/output round-trips and the exact upstream
+   model. A bridge 200, exit code, canary, or `CodexLoadTaskSmoke` alone is not
+   acceptance: none proves the picker offered the id or the client's dispatcher
+   executed the tools. If the installed client's catalog lacks the id, first fix
+   step 5a; do not use a local alias as picker evidence. If it 400s on
    an unmodeled inbound shape (`Polymorphism_UnrecognizedTypeDiscriminator`, a new
    `input[]`/tool `type`), that shape is a NEW change: probe whether Copilot
    accepts it natively (`ResponsesProbe`), then model + carry it — the
    `add-codex-additional-tools-item` change under `openspec/changes/` (or
    `openspec/changes/archive/` if later archived) is the worked example.
-   Caveat: this smoke exercises only what the `codex exec` CLI emits, which is a
-   subset of the full client wire — notably it does NOT send the desktop app's
+   A `codex exec` CLI smoke exercises only a subset of the full client wire —
+   notably it does NOT send the desktop app's
    `input[0]` `additional_tools` preamble. Shapes the CLI doesn't emit need a
    direct HTTP-edge replay of a real capture through `/codex/responses` (see
    `CodexAdditionalToolsHeadlessTests`), so add one whenever you model a new
@@ -295,7 +326,10 @@ Full worked example (opus-4.6-1m, the -internal/-high/-xhigh variants):
    ```
    Watch for **dependent config/tests**: a `Routing.Locations` rule whose target
    is now gone, a profile's `EffortToVariant` pointing at a deleted sibling
-   (switch it to `Strip`), unit tests keyed on the id.
+   (switch it to `Strip`), unit tests keyed on the id. For a Codex id, also
+   remove its reviewed supplemental resource and provenance if present, then
+   check that `/codex/models` hides/omits it for the old baseline and that a
+   newer official baseline does not get duplicate or stale bridge metadata.
 3. **Check what replaces it.** A retired variant often means its capability moved
    to the base id — e.g. `opus-4.6-1m` retired because the opus-4.6 **base** now
    serves 1M natively. **Probe the base** (`OpusBase_LargePrompt_Probe…`) before
@@ -311,15 +345,14 @@ Full worked example (opus-4.6-1m, the -internal/-high/-xhigh variants):
   `[Trait("Category","Integration")]`).
 - CI-safe unit suite (no network):
   `dotnet test tests/CopilotBridge.UnitTests --filter "Category!=Integration"`.
-- End-to-end sanity: the headless smoke drives a REAL client against the bridge
-  with the new/changed model and asserts a 2xx reaches Copilot.
+- End-to-end acceptance: the real-client-verify workflow checks a real client,
+  its selectable catalog, selected tool execution, and client-owned dispatch log.
   - **Claude (`claude-*`)** → `claude.exe` (`HeadlessSmokeTests`,
     `CcOnGpt5*HeadlessTests`).
-  - **Codex (`gpt-*` / `mai-code-*`)** → `codex.exe` load task
-    (`CodexLoadTaskSmokeTests`, model via `CODEX_SMOKE_MODEL`). Exercises a real
-    Codex client tool loop (multi-call `function_call`/`function_call_output`
-    round-trips + model routing) — a probe or plain turn does not. Required for
-    every added/reconciled Codex id (step 7). It does NOT cover the desktop app's
+  - **Codex (`gpt-*` / `mai-code-*`)** → app-server `model/list` plus exact-id
+    multi-tool behavior case and client-owned SQLite verdict (step 7).
+    `CodexLoadTaskSmokeTests` remains a complementary wire assertion, not the
+    picker or dispatch verdict. The CLI does not cover the desktop app's
     `additional_tools` preamble (the `codex exec` CLI doesn't emit it) — that shape
     is checked by the HTTP-edge replay `CodexAdditionalToolsHeadlessTests`.
 
@@ -341,10 +374,10 @@ Full worked example (opus-4.6-1m, the -internal/-high/-xhigh variants):
   in step 6 first: `StripBetas`, `MaxThinkingBudget` and every Codex field have
   **no** B3 today, so landing a rewrite there means extending the sweep, not just
   writing the profile field.
-- **A Codex model isn't done until a real `codex.exe` load task passes on it.**
-  Probes and plain turns don't exercise a real client tool loop; the load-task
-  smoke (`CodexLoadTaskSmokeTests`, `CODEX_SMOKE_MODEL=<id>`) catches tool-loop and
-  routing regressions the CLI actually drives. Inbound shapes the `codex exec` CLI
+- **A Codex model isn't done until real app-server `model/list` visibly offers
+  the exact id and a selected multi-tool task passes the client-owned dispatch
+  verdict.** Routing and live `/responses` alone leave a model absent from the
+  picker. Inbound shapes the `codex exec` CLI
   doesn't emit (e.g. the desktop `additional_tools` preamble) need a direct
   HTTP-edge replay instead (`CodexAdditionalToolsHeadlessTests`).
 - **Repo files are English** (code, comments, docs, commit messages); chat replies

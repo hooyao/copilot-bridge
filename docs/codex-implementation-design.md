@@ -316,6 +316,17 @@ verified during implementation (was Q5).
   report 1,050,000 total / 922,000 maximum prompt / 128,000 maximum output;
   Codex receives 1,050,000 total and an explicit 892,000 auto-compact threshold
   (85% of total context, rounded down, while retaining the lower prompt guard).
+- The reviewed supplemental Codex catalog includes a complete, provenance-pinned
+  `gpt-6.1-sol` resource for client versions whose exact official catalog still
+  omits that slug. It supplies Codex-owned picker metadata only when absent;
+  same-slug official baseline records win without duplication. The projector
+  still requires the exact Copilot Responses model to be live before advertising
+  it as visible and supported. A real app-server `model/list` check and selected
+  multi-tool run verify the metadata and execution legs together. The official
+  resource offers Ultra, but the exact live Copilot Responses profile rejects
+  it; the projection removes Ultra from the offered effort list for this exact
+  id in both supplemental and same-slug baseline records, preserving the pinned
+  source bytes. The picker offers low, medium, high, xhigh, and max.
 - `config codex` manages `[model_providers.copilot-bridge.auth]`. Its hidden
   `auth provider-token` command prints a stable public sentinel; the real
   GitHub/Copilot credential remains exclusively inside `AuthService`.
