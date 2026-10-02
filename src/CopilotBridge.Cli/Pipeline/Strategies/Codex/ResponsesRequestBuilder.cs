@@ -119,6 +119,8 @@ internal static class ResponsesRequestBuilder
         // WARN-logged the fuzzy match and let the request through; here we just
         // borrow the closest model's effort-clamp + custom-tool-drop rules). Only
         // a below-floor id yields null → the existing unclamped passthrough.
+        // A minimal+web_search rejection is a silent-downgrade rule, so it uses
+        // only the exact profile and is never borrowed from a nearby model.
         var exactProfile = profiles.Get(ir.Model);
         var profile = exactProfile ?? profiles.GetNearest(ir.Model, out _, out _);
         // Pull the openai bag (un-modeled knobs T1 stashed). Absent → empty.
@@ -216,7 +218,10 @@ internal static class ResponsesRequestBuilder
             // survives. Emit a reasoning object if EITHER is present — if coercion
             // dropped effort but a summary exists, reasoning:{summary:…} still carries
             // it (WriteBagFields drops "reasoning_summary" at the top level).
-            effort = CoerceEffort(ir.OutputConfig?.Effort, profile, bag, out var minimalWebSearchEffortRaised);
+            effort = CoerceEffort(
+                ir.OutputConfig?.Effort, profile,
+                exactProfile?.RejectsMinimalWithWebSearch == true, bag,
+                out var minimalWebSearchEffortRaised);
             if (minimalWebSearchEffortRaised)
                 mutations |= ResponsesRequestMutation.MinimalWebSearchEffortRaised;
             if (ir.OutputConfig?.Effort is { } inboundEffort
@@ -1495,10 +1500,13 @@ internal static class ResponsesRequestBuilder
     /// <c>docs/routing.md</c>). Unknown profile → pass through (the model router
     /// already validated the id; a missing profile is a catalog gap surfaced
     /// elsewhere). The caller WARN-logs when the returned value differs from the
-    /// inbound one.
+    /// inbound one. <paramref name="exactModelRejectsMinimalWithWebSearch"/>
+    /// comes only from an exact catalog hit; a fuzzy-nearest profile cannot prove
+    /// this rejection for the requested model.
     /// </summary>
     private static string? CoerceEffort(
-        string? effort, CodexModelProfile? profile, JsonElement? bag,
+        string? effort, CodexModelProfile? profile,
+        bool exactModelRejectsMinimalWithWebSearch, JsonElement? bag,
         out bool minimalWebSearchEffortRaised)
     {
         minimalWebSearchEffortRaised = false;
@@ -1508,7 +1516,7 @@ internal static class ResponsesRequestBuilder
         // rejects a real Codex tools[] list containing web_search at minimal.
         // Preserve minimal for tool-free and other-tool requests. When search is
         // available, retain the tool and use the least accepted higher effort.
-        if (CodexModelProfileCatalog.MinimalWithWebSearchRequiresHigherEffort
+        if (exactModelRejectsMinimalWithWebSearch
             && string.Equals(effort, "minimal", StringComparison.OrdinalIgnoreCase)
             && profile.AcceptedEfforts.Contains("minimal", StringComparer.OrdinalIgnoreCase)
             && HasWebSearchTool(bag))

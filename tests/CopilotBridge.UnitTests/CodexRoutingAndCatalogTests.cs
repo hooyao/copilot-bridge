@@ -56,6 +56,17 @@ public class CodexRoutingAndCatalogTests
     }
 
     [Theory]
+    [InlineData("gpt-5-mini", true)]
+    [InlineData("mai-code-1.1-flash", true)]
+    [InlineData("gpt-6.1-sol", false)]
+    [InlineData("gpt-5.3-codex", false)]
+    public void MinimalWithWebSearchFact_IsPerExactModel(string id, bool rejectsCombination)
+    {
+        var profile = Assert.IsType<CodexModelProfile>(new CodexModelProfileCatalog().Get(id));
+        Assert.Equal(rejectsCombination, profile.RejectsMinimalWithWebSearch);
+    }
+
+    [Theory]
     [MemberData(nameof(CodexIds))]
     public void Normalize_NoOpsOnCodexIds(string id)
     {

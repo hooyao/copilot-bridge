@@ -203,10 +203,11 @@ public partial class ResponsesProbe
             {
                 var rejectedWithSearch = facts["minimal_with_web_search_rejected"]?.GetValue<bool>()
                     ?? throw new InvalidDataException($"{model}: live facts omit minimal+web_search outcome");
-                Assert.Equal(
-                    CodexModelProfileCatalog.MinimalWithWebSearchRequiresHigherEffort,
-                    rejectedWithSearch);
+                Assert.Equal(profile.RejectsMinimalWithWebSearch, rejectedWithSearch);
             }
+            else
+                Assert.False(profile.RejectsMinimalWithWebSearch,
+                    $"{model}: minimal+web_search flag cannot apply when minimal alone is rejected");
 
             var fieldsRejected = Assert.IsType<JsonArray>(facts["fields_rejected"])
                 .Select(value => value!.GetValue<string>())

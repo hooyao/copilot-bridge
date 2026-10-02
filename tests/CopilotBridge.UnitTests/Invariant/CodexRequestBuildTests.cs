@@ -88,6 +88,40 @@ public class CodexRequestBuildTests
         Assert.Equal("minimal", emitted["reasoning"]?["effort"]?.GetValue<string>());
     }
 
+    [Fact]
+    public void MinimalWithSearch_ExactModelWithoutRejectionFact_IsPreserved()
+    {
+        var profiles = new CodexModelProfileCatalog([
+            new CodexModelProfile
+            {
+                CanonicalId = "future-search-friendly",
+                AcceptedEfforts = ["minimal", "low", "high"],
+                DefaultEffort = "high",
+                RejectsMinimalWithWebSearch = false,
+            },
+        ]);
+        var bag = Bag("""{"tools":[{"type":"web_search"}]}""");
+        var wire = JsonNode.Parse(ResponsesRequestBuilder.Build(
+            Ir("future-search-friendly", "minimal", bag), profiles).Body)!.AsObject();
+
+        Assert.Equal("minimal", wire["reasoning"]?["effort"]?.GetValue<string>());
+        Assert.Equal("web_search", wire["tools"]?[0]?["type"]?.GetValue<string>());
+    }
+
+    [Fact]
+    public void MinimalWithSearch_UnknownNearbyModel_DoesNotBorrowSilentDowngrade()
+    {
+        const string requested = "mai-code-1.2-flash";
+        Assert.Null(Catalog.Get(requested));
+        Assert.NotNull(Catalog.GetNearest(requested, out var matched, out _));
+        Assert.Equal("mai-code-1.1-flash", matched);
+        var bag = Bag("""{"tools":[{"type":"web_search"}]}""");
+        var wire = Emit(Ir(requested, "minimal", bag));
+
+        Assert.Equal(requested, wire["model"]?.GetValue<string>());
+        Assert.Equal("minimal", wire["reasoning"]?["effort"]?.GetValue<string>());
+    }
+
     // ── CoerceEffort: per-model DefaultEffort fallback, read back off the wire ────
     // Contract (change #2, docs/gpt55-runaway-diagnosis.md): an inbound effort the
     // model's profile does NOT accept is replaced by that profile's deliberate

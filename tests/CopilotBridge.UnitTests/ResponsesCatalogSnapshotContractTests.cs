@@ -35,8 +35,10 @@ public sealed class ResponsesCatalogSnapshotContractTests
             Assert.Equal(profile.AcceptedEfforts.Order(StringComparer.Ordinal), accepted);
             if (accepted.Contains("minimal", StringComparer.Ordinal))
                 Assert.Equal(
-                    CodexModelProfileCatalog.MinimalWithWebSearchRequiresHigherEffort,
+                    profile.RejectsMinimalWithWebSearch,
                     facts["minimal_with_web_search_rejected"]?.GetValue<bool>());
+            else
+                Assert.False(profile.RejectsMinimalWithWebSearch);
 
             var fieldsRejected = Strings(facts, "fields_rejected");
             Assert.Equal(

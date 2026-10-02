@@ -88,11 +88,6 @@ internal sealed class CodexModelProfileCatalog
     public static readonly bool StripsServiceTier = true;
     public static readonly bool StripsStoreTrue = true;
     public static readonly bool DropsImageGenerationTool = true;
-    // Both live minimal-capable profiles (gpt-5-mini and mai-code-1.1-flash)
-    // reject minimal when web_search is also in tools[]. The exact-model live
-    // contract sweep guards this cross-field fact for every model that accepts
-    // minimal on its own (2026-10-02).
-    public static readonly bool MinimalWithWebSearchRequiresHigherEffort = true;
 
     /// <summary>
     /// The baseline profile set, row-by-row from
@@ -247,7 +242,17 @@ internal sealed class CodexModelProfileCatalog
         // DefaultEffort=high: small rejects xhigh, so its fallback is 'high' (its
         // top accepted tier) — an inbound 'max'/'xhigh' lands here.
         string[] small = ["minimal", "low", "medium", "high"];
-        yield return new CodexModelProfile { CanonicalId = "gpt-5-mini", AcceptedEfforts = small, DefaultEffort = "high", SupportsMultimodalFunctionOutput = true };
+        // Minimal alone is accepted; minimal + web_search is rejected on both
+        // this exact id and mai-code-1.1-flash (2026-10-02 live probes and
+        // captured real Codex request replays).
+        yield return new CodexModelProfile
+        {
+            CanonicalId = "gpt-5-mini",
+            AcceptedEfforts = small,
+            DefaultEffort = "high",
+            RejectsMinimalWithWebSearch = true,
+            SupportsMultimodalFunctionOutput = true,
+        };
         // The old -picker id is unavailable to vscode-chat (2026-10-02 exact-id
         // liveness 400); mai-code-1.1-flash is live on /responses. Its direct
         // effort probe accepts null/minimal/low/medium/high and rejects
@@ -260,6 +265,7 @@ internal sealed class CodexModelProfileCatalog
             CanonicalId = "mai-code-1.1-flash",
             AcceptedEfforts = small,
             DefaultEffort = "high",
+            RejectsMinimalWithWebSearch = true,
             SupportsMultimodalFunctionOutput = true,
         };
     }

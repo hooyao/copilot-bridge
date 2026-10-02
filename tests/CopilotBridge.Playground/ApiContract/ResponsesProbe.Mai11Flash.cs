@@ -97,7 +97,9 @@ public partial class ResponsesProbe
         _output.WriteLine($"  body: {Truncate(body, 600)}");
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, status);
         Assert.Contains("web_search", body, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(CodexModelProfileCatalog.MinimalWithWebSearchRequiresHigherEffort, rejectedWithSearch);
+        Assert.Equal(
+            new CodexModelProfileCatalog().Get(model)?.RejectsMinimalWithWebSearch,
+            rejectedWithSearch);
         var snapshot = ContractSnapshot.ReadOrNull(ResponsesSnapshotFile)
             ?? throw new FileNotFoundException(ResponsesSnapshotFile);
         Assert.Equal(

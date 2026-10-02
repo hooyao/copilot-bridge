@@ -49,6 +49,14 @@ internal sealed record CodexModelProfile
     public bool RejectsCustomTools { get; init; }
 
     /// <summary>
+    /// True only when this exact model accepts <c>minimal</c> alone but rejects
+    /// it when <c>web_search</c> is in <c>tools[]</c>. T2 raises effort to an
+    /// accepted higher value while retaining the search tool. This silent
+    /// rewrite is never borrowed from a fuzzy-nearest profile.
+    /// </summary>
+    public bool RejectsMinimalWithWebSearch { get; init; }
+
+    /// <summary>
     /// True only when a direct live two-turn probe proved this exact model accepts
     /// and semantically consumes Responses <c>function_call_output.output</c> content
     /// items containing <c>input_image</c>. This is distinct from ordinary top-level

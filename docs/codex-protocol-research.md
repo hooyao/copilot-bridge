@@ -94,7 +94,9 @@ OpenAI-Chat translation" assumption (§4.4).
 > `none/xhigh/max/ultra`. A real Codex request with nine tools revealed the
 > cross-field rule: `minimal` plus `web_search` returns 400, while removing only
 > `web_search` returns 200. The bridge preserves minimal without search and
-> uses low when search is available. These are current facts; the September
+> uses low when search is available on those two exact profiles. The rejection
+> flag is per model and is not borrowed by a fuzzy-nearest unknown id. These
+> are current facts; the September
 > snapshot and historical picker observations below remain dated research.
 >
 > | models | total context | max prompt | max output |
@@ -499,7 +501,7 @@ What Codex sends (Track B) × what Copilot `/responses` accepts (Track A) → br
 | `prompt_cache_key` | always (§3.2) | 200 (§2.3) | passthrough |
 | `tools: function` | Responses-native shape (§3.5) | 200 (§2.4) | passthrough |
 | `tools: custom`/`apply_patch` | freeform (§3.5) | Historical `-internal` flash returned 500 (§2.4); current `mai-code-1.1-flash` accepts it (200) | passthrough; the per-profile drop remains available for a future rejecting model |
-| `tools: web_search` | (§3.5) | 200 in the original isolated tool probes (§2.4); `gpt-5-mini` and `mai-code-1.1-flash` return 400 for `minimal` plus `web_search` (2026-10-02) | retain the tool; coerce `minimal` to `low` only when the exact profile accepts minimal and the request carries `web_search` |
+| `tools: web_search` | (§3.5) | 200 in the original isolated tool probes (§2.4); `gpt-5-mini` and `mai-code-1.1-flash` return 400 for `minimal` plus `web_search` (2026-10-02) | retain the tool; coerce `minimal` to `low` only when the exact profile records this rejection and the request carries `web_search`; never borrow the rule for an unknown id |
 | `tools: image_generation` | (§3.5) | **400** all 6 (§2.4) | **drop** |
 | vision `input_image` | data-URL image part | 200 on 5 vision models (§2.6) | passthrough; set `Copilot-Vision-Request: true` |
 | `tool_choice` | `"auto"` (§3.2) | 200 | passthrough |
