@@ -93,7 +93,8 @@ public partial class ResponsesProbe
                     fieldRejected.Add(label);
             }
 
-            // ── tool rejections (image_generation is the verified 400; flash 500s on custom) ──
+            // ── tool rejections (image_generation is the verified 400;
+            //    custom-tool acceptance is checked per exact profile) ──
             var toolRejected = new JsonArray();
             foreach (var (label, toolJson) in ResponsesToolProbes)
             {

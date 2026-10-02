@@ -34,16 +34,16 @@ Per-model edge: `mai-code-1-flash-internal` 500s on custom/`apply_patch` tools.
 work-item list: §4.3. This overturns `pipeline-design.md` §3's "Codex needs
 OpenAI-Chat translation" assumption (§4.4).
 
-> **Addendum — 2026-07/08 model-set update (the tables below are a 2026-06-12 snapshot).**
-> The live `/responses` model set and effort profiles have since moved; the §2.1 /
-> §2.2 / §4 tables reflect the original 2026-06-12 probe and are NOT re-probed here.
-> Current wire-truth (see `codex-implementation-design.md` §5–§6 and the live
-> `CodexModelProfileCatalog` / `CopilotModelRegistry.ResponsesModelIds`):
-> - **Model set:** `mai-code-1-flash-internal` was retired → **`mai-code-1-flash-picker`**;
+> **Addendum — 2026-07/08 model-set snapshot (the tables below are a 2026-06-12 snapshot).**
+> The `/responses` model set and effort profiles had moved by August; the §2.1 /
+> §2.2 / §4 tables reflect the original 2026-06-12 probe. The following facts
+> describe the July/August state, not the current MAI contract; see the
+> 2026-10-02 replacement addendum below and the live `CodexModelProfileCatalog`.
+> - **Model set then:** `mai-code-1-flash-internal` was retired → **`mai-code-1-flash-picker`**;
 >   the four **`gpt-5.6` codenames** (`gpt-5.6-luna` / `gpt-5.6-sol` /
 >   `gpt-5.6-sol-fast` / `gpt-5.6-terra`)
->   were added. So it is no longer "6 models".
-> - **Effort profiles: now THREE, not two.** The large/small split still holds, plus
+>   were added. The set was no longer "6 models".
+> - **Effort profiles then: THREE, not two.** The large/small split held, plus
 >   a new **`xlarge`** profile for the gpt-5.6 codenames: they accept
 >   `none/low/medium/high/xhigh/**max**` and reject `minimal` — the **first Codex
 >   models to accept `max`** (`ResponsesProbe.Gpt56_Effort_ReProbe`). The §2.2 table's
@@ -51,12 +51,12 @@ OpenAI-Chat translation" assumption (§4.4).
 >   Probe trap: the 400 body for `minimal` on these ids lists supported values
 >   WITHOUT `max`, yet `max` live-probes 200 — the advertised list lies.
 > - **Custom tools:** a 2026-08-28 re-probe found that
->   `mai-code-1-flash-picker` now accepts the custom `apply_patch` shape (200),
+>   `mai-code-1-flash-picker` accepted the custom `apply_patch` shape (200),
 >   so the old per-model custom-tool drop is retired.
 > - **Multimodal function output:** a two-turn semantic sweep found that all nine
 >   OpenAI profiles accepted a structured red image and answered `red`.
->   `mai-code-1-flash-picker` returned 200 but answered `blue`, so only that exact
->   profile retains the compatibility string fallback.
+>   `mai-code-1-flash-picker` returned 200 but answered `blue`, so that retired
+>   profile used the compatibility string fallback at the time.
 
 > **Addendum — 2026-09-07 GPT-6 Astra.** Copilot now exposes exact
 > `gpt-6-astra` on `/responses` with 1,000,000 total / 872,000 prompt / 128,000

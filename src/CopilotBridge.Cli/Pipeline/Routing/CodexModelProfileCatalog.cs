@@ -165,7 +165,8 @@ internal sealed class CodexModelProfileCatalog
         // PNG as output:[{type:input_text},{type:input_image}] and sol answered
         // exactly "red" (200). This proves a capability that ordinary top-level
         // vision probes do not. The 2026-08-28 exact-profile sweep subsequently
-        // proved this capability for Luna and Terra too; MAI Flash remains false.
+        // proved this capability for Luna and Terra too; the retired MAI picker
+        // remained false at that date. MAI 1.1 was later probed true below.
         yield return new CodexModelProfile
         {
             CanonicalId = "gpt-5.6-sol",
