@@ -65,17 +65,17 @@ public partial class ResponsesProbe
         ["gpt-5.4", true],
         ["gpt-5.5", true],
         ["gpt-5.6-luna", true],
-        ["gpt-5.6-sol", false],
+        ["gpt-5.6-sol", true],
         ["gpt-5.6-sol-fast", true],
         ["gpt-5.6-terra", true],
-        ["gpt-5-mini", false],
-        ["mai-code-1-flash-picker", false],
+        ["gpt-5-mini", true],
+        ["mai-code-1.1-flash", true],
     ];
 
     [Theory]
     [InlineData("gpt-5.6-sol")]
     [InlineData("gpt-5-mini")]
-    [InlineData("mai-code-1-flash-picker")]
+    [InlineData("mai-code-1.1-flash")]
     public async Task StandaloneNamedFunctionOutput_SyntheticCallId_AcceptanceMatrix(string model)
     {
         var payload = $$"""

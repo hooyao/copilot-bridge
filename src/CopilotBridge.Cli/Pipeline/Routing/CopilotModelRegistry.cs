@@ -44,11 +44,13 @@ internal sealed class CopilotModelRegistry : IModelRegistry
         // sending them to the unimplemented /chat/completions branch.
         "gpt-6-luna",
         "gpt-6-sol",
+        // ResponsesProbe.Gpt61Sol_LivenessProbe (2026-10-02): exact id serves /responses.
+        "gpt-6.1-sol",
         "gpt-5-mini",
-        // mai-code-1-flash-internal was RETIRED by Copilot (2026 reconciliation:
-        // 400 "not available for integrator"); the live Responses id is now
-        // mai-code-1-flash-picker (200 — ResponsesProbe.MaiCode_LivenessProbe).
-        "mai-code-1-flash-picker",
+        // The 2026-10-02 exact-id probes retired mai-code-1-flash-picker (400
+        // unavailable for vscode-chat) and confirmed mai-code-1.1-flash serves
+        // /responses (200 — ResponsesProbe.Mai11Flash_LivenessProbe).
+        "mai-code-1.1-flash",
     };
 
     public RouteTarget? Resolve(string requestedModelId)

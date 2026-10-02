@@ -18,8 +18,7 @@ namespace CopilotBridge.UnitTests.Invariant;
 ///   <item>per-model <c>reasoning.effort</c> fallback (<c>CoerceEffort</c> →
 ///         profile <c>DefaultEffort</c> for an unaccepted inbound effort);</item>
 ///   <item>tool drops in <c>WriteToolsWithDrops</c> (uniform
-///         <c>image_generation</c> drop; <c>custom</c> drop for
-///         <c>mai-code-1-flash-picker</c>);</item>
+///         <c>image_generation</c> drop and profile-driven <c>custom</c> support);</item>
 ///   <item><c>max_output_tokens</c> round-trip (P2's fix);</item>
 ///   <item><c>service_tier</c> strip and <c>store</c>-only-when-true strip.</item>
 /// </list>
@@ -61,6 +60,68 @@ public class CodexRequestBuildTests
         return doc.RootElement.Clone();
     }
 
+    /// <summary>
+    /// Live backend contract: minimal is accepted alone on the two small
+    /// profiles, but rejected when web_search is in Responses tools[]. Keep
+    /// search available by raising only that combination to low.
+    /// </summary>
+    [Theory]
+    [InlineData("gpt-5-mini", "web_search", "minimal", "low")]
+    [InlineData("mai-code-1.1-flash", "web_search", "minimal", "low")]
+    [InlineData("mai-code-1.1-flash", "function", "minimal", "minimal")]
+    [InlineData("mai-code-1.1-flash", "web_search", "high", "high")]
+    [InlineData("gpt-5.3-codex", "web_search", "minimal", "xhigh")]
+    public void MinimalWithWebSearch_UsesLowOnlyForRejectedCombination(
+        string model, string toolType, string inboundEffort, string expectedEffort)
+    {
+        var bag = Bag($$"""{"tools":[{"type":"{{toolType}}","name":"probe"}]}""");
+        var emitted = Emit(Ir(model, inboundEffort, bag));
+
+        Assert.Equal(expectedEffort, emitted["reasoning"]?["effort"]?.GetValue<string>());
+        Assert.Equal(toolType, emitted["tools"]?[0]?["type"]?.GetValue<string>());
+    }
+
+    [Fact]
+    public void MinimalWithoutTools_RemainsMinimalOnMai11Flash()
+    {
+        var emitted = Emit(Ir("mai-code-1.1-flash", "minimal"));
+        Assert.Equal("minimal", emitted["reasoning"]?["effort"]?.GetValue<string>());
+    }
+
+    [Fact]
+    public void MinimalWithSearch_ExactModelWithoutRejectionFact_IsPreserved()
+    {
+        var profiles = new CodexModelProfileCatalog([
+            new CodexModelProfile
+            {
+                CanonicalId = "future-search-friendly",
+                AcceptedEfforts = ["minimal", "low", "high"],
+                DefaultEffort = "high",
+                RejectsMinimalWithWebSearch = false,
+            },
+        ]);
+        var bag = Bag("""{"tools":[{"type":"web_search"}]}""");
+        var wire = JsonNode.Parse(ResponsesRequestBuilder.Build(
+            Ir("future-search-friendly", "minimal", bag), profiles).Body)!.AsObject();
+
+        Assert.Equal("minimal", wire["reasoning"]?["effort"]?.GetValue<string>());
+        Assert.Equal("web_search", wire["tools"]?[0]?["type"]?.GetValue<string>());
+    }
+
+    [Fact]
+    public void MinimalWithSearch_UnknownNearbyModel_DoesNotBorrowSilentDowngrade()
+    {
+        const string requested = "mai-code-1.2-flash";
+        Assert.Null(Catalog.Get(requested));
+        Assert.NotNull(Catalog.GetNearest(requested, out var matched, out _));
+        Assert.Equal("mai-code-1.1-flash", matched);
+        var bag = Bag("""{"tools":[{"type":"web_search"}]}""");
+        var wire = Emit(Ir(requested, "minimal", bag));
+
+        Assert.Equal(requested, wire["model"]?.GetValue<string>());
+        Assert.Equal("minimal", wire["reasoning"]?["effort"]?.GetValue<string>());
+    }
+
     // ── CoerceEffort: per-model DefaultEffort fallback, read back off the wire ────
     // Contract (change #2, docs/gpt55-runaway-diagnosis.md): an inbound effort the
     // model's profile does NOT accept is replaced by that profile's deliberate
@@ -99,6 +160,12 @@ public class CodexRequestBuildTests
     [InlineData("gpt-6-astra", "minimal", "low")]
     [InlineData("gpt-6-astra", "low", "low")]
     [InlineData("gpt-6-astra", "max", "max")]
+    // GPT-6.1 Sol has the same independently probed effort boundary.
+    [InlineData("gpt-6.1-sol", "none", "low")]
+    [InlineData("gpt-6.1-sol", "minimal", "low")]
+    [InlineData("gpt-6.1-sol", "ultra", "low")]
+    [InlineData("gpt-6.1-sol", "low", "low")]
+    [InlineData("gpt-6.1-sol", "max", "max")]
     // small profile (gpt-5-mini): accepts minimal/low/medium/high; DefaultEffort=high.
     [InlineData("gpt-5-mini", "max", "high")]         // unaccepted → small default high
     [InlineData("gpt-5-mini", "xhigh", "high")]       // unaccepted (small rejects xhigh) → default high
@@ -134,9 +201,9 @@ public class CodexRequestBuildTests
         }
     }
 
-    // ── Tool drops: image_generation (uniform) + custom (flash only) ─────────────
+    // ── Tool drops: image_generation (uniform) + profile-driven custom policy ──
 
-    /// <summary>Three-tool bag: a function (sibling), image_generation (uniform drop), custom (flash drop).</summary>
+    /// <summary>Three-tool bag: function and custom survivors, plus image_generation to drop.</summary>
     private static JsonElement ToolsBag() => Bag("""
         {
           "tools": [
@@ -149,7 +216,7 @@ public class CodexRequestBuildTests
 
     [Theory]
     [InlineData("gpt-5.3-codex", true, 2)]                 // large: custom kept → function + custom
-    [InlineData("mai-code-1-flash-picker", true, 2)]     // 2026-08-28 live re-probe: custom accepted
+    [InlineData("mai-code-1.1-flash", true, 2)]         // 2026-10-02 direct live probe: custom accepted
     public void WriteToolsWithDrops_DropsImageGen_AndHonorsCustomCapability(string model, bool customKept, int expectedCount)
     {
         var emitted = Emit(Ir(model, bag: ToolsBag()));

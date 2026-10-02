@@ -57,18 +57,21 @@ public partial class ResponsesProbe
         "gpt-6-astra",
         "gpt-6-luna",
         "gpt-6-sol",
+        "gpt-6.1-sol",
         "gpt-5-mini",
-        "mai-code-1-flash-picker",
+        "mai-code-1.1-flash",
     ];
 
-    /// <summary>Models advertising vision (input_image) — all but the flash model.</summary>
+    /// <summary>Responses models included in the live input-image probe matrix.</summary>
     public static readonly string[] VisionModels =
     [
         "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5",
         "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-sol-fast", "gpt-5.6-terra",
         "gpt-6-astra",
         "gpt-6-luna", "gpt-6-sol",
+        "gpt-6.1-sol",
         "gpt-5-mini",
+        "mai-code-1.1-flash",
     ];
 
     // Codex effort vocabulary (config-reference): minimal|low|medium|high|xhigh.
@@ -107,13 +110,8 @@ public partial class ResponsesProbe
     }
 
     /// <summary>
-    /// Liveness probe for the <c>mai-code-1-flash</c> Responses ids during the 2026
-    /// model reconciliation. Copilot's <c>/models</c> now lists
-    /// <c>mai-code-1-flash-picker</c>, not the <c>-internal</c> id in
-    /// <see cref="CopilotModelRegistry"/>'s Responses set — but <c>/models</c> has
-    /// been wrong in both directions, so absence isn't grounds to delete. A 200 on a
-    /// minimal request = keep the id; a 4xx = Copilot retired it, swap to whatever
-    /// currently routes. Probes both so the catalog tracks the live id.
+    /// Historical liveness probe for the two retired MAI Flash ids. The exact
+    /// replacement id is probed in <see cref="Mai11Flash_LivenessProbe"/>.
     /// </summary>
     [Theory]
     [InlineData("mai-code-1-flash-internal")]
@@ -134,42 +132,6 @@ public partial class ResponsesProbe
         _output.WriteLine($"[{model}] liveness → {(int)status} {status}");
         _output.WriteLine($"  body: {Truncate(body, 300)}");
     }
-
-    /// <summary>
-    /// 2026 reconciliation follow-up — re-probe <c>mai-code-1-flash-picker</c>'s
-    /// EFFORT contract directly (PR #15 review #3). The catalog row for
-    /// <c>-picker</c> currently carries the "small" effort set
-    /// (<c>minimal/low/medium/high</c>, reject <c>none</c>+<c>xhigh</c>)
-    /// <b>extrapolated</b> from the retired <c>-internal</c> sibling, marked
-    /// PLAYGROUND-PENDING. This probes each effort value against the LIVE
-    /// <c>-picker</c> id so the row can be grounded in wire truth (or corrected).
-    /// Read the "→ HTTP N" lines: 200 = accepted, 400 = rejected.
-    /// </summary>
-    [Theory]
-    [MemberData(nameof(MaiCodePickerEffortMatrix))]
-    public Task MaiCodePicker_Effort_ReProbe(string? effort) =>
-        Effort_ProbeAcceptance("mai-code-1-flash-picker", effort);
-
-    public static IEnumerable<object[]> MaiCodePickerEffortMatrix() =>
-        from e in Efforts select new object[] { e! };
-
-    /// <summary>
-    /// 2026 reconciliation follow-up — re-probe <c>mai-code-1-flash-picker</c>'s
-    /// TOOL contract directly. The catalog historically asserted
-    /// <c>RejectsCustomTools = true</c> (custom <c>apply_patch</c> → 500),
-    /// originally extrapolated from <c>-internal</c>. This probes function / custom
-    /// apply_patch / web_search / image_generation against the LIVE <c>-picker</c>
-    /// id. The load-bearing case is <c>apply_patch_custom</c>: a non-200 there
-    /// confirms <c>RejectsCustomTools</c>; the 2026-08-28 200 refuted that old
-    /// rule and caused the row to drop the flag.
-    /// </summary>
-    [Theory]
-    [MemberData(nameof(MaiCodePickerToolMatrix))]
-    public Task MaiCodePicker_Tool_ReProbe(string label, string toolJson) =>
-        Tool_ProbeAcceptance("mai-code-1-flash-picker", label, toolJson);
-
-    public static IEnumerable<object[]> MaiCodePickerToolMatrix() =>
-        from t in Tools select new object[] { t.Label, t.Json };
 
     /// <summary>Task 2.4 — reasoning.effort acceptance per model.</summary>
     [Theory]

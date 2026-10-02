@@ -60,6 +60,35 @@ public partial class ResponsesProbe
                     effortRejected.Add(effort);
             }
 
+            // Minimal may be accepted alone yet rejected with web_search. Both
+            // current minimal-capable models do this; probe the combination on
+            // every model where the live effort sweep found minimal accepted.
+            bool? minimalWithWebSearchRejected = null;
+            bool? lowWithWebSearchAccepted = null;
+            if (effortAccepted.Any(value => value?.GetValue<string>() == "minimal"))
+            {
+                // The runtime uses low as its replacement, so guard acceptance
+                // of that exact combination too. A rejected minimal alone is
+                // insufficient evidence for a safe silent rewrite.
+                foreach (var searchEffort in new[] { "minimal", "low" })
+                {
+                    var payload =
+                        "{\"model\":\"" + model + "\","
+                        + "\"instructions\":\"Reply with exactly: ok\","
+                        + "\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"reply: ok\"}]}],"
+                        + "\"stream\":false,\"store\":false,\"reasoning\":{\"effort\":\"" + searchEffort + "\"},"
+                        + "\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"web_search\"}]}";
+                    var (status, body) = await ProbeRetry.WithRetry(
+                        () => client.TryPostResponsesAsync(payload), $"{model} {searchEffort}+web_search");
+                    var acceptedWithSearch = WireAcceptance.IsAccepted(
+                        status, body, $"{model} {searchEffort}+web_search");
+                    if (searchEffort == "minimal")
+                        minimalWithWebSearchRejected = !acceptedWithSearch;
+                    else
+                        lowWithWebSearchAccepted = acceptedWithSearch;
+                }
+            }
+
             // ── field rejections (store:true / service_tier are the verified 400s) ──
             var fieldRejected = new JsonArray();
             foreach (var (label, extra) in ResponsesFieldProbes)
@@ -75,7 +104,8 @@ public partial class ResponsesProbe
                     fieldRejected.Add(label);
             }
 
-            // ── tool rejections (image_generation is the verified 400; flash 500s on custom) ──
+            // ── tool rejections (image_generation is the verified 400;
+            //    custom-tool acceptance is checked per exact profile) ──
             var toolRejected = new JsonArray();
             foreach (var (label, toolJson) in ResponsesToolProbes)
             {
@@ -101,13 +131,18 @@ public partial class ResponsesProbe
                 $"[{model}] multimodal function output first={(int)multimodal.FirstStatus} "
                 + $"second={(int?)multimodal.SecondStatus} understood={multimodal.Supported}");
 
-            models[model] = new JsonObject
+            var modelFacts = new JsonObject
             {
                 ["effort"] = new JsonObject { ["accepted"] = effortAccepted, ["rejected"] = effortRejected },
                 ["fields_rejected"] = fieldRejected,
                 ["tools_rejected"] = toolRejected,
                 ["supports_multimodal_function_output"] = multimodal.Supported,
             };
+            if (minimalWithWebSearchRejected is { } rejectedWithSearch)
+                modelFacts["minimal_with_web_search_rejected"] = rejectedWithSearch;
+            if (lowWithWebSearchAccepted is { } acceptedLowWithSearch)
+                modelFacts["low_with_web_search_accepted"] = acceptedLowWithSearch;
+            models[model] = modelFacts;
         }
 
         // ── SSE event set (one capture; the grammar is per-backend, not per-model) ──
@@ -177,6 +212,23 @@ public partial class ResponsesProbe
                 expectedAccepted.SequenceEqual(accepted, StringComparer.Ordinal),
                 $"{model}: catalog accepted efforts [{string.Join(',', expectedAccepted)}] "
                 + $"!= live [{string.Join(',', accepted)}]");
+            if (expectedAccepted.Contains("minimal", StringComparer.Ordinal))
+            {
+                var rejectedWithSearch = facts["minimal_with_web_search_rejected"]?.GetValue<bool>()
+                    ?? throw new InvalidDataException($"{model}: live facts omit minimal+web_search outcome");
+                Assert.Equal(profile.RejectsMinimalWithWebSearch, rejectedWithSearch);
+                var acceptedLowWithSearch = facts["low_with_web_search_accepted"]?.GetValue<bool>()
+                    ?? throw new InvalidDataException($"{model}: live facts omit low+web_search outcome");
+                if (profile.RejectsMinimalWithWebSearch)
+                {
+                    Assert.Contains("low", expectedAccepted);
+                    Assert.True(acceptedLowWithSearch,
+                        $"{model}: profile raises minimal to low, but live backend rejects low+web_search");
+                }
+            }
+            else
+                Assert.False(profile.RejectsMinimalWithWebSearch,
+                    $"{model}: minimal+web_search flag cannot apply when minimal alone is rejected");
 
             var fieldsRejected = Assert.IsType<JsonArray>(facts["fields_rejected"])
                 .Select(value => value!.GetValue<string>())

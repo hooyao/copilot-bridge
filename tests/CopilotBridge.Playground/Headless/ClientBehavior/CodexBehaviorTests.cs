@@ -112,6 +112,31 @@ public class CodexBehaviorTests
     }
 
     /// <summary>
+    /// Exact GPT-6.1 Sol client capture and dispatch verdict. This id is live on
+    /// Copilot before the tested Codex binary has an official catalog entry, so
+    /// every upstream sampling turn must retain the exact GPT-6.1 Sol id.
+    /// </summary>
+    [Fact]
+    public async Task Codex_Gpt61Sol_MultiStepToolChain_ProducesDispatchLogForVerdict()
+    {
+        const string model = "gpt-6.1-sol";
+        const string canary = "gpt61sol_tool_canary_10226";
+        var prompt =
+            "Use separate real shell tool calls in order. Do not fabricate output:\n"
+            + "1. Calculate 43 * 47 with a shell command and write the result to gpt61_probe.txt.\n"
+            + $"2. Append the exact line {canary} to gpt61_probe.txt with a second shell command.\n"
+            + "3. Read the file with a third shell command. Report both lines verbatim, then stop.";
+
+        await DriveAndRecordAsync(
+            "codex-gpt-6-1-sol-model-support",
+            prompt,
+            modelReasoningEffort: "max",
+            expectedCodexVersion: "0.144.6",
+            model: model,
+            resolvedModel: model);
+    }
+
+    /// <summary>
     /// Candidate-targeted evidence for Copilot's internal-only Sol Fast id. This
     /// must remain separate from <see cref="ClientBehaviorSupport.LatestGpt"/>:
     /// Fast is an opt-in variant, not a replacement for the public Sol default.
@@ -144,35 +169,54 @@ public class CodexBehaviorTests
     }
 
     /// <summary>
-    /// Live client evidence for MAI Flash's re-probed custom-tool support. The
-    /// task forces Codex's grammar <c>exec</c> tool so removing the historical
-    /// custom-tool drop is verified as an execution-and-echo loop, not merely a
-    /// declaration accepted by the backend.
+    /// Exact-model client evidence for the live MAI-Code 1.1 Flash replacement.
+    /// The task needs a custom patch call and a later shell readback.
     /// </summary>
     [Fact]
-    public async Task Codex_MaiFlash_CustomTool_ProducesDispatchLogForVerdict()
+    public async Task Codex_Mai11Flash_MultiStepToolChain_ProducesDispatchLogForVerdict()
     {
-        var credentialSource = Environment.GetEnvironmentVariable(
-            "COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY");
-        if (string.IsNullOrWhiteSpace(credentialSource))
-            throw new InvalidOperationException(
-                "Set COPILOT_BRIDGE_TEST_PLUGIN_CREDENTIAL_SOURCE_DIRECTORY to a scratch "
-                + "directory containing a freshly authorized version-3 credential.");
-
-        const string canary = "codex-mai-custom-tool-canary-62841";
+        const string canary = "codex_mai11_flash_canary_10226";
         var prompt =
-            "Use the apply_patch tool (not a shell command) to create mai_custom_probe.txt with exactly two "
-            + "lines: 3127 and " + canary + ". Then run one shell command that reads the file, report both "
-            + "lines verbatim, and stop.";
+            "Use the apply_patch tool, not a shell command, to create mai11_probe.txt "
+            + $"with exactly two lines: 2021 and {canary}. After the patch tool "
+            + "returns, use a separate shell tool call to read the file. Report both "
+            + "lines verbatim, then stop. Do not fabricate the file contents.";
 
         await DriveAndRecordAsync(
-            "codex-mai-flash-custom-tool",
+            "codex-mai-1-1-flash-model-support",
             prompt,
-            modelReasoningEffort: "high",
-            credentialSourceDirectory: credentialSource,
-            credentialStagingMode: CredentialStagingMode.CopilotPluginVersionThree,
-            model: "mai-code-1-flash-picker",
-            modelCatalogTemplateSlug: "gpt-5.5");
+            modelReasoningEffort: "minimal",
+            expectedCodexVersion: "0.144.6",
+            model: "mai-code-1.1-flash",
+            modelCatalogTemplateSlug: "gpt-5.5",
+            resolvedModel: "mai-code-1.1-flash");
+    }
+
+    /// <summary>
+    /// Exact GPT-5 mini client capture for the minimal-plus-web_search rule.
+    /// The local alias supplies the reviewed client's tool behavior while each
+    /// sampling request keeps the real backend id. The skill reads the trace
+    /// and client-owned SQLite log for the tool execution verdict.
+    /// </summary>
+    [Fact]
+    public async Task Codex_Gpt5Mini_MinimalWithSearch_ProducesDispatchLogForVerdict()
+    {
+        const string model = "gpt-5-mini";
+        const string canary = "codex_gpt5mini_search_canary_10226";
+        var prompt =
+            "Use the apply_patch tool, not a shell command, to create mini_search_probe.txt "
+            + $"with exactly two lines: 2021 and {canary}. After the patch tool "
+            + "returns, use a separate shell tool call to read the file. Report both "
+            + "lines verbatim, then stop. Do not fabricate the file contents.";
+
+        await DriveAndRecordAsync(
+            "codex-gpt-5-mini-minimal-web-search",
+            prompt,
+            modelReasoningEffort: "minimal",
+            expectedCodexVersion: "0.144.6",
+            model: model,
+            modelCatalogTemplateSlug: "gpt-5.5",
+            resolvedModel: model);
     }
 
     [Fact]

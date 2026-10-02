@@ -92,7 +92,7 @@ internal sealed class CodexModelProfileCatalog
     /// <summary>
     /// The baseline profile set, row-by-row from
     /// <c>docs/copilot-responses-contract-snapshot.json</c> (seeded 2026-06-15,
-    /// Enterprise), with <c>mai-code-1-flash-picker</c> re-probed directly 2026-07
+    /// Enterprise), with <c>mai-code-1.1-flash</c> probed directly 2026-10-02
     /// (see its row) and the <c>gpt-5.6</c> codename slots probed directly 2026-07/08
     /// (see their rows), <c>gpt-6-astra</c> probed directly 2026-09-07, and
     /// <c>gpt-6-luna</c>/<c>gpt-6-sol</c> probed directly 2026-09-23.
@@ -108,7 +108,7 @@ internal sealed class CodexModelProfileCatalog
     ///         minimal → 400). So Anthropic's top tier passes through instead of
     ///         being clamped to <c>xhigh</c>.</item>
     ///   <item><b>small</b> — <c>gpt-5-mini</c>,
-    ///         <c>mai-code-1-flash-picker</c>: accept
+    ///         <c>mai-code-1.1-flash</c>: accept
     ///         <c>minimal/low/medium/high</c>, reject <c>none</c> AND <c>xhigh</c>
     ///         (the inverse of large at the boundaries).</item>
     ///   <item><b>Astra</b> — accepts <c>low/medium/high/xhigh/max</c>, rejects
@@ -123,8 +123,8 @@ internal sealed class CodexModelProfileCatalog
         // Structured multimodal function output was probed independently on every
         // exact profile (ExactProfiles_StructuredImageFunctionOutput_ProbeAcceptance,
         // 2026-08-28). Every OpenAI model below understood the red test image;
-        // mai-code-1-flash-picker returned 200 but answered "blue", so it remains
-        // false and takes the compatibility string fallback.
+        // The retired mai-code-1-flash-picker answered "blue", so it took the
+        // compatibility string fallback. Its live replacement was probed below.
         // ── "large" effort profile: accept none/low/medium/high/xhigh, reject minimal ──
         // DefaultEffort=xhigh: an unaccepted inbound effort falls back to xhigh —
         // the large profile's top accepted tier — with a WARNING in CoerceEffort.
@@ -160,7 +160,8 @@ internal sealed class CodexModelProfileCatalog
         // PNG as output:[{type:input_text},{type:input_image}] and sol answered
         // exactly "red" (200). This proves a capability that ordinary top-level
         // vision probes do not. The 2026-08-28 exact-profile sweep subsequently
-        // proved this capability for Luna and Terra too; MAI Flash remains false.
+        // proved this capability for Luna and Terra too; the retired MAI picker
+        // remained false at that date. MAI 1.1 was later probed true below.
         yield return new CodexModelProfile
         {
             CanonicalId = "gpt-5.6-sol",
@@ -223,26 +224,49 @@ internal sealed class CodexModelProfileCatalog
             SupportsMultimodalFunctionOutput = true,
         };
 
+        // Gpt61Sol_Effort_ReProbe (2026-10-02): null/low/medium/high/xhigh/max
+        // -> 200; none/minimal/ultra -> 400. The fallback is low, the least
+        // expensive accepted tier. Gpt61Sol_Tool_ReProbe accepted function,
+        // custom apply_patch and web_search; image_generation retained the
+        // catalog-wide rejection. Gpt61Sol_StructuredImageFunctionOutput_
+        // ProbeAcceptance completed 200/200 and answered red.
+        yield return new CodexModelProfile
+        {
+            CanonicalId = "gpt-6.1-sol",
+            AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
+            DefaultEffort = "low",
+            SupportsMultimodalFunctionOutput = true,
+        };
+
         // ── "small" effort profile: accept minimal/low/medium/high, reject none+xhigh ──
         // DefaultEffort=high: small rejects xhigh, so its fallback is 'high' (its
         // top accepted tier) — an inbound 'max'/'xhigh' lands here.
         string[] small = ["minimal", "low", "medium", "high"];
-        yield return new CodexModelProfile { CanonicalId = "gpt-5-mini", AcceptedEfforts = small, DefaultEffort = "high", SupportsMultimodalFunctionOutput = true };
-        // mai-code-1-flash-INTERNAL was retired by Copilot (2026 reconciliation —
-        // 400 "not available for integrator"); the live Responses id is
-        // mai-code-1-flash-PICKER (200 — ResponsesProbe.MaiCode_LivenessProbe).
-        // Effort + custom-tool contract RE-PROBED directly on -picker 2026-07/08
-        // (ResponsesProbe.MaiCodePicker_Effort_ReProbe / _Tool_ReProbe; underlying
-        // model 'mai-2-flash-code-2026-05-18'): accepts null/minimal/low/medium/high,
-        // REJECTS none + xhigh (400 "Supported values are: minimal, low, medium,
-        // high") → the "small" set. Custom apply_patch was 500 in 2026-07 but
-        // re-probed 200 on 2026-08-28 (MaiCodePicker_Tool_ReProbe), so no custom
-        // tool rewrite remains. function + web_search → 200.
+        // Minimal alone is accepted; minimal + web_search is rejected on both
+        // this exact id and mai-code-1.1-flash (2026-10-02 live probes and
+        // captured real Codex request replays).
         yield return new CodexModelProfile
         {
-            CanonicalId = "mai-code-1-flash-picker",
-            AcceptedEfforts = small,     // MaiCodePicker_Effort_ReProbe: none/xhigh → 400
-            DefaultEffort = "high",      // small's top accepted tier (xhigh rejected)
+            CanonicalId = "gpt-5-mini",
+            AcceptedEfforts = small,
+            DefaultEffort = "high",
+            RejectsMinimalWithWebSearch = true,
+            SupportsMultimodalFunctionOutput = true,
+        };
+        // The old -picker id is unavailable to vscode-chat (2026-10-02 exact-id
+        // liveness 400); mai-code-1.1-flash is live on /responses. Its direct
+        // effort probe accepts null/minimal/low/medium/high and rejects
+        // none/xhigh/max/ultra. Function, custom apply_patch, and web_search
+        // returned 200; image_generation retained the catalog-wide 400.
+        // Mai11Flash_StructuredImageFunctionOutput_ProbeAcceptance completed both
+        // turns (200/200) and answered the red image correctly, unlike -picker.
+        yield return new CodexModelProfile
+        {
+            CanonicalId = "mai-code-1.1-flash",
+            AcceptedEfforts = small,
+            DefaultEffort = "high",
+            RejectsMinimalWithWebSearch = true,
+            SupportsMultimodalFunctionOutput = true,
         };
     }
 }

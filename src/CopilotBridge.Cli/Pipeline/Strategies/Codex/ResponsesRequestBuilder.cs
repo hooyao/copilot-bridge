@@ -19,6 +19,7 @@ internal enum ResponsesRequestMutation
     InvalidMessageIdDropped = 1 << 5,
     RecursiveAgentToolDropped = 1 << 6,
     ProviderConflictDropped = 1 << 7,
+    MinimalWebSearchEffortRaised = 1 << 8,
 }
 
 /// <summary>
@@ -43,6 +44,7 @@ internal static class ResponsesRequestBuilder
         if (mutations == ResponsesRequestMutation.None) return "";
         var codes = new List<string>(8);
         if ((mutations & ResponsesRequestMutation.EffortCoerced) != 0) codes.Add("profile.effort");
+        if ((mutations & ResponsesRequestMutation.MinimalWebSearchEffortRaised) != 0) codes.Add("profile.effort.web_search");
         if ((mutations & ResponsesRequestMutation.ServiceTierStripped) != 0) codes.Add("profile.service_tier");
         if ((mutations & ResponsesRequestMutation.StoreTrueStripped) != 0) codes.Add("profile.store_true");
         if ((mutations & ResponsesRequestMutation.ImageGenerationToolDropped) != 0) codes.Add("profile.tool.image_generation");
@@ -117,6 +119,8 @@ internal static class ResponsesRequestBuilder
         // WARN-logged the fuzzy match and let the request through; here we just
         // borrow the closest model's effort-clamp + custom-tool-drop rules). Only
         // a below-floor id yields null → the existing unclamped passthrough.
+        // A minimal+web_search rejection is a silent-downgrade rule, so it uses
+        // only the exact profile and is never borrowed from a nearby model.
         var exactProfile = profiles.Get(ir.Model);
         var profile = exactProfile ?? profiles.GetNearest(ir.Model, out _, out _);
         // Pull the openai bag (un-modeled knobs T1 stashed). Absent → empty.
@@ -214,7 +218,12 @@ internal static class ResponsesRequestBuilder
             // survives. Emit a reasoning object if EITHER is present — if coercion
             // dropped effort but a summary exists, reasoning:{summary:…} still carries
             // it (WriteBagFields drops "reasoning_summary" at the top level).
-            effort = CoerceEffort(ir.OutputConfig?.Effort, profile);
+            effort = CoerceEffort(
+                ir.OutputConfig?.Effort, profile,
+                exactProfile?.RejectsMinimalWithWebSearch == true, bag,
+                out var minimalWebSearchEffortRaised);
+            if (minimalWebSearchEffortRaised)
+                mutations |= ResponsesRequestMutation.MinimalWebSearchEffortRaised;
             if (ir.OutputConfig?.Effort is { } inboundEffort
                 && effort is { } outboundEffort
                 && !string.Equals(inboundEffort, outboundEffort, StringComparison.OrdinalIgnoreCase))
@@ -1433,9 +1442,8 @@ internal static class ResponsesRequestBuilder
     }
 
     /// <summary>
-    /// Re-emit the tools array, dropping <c>image_generation</c> (uniform 400),
-    /// and — for <c>mai-code-1-flash-internal</c> — dropping <c>custom</c> tools
-    /// (that model 500s on them, profile flag).
+    /// Re-emit the tools array, dropping <c>image_generation</c> (uniform 400)
+    /// and custom tools when the resolved model profile requires that policy.
     /// </summary>
     private static void WriteToolsWithDrops(
         Utf8JsonWriter w,
@@ -1470,10 +1478,16 @@ internal static class ResponsesRequestBuilder
     }
 
     /// <summary>
-    /// Coerce an inbound effort to what the resolved model accepts. Three cases:
+    /// Coerce an inbound effort to a value accepted by the resolved model and
+    /// the request's tool set. Four cases:
     /// <list type="number">
     ///   <item>null → null (no effort set; nothing to write).</item>
-    ///   <item>accepted (case-insensitive) → returned as-is.</item>
+    ///   <item>accepted (case-insensitive), without the web-search constraint →
+    ///         returned as-is.</item>
+    ///   <item><c>minimal</c> accepted alone, but <c>web_search</c> present →
+    ///         <c>low</c> (probed with the search tool for this exact model),
+    ///         with the tool retained and <paramref name="minimalWebSearchEffortRaised"/>
+    ///         set so the caller reports the actual reason.</item>
     ///   <item>not accepted → the model's <see cref="CodexModelProfile.DefaultEffort"/>.
     ///         E.g. Anthropic's <c>max</c> lands here for the "large"/"small"
     ///         profiles that don't accept it — but the "xlarge" profile (gpt-5.6)
@@ -1486,15 +1500,51 @@ internal static class ResponsesRequestBuilder
     /// <c>docs/routing.md</c>). Unknown profile → pass through (the model router
     /// already validated the id; a missing profile is a catalog gap surfaced
     /// elsewhere). The caller WARN-logs when the returned value differs from the
-    /// inbound one.
+    /// inbound one. <paramref name="exactModelRejectsMinimalWithWebSearch"/>
+    /// comes only from an exact catalog hit; a fuzzy-nearest profile cannot prove
+    /// this rejection for the requested model.
     /// </summary>
-    private static string? CoerceEffort(string? effort, CodexModelProfile? profile)
+    private static string? CoerceEffort(
+        string? effort, CodexModelProfile? profile,
+        bool exactModelRejectsMinimalWithWebSearch, JsonElement? bag,
+        out bool minimalWebSearchEffortRaised)
     {
+        minimalWebSearchEffortRaised = false;
         if (effort is null) return null;
         if (profile is null) return effort;
+        // Copilot accepts minimal on the two small profiles in isolation, but
+        // rejects a real Codex tools[] list containing web_search at minimal.
+        // Preserve minimal for tool-free and other-tool requests. When search is
+        // available, retain the tool and use the probed compatible low effort.
+        if (exactModelRejectsMinimalWithWebSearch
+            && string.Equals(effort, "minimal", StringComparison.OrdinalIgnoreCase)
+            && profile.AcceptedEfforts.Contains("minimal", StringComparer.OrdinalIgnoreCase)
+            && HasWebSearchTool(bag))
+        {
+            minimalWebSearchEffortRaised = true;
+            return "low";
+        }
         if (profile.AcceptedEfforts.Contains(effort, StringComparer.OrdinalIgnoreCase))
             return effort;
         // Not accepted — fall back to the model's deliberate default (never a guess).
         return profile.DefaultEffort;
+    }
+
+    private static bool HasWebSearchTool(JsonElement? bag)
+    {
+        if (bag is not { ValueKind: JsonValueKind.Object } obj
+            || !obj.TryGetProperty("tools", out var tools)
+            || tools.ValueKind != JsonValueKind.Array)
+            return false;
+
+        foreach (var tool in tools.EnumerateArray())
+        {
+            if (tool.ValueKind == JsonValueKind.Object
+                && tool.TryGetProperty("type", out var type)
+                && type.ValueKind == JsonValueKind.String
+                && string.Equals(type.GetString(), "web_search", StringComparison.Ordinal))
+                return true;
+        }
+        return false;
     }
 }

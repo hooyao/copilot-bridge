@@ -1187,9 +1187,10 @@ back as a complete array, never a partially translated one. T2 never asks who
 produced the request: a source that means its tool output to stay opaque says so
 ON THE IR (Codex T1 marks `opaque_tool_output` on the block), and T2 pulls that
 fact. Positive support is exact-profile only: the 2026-08-28 matrix proved it
-for every current OpenAI Responses profile, while `mai-code-1-flash-picker`
-returned 200 but misidentified the red test image as blue and keeps the
-compatibility string path. Fuzzy-nearest and unprobed models also keep that path.
+for every then-current OpenAI Responses profile. The retired
+`mai-code-1-flash-picker` returned 200 but misidentified the red image as blue;
+its live replacement, `mai-code-1.1-flash`, completed both turns and identified
+red on 2026-10-02. Fuzzy-nearest and unprobed models keep the string path.
 
 Native Responses tool outputs retain their original content even when marked
 opaque. The request builder still detects `input_image` parts in the output
@@ -1909,6 +1910,24 @@ substitute for live request-shape probes.
 
 **Backend request profiles (`CodexModelProfileCatalog` and
 `ModelProfileCatalog`):**
+
+As of 2026-10-02, the Responses catalog also carries exact `gpt-6.1-sol`.
+Live `ResponsesProbe.Gpt61Sol_*` calls established that it accepts
+`low/medium/high/xhigh/max`, rejects `none/minimal/ultra`, accepts function,
+custom grammar, web-search and structured image tool output, and retains the
+backend-wide `store:true`, `service_tier`, and `image_generation` rejections.
+Its unsupported-effort fallback is `low`. The Responses contract snapshot and
+B3 comparison pin those rejection-driven rewrites; client catalog metadata
+still comes from the requesting Codex version's official resources.
+
+The 2026-10-02 MAI reconciliation removes the unavailable
+`mai-code-1-flash-picker` route and profiles exact `mai-code-1.1-flash`.
+Copilot accepts `minimal/low/medium/high` on that id, including native custom
+tools and structured image tool output. A captured real Codex request proved
+that `minimal` plus `web_search` is rejected even though minimal alone is
+accepted; the same cross-field rule holds on `gpt-5-mini`. T2 therefore sends
+`low` only for that combination and retains the search tool. The Responses
+snapshot and live sweep guard both affected model ids.
 
 1. Run `tests/CopilotBridge.Playground/CopilotGapProbes.DumpClaudeModelsAndCapabilities`
    to see what Copilot exposes on the current account.

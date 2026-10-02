@@ -34,16 +34,16 @@ Per-model edge: `mai-code-1-flash-internal` 500s on custom/`apply_patch` tools.
 work-item list: §4.3. This overturns `pipeline-design.md` §3's "Codex needs
 OpenAI-Chat translation" assumption (§4.4).
 
-> **Addendum — 2026-07/08 model-set update (the tables below are a 2026-06-12 snapshot).**
-> The live `/responses` model set and effort profiles have since moved; the §2.1 /
-> §2.2 / §4 tables reflect the original 2026-06-12 probe and are NOT re-probed here.
-> Current wire-truth (see `codex-implementation-design.md` §5–§6 and the live
-> `CodexModelProfileCatalog` / `CopilotModelRegistry.ResponsesModelIds`):
-> - **Model set:** `mai-code-1-flash-internal` was retired → **`mai-code-1-flash-picker`**;
+> **Addendum — 2026-07/08 model-set snapshot (the tables below are a 2026-06-12 snapshot).**
+> The `/responses` model set and effort profiles had moved by August; the §2.1 /
+> §2.2 / §4 tables reflect the original 2026-06-12 probe. The following facts
+> describe the July/August state, not the current MAI contract; see the
+> 2026-10-02 replacement addendum below and the live `CodexModelProfileCatalog`.
+> - **Model set then:** `mai-code-1-flash-internal` was retired → **`mai-code-1-flash-picker`**;
 >   the four **`gpt-5.6` codenames** (`gpt-5.6-luna` / `gpt-5.6-sol` /
 >   `gpt-5.6-sol-fast` / `gpt-5.6-terra`)
->   were added. So it is no longer "6 models".
-> - **Effort profiles: now THREE, not two.** The large/small split still holds, plus
+>   were added. The set was no longer "6 models".
+> - **Effort profiles then: THREE, not two.** The large/small split held, plus
 >   a new **`xlarge`** profile for the gpt-5.6 codenames: they accept
 >   `none/low/medium/high/xhigh/**max**` and reject `minimal` — the **first Codex
 >   models to accept `max`** (`ResponsesProbe.Gpt56_Effort_ReProbe`). The §2.2 table's
@@ -51,12 +51,12 @@ OpenAI-Chat translation" assumption (§4.4).
 >   Probe trap: the 400 body for `minimal` on these ids lists supported values
 >   WITHOUT `max`, yet `max` live-probes 200 — the advertised list lies.
 > - **Custom tools:** a 2026-08-28 re-probe found that
->   `mai-code-1-flash-picker` now accepts the custom `apply_patch` shape (200),
+>   `mai-code-1-flash-picker` accepted the custom `apply_patch` shape (200),
 >   so the old per-model custom-tool drop is retired.
 > - **Multimodal function output:** a two-turn semantic sweep found that all nine
 >   OpenAI profiles accepted a structured red image and answered `red`.
->   `mai-code-1-flash-picker` returned 200 but answered `blue`, so only that exact
->   profile retains the compatibility string fallback.
+>   `mai-code-1-flash-picker` returned 200 but answered `blue`, so that retired
+>   profile used the compatibility string fallback at the time.
 
 > **Addendum — 2026-09-07 GPT-6 Astra.** Copilot now exposes exact
 > `gpt-6-astra` on `/responses` with 1,000,000 total / 872,000 prompt / 128,000
@@ -85,11 +85,26 @@ OpenAI-Chat translation" assumption (§4.4).
 > `docs/copilot-codex-model-capabilities-snapshot.json` (Enterprise account).
 > `mai-code-1-flash-picker` was absent from discovery; absence alone does not
 > retire its live-probed profile. The advertised limits are:
+
+> **2026-10-02 replacement:** the exact picker id now returns 400 "not
+> available for integrator `vscode-chat`". Copilot discovery lists the distinct
+> `mai-code-1.1-flash` id on `/responses`; direct liveness and the full effort,
+> field, tool, and structured image-output probes returned a working contract.
+> The new id accepts `minimal/low/medium/high` in isolation and rejects
+> `none/xhigh/max/ultra`. A real Codex request with nine tools revealed the
+> cross-field rule: `minimal` plus `web_search` returns 400, while removing only
+> `web_search` returns 200. The bridge preserves minimal without search and
+> uses low when search is available on those two exact profiles; direct live
+> probes and captured Codex requests confirm low plus `web_search` returns 200.
+> The rejection and replacement-acceptance facts are per model and are not
+> borrowed by a fuzzy-nearest unknown id. These are current facts; the September
+> snapshot and historical picker observations below remain dated research.
 >
 > | models | total context | max prompt | max output |
 > | --- | ---: | ---: | ---: |
 > | `gpt-5.4`, `gpt-5.5`, `gpt-5.6-{luna,sol,sol-fast,terra}` | 1,050,000 | 922,000 | 128,000 |
 > | `gpt-6-luna`, `gpt-6-sol` | 1,000,000 | 872,000 | 128,000 |
+> | `gpt-6.1-sol` (2026-10-02 live discovery, not in this September snapshot) | 1,050,000 | 922,000 | 128,000 |
 > | `gpt-6-astra` | 1,050,000 | 1,050,000 | 128,000 |
 > | `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 |
 > | `gpt-5-mini` | 264,000 | 128,000 | 64,000 |
@@ -382,7 +397,7 @@ Request-side reasoning/text structs (`codex-api/src/common.rs:124-161`):
 
 **New facts only the capture gave:**
 - **Default `reasoning.effort = "medium"`**, `text.verbosity = "low"` for `gpt-5.3-codex` (CLI default, no flags).
-- **Codex's default toolset = 14 tools**, types: `function` (×10, incl. `shell_command`, `apply_patch` sibling utilities, `update_plan`), `custom` (`apply_patch`), `namespace` (`mcp__node_repl`), `tool_search`, **`web_search`**. So `apply_patch`(custom) + `web_search` are sent **by default** → both 200 on Copilot (§2.4) → clean. **`image_generation` is NOT in the default set** → the "drop image_generation" coercion (§4.2) is defensive, rarely exercised.
+- **Codex's default toolset = 14 tools**, types: `function` (×10, incl. `shell_command`, `apply_patch` sibling utilities, `update_plan`), `custom` (`apply_patch`), `namespace` (`mcp__node_repl`), `tool_search`, **`web_search`**. Both tool types are accepted in ordinary Codex requests. On the minimal-capable `gpt-5-mini` and `mai-code-1.1-flash` profiles, Copilot rejects `minimal` when `web_search` is present; T2 keeps the tool and sends `low` for that combination. **`image_generation` is NOT in the default set** → the "drop image_generation" coercion (§4.2) is defensive, rarely exercised.
 - First input item is **`role:"developer"`** (not `system`) — Codex uses the developer role for its preamble; `instructions` (~12KB) carries the system prompt separately.
 - Codex-specific **headers on the wire**: `x-codex-beta-features`, `x-codex-turn-metadata` (rich JSON: session/thread/turn ids, workspace git origin + commit + dirty flag), `x-codex-window-id`, `session-id`, `thread-id`, `x-client-request-id`, `originator: codex_exec`, `User-Agent: codex_exec/0.140.0-alpha.2 (...) WindowsTerminal`. The bridge will **replace** these with the official VS Code Copilot header set (as `/cc` does) — Copilot won't recognize `x-codex-*`.
 
@@ -439,21 +454,18 @@ capture contained 103 such persisted heartbeat items and no `call_id`; bridge 0.
 rejected the first one at source-generated deserialization because its DTO still
 declared `call_id` required.
 
-`ResponsesProbe.StandaloneNamedFunctionOutput_AcceptanceMatrix` established the
-current Copilot backend contract with the same minimal item on every bridge profile:
+The 2026-09-06 `ResponsesProbe.StandaloneNamedFunctionOutput_AcceptanceMatrix`
+found seven accepting models and three rejections (`gpt-5.6-sol`, `gpt-5-mini`,
+and the now-retired `mai-code-1-flash-picker`). The 2026-10-02 recheck of the
+same minimal item returned 200 on `gpt-5.6-sol` and `gpt-5-mini`; the live
+replacement `mai-code-1.1-flash` also returned 200. All current ids in that
+probe matrix now accept the standalone named output without `call_id`.
 
-- **accepted (200):** `gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`,
-  `gpt-5.6-luna`, `gpt-5.6-sol-fast`, `gpt-5.6-terra`;
-- **rejected (400, “Function call output requires call_id”):** `gpt-5.6-sol`,
-  `gpt-5-mini`, `mai-code-1-flash-picker`.
-
-Adding an arbitrary compatibility id is not valid: all three rejecting models then
-returned `No tool call found for function call output with call_id ...`. A sanitized
-Desktop heartbeat body with two persisted standalone events returned 200 on
-`gpt-5.6-sol-fast`. Therefore the bridge preserves the native item and requested
-model for every target. It neither fabricates history nor silently lowers the event
-to a message; a backend-specific rejection remains visible, and an operator may use
-an explicit routing location to select a supporting target.
+Adding an arbitrary compatibility id remains invalid when no matching tool
+call exists: the synthetic-id probes return `No tool call found for function
+call output with call_id ...`. A sanitized Desktop heartbeat body with two
+persisted standalone events returned 200 on `gpt-5.6-sol-fast`. The bridge
+preserves the native item and requested model rather than fabricating history.
 
 ### 3.5 Tool shapes Codex emits
 `ToolSpec` enum, serialized `#[serde(tag="type")]` (`tools/src/tool_spec.rs:15-64`).
@@ -489,14 +501,14 @@ What Codex sends (Track B) × what Copilot `/responses` accepts (Track A) → br
 | `service_tier` | model-gated (§3.2) | **400** (§2.3) | **strip** |
 | `prompt_cache_key` | always (§3.2) | 200 (§2.3) | passthrough |
 | `tools: function` | Responses-native shape (§3.5) | 200 (§2.4) | passthrough |
-| `tools: custom`/`apply_patch` | freeform (§3.5) | **200** on 5; **500** on flash (§2.4) | passthrough (no rewrite); flash can't do custom tools — profile note |
-| `tools: web_search` | (§3.5) | 200 all 6 (§2.4) | passthrough |
+| `tools: custom`/`apply_patch` | freeform (§3.5) | Historical `-internal` flash returned 500 (§2.4); current `mai-code-1.1-flash` accepts it (200) | passthrough; the per-profile drop remains available for a future rejecting model |
+| `tools: web_search` | (§3.5) | 200 in the original isolated tool probes (§2.4); `gpt-5-mini` and `mai-code-1.1-flash` return 400 for `minimal` plus `web_search` and 200 for `low` plus `web_search` (2026-10-02) | retain the tool; coerce `minimal` to the probed compatible `low` only when the exact profile records both facts; never borrow the rule for an unknown id |
 | `tools: image_generation` | (§3.5) | **400** all 6 (§2.4) | **drop** |
 | vision `input_image` | data-URL image part | 200 on 5 vision models (§2.6) | passthrough; set `Copilot-Vision-Request: true` |
 | `tool_choice` | `"auto"` (§3.2) | 200 | passthrough |
 | message `id` / `phase` | valid `msg*` ids plus commentary/final phase; older message history may use `item_0` | valid metadata 200; assistant and developer `item_0` id 400 (§3.4.1) | preserve valid metadata; omit only rejected id on every message path and report coercion |
 | `function_call_output.output` array | ordered native content items (0.147 desktop) | real captured array 200 (§3.4.1) | passthrough unchanged; never use Claude flattening |
-| standalone named `function_call_output` | 0.153.3 external tool event: no `call_id`, non-empty `name`, optional `namespace` (§3.4.2) | model-dependent: seven current profiles accept; `gpt-5.6-sol`, `gpt-5-mini`, and MAI picker require a real paired call | preserve item, authority, model, and order; never invent an id/call/message/route |
+| standalone named `function_call_output` | 0.153.3 external tool event: no `call_id`, non-empty `name`, optional `namespace` (§3.4.2) | All current ids in the 2026-10-02 probe matrix accept; the retired MAI picker and two GPT ids rejected in September (§3.4.2) | preserve item, authority, model, and order; never invent an id/call/message/route |
 | `stream` | always `true` (§3.2) | streams cleanly (§2.5) | passthrough |
 | SSE response | parser tolerant, needs terminal `response.completed`, no `[DONE]` handling (§3.3) | ends at `response.completed`, **no `[DONE]`** (§2.5) | **passthrough — no DONE-filter needed** |
 | headers `x-codex-*` | sent (§3.2) | not probed for rejection; Copilot generally ignores unknowns | passthrough; bridge adds its own official Copilot headers (replace, like `/cc`) |
@@ -532,7 +544,7 @@ A separate change implements (each tied to a finding):
 
 - **`/codex/v1/responses` endpoint** under `Endpoints/Codex/`, per-client prefix (parallels `/cc`). Sub-route only `/responses` for now; `/responses/compact` + `/memories/*` (§3.1) are **out of scope** unless a later capture shows Codex hits them against a custom provider (likely not — they're OpenAI-backend features).
 - **DTOs** `Models/Responses/` from `references/openai-sdk-pkg/` (§0), registered in `Models/JsonContext.cs` (AOT). Minimal set: the `ResponsesApiRequest` fields (§3.2) + the SSE event types (§2.5/§3.3).
-- **Per-model effort profile catalog** (the real work — §4.2 item 1): two profiles (large/small) keyed by model id from §2.2, plus the uniform strips (`service_tier`, `image_generation`) and the flash-no-custom-tools flag. Still far simpler than the Anthropic `ProfileAdjuster` (no thinking-shape coercion, no mid-conv-system fold).
+- **Per-model effort profile catalog** (the real work — §4.2 item 1): model-keyed effort sets, the uniform strips (`service_tier`, `image_generation`), and a dormant per-profile custom-tool rejection flag. The retired internal flash id once needed that flag; live `mai-code-1.1-flash` accepts custom tools. The catalog remains simpler than the Anthropic `ProfileAdjuster` (no thinking-shape coercion or mid-conv-system fold).
 - **Header build**: reuse the existing endpoint-agnostic `CopilotHeaderFactory` (no `/responses`-specific header beyond the official set; confirmed §1.4 + reuse in probe). Set `Copilot-Vision-Request:true` when `input_image` present (§2.6); set `x-initiator` per last input item (reference `responses/utils.ts`).
 - **Streaming**: plain SSE passthrough (§2.5) — no DONE-filter, no transform; forward `function_call_arguments.*` verbatim.
 - **Headless harness**: drive real `codex.exe` via `codex exec --json -c model_providers.<id>.base_url=.../codex` (Track-B capture, Task 3.4, still to run live).

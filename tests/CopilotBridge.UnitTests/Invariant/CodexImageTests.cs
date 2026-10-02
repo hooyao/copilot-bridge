@@ -307,11 +307,21 @@ public class CodexImageTests
         // The recorded expectation for that model, not news. Reporting it would train
         // the operator to ignore the warning that actually matters.
         var ir = ToolResultImageRequest(
-            "mai-code-1-flash-picker",
+            "probed-unsupported-fixture",
             "[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"aGVsbG8=\"}}]");
 
+        var unsupportedProfiles = new CodexModelProfileCatalog([
+            new CodexModelProfile
+            {
+                CanonicalId = "probed-unsupported-fixture",
+                AcceptedEfforts = ["low"],
+                DefaultEffort = "low",
+                SupportsMultimodalFunctionOutput = false,
+            },
+        ]);
+
         var (_, vision, _) = ResponsesRequestBuilder.Build(
-            ir, Profiles, filterRecursiveAgentTool: false, out _, out var downgraded);
+            ir, unsupportedProfiles, filterRecursiveAgentTool: false, out _, out var downgraded);
 
         Assert.False(downgraded);
         Assert.False(vision);

@@ -369,6 +369,11 @@ internal static class CodexAppServerProcess
             FileName = codexExe,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            // Codex writes UTF-8 JSON. Windows' default console code page can
+            // decode a Unicode citation marker across an escaped quote and
+            // corrupt the bundled catalog before JsonNode sees it.
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
             UseShellExecute = false,
             CreateNoWindow = true,
         };

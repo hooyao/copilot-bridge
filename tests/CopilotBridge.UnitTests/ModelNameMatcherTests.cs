@@ -24,12 +24,13 @@ public class ModelNameMatcherTests
 
     // The Codex/Responses catalog's known ids. Mirrors
     // CodexModelProfileCatalog.BuildDefault() so the fuzzy-match cases exercise
-    // the real candidate set (incl. the gpt-5.6 codenames added 2026-07/08).
+    // the real candidate set (incl. the GPT-6 profiles added 2026-09/10).
     private static readonly string[] Codex =
     [
         "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
         "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-sol-fast", "gpt-5.6-terra",
-        "gpt-5-mini", "mai-code-1-flash-picker",
+        "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol",
+        "gpt-5-mini", "mai-code-1.1-flash",
     ];
 
     private static string? Nearest(string id, string[] known, out double score) =>
@@ -205,10 +206,9 @@ public class ModelNameMatcherTests
     [Fact]
     public void MaiCodeVariant_MatchesMaiCodeFamily()
     {
-        // A renamed mai-code suffix (the exact churn that happened: -internal →
-        // -picker) must land back on the mai-code profile, not a gpt one.
-        var match = Nearest("mai-code-1-flash-preview", Codex, out _);
-        Assert.Equal("mai-code-1-flash-picker", match);
+        // A renamed MAI suffix must land on the current MAI profile, not GPT.
+        var match = Nearest("mai-code-1.1-flash-preview", Codex, out _);
+        Assert.Equal("mai-code-1.1-flash", match);
     }
 
     [Fact]
@@ -226,7 +226,7 @@ public class ModelNameMatcherTests
     [InlineData("claude-haiku-4.5", "haiku", 4, 5)]
     [InlineData("gpt-5.5", "gpt", 5, 5)]
     [InlineData("gpt-5.3-codex", "codex", 5, 3)]   // family = first non-vendor alpha token
-    [InlineData("mai-code-1-flash-picker", "code", 1, -1)]
+    [InlineData("mai-code-1.1-flash", "code", 1, 1)]
     public void ParseFamilyVersion_ExtractsFamilyAndVersion(string id, string family, int major, int minor)
     {
         var (f, mj, mn) = ModelNameMatcher.ParseFamilyVersion(id);
