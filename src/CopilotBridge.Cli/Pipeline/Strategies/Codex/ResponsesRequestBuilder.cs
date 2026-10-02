@@ -1485,7 +1485,7 @@ internal static class ResponsesRequestBuilder
     ///   <item>accepted (case-insensitive), without the web-search constraint →
     ///         returned as-is.</item>
     ///   <item><c>minimal</c> accepted alone, but <c>web_search</c> present →
-    ///         <c>low</c> (or the profile's accepted fallback if low is absent),
+    ///         <c>low</c> (probed with the search tool for this exact model),
     ///         with the tool retained and <paramref name="minimalWebSearchEffortRaised"/>
     ///         set so the caller reports the actual reason.</item>
     ///   <item>not accepted → the model's <see cref="CodexModelProfile.DefaultEffort"/>.
@@ -1515,18 +1515,14 @@ internal static class ResponsesRequestBuilder
         // Copilot accepts minimal on the two small profiles in isolation, but
         // rejects a real Codex tools[] list containing web_search at minimal.
         // Preserve minimal for tool-free and other-tool requests. When search is
-        // available, retain the tool and use the least accepted higher effort.
+        // available, retain the tool and use the probed compatible low effort.
         if (exactModelRejectsMinimalWithWebSearch
             && string.Equals(effort, "minimal", StringComparison.OrdinalIgnoreCase)
             && profile.AcceptedEfforts.Contains("minimal", StringComparer.OrdinalIgnoreCase)
             && HasWebSearchTool(bag))
         {
-            var compatible = profile.AcceptedEfforts.Contains("low", StringComparer.OrdinalIgnoreCase)
-                ? "low"
-                : profile.DefaultEffort;
-            minimalWebSearchEffortRaised =
-                !string.Equals(effort, compatible, StringComparison.OrdinalIgnoreCase);
-            return compatible;
+            minimalWebSearchEffortRaised = true;
+            return "low";
         }
         if (profile.AcceptedEfforts.Contains(effort, StringComparer.OrdinalIgnoreCase))
             return effort;

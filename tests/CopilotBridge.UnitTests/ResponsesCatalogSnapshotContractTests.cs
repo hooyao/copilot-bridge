@@ -34,9 +34,18 @@ public sealed class ResponsesCatalogSnapshotContractTests
                 .ToArray();
             Assert.Equal(profile.AcceptedEfforts.Order(StringComparer.Ordinal), accepted);
             if (accepted.Contains("minimal", StringComparer.Ordinal))
+            {
                 Assert.Equal(
                     profile.RejectsMinimalWithWebSearch,
                     facts["minimal_with_web_search_rejected"]?.GetValue<bool>());
+                var acceptedLowWithSearch = facts["low_with_web_search_accepted"]?.GetValue<bool>();
+                Assert.NotNull(acceptedLowWithSearch);
+                if (profile.RejectsMinimalWithWebSearch)
+                {
+                    Assert.Contains("low", accepted);
+                    Assert.True(acceptedLowWithSearch);
+                }
+            }
             else
                 Assert.False(profile.RejectsMinimalWithWebSearch);
 

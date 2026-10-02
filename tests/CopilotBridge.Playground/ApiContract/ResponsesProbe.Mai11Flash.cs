@@ -105,6 +105,20 @@ public partial class ResponsesProbe
         Assert.Equal(
             rejectedWithSearch,
             snapshot["models"]?[model]?["minimal_with_web_search_rejected"]?.GetValue<bool>());
+
+        // Change only effort on the same search-bearing request: low is the
+        // exact replacement T2 emits, so its backend acceptance is load-bearing.
+        var lowWithSearch = JsonNode.Parse(withSearch)!.AsObject();
+        lowWithSearch["reasoning"]!.AsObject()["effort"] = "low";
+        var (lowStatus, lowBody) = await client.TryPostResponsesAsync(lowWithSearch.ToJsonString());
+        var acceptedLowWithSearch = WireAcceptance.IsAccepted(
+            lowStatus, lowBody, $"{model} low+web_search");
+        _output.WriteLine($"[{model}] low + web_search -> {(int)lowStatus} {lowStatus}");
+        Assert.True(acceptedLowWithSearch,
+            $"{model}: low+web_search rejected: {WireAcceptance.ErrorMessage(lowBody)}");
+        Assert.Equal(
+            acceptedLowWithSearch,
+            snapshot["models"]?[model]?["low_with_web_search_accepted"]?.GetValue<bool>());
     }
 
     /// <summary>

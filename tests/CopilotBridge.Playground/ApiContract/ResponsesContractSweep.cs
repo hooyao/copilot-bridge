@@ -64,18 +64,29 @@ public partial class ResponsesProbe
             // current minimal-capable models do this; probe the combination on
             // every model where the live effort sweep found minimal accepted.
             bool? minimalWithWebSearchRejected = null;
+            bool? lowWithWebSearchAccepted = null;
             if (effortAccepted.Any(value => value?.GetValue<string>() == "minimal"))
             {
-                var payload =
-                    "{\"model\":\"" + model + "\","
-                    + "\"instructions\":\"Reply with exactly: ok\","
-                    + "\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"reply: ok\"}]}],"
-                    + "\"stream\":false,\"store\":false,\"reasoning\":{\"effort\":\"minimal\"},"
-                    + "\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"web_search\"}]}";
-                var (status, body) = await ProbeRetry.WithRetry(
-                    () => client.TryPostResponsesAsync(payload), $"{model} minimal+web_search");
-                minimalWithWebSearchRejected = !WireAcceptance.IsAccepted(
-                    status, body, $"{model} minimal+web_search");
+                // The runtime uses low as its replacement, so guard acceptance
+                // of that exact combination too. A rejected minimal alone is
+                // insufficient evidence for a safe silent rewrite.
+                foreach (var searchEffort in new[] { "minimal", "low" })
+                {
+                    var payload =
+                        "{\"model\":\"" + model + "\","
+                        + "\"instructions\":\"Reply with exactly: ok\","
+                        + "\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"reply: ok\"}]}],"
+                        + "\"stream\":false,\"store\":false,\"reasoning\":{\"effort\":\"" + searchEffort + "\"},"
+                        + "\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"web_search\"}]}";
+                    var (status, body) = await ProbeRetry.WithRetry(
+                        () => client.TryPostResponsesAsync(payload), $"{model} {searchEffort}+web_search");
+                    var acceptedWithSearch = WireAcceptance.IsAccepted(
+                        status, body, $"{model} {searchEffort}+web_search");
+                    if (searchEffort == "minimal")
+                        minimalWithWebSearchRejected = !acceptedWithSearch;
+                    else
+                        lowWithWebSearchAccepted = acceptedWithSearch;
+                }
             }
 
             // ── field rejections (store:true / service_tier are the verified 400s) ──
@@ -129,6 +140,8 @@ public partial class ResponsesProbe
             };
             if (minimalWithWebSearchRejected is { } rejectedWithSearch)
                 modelFacts["minimal_with_web_search_rejected"] = rejectedWithSearch;
+            if (lowWithWebSearchAccepted is { } acceptedLowWithSearch)
+                modelFacts["low_with_web_search_accepted"] = acceptedLowWithSearch;
             models[model] = modelFacts;
         }
 
@@ -204,6 +217,14 @@ public partial class ResponsesProbe
                 var rejectedWithSearch = facts["minimal_with_web_search_rejected"]?.GetValue<bool>()
                     ?? throw new InvalidDataException($"{model}: live facts omit minimal+web_search outcome");
                 Assert.Equal(profile.RejectsMinimalWithWebSearch, rejectedWithSearch);
+                var acceptedLowWithSearch = facts["low_with_web_search_accepted"]?.GetValue<bool>()
+                    ?? throw new InvalidDataException($"{model}: live facts omit low+web_search outcome");
+                if (profile.RejectsMinimalWithWebSearch)
+                {
+                    Assert.Contains("low", expectedAccepted);
+                    Assert.True(acceptedLowWithSearch,
+                        $"{model}: profile raises minimal to low, but live backend rejects low+web_search");
+                }
             }
             else
                 Assert.False(profile.RejectsMinimalWithWebSearch,

@@ -311,6 +311,7 @@
         ]
       },
       "minimal_with_web_search_rejected": true,
+      "low_with_web_search_accepted": true,
       "fields_rejected": [
         "store_true",
         "service_tier"
@@ -336,6 +337,7 @@
         ]
       },
       "minimal_with_web_search_rejected": true,
+      "low_with_web_search_accepted": true,
       "fields_rejected": [
         "store_true",
         "service_tier"

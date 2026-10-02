@@ -64,6 +64,8 @@ public class CodexRoutingAndCatalogTests
     {
         var profile = Assert.IsType<CodexModelProfile>(new CodexModelProfileCatalog().Get(id));
         Assert.Equal(rejectsCombination, profile.RejectsMinimalWithWebSearch);
+        if (rejectsCombination)
+            Assert.Contains("low", profile.AcceptedEfforts);
     }
 
     [Theory]
