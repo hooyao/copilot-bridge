@@ -65,10 +65,10 @@ public partial class ResponsesProbe
         ["gpt-5.4", true],
         ["gpt-5.5", true],
         ["gpt-5.6-luna", true],
-        ["gpt-5.6-sol", false],
+        ["gpt-5.6-sol", true],
         ["gpt-5.6-sol-fast", true],
         ["gpt-5.6-terra", true],
-        ["gpt-5-mini", false],
+        ["gpt-5-mini", true],
         ["mai-code-1.1-flash", true],
     ];
 

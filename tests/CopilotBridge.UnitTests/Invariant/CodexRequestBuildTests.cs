@@ -167,9 +167,9 @@ public class CodexRequestBuildTests
         }
     }
 
-    // ── Tool drops: image_generation (uniform) + custom (flash only) ─────────────
+    // ── Tool drops: image_generation (uniform) + profile-driven custom policy ──
 
-    /// <summary>Three-tool bag: a function (sibling), image_generation (uniform drop), custom (flash drop).</summary>
+    /// <summary>Three-tool bag: function and custom survivors, plus image_generation to drop.</summary>
     private static JsonElement ToolsBag() => Bag("""
         {
           "tools": [

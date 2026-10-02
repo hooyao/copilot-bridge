@@ -62,7 +62,7 @@ public partial class ResponsesProbe
         "mai-code-1.1-flash",
     ];
 
-    /// <summary>Models advertising vision (input_image) — all but the flash model.</summary>
+    /// <summary>Responses models included in the live input-image probe matrix.</summary>
     public static readonly string[] VisionModels =
     [
         "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5",

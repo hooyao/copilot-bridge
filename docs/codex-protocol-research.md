@@ -451,21 +451,18 @@ capture contained 103 such persisted heartbeat items and no `call_id`; bridge 0.
 rejected the first one at source-generated deserialization because its DTO still
 declared `call_id` required.
 
-`ResponsesProbe.StandaloneNamedFunctionOutput_AcceptanceMatrix` established the
-current Copilot backend contract with the same minimal item on every bridge profile:
+The 2026-09-06 `ResponsesProbe.StandaloneNamedFunctionOutput_AcceptanceMatrix`
+found seven accepting models and three rejections (`gpt-5.6-sol`, `gpt-5-mini`,
+and the now-retired `mai-code-1-flash-picker`). The 2026-10-02 recheck of the
+same minimal item returned 200 on `gpt-5.6-sol` and `gpt-5-mini`; the live
+replacement `mai-code-1.1-flash` also returned 200. All current ids in that
+probe matrix now accept the standalone named output without `call_id`.
 
-- **accepted (200):** `gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`,
-  `gpt-5.6-luna`, `gpt-5.6-sol-fast`, `gpt-5.6-terra`;
-- **rejected (400, “Function call output requires call_id”):** `gpt-5.6-sol`,
-  `gpt-5-mini`, `mai-code-1-flash-picker`.
-
-Adding an arbitrary compatibility id is not valid: all three rejecting models then
-returned `No tool call found for function call output with call_id ...`. A sanitized
-Desktop heartbeat body with two persisted standalone events returned 200 on
-`gpt-5.6-sol-fast`. Therefore the bridge preserves the native item and requested
-model for every target. It neither fabricates history nor silently lowers the event
-to a message; a backend-specific rejection remains visible, and an operator may use
-an explicit routing location to select a supporting target.
+Adding an arbitrary compatibility id remains invalid when no matching tool
+call exists: the synthetic-id probes return `No tool call found for function
+call output with call_id ...`. A sanitized Desktop heartbeat body with two
+persisted standalone events returned 200 on `gpt-5.6-sol-fast`. The bridge
+preserves the native item and requested model rather than fabricating history.
 
 ### 3.5 Tool shapes Codex emits
 `ToolSpec` enum, serialized `#[serde(tag="type")]` (`tools/src/tool_spec.rs:15-64`).
@@ -501,14 +498,14 @@ What Codex sends (Track B) × what Copilot `/responses` accepts (Track A) → br
 | `service_tier` | model-gated (§3.2) | **400** (§2.3) | **strip** |
 | `prompt_cache_key` | always (§3.2) | 200 (§2.3) | passthrough |
 | `tools: function` | Responses-native shape (§3.5) | 200 (§2.4) | passthrough |
-| `tools: custom`/`apply_patch` | freeform (§3.5) | **200** on 5; **500** on flash (§2.4) | passthrough (no rewrite); flash can't do custom tools — profile note |
+| `tools: custom`/`apply_patch` | freeform (§3.5) | Historical `-internal` flash returned 500 (§2.4); current `mai-code-1.1-flash` accepts it (200) | passthrough; the per-profile drop remains available for a future rejecting model |
 | `tools: web_search` | (§3.5) | 200 all 6 (§2.4) | passthrough |
 | `tools: image_generation` | (§3.5) | **400** all 6 (§2.4) | **drop** |
 | vision `input_image` | data-URL image part | 200 on 5 vision models (§2.6) | passthrough; set `Copilot-Vision-Request: true` |
 | `tool_choice` | `"auto"` (§3.2) | 200 | passthrough |
 | message `id` / `phase` | valid `msg*` ids plus commentary/final phase; older message history may use `item_0` | valid metadata 200; assistant and developer `item_0` id 400 (§3.4.1) | preserve valid metadata; omit only rejected id on every message path and report coercion |
 | `function_call_output.output` array | ordered native content items (0.147 desktop) | real captured array 200 (§3.4.1) | passthrough unchanged; never use Claude flattening |
-| standalone named `function_call_output` | 0.153.3 external tool event: no `call_id`, non-empty `name`, optional `namespace` (§3.4.2) | model-dependent: seven current profiles accept; `gpt-5.6-sol`, `gpt-5-mini`, and MAI picker require a real paired call | preserve item, authority, model, and order; never invent an id/call/message/route |
+| standalone named `function_call_output` | 0.153.3 external tool event: no `call_id`, non-empty `name`, optional `namespace` (§3.4.2) | All current ids in the 2026-10-02 probe matrix accept; the retired MAI picker and two GPT ids rejected in September (§3.4.2) | preserve item, authority, model, and order; never invent an id/call/message/route |
 | `stream` | always `true` (§3.2) | streams cleanly (§2.5) | passthrough |
 | SSE response | parser tolerant, needs terminal `response.completed`, no `[DONE]` handling (§3.3) | ends at `response.completed`, **no `[DONE]`** (§2.5) | **passthrough — no DONE-filter needed** |
 | headers `x-codex-*` | sent (§3.2) | not probed for rejection; Copilot generally ignores unknowns | passthrough; bridge adds its own official Copilot headers (replace, like `/cc`) |
@@ -544,7 +541,7 @@ A separate change implements (each tied to a finding):
 
 - **`/codex/v1/responses` endpoint** under `Endpoints/Codex/`, per-client prefix (parallels `/cc`). Sub-route only `/responses` for now; `/responses/compact` + `/memories/*` (§3.1) are **out of scope** unless a later capture shows Codex hits them against a custom provider (likely not — they're OpenAI-backend features).
 - **DTOs** `Models/Responses/` from `references/openai-sdk-pkg/` (§0), registered in `Models/JsonContext.cs` (AOT). Minimal set: the `ResponsesApiRequest` fields (§3.2) + the SSE event types (§2.5/§3.3).
-- **Per-model effort profile catalog** (the real work — §4.2 item 1): two profiles (large/small) keyed by model id from §2.2, plus the uniform strips (`service_tier`, `image_generation`) and the flash-no-custom-tools flag. Still far simpler than the Anthropic `ProfileAdjuster` (no thinking-shape coercion, no mid-conv-system fold).
+- **Per-model effort profile catalog** (the real work — §4.2 item 1): model-keyed effort sets, the uniform strips (`service_tier`, `image_generation`), and a dormant per-profile custom-tool rejection flag. The retired internal flash id once needed that flag; live `mai-code-1.1-flash` accepts custom tools. The catalog remains simpler than the Anthropic `ProfileAdjuster` (no thinking-shape coercion or mid-conv-system fold).
 - **Header build**: reuse the existing endpoint-agnostic `CopilotHeaderFactory` (no `/responses`-specific header beyond the official set; confirmed §1.4 + reuse in probe). Set `Copilot-Vision-Request:true` when `input_image` present (§2.6); set `x-initiator` per last input item (reference `responses/utils.ts`).
 - **Streaming**: plain SSE passthrough (§2.5) — no DONE-filter, no transform; forward `function_call_arguments.*` verbatim.
 - **Headless harness**: drive real `codex.exe` via `codex exec --json -c model_providers.<id>.base_url=.../codex` (Track-B capture, Task 3.4, still to run live).
