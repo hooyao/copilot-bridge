@@ -1443,7 +1443,7 @@ internal static class ResponsesRequestBuilder
 
     /// <summary>
     /// Re-emit the tools array, dropping <c>image_generation</c> (uniform 400)
-    /// and custom tools only when an exact model profile requires that policy.
+    /// and custom tools when the resolved model profile requires that policy.
     /// </summary>
     private static void WriteToolsWithDrops(
         Utf8JsonWriter w,
