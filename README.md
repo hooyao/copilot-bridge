@@ -207,6 +207,16 @@ Copilot reports the same live limits for `gpt-5.6-sol-fast` and labels it
 that endpoint preserves complete model behavior only from the exact official
 Codex catalog, which does not currently publish the internal slug.
 
+`gpt-6.1-sol` is available for direct selection and is also included in the
+bridge's reviewed supplemental Codex catalog. Some installed Codex builds omit
+it from their bundled picker catalog; with command-backed provider auth, the
+bridge adds its complete official Codex model resource to `/codex/models` when
+the exact client catalog lacks it. Restart Codex after upgrading the bridge so
+the model picker refreshes. Availability still depends on the active Copilot
+account's live model access. Its picker offers low, medium, high, xhigh, and
+max reasoning; Copilot rejects Ultra for this exact id, so the bridge removes
+that choice from projected metadata while preserving the official source record.
+
 **Or do it by hand** — edit `~/.codex/config.toml`, set the default model +
 provider at the top and add the provider block:
 

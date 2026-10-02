@@ -27,6 +27,8 @@ internal sealed record CodexAppServerInvocation(
     int? RequestMaxRetries = null,
     int? StreamMaxRetries = null,
     string? ModelCatalogTemplateSlug = null,
+    string? RequiredListedModel = null,
+    IReadOnlyList<string>? RequiredListedReasoningEfforts = null,
     JsonArray? InjectedItems = null,
     IReadOnlyList<string>? LocalImagePaths = null);
 
@@ -177,6 +179,35 @@ internal static class CodexAppServerProcess
             var userAgent = initialize["result"]?["userAgent"]?.GetValue<string>()
                 ?? throw new InvalidDataException("Codex initialize response did not include userAgent.");
             await SendAsync(process, new JsonObject { ["method"] = "initialized" }, token);
+
+            if (invocation.RequiredListedModel is { Length: > 0 } requiredModel)
+            {
+                await SendAsync(process, new JsonObject
+                {
+                    ["method"] = "model/list",
+                    ["id"] = 10_000,
+                    ["params"] = new JsonObject { ["limit"] = 100 },
+                }, token);
+                var listing = await ReadUntilAsync(process, stdout,
+                    message => ResponseId(message) == 10_000, token);
+                var listed = listing["result"]?["data"]?.AsArray()
+                    ?? throw new InvalidDataException("Codex model/list returned no data array: " + listing.ToJsonString());
+                var listedModel = listed.SingleOrDefault(entry => string.Equals(
+                    entry?["model"]?.GetValue<string>(), requiredModel, StringComparison.Ordinal));
+                if (listedModel is null || listedModel["hidden"]?.GetValue<bool>() != false)
+                    throw new InvalidDataException($"Codex model/list did not offer visible {requiredModel}.");
+                if (invocation.RequiredListedReasoningEfforts is { } expectedEfforts)
+                {
+                    var offeredEfforts = listedModel["supportedReasoningEfforts"]?.AsArray()
+                        .Select(level => level?["reasoningEffort"]?.GetValue<string>())
+                        .ToArray()
+                        ?? throw new InvalidDataException($"Codex model/list omitted {requiredModel} efforts.");
+                    if (!offeredEfforts.SequenceEqual(expectedEfforts, StringComparer.Ordinal))
+                        throw new InvalidDataException(
+                            $"Codex model/list offered [{string.Join(", ", offeredEfforts)}] for {requiredModel}; "
+                            + $"expected [{string.Join(", ", expectedEfforts)}].");
+                }
+            }
 
             var threadStartParams = new JsonObject
             {

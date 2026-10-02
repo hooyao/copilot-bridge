@@ -93,6 +93,26 @@ internal sealed class CodexCatalogProjector
                 ["visibility"] = writer => writer.WriteStringValue(effective[index] ? ReadVisibility(source) : "hide"),
             };
 
+            // The official Codex resource advertises Ultra, but the exact
+            // GPT-6.1 Sol Copilot /responses profile rejects it (2026-10-02
+            // Gpt61Sol_Effort_ReProbe). Apply this to every source record,
+            // including future same-slug baselines, without changing the
+            // provenance-pinned official resource on disk.
+            if (string.Equals(slug, "gpt-6.1-sol", StringComparison.Ordinal) &&
+                _profiles.Get(slug) is { } profile)
+            {
+                var accepted = profile.AcceptedEfforts.ToHashSet(StringComparer.Ordinal);
+                var offered = source.GetProperty("supported_reasoning_levels").EnumerateArray()
+                    .Where(level => accepted.Contains(level.GetProperty("effort").GetString()!))
+                    .ToArray();
+                replacements["supported_reasoning_levels"] = writer =>
+                {
+                    writer.WriteStartArray();
+                    foreach (var level in offered) level.WriteTo(writer);
+                    writer.WriteEndArray();
+                };
+            }
+
             var resolved = resolvedRoutes[index];
             if (effective[index] && resolved.IsInvariant && resolved.Target is { } target &&
                 liveById.TryGetValue(target.ModelId, out var live) &&
