@@ -192,6 +192,33 @@ public class CodexBehaviorTests
             resolvedModel: "mai-code-1.1-flash");
     }
 
+    /// <summary>
+    /// Exact GPT-5 mini client capture for the minimal-plus-web_search rule.
+    /// The local alias supplies the reviewed client's tool behavior while each
+    /// sampling request keeps the real backend id. The skill reads the trace
+    /// and client-owned SQLite log for the tool execution verdict.
+    /// </summary>
+    [Fact]
+    public async Task Codex_Gpt5Mini_MinimalWithSearch_ProducesDispatchLogForVerdict()
+    {
+        const string model = "gpt-5-mini";
+        const string canary = "codex_gpt5mini_search_canary_10226";
+        var prompt =
+            "Use the apply_patch tool, not a shell command, to create mini_search_probe.txt "
+            + $"with exactly two lines: 2021 and {canary}. After the patch tool "
+            + "returns, use a separate shell tool call to read the file. Report both "
+            + "lines verbatim, then stop. Do not fabricate the file contents.";
+
+        await DriveAndRecordAsync(
+            "codex-gpt-5-mini-minimal-web-search",
+            prompt,
+            modelReasoningEffort: "minimal",
+            expectedCodexVersion: "0.144.6",
+            model: model,
+            modelCatalogTemplateSlug: "gpt-5.5",
+            resolvedModel: model);
+    }
+
     [Fact]
     public async Task Codex_BuiltInGitHubCliOAuth_DirectLeaseCompletesToolChain_ForVerdict()
     {
