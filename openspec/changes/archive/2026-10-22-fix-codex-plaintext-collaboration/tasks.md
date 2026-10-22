@@ -35,3 +35,4 @@
 - [x] 6.5 Separate encrypted-schema activation from plaintext dispatch recognition for mixed message inventories, with streaming and buffered contracts.
 - [x] 6.6 Restrict qualified aliases to declared collaboration children, preserve unrelated flat names, and reject ambiguous aliases across inventories.
 - [x] 6.7 Verify the second-round fixes through real Astra collaboration, including a mixed-schema ingress, and inspect the client-owned execution evidence.
+- [x] 6.8 Restore the decision-log table header/delimiter adjacency identified by the third review; verify the documentation-only diff.

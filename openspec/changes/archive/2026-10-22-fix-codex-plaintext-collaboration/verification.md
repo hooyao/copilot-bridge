@@ -81,3 +81,7 @@ The real current Codex/Astra lifecycle passed both variants after these fixes:
 - Mixed inventory: manifest `codex-astra-plaintext-collaboration-mixed-20261022-095938-535.json`, 18 upstream requests, 15 matching call/output rounds, seven custom exec calls, zero encrypted agent-message parts. A test-only ingress proxy removed only send/follow-up schema encryption before the real bridge; the encrypted-spawn/plain-send combination appeared in all 18 inbound inventories. Real client and live Copilot executed spawn, child-to-parent message, and same-child follow-up, all with restored namespaces and empty dispatch markers. Independently verified arithmetic `23308` and SHA-256 `9989A882C3B943E495BA8E15C7068A84E58C6E223E4F87C816725CE0D3BE0E1D`. Client SQLite window: 536 rows, zero router/dispatch fatals, ERROR rows, or retries.
 
 Both clients completed without aborted execution. The three live HTTP-edge captured replay variants also passed again. Verdict: **PASS** from matching real execution results, run-specific wire evidence, and each client's own nonempty dispatch log.
+
+## Copilot review round 3
+
+The review reported no remaining code issues and one body-only documentation finding: the new decision row separated the Markdown table header from its delimiter. Moved that row below the delimiter and verified header/delimiter adjacency and `git diff --check`. No product or harness code changed; the second-round execution evidence above remains applicable.
