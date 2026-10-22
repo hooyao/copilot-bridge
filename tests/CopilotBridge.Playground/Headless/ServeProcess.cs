@@ -70,7 +70,8 @@ internal sealed record ServeInvocation(
     CredentialStagingMode CredentialStagingMode = CredentialStagingMode.LegacyRawMirror,
     string? WorkingDirectory = null,
     bool SimulateUpdaterTargetActivation = false,
-    bool UseCustomOAuthApp = false);
+    bool UseCustomOAuthApp = false,
+    bool PlaintextCollaboration = false);
 
 internal enum CredentialStagingMode
 {
@@ -310,7 +311,8 @@ internal static class ServeProcess
                 inv.KeepAliveIntervalSeconds,
                 inv.CodexCatalogCacheDirectory,
                 inv.LiveOverlayFailureCooldownSeconds,
-                inv.UseCustomOAuthApp);
+                inv.UseCustomOAuthApp,
+                inv.PlaintextCollaboration);
 
             var scratchExe = Path.Combine(scratchDir, "copilot-bridge.exe");
             var port = GetFreeLoopbackPort();
@@ -548,7 +550,8 @@ internal static class ServeProcess
         int? keepAliveIntervalSeconds,
         string? codexCatalogCacheDirectory,
         int? liveOverlayFailureCooldownSeconds,
-        bool useCustomOAuthApp)
+        bool useCustomOAuthApp,
+        bool plaintextCollaboration)
     {
         var root = JsonNode.Parse(File.ReadAllText(path))?.AsObject()
             ?? throw new ServeStartupException($"appsettings.json at {path} is not a JSON object.");
@@ -560,6 +563,12 @@ internal static class ServeProcess
             ?? throw new ServeStartupException("appsettings.json has no Tracing section to enable.");
         tracing["Enabled"] = true;
         tracing["Directory"] = traceDir;
+        if (plaintextCollaboration)
+        {
+            var collaboration = root["Codex"]?["PlaintextCollaboration"]?.AsObject()
+                ?? throw new ServeStartupException("appsettings.json has no Codex.PlaintextCollaboration section.");
+            collaboration["Enabled"] = true;
+        }
 
         if (useCustomOAuthApp)
         {

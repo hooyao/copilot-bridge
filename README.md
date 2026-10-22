@@ -239,6 +239,22 @@ refresh_interval_ms = 0
 The command path differs for native and `dotnet <dll>` development installs, so
 `copilot-bridge config codex` is strongly preferred over hand-editing.
 
+If Astra works directly but native Codex subagents fail with
+`Encrypted function output content could not be decrypted or decoded.`, enable
+the optional workaround in the bridge's `appsettings.json`, then restart the bridge
+and start a fresh Codex task:
+
+```json
+{ "Codex": { "PlaintextCollaboration": { "Enabled": true } } }
+```
+
+Merge that setting into the existing `Codex` section. It preserves complete new
+spawn/message/follow-up tasks by using Codex's explicit plaintext dispatch over
+the existing HTTPS connection. It is off by default, supports stateless native
+`/codex/responses` requests, and does not recover old encrypted history. Existing
+ciphertext is preserved. The bridge also surfaces the confirmed decryption error
+and its machine code when Copilot puts them after an empty failed SSE terminal.
+
 ## Configuration (`appsettings.json`)
 
 The file next to the executable. Everything below has a sensible default — you
@@ -250,6 +266,7 @@ only touch it to tune. Each detector row is toggled by its own `Enabled` flag
 | --- | --- | --- |
 | **`Server.Port`** | `8765` | Listen port. Change it and update `base_url` in your CLI config to match. |
 | **`Server.MaxRequestBodySizeBytes`** | `104857600` (100 MiB) | Maximum inbound request body for every bridge endpoint. The finite default gives image-heavy Codex conversations room beyond Kestrel's 30 MB default. Raising it increases worst-case per-request memory use and does not compact client history; restart after changing it. |
+| **`Codex.PlaintextCollaboration.Enabled`** | `false` | Opt-in workaround for Copilot encrypted native Codex task failures. Preserves new collaboration messages using explicit plaintext dispatch over HTTPS; requires a bridge restart and fresh task. Existing ciphertext is preserved; active stateful continuation is rejected. |
 | **`Codex.ModelCatalog.Enabled`** | `true` | Map Codex-native `GET /codex/models` discovery so command-auth Codex can learn reviewed live Copilot context limits. Set `false` to remove only the metadata route and fall back to Codex's bundled catalog; `/codex/responses` inference remains available. |
 | **`Codex.ModelCatalog.LiveOverlayFailureCooldownSeconds`** | `300` | Exact process-local delay after a failed live Copilot `/models` overlay refresh. During it, catalog polls serve the reviewed baseline or stale last-known-good overlay without another upstream call or warning; at expiry one shared retry is allowed. Range 1–3600. This metadata control never delays or disables `/codex/responses` inference, and restart permits an immediate retry. |
 | **`Codex.ModelCatalog.SourceTtlHours`** | `24` | How often an exact-version official Codex catalog is checked for source changes. Microsoft `HybridCache` supplies the process-memory level and per-version request coalescing; the validated file remains available stale when GitHub is unavailable. Range 1–168. |

@@ -25,17 +25,20 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
     private readonly TimeSpan _silence;
     private readonly bool _failFirstSampling;
     private readonly bool _failFirstHttpRequest;
+    private readonly bool _decryptionFailureOnce;
     private readonly TimeSpan _firstFailureSilence;
     private int _samplingRequests;
     private int _toolOutputRequests;
     private int _timedOutSamplingRequests;
     private int _httpFailedRequests;
+    private int _decryptionFailures;
 
     public string BaseUrl { get; }
     public int SamplingRequests => Volatile.Read(ref _samplingRequests);
     public int ToolOutputRequests => Volatile.Read(ref _toolOutputRequests);
     public int TimedOutSamplingRequests => Volatile.Read(ref _timedOutSamplingRequests);
     public int HttpFailedRequests => Volatile.Read(ref _httpFailedRequests);
+    public int DecryptionFailures => Volatile.Read(ref _decryptionFailures);
     public TimeSpan Silence => _silence;
 
     private SilentResponsesUpstreamServer(
@@ -45,7 +48,8 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
         TimeSpan silence,
         bool failFirstSampling,
         bool failFirstHttpRequest,
-        TimeSpan firstFailureSilence)
+        TimeSpan firstFailureSilence,
+        bool decryptionFailureOnce)
     {
         BaseUrl = baseUrl;
         _workDirectory = workDirectory;
@@ -54,6 +58,7 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
         _failFirstSampling = failFirstSampling;
         _failFirstHttpRequest = failFirstHttpRequest;
         _firstFailureSilence = firstFailureSilence;
+        _decryptionFailureOnce = decryptionFailureOnce;
         _listener.Prefixes.Add(baseUrl + "/");
         _listener.Start();
         _acceptLoop = AcceptLoopAsync();
@@ -65,7 +70,8 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
         TimeSpan silence,
         bool failFirstSampling = false,
         bool failFirstHttpRequest = false,
-        TimeSpan? firstFailureSilence = null)
+        TimeSpan? firstFailureSilence = null,
+        bool decryptionFailureOnce = false)
     {
         using var socket = new TcpListener(IPAddress.Loopback, 0);
         socket.Start();
@@ -78,7 +84,8 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
             silence,
             failFirstSampling,
             failFirstHttpRequest,
-            firstFailureSilence ?? TimeSpan.FromSeconds(10));
+            firstFailureSilence ?? TimeSpan.FromSeconds(10),
+            decryptionFailureOnce);
     }
 
     public async ValueTask DisposeAsync()
@@ -146,6 +153,21 @@ internal sealed class SilentResponsesUpstreamServer : IAsyncDisposable
             context.Response.StatusCode = 200;
             context.Response.ContentType = "text/event-stream";
             context.Response.SendChunked = true;
+
+            if (_decryptionFailureOnce
+                && Interlocked.CompareExchange(ref _decryptionFailures, 1, 0) == 0)
+            {
+                await WriteEventAsync(context.Response, "response.created", """
+                    {"type":"response.created","sequence_number":1,"response":{"id":"resp_decryption_detail","object":"response","model":"gpt-6-astra","status":"in_progress","output":[]}}
+                    """);
+                await WriteEventAsync(context.Response, "response.failed", """
+                    {"type":"response.failed","sequence_number":2,"response":{"id":"resp_decryption_detail","object":"response","model":"gpt-6-astra","status":"failed","output":[],"error":null}}
+                    """);
+                await WriteEventAsync(context.Response, "error", """
+                    {"type":"error","code":"invalid_request_body","message":"Encrypted function output content could not be decrypted or decoded."}
+                    """);
+                return;
+            }
 
             if (_failFirstSampling
                 && Interlocked.CompareExchange(ref _timedOutSamplingRequests, 1, 0) == 0)

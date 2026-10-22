@@ -30,6 +30,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
     private readonly RequestAudit _audit;
     private readonly UpstreamTimeoutOptions _timeout;
     private readonly CcToResponsesOptions _ccOptions;
+    private readonly CodexPlaintextCollaborationOptions _collaborationOptions;
     private readonly ILogger<CopilotResponsesStrategy> _log;
 
     public CopilotResponsesStrategy(
@@ -39,7 +40,8 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         RequestAudit audit,
         IOptions<UpstreamTimeoutOptions> timeout,
         ILogger<CopilotResponsesStrategy> log,
-        IOptions<CcToResponsesOptions>? ccOptions = null)
+        IOptions<CcToResponsesOptions>? ccOptions = null,
+        IOptions<CodexPlaintextCollaborationOptions>? collaborationOptions = null)
     {
         _copilot = copilot;
         _profiles = profiles;
@@ -47,6 +49,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         _audit = audit;
         _timeout = timeout.Value;
         _ccOptions = ccOptions?.Value ?? new CcToResponsesOptions();
+        _collaborationOptions = collaborationOptions?.Value ?? new CodexPlaintextCollaborationOptions();
         _log = log;
     }
 
@@ -65,6 +68,18 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         var (body, vision, coercedEffort) = ResponsesRequestBuilder.Build(
             ctx.Request.Body, _profiles, filterRecursiveAgentTool, out var removedAgentTool,
             out var downgradedImageOnUnknownModel, out var requestMutations);
+        CodexPlaintextCollaboration? collaboration = null;
+        if (_collaborationOptions.Enabled && ctx.Request.Path.StartsWith("/codex/", StringComparison.OrdinalIgnoreCase))
+        {
+            collaboration = new CodexPlaintextCollaboration();
+            body = collaboration.PrepareRequest(body);
+            if (collaboration.Active)
+            {
+                requestMutations |= ResponsesRequestMutation.PlaintextCollaboration;
+                _log.LogInformation("Native Codex plaintext collaboration adaptation active; new message arguments use explicit plaintext dispatch");
+            }
+            else collaboration = null;
+        }
         ctx.Response.ImageDowngradedOnUnknownModel = downgradedImageOnUnknownModel;
         ctx.Response.RequestMutationCodes = ResponsesRequestBuilder.FormatMutations(requestMutations);
         if (downgradedImageOnUnknownModel)
@@ -170,7 +185,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             if (preserveNativeEvents)
                 ctx.Response.NativeResponsesEvents = new NativeResponsesEventLedger();
             ctx.Response.EventStream = TranslateStreamAsync(
-                resp, ctx.Request.Body.Model, capture, keepAliveSeconds, preserveNativeEvents, ctx.Ct);
+                resp, ctx.Request.Body.Model, capture, keepAliveSeconds, preserveNativeEvents, collaboration, ctx.Ct);
             _log.LogDebug(
                 "strategy {Name}: T3 streaming (content-type={ContentType} keepAlive={KeepAliveSeconds}s)",
                 Name, contentType, keepAliveSeconds);
@@ -206,6 +221,8 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
                 {
                     if (resp.IsSuccessStatusCode)
                     {
+                        if (collaboration is not null)
+                            ctx.Response.BufferedBody = collaboration.RestoreResponse(ctx.Response.BufferedBody);
                         var irBody = BufferedResponsesToAnthropic.TryTranslate(ctx.Response.BufferedBody)
                             ?? throw new UpstreamResponseFailedException("invalid_buffered_response");
                         ctx.Response.BufferedResponsesWireBody = ctx.Response.BufferedBody;
@@ -262,6 +279,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
         RawResponseCapture? capture,
         int keepAliveSeconds,
         bool preserveNativeEvents,
+        CodexPlaintextCollaboration? collaboration,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var sm = new ResponsesToAnthropicStream(
@@ -290,7 +308,7 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
             // Codex T4 recognizes its identity and emits it before fidelity accounting.
             var keepAlive = TimeSpan.FromSeconds(keepAliveSeconds);
             var needsReader = streamIdleSeconds > 0 || keepAliveSeconds > 0;
-            using var readCts = needsReader
+            using var readCts = needsReader || preserveNativeEvents
                 ? CancellationTokenSource.CreateLinkedTokenSource(ct)
                 : null;
             var readCt = readCts?.Token ?? ct;
@@ -319,7 +337,11 @@ internal sealed class CopilotResponsesStrategy : IUpstreamStrategy<MessagesReque
                     break;
                 }
                 sawUpstreamEvent = true;
-                foreach (var irItem in sm.Translate(e.Current))
+                if (preserveNativeEvents && ResponsesFailureDetailReader.TryReadFailed(e.Current, out var failure)
+                    && failure.Code == "unknown" && failure.ClientMessage == UpstreamResponseFailedException.GenericClientMessage)
+                    throw await ResponsesFailureDetailReader.EnrichAsync(e, readCts!, failure, ct);
+                var current = collaboration?.RestoreEvent(e.Current) ?? e.Current;
+                foreach (var irItem in sm.Translate(current))
                     yield return irItem;
                 // A Responses completed/incomplete event is authoritative. Do not
                 // wait for transport EOF after yielding the client terminal: a

@@ -10,6 +10,9 @@ namespace CopilotBridge.Cli.Pipeline.Strategies.Codex;
 /// </summary>
 internal static class BufferedResponsesToAnthropic
 {
+    // Presence distinguishes explicit plaintext dispatch ([]) from legacy
+    // encrypted delivery. Carry the value across detector reconstruction.
+    internal const string EncryptedArgumentsMarker = "bridge_encrypted_function_args";
     private const string GrammarMarker = "bridge_input_is_grammar_text";
     private const string NamespaceMarker = "bridge_tool_namespace";
     // Carries the upstream custom_tool_call's real `ctc_` item id to T4, which stamps
@@ -55,7 +58,7 @@ internal static class BufferedResponsesToAnthropic
 
             var status = statusElement.GetString();
             if (status == "failed")
-                throw new UpstreamResponseFailedException(ReadFailureCode(root));
+                throw UpstreamResponseFailedException.FromEvent(root);
             if (status is not ("completed" or "incomplete"))
                 return null;
 
@@ -198,6 +201,12 @@ internal static class BufferedResponsesToAnthropic
             writer.WritePropertyName("input");
             argumentsDoc.RootElement.WriteTo(writer);
             WriteNamespace(writer, item);
+            if (item.TryGetProperty("encrypted_function_args", out var encryptedArguments)
+                && encryptedArguments.ValueKind == JsonValueKind.Array)
+            {
+                writer.WritePropertyName(EncryptedArgumentsMarker);
+                encryptedArguments.WriteTo(writer);
+            }
             writer.WriteEndObject();
         }
     }
@@ -280,14 +289,6 @@ internal static class BufferedResponsesToAnthropic
         if (!element.TryGetProperty(property, out var value) || !value.TryGetInt64(out var number))
             return 0;
         return (int)Math.Clamp(number, 0, int.MaxValue);
-    }
-
-    private static string? ReadFailureCode(JsonElement root)
-    {
-        if (root.TryGetProperty("error", out var error)
-            && error.ValueKind == JsonValueKind.Object)
-            return ReadString(error, "code");
-        return null;
     }
 
     private static UpstreamResponseFailedException InvalidResponse() =>

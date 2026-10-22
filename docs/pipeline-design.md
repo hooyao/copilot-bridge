@@ -967,6 +967,44 @@ old per-login Copilot Plugin tokens being evicted by `oauth_access.destroy` with
 observation of that revocation and was not the GitHub token lifetime. See
 `docs/token-storage.md` for file and threat-model details.
 
+### 4.11 Native Codex plaintext collaboration and failure diagnostics
+
+`Codex:PlaintextCollaboration:Enabled` is an explicit, disabled-by-default native
+Codex policy for Copilot Responses. The request-scoped strategy projects recognized
+encrypted `collaboration` message-tool inventories to the ordinary reserved
+`bridge_plaintext_collaboration` namespace after T2, removing only the encrypted
+string-message annotation on `spawn_agent`, `send_message`, and `followup_task`.
+Incremental inventories, saved calls and named outputs, and tool choices use the same projection.
+Before T3, response identities are restored and those message calls acquire
+`encrypted_function_args: []`, selecting Codex's supported plaintext delivery path.
+The encrypted-schema activation gate is distinct from dispatch recognition: after
+activation, every recognized string-message action in the projected inventories
+gets the plaintext marker, including actions whose schemas were already plain.
+Qualified aliases are mapped only for declared collaboration children; unrelated
+flat functions retain their identities and ambiguous flat/child aliases are rejected.
+Buffered T3/T4 carry explicit encryption-dispatch metadata across response-stage
+reconstruction, including model rewrites. The private buffered carrier is removed
+at the Claude edge and is never used to infer plaintext for an unmarked call.
+When only the top-level model changes, native buffered delivery patches that
+field in the adapted Responses object, preserving replay-valid item ids and all
+other native fields. Additional semantic detector edits still reconstruct from IR.
+This policy is an explicit native request/response fidelity exception; T1 and the
+general T2 builder remain independent of source/destination selection.
+
+Projection is stateless and request-local. Reserved-name collisions, contradictory
+identities, stateful continuation, or encrypted arguments returned for an adapted
+plaintext action fail explicitly. Existing ciphertext is never decrypted, relabeled,
+or deleted. Disabled requests and Claude Code routes keep their existing behavior.
+Wire audits capture the actual projected upstream request and raw upstream response;
+ordinary logs report activation without task text.
+
+A native empty `response.failed` can be enriched from one following structured
+`error` event within a short fixed bound. Known failures and successful terminals
+remain immediate. Normalized machine codes and an exact-match reviewed decryption
+diagnostic cross the typed fault boundary; arbitrary generated upstream messages do
+not. EOF, a stalled or unreadable diagnostic tail, and cancellation retain honest
+single-terminal failure semantics without waiting for the normal idle timeout.
+
 ## 5. Request pipeline (current: `Pipeline<MessagesRequest>`)
 
 The endpoint handler parses the JSON body before constructing

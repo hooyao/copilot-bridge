@@ -129,6 +129,7 @@ first** (a real comment or a completed round always wins over run health):
 | pr-status says | do |
 | --- | --- |
 | `SUPPRESSED_FINDINGS>0` | the latest current-head Copilot review has a body-only finding → read that review body and fix/refute it; there is no thread to resolve |
+| `COPILOT_EVIDENCE_CONFIRMATION=1` | a recognized evidence-only overview has no code findings → inspect the saved real-client execution/log evidence before merging; this flag never waives that verification |
 | `OPEN_COMMENTS>0` | there are unresolved review comments → go fix/refute them (regardless of `COPILOT_RUN` — a run can post comments and still end up cancelled) |
 | `OPEN_COMMENTS=0` and `ROUND_HINT` went up since your last push | Copilot reviewed with no new findings → satisfied → proceed to step 5 |
 | `OPEN_COMMENTS=0`, `ROUND_HINT` unchanged, `COPILOT_RUN=running` | genuinely still reviewing → loop again |
@@ -154,9 +155,14 @@ The last row is a real trap: a failed `gh` call must never be silently read as
 "0 open comments / all clear". The script exits non-zero and prints
 `STATUS_ERROR=1` precisely so a green-looking `OPEN_COMMENTS=0` can't come from a
 swallowed error. Never poll the raw `reviews[]` length as a completion signal.
-The script uses review bodies only for one narrow exception: an explicit
-`Needs a closer look` / positive `Suppressed comments (N)` marker on the latest
-Copilot review whose immutable review `commit_id` equals the current head.
+The script classifies only the latest Copilot review whose immutable review
+`commit_id` equals the current head. Positive suppressed/open/previously-missed
+issue counts always block. Unknown `Needs a closer look` bodies also block.
+A strictly recognized `No open issues` overview containing only the known
+client-evidence confirmation note instead sets `COPILOT_EVIDENCE_CONFIRMATION=1`.
+Inspect the actual client-owned execution evidence before merging; the status
+script does not verify it for you. See `references/review-status.md` for the
+classification contract and offline regression command.
 
 ### After you handle each comment: reply, then RESOLVE it
 

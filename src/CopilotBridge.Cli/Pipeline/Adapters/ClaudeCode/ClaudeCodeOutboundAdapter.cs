@@ -94,6 +94,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
         if (body.AsSpan().IndexOf(GrammarMarkerBytes) < 0
             && body.AsSpan().IndexOf(NamespaceMarkerBytes) < 0
             && body.AsSpan().IndexOf(CustomToolCallIdMarkerBytes) < 0
+            && body.AsSpan().IndexOf("bridge_encrypted_function_args"u8) < 0
             && body.AsSpan().IndexOf(ReasoningMarkerBytes) < 0
             && body.AsSpan().IndexOf(WebSearchMarkerBytes) < 0)
             return body;
@@ -114,6 +115,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                     && (block.TryGetProperty(GrammarMarker, out _)
                         || block.TryGetProperty(NamespaceMarker, out _)
                         || block.TryGetProperty(CustomToolCallIdMarker, out _)
+                        || block.TryGetProperty(BufferedResponsesToAnthropic.EncryptedArgumentsMarker, out _)
                         || block.TryGetProperty(ReasoningMarker, out _)
                         || block.TryGetProperty(ReasoningOriginMarker, out _)
                         || block.TryGetProperty(WebSearchMarker, out _)
@@ -165,6 +167,7 @@ internal sealed class ClaudeCodeOutboundAdapter : IClientOutboundAdapter<Message
                             if (inner.NameEquals(GrammarMarker)
                                 || inner.NameEquals(NamespaceMarker)
                                 || inner.NameEquals(CustomToolCallIdMarker)
+                                || inner.NameEquals(BufferedResponsesToAnthropic.EncryptedArgumentsMarker)
                                 || inner.NameEquals(ReasoningMarker)
                                 || inner.NameEquals(ReasoningOriginMarker)
                                 || inner.NameEquals(WebSearchMarker)

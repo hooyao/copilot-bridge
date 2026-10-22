@@ -1,5 +1,6 @@
 using System.Text.Json;
 using CopilotBridge.Cli.Copilot;
+using CopilotBridge.Cli.Pipeline.Strategies.Codex;
 
 namespace CopilotBridge.Cli.Pipeline.Adapters.Codex;
 
@@ -145,6 +146,12 @@ internal static class BufferedAnthropicToResponses
             if (input.ValueKind != JsonValueKind.Object)
                 throw InvalidIr();
             writer.WriteString("arguments", input.GetRawText());
+            if (block.TryGetProperty(BufferedResponsesToAnthropic.EncryptedArgumentsMarker, out var encryptedArguments)
+                && encryptedArguments.ValueKind == JsonValueKind.Array)
+            {
+                writer.WritePropertyName("encrypted_function_args");
+                encryptedArguments.WriteTo(writer);
+            }
         }
         writer.WriteString("status", "completed");
         writer.WriteEndObject();

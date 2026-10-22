@@ -75,7 +75,8 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
                     : null;
                 foreach (var tail in sm.FlushTerminal(
                              failed: fault is not null,
-                             failureCode: failureCode))
+                             failureCode: failureCode,
+                             failureMessage: (fault as UpstreamResponseFailedException)?.ClientMessage))
                     yield return tail;
             }
         }
@@ -106,11 +107,16 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         // a real buffered HTTP error before this adapter's streaming enumerator is
         // ever created. Release any native-event references that T3 accumulated.
         _ctx.Response.NativeResponsesEvents?.Clear();
-        if (ReferenceEquals(irBody, _ctx.Response.InitialBufferedIrBody)
-            && _ctx.Response.BufferedResponsesWireBody is { } original)
+        var nativeBody = _ctx.Response.BufferedResponsesWireBody;
+        if (nativeBody is not null && _ctx.Response.InitialBufferedIrBody is { } initialIr)
+            nativeBody = ReferenceEquals(irBody, initialIr)
+                ? nativeBody
+                : PreserveModelOnlyRewrite(initialIr, irBody, nativeBody);
+        else nativeBody = null;
+        if (nativeBody is { } original)
         {
-            // The byte-preserving shortcut sends the ORIGINAL upstream bytes back to
-            // Codex verbatim — LOSSLESS, which is its whole point (a buffered response
+            // The native shortcut preserves upstream fields (a model-only rewrite
+            // above has already patched that one field). A buffered response
             // can carry reasoning/encrypted_content and fields the IR does not model).
             // The one exception: a custom_tool_call whose id is not `ctc`-prefixed would,
             // passed through unchanged, be echoed next turn and 400 ("Expected an ID
@@ -138,6 +144,29 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         // not represent successful response IR; preserve their existing surface.
         _log.LogDebug("adapter {Name}: buffered non-message passthrough bytes={Bytes}", Name, irBody.Length);
         return ValueTask.FromResult(irBody);
+    }
+
+    private static byte[]? PreserveModelOnlyRewrite(byte[] initialIr, byte[] currentIr, byte[] nativeBody)
+    {
+        // A model-only detector rewrite must retain native dispatch metadata,
+        // replay-valid item ids, reasoning and future fields. Semantic changes
+        // still go through T4 reconstruction; never bypass a detector edit.
+        try
+        {
+            if (JsonNode.Parse(initialIr) is not JsonObject initial
+                || JsonNode.Parse(currentIr) is not JsonObject current
+                || current["model"] is not JsonValue model
+                || !model.TryGetValue<string>(out var name)
+                || !initial.ContainsKey("model")) return null;
+            initial["model"] = name;
+            if (!JsonNode.DeepEquals(initial, current)
+                || JsonNode.Parse(nativeBody) is not JsonObject native) return null;
+            native["model"] = name;
+            using var buffer = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(buffer)) native.WriteTo(writer);
+            return buffer.ToArray();
+        }
+        catch (JsonException) { return null; }
     }
 
     /// <summary>
@@ -333,6 +362,7 @@ internal sealed class AnthropicToResponsesStream
     private int _nativeExpectedOrdinal;
     private string? _nativeModelOverride;
     private string _failureCode = "upstream_error";
+    private string _failureMessage = UpstreamResponseFailedException.GenericClientMessage;
     private readonly List<SseItem<string>> _nativeActualSemantic = [];
     private readonly Dictionary<int, NativeCustomToolCall> _nativeCustomToolsByOutput = [];
     private readonly Dictionary<string, NativeCustomToolCall> _nativeCustomToolsByCallId =
@@ -555,13 +585,16 @@ internal sealed class AnthropicToResponsesStream
     /// </summary>
     public IEnumerable<SseItem<string>> FlushTerminal(
         bool failed,
-        string? failureCode = null)
+        string? failureCode = null,
+        string? failureMessage = null)
     {
         if (_nativeTerminalDelivered) yield break;
         if (failed && _stopReason != FailedStopReason)
             _stopReason = FailedStopReason;
         if (failed && !string.IsNullOrEmpty(failureCode))
             _failureCode = failureCode;
+        if (failed && failureMessage == UpstreamResponseFailedException.EncryptedContentMessage)
+            _failureMessage = UpstreamResponseFailedException.EncryptedContentMessage;
         if (!_created)
         {
             _created = true;
@@ -1100,7 +1133,7 @@ internal sealed class AnthropicToResponsesStream
         // Honest failure terminal. Codex's parser models response.failed; carry
         // whatever output was assembled before the failure plus an error object.
         var output = "[" + string.Join(",", _completedItems.Select(static item => item.Json)) + "]";
-        return $"{{\"type\":\"response.failed\",\"sequence_number\":{_seq++},\"response\":{{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":\"failed\",\"model\":{Enc(_model)},\"output\":{output},\"error\":{{\"code\":{Enc(_failureCode)},\"message\":\"the upstream model backend failed mid-stream\"}},\"usage\":{UsageJson()}}}}}";
+        return $"{{\"type\":\"response.failed\",\"sequence_number\":{_seq++},\"response\":{{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":\"failed\",\"model\":{Enc(_model)},\"output\":{output},\"error\":{{\"code\":{Enc(_failureCode)},\"message\":{Enc(_failureMessage)}}},\"usage\":{UsageJson()}}}}}";
     }
 
     private string UsageJson() =>

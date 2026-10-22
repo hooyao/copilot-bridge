@@ -30,7 +30,8 @@ internal sealed record CodexAppServerInvocation(
     string? RequiredListedModel = null,
     IReadOnlyList<string>? RequiredListedReasoningEfforts = null,
     JsonArray? InjectedItems = null,
-    IReadOnlyList<string>? LocalImagePaths = null);
+    IReadOnlyList<string>? LocalImagePaths = null,
+    bool EnableMultiAgent = false);
 
 internal sealed record CodexAppServerResult(
     int ExitCode,
@@ -133,6 +134,13 @@ internal static class CodexAppServerProcess
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        if (invocation.EnableMultiAgent)
+        {
+            start.ArgumentList.Add("--enable");
+            start.ArgumentList.Add("multi_agent");
+            start.ArgumentList.Add("--enable");
+            start.ArgumentList.Add("multi_agent_v2");
+        }
         start.ArgumentList.Add("app-server");
         start.ArgumentList.Add("--stdio");
         start.Environment["CODEX_HOME"] = invocation.CodexHome;
