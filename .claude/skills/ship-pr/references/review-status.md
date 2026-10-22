@@ -16,8 +16,8 @@ areas; the bounded evidence-review request is the invariant rather than one exac
 word order. Unrecognized scope concerns still block, as do extra instructions or
 additional paragraphs.
 
-The request must explicitly name human review/confirmation and client-owned
-execution evidence. Its vocabulary is limited to that verification reminder,
+The request must explicitly name human review, assessment, or verification and
+client-owned execution evidence. Its vocabulary is limited to that verification reminder,
 including the observed inspection wording; an unknown concern inside the same
 sentence or a generic human-review request remains blocking.
 

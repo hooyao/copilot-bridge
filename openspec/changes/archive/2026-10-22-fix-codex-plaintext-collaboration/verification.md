@@ -128,3 +128,7 @@ The review still reported `No open issues`; the evidence-only note listed dispat
 ## Copilot review round 8
 
 The review reported `No open issues` and requested final human review `including inspection of the reported client-owned execution evidence`. Its regression failed before the classifier accepted a bounded verification-request vocabulary instead of one preposition pattern. The request must name human review/confirmation and client-owned execution evidence; all request words and scope words remain restricted. New guards reject an unknown cancellation concern inside the same sentence and a generic human-review request without execution evidence. All 17 offline contracts and all four mirror compatibility tests pass. No runtime or harness code changed.
+
+## Copilot review round 9
+
+The review again reported `No open issues`; its evidence-only note said the changes `need final human assessment`. The observed case and a required-human-verification contract both failed before recognizing the bounded assessment/verification vocabulary and need/require/warrant phrasing. All 19 offline status contracts and all four mirror compatibility tests pass. Scope and request vocabularies remain restricted, explicit client-owned execution evidence is still required, and hidden findings and unknown concerns remain blocking. Runtime and harness code remain unchanged.
