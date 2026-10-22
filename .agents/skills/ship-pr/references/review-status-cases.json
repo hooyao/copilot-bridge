@@ -25,6 +25,21 @@
     "open": 1, "suppressed": 1, "evidence": 0
   },
   {
+    "name": "human review including inspection of evidence is separate",
+    "reviews": [{"commit_id":"current","user":{"login":"Copilot"},"submitted_at":"2026-10-22T11:15:47Z","body":"<!-- ccr-overview-v2 -->\n\n### 🔵 Needs a closer look\n\nProtocol-sensitive dispatch, terminal handling, and shipping-gate changes warrant final human review, including inspection of the reported client-owned execution evidence.\n\n**No open issues** 🎉\n\n<sub>Review effort: Balanced</sub>"}],
+    "open": 0, "suppressed": 0, "evidence": 1
+  },
+  {
+    "name": "unknown concern inside review request remains blocking",
+    "reviews": [{"commit_id":"current","user":{"login":"Copilot"},"submitted_at":"2026-10-22T11:15:47Z","body":"### 🔵 Needs a closer look\n\nProtocol-sensitive dispatch changes warrant human review, including inspection of the reported client-owned execution evidence and cancellation failure.\n\n**No open issues** 🎉"}],
+    "open": 1, "suppressed": 1, "evidence": 0
+  },
+  {
+    "name": "generic human review without execution evidence stays blocking",
+    "reviews": [{"commit_id":"current","user":{"login":"Copilot"},"submitted_at":"2026-10-22T11:15:47Z","body":"### 🔵 Needs a closer look\n\nProtocol-sensitive dispatch changes warrant final human review.\n\n**No open issues** 🎉"}],
+    "open": 1, "suppressed": 1, "evidence": 0
+  },
+  {
     "name": "previously missed issue survives no-open-issues overview",
     "reviews": [{"commit_id":"current","user":{"login":"Copilot"},"submitted_at":"2026-10-22T10:38:29Z","body":"### 🔵 Needs a closer look\n\nThe native dispatch and stream-terminal changes warrant human confirmation of the documented client-owned execution evidence, which was not independently verified here.\n\n**No open issues** 🎉\n\n<details><summary><strong>1 previously missed issue</strong></summary>Preserve the explicit dispatch marker on the buffered route.</details>"}],
     "open": 1, "suppressed": 1, "evidence": 0

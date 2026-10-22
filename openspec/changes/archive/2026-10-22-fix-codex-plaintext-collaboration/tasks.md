@@ -42,3 +42,4 @@
 - [x] 6.12 Verify the offline ship-status contracts and mirrored-skill compatibility, preserve pre-existing skill edits, and resume the user-authorized review loop with its ten-round limit.
 - [x] 6.13 Cover the sixth review's final-human-review wording as the same evidence-only reminder while retaining the existing fail-closed cases and mirror parity.
 - [x] 6.14 Recognize the bounded evidence-review request across known scope lists and verified/inspected wording, with an explicit unknown-scope concern regression.
+- [x] 6.15 Cover evidence inspection within a human-review request using a bounded verification vocabulary, while rejecting generic review requests and unknown in-sentence concerns.

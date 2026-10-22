@@ -124,3 +124,7 @@ The review again reported `No open issues`, using the observed variation `Protoc
 ## Copilot review round 7
 
 The review still reported `No open issues`; the evidence-only note listed dispatch, terminal handling, and shipping-gate scope and used `independently inspected` instead of `verified`. The added case reproduced the block before replacing full-sentence matching with the bounded evidence-review grammar and an explicit allowlist of known scope words. A second case rejects an unknown `dispatch failures` concern even with the otherwise identical evidence-review sentence. All 14 offline contracts and all four mirror compatibility tests pass. Actual code findings remain blocking, and runtime/harness code and its verified client evidence are unchanged.
+
+## Copilot review round 8
+
+The review reported `No open issues` and requested final human review `including inspection of the reported client-owned execution evidence`. Its regression failed before the classifier accepted a bounded verification-request vocabulary instead of one preposition pattern. The request must name human review/confirmation and client-owned execution evidence; all request words and scope words remain restricted. New guards reject an unknown cancellation concern inside the same sentence and a generic human-review request without execution evidence. All 17 offline contracts and all four mirror compatibility tests pass. No runtime or harness code changed.

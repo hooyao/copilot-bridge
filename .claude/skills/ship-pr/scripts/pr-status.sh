@@ -119,12 +119,17 @@ BODY_STATUS="$(echo "$REVIEWS_JSON" | jq --arg head "$HEAD_SHA" '
   # Recognize only the observed evidence-only overview, with no extra body text.
   # A clean headline never cancels a positive hidden count or an unknown concern.
   def evidence_note:
-    (capture("^(?<scope>.+) warrant (final )?human (confirmation|review) of the (documented|reported) client-owned execution evidence(, which was not independently (verified|inspected) here)?\\.$") // {}) as $note
+    (capture("^(?<scope>.+) warrant (?<request>.+)\\.$") // {}) as $note
     | ($note.scope // "") as $scope
+    | ($note.request // "") as $request
     | ($scope | test("^(The native|Protocol-sensitive) "))
       and ($scope | sub("^(The native|Protocol-sensitive) "; "")
         | gsub(", *"; " ") | split(" ")
-        | all(.[]; IN("dispatch", "terminal", "handling", "stream-terminal", "shipping-gate", "review-gate", "changes", "and")));
+        | all(.[]; IN("dispatch", "terminal", "handling", "stream-terminal", "shipping-gate", "review-gate", "changes", "and")))
+      and ($request | test("^(final )?human (confirmation|review)(,| )"))
+      and ($request | contains("client-owned execution evidence"))
+      and ($request | gsub("[,.] *"; " ") | gsub("^\\s+|\\s+$"; "") | split(" ")
+        | all(.[]; IN("final", "human", "confirmation", "review", "including", "inspection", "and", "of", "the", "reported", "documented", "client-owned", "execution", "evidence", "which", "was", "not", "independently", "verified", "inspected", "here")));
   def evidence_only:
     (gsub("\r"; "") | split("\n")
       | map(gsub("^\\s+|\\s+$"; "") | select(length > 0)
