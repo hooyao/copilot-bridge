@@ -17,7 +17,7 @@ The bridge SHALL expose `Codex:PlaintextCollaboration:Enabled`, default false. W
 
 ### Requirement: Producer-side projection preserves complete task semantics
 
-Active adaptation SHALL rename the recognized collaboration namespace to a reserved ordinary upstream namespace and remove only the recognized message encryption annotations. It SHALL consistently project top-level and historical tool inventories, replayed function calls, and explicit/allowed tool choices while preserving every unrelated value, argument string, call id, item position, and existing ciphertext. Active requests MUST be stateless, force `store:false`, and reject reserved-name collisions, conflicting identities, or stateful continuation before upstream sending.
+Active adaptation SHALL rename the recognized collaboration namespace to a reserved ordinary upstream namespace and remove only the recognized message encryption annotations. It SHALL consistently project top-level and historical tool inventories, replayed function calls and named outputs (including standalone outputs without a call id), and explicit/allowed tool choices while preserving every unrelated value, argument string, call id, item position, and existing ciphertext. Active requests MUST be stateless, force `store:false`, and reject reserved-name collisions, conflicting identities, or stateful continuation before upstream sending.
 
 #### Scenario: Incremental inventory and replay retain their meaning
 - **WHEN** a native request includes encrypted message tools in `additional_tools` or `tool_search_output`, saved collaboration calls, and an explicit tool choice
@@ -27,6 +27,15 @@ Active adaptation SHALL rename the recognized collaboration namespace to a reser
 #### Scenario: Stateful request is rejected
 - **WHEN** adaptation would activate on a request carrying non-null `previous_response_id` or `conversation`
 - **THEN** the bridge returns a bounded HTTP 400 before making an upstream request.
+
+#### Scenario: Qualified reserved function names are rejected
+- **WHEN** an active request declares an ordinary function whose name uses either the dotted or double-underscore qualified reserved namespace in any supported inventory
+- **THEN** the bridge rejects it before upstream sending rather than risk restoring that unrelated function as a native collaboration action.
+
+#### Scenario: Named function outputs retain consistent replay identity
+- **WHEN** active replay contains paired or standalone named function outputs
+- **THEN** their names and namespaces use the same projected identities as their declarations and calls
+- **AND** output values, unrelated metadata, and the presence or absence of a call id remain unchanged.
 
 #### Scenario: Existing ciphertext is never discarded
 - **WHEN** historical `agent_message` or reasoning items contain ciphertext
@@ -45,6 +54,11 @@ For active adaptation, streaming and buffered Responses copies of projected mess
 #### Scenario: Nonempty encrypted marker is rejected
 - **WHEN** Copilot returns a projected message action with a nonempty `encrypted_function_args`
 - **THEN** the bridge emits a bounded failure and never labels that action as plaintext.
+
+#### Scenario: Malformed buffered success remains a typed failure
+- **WHEN** adaptation is active and an upstream HTTP 200 buffered body is truncated or not JSON
+- **THEN** the native client receives a bounded failed response with `invalid_buffered_response`
+- **AND** JSON parser text and the arbitrary upstream body do not cross the client boundary.
 
 ### Requirement: Real native collaboration proves task delivery and execution
 

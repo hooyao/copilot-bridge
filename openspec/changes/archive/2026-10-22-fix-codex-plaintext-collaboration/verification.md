@@ -5,7 +5,7 @@ Verified on 2026-10-22 with .NET SDK 10.0.402 and the real desktop-bundled Codex
 ## Contract and build checks
 
 - Solution build: succeeded with zero warnings and zero errors.
-- Solution non-integration test filter: 1,877 unit tests passed; Playground has no non-integration cases.
+- Solution non-integration test filter: 1,891 unit tests passed after the first review fixes; Playground has no non-integration cases.
 - OpenSpec strict validation: passed.
 - `git diff --check`: passed.
 - Plaintext-marker mutation: replacing the empty encrypted-argument marker with a nonempty list made the sparse lifecycle contract fail. Original source was restored.
@@ -55,3 +55,16 @@ Verdict: **PASS** for actionable client-visible failure detail and resumed tool 
 ## Operational scope
 
 The workaround is opt-in with `Codex:PlaintextCollaboration:Enabled=true`, requires a restart, and applies only to stateless native Codex Responses traffic. Existing encrypted history is preserved and can still fail; start a fresh task when enabling. The error-detail correction is independent of the workaround switch. This change does not establish that Copilot's internal encryption defect is resolved.
+
+## Copilot review round 1
+
+The three review findings were reproduced with 14 new contract cases, all failing before the product fixes and passing afterward: qualified reserved-name collisions in all inventories, paired/standalone named-output identity projection, and bounded malformed-buffered-response handling with the workaround enabled. The complete unit suite then passed 1,891 cases.
+
+The live current Codex Astra lifecycle was repeated after these fixes. Manifest: `tests/behavior-runs/manifests/codex-astra-plaintext-collaboration-20261022-094359-703.json`.
+
+- 17 upstream requests, 14 matching tool/output rounds, seven custom exec calls, and zero encrypted agent-message parts.
+- All three collaboration message actions retained their restored namespace and explicit empty plaintext marker.
+- The independently verified arithmetic was `27212`; result-file SHA-256 matched the child's follow-up: `6598CB0CBC536EB390868B5514753638520B688A39C86EACCF20ADCCF2D1A0AB`.
+- The run-specific client SQLite window had 513 rows and zero router/dispatch fatals, ERROR rows, or retries; client execution was not aborted.
+
+The real-client decryption-detail/recovery case also passed again (manifest `codex-decryption-failure-detail-20261022-094530-815.json`, 82 SQLite rows, zero router/ERROR rows, exact diagnostic delivered, successful exec/output recovery). The live HTTP-edge capture replay passed all three variants: baseline, paired named output, and standalone named output. The named-output variants assert the actual projected upstream identities and unchanged output values.

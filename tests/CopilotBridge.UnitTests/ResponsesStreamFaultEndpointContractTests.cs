@@ -40,6 +40,26 @@ namespace CopilotBridge.UnitTests;
 public class ResponsesStreamFaultEndpointContractTests
 {
     [Theory]
+    [InlineData("not-json-private-upstream-body")]
+    [InlineData("{\"object\":\"response\",\"output\":")]
+    public async Task EnabledPlaintextMalformedBufferedResponseRemainsABoundedNativeFailure(string upstreamBody)
+    {
+        var fixture = JsonNode.Parse(File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "Fixtures", "Codex", "plaintext-collaboration.json")))!;
+        var request = fixture["body"]!.DeepClone();
+        request["stream"] = false;
+        var outcome = await RunCodexBufferedAsync(Encoding.UTF8.GetBytes(upstreamBody),
+            plaintextCollaboration: true, nativeRequest: request.ToJsonString());
+        Assert.Equal(StatusCodes.Status502BadGateway, outcome.Status);
+        var response = JsonNode.Parse(outcome.Body)!;
+        Assert.Equal("response", response["object"]!.GetValue<string>());
+        Assert.Equal("failed", response["status"]!.GetValue<string>());
+        Assert.Equal("invalid_buffered_response", response["error"]!["code"]!.GetValue<string>());
+        Assert.DoesNotContain("not-json-private-upstream-body", outcome.Body);
+        Assert.DoesNotContain("JsonException", outcome.Body);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task NativeDecryptionFailurePreservesReviewedDiagnosticAndMachineCode(bool trailingDetail)
@@ -294,7 +314,8 @@ public class ResponsesStreamFaultEndpointContractTests
         ICopilotClient client,
         BridgeContext<MessagesRequest> context,
         RequestAudit audit,
-        ILoggerFactory loggerFactory) =>
+        ILoggerFactory loggerFactory,
+        bool plaintextCollaboration = false) =>
         new(
             client,
             new CodexModelProfileCatalog(),
@@ -305,7 +326,8 @@ public class ResponsesStreamFaultEndpointContractTests
                 FirstByteTimeoutSeconds = 0,
                 StreamIdleTimeoutSeconds = 0,
             }),
-            loggerFactory.CreateLogger<CopilotResponsesStrategy>());
+            loggerFactory.CreateLogger<CopilotResponsesStrategy>(),
+            collaborationOptions: Options.Create(new CodexPlaintextCollaborationOptions { Enabled = plaintextCollaboration }));
 
     private static async Task<Outcome> RunClaudeAsync(
         Stream upstream,
@@ -452,16 +474,17 @@ public class ResponsesStreamFaultEndpointContractTests
         return OutcomeFrom(http, responseBytes, recorder.Events);
     }
 
-    private static async Task<Outcome> RunCodexBufferedAsync(byte[] upstreamBody)
+    private static async Task<Outcome> RunCodexBufferedAsync(
+        byte[] upstreamBody, bool plaintextCollaboration = false, string? nativeRequest = null)
     {
         var recorder = new RecordingLoggerProvider();
         using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(recorder));
         var audit = TestAudit.Create(true, loggerFactory.CreateLogger<MessagesRequest>());
         var context = new BridgeContext<MessagesRequest>();
         var strategy = BuildStrategy(
-            new StubClient(BufferedResponse(upstreamBody)), context, audit, loggerFactory);
+            new StubClient(BufferedResponse(upstreamBody)), context, audit, loggerFactory, plaintextCollaboration);
 
-        var request = CodexRequest.Replace("\"stream\":true", "\"stream\":false", StringComparison.Ordinal);
+        var request = nativeRequest ?? CodexRequest.Replace("\"stream\":true", "\"stream\":false", StringComparison.Ordinal);
         var http = BuildHttpContext("/codex/responses", request, out var responseBytes);
         await CodexResponsesEndpoint.HandleAsync(
             http,

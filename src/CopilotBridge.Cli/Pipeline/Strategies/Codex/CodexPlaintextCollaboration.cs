@@ -37,14 +37,18 @@ internal sealed class CodexPlaintextCollaboration
         if (!Active) return body;
         if (root["previous_response_id"] is not null || root["conversation"] is not null)
             throw new CodexBadRequestException("Plaintext collaboration requires stateless Responses requests; previous_response_id and conversation are unsupported.");
-        if (Inventory(root).Any(tool => Text(tool["name"]) == UpstreamNamespace))
+        // Qualified ordinary function names share the response mapper's identity
+        // space, so they collide just as the bare namespace does.
+        if (Inventory(root).Any(tool => Text(tool["name"]) is { } name
+            && (name == UpstreamNamespace || QualifiedSuffix(name, UpstreamNamespace) is not null)))
             throw new CodexBadRequestException("The bridge_plaintext_collaboration tool namespace is reserved by the bridge.");
 
         foreach (var tool in Inventory(root)) ProjectTool(tool, reverse: false);
         if (root["input"] is JsonArray input)
         {
             foreach (var item in input.OfType<JsonObject>())
-                if (Text(item["type"]) is "function_call" or "custom_tool_call")
+                if (Text(item["type"]) is "function_call" or "custom_tool_call"
+                    or "function_call_output" or "custom_tool_call_output")
                     MapIdentity(item, ClientNamespace, UpstreamNamespace, response: false);
         }
         ProjectChoice(root["tool_choice"], ClientNamespace, UpstreamNamespace, response: false);
@@ -55,7 +59,9 @@ internal sealed class CodexPlaintextCollaboration
     internal byte[] RestoreResponse(byte[] body)
     {
         if (!Active) return body;
-        var root = JsonNode.Parse(body);
+        JsonNode? root;
+        try { root = JsonNode.Parse(body); }
+        catch (JsonException) { throw new UpstreamResponseFailedException("invalid_buffered_response"); }
         if (root is not JsonObject response) return body;
         RestoreResponse(response);
         return Bytes(response);

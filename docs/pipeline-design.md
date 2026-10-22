@@ -974,7 +974,7 @@ Codex policy for Copilot Responses. The request-scoped strategy projects recogni
 encrypted `collaboration` message-tool inventories to the ordinary reserved
 `bridge_plaintext_collaboration` namespace after T2, removing only the encrypted
 string-message annotation on `spawn_agent`, `send_message`, and `followup_task`.
-Incremental inventories, saved calls, and tool choices use the same projection.
+Incremental inventories, saved calls and named outputs, and tool choices use the same projection.
 Before T3, response identities are restored and those message calls acquire
 `encrypted_function_args: []`, selecting Codex's supported plaintext delivery path.
 This policy is an explicit native request/response fidelity exception; T1 and the

@@ -25,3 +25,10 @@
 - [x] 5.1 Add a real current Codex behavior scenario through an isolated bridge subprocess exercising Astra spawn, child-to-parent message, same-child follow-up, and multiple tool executions.
 - [x] 5.2 Run the scenario and judge the run-specific trace and client-owned dispatch log; retain a captured-byte regression case for the collaboration edge.
 - [x] 5.3 Update user-facing documentation, design decisions, and OpenSpec validation with the final verified behavior and limitations.
+
+## 6. Copilot review follow-ups
+
+- [x] 6.1 Reject reserved ordinary-function names using either qualified alias form in every supported inventory.
+- [x] 6.2 Project paired and standalone named function-output identities without changing output values or metadata.
+- [x] 6.3 Normalize malformed buffered success bodies into the typed native failure when plaintext adaptation is active.
+- [x] 6.4 Re-run the client behavior and captured HTTP-edge cases, inspect client-owned evidence, and complete regression checks after the review fixes.

@@ -147,6 +147,60 @@ public sealed class CodexPlaintextCollaborationTests
     }
 
     [Theory]
+    [InlineData("tools", ".")]
+    [InlineData("tools", "__")]
+    [InlineData("additional_tools", ".")]
+    [InlineData("additional_tools", "__")]
+    [InlineData("tool_search_output", ".")]
+    [InlineData("tool_search_output", "__")]
+    public void ReservedQualifiedFunctionCollisionFailsBeforeItCanBeMisrouted(string inventory, string separator)
+    {
+        var body = Request(inventory);
+        var tools = inventory == "tools" ? body["tools"]!.AsArray()
+            : body["input"]![2]!["tools"]!.AsArray();
+        tools.Add(new JsonObject
+        {
+            ["type"] = "function", ["name"] = "bridge_plaintext_collaboration" + separator + "spawn_agent",
+            ["parameters"] = JsonNode.Parse("""{"type":"object","properties":{}}"""),
+        });
+        Assert.Throws<CodexBadRequestException>(() => new CodexPlaintextCollaboration().PrepareRequest(Bytes(body)));
+    }
+
+    [Theory]
+    [InlineData(true, "namespace")]
+    [InlineData(false, "namespace")]
+    [InlineData(true, ".")]
+    [InlineData(false, ".")]
+    [InlineData(true, "__")]
+    [InlineData(false, "__")]
+    public void NamedFunctionOutputReplayProjectsIdentityWithoutChangingTheOutput(bool paired, string qualification)
+    {
+        var body = Request();
+        var input = body["input"]!.AsArray();
+        if (paired) input.Add(JsonNode.Parse("""{"type":"function_call","namespace":"collaboration","name":"spawn_agent","call_id":"paired_call","arguments":"{}"}"""));
+        var toolOutput = new JsonObject
+        {
+            ["type"] = "function_call_output", ["id"] = "fco_preserved",
+            ["name"] = qualification == "namespace" ? "spawn_agent" : "collaboration" + qualification + "spawn_agent",
+            ["output"] = JsonNode.Parse("""[{"type":"input_text","text":"complete result 中文"}]"""),
+            ["future_metadata"] = new JsonObject { ["retained"] = true },
+        };
+        if (qualification == "namespace") toolOutput["namespace"] = "collaboration";
+        if (paired) toolOutput["call_id"] = "paired_call";
+        input.Add(toolOutput);
+        var ir = CodexRoundTrip.ToIr(CodexRoundTrip.ParseRequest(body.ToJsonString()));
+        var wire = JsonNode.Parse(new CodexPlaintextCollaboration().PrepareRequest(CodexRoundTrip.ToResponsesWire(ir)))!;
+        var actual = wire["input"]!.AsArray().Single(item => item?["type"]?.GetValue<string>() == "function_call_output")!;
+        Assert.Equal("bridge_plaintext_collaboration", actual["namespace"]?.GetValue<string>());
+        Assert.Equal("spawn_agent", actual["name"]!.GetValue<string>());
+        Assert.Equal("fco_preserved", actual["id"]!.GetValue<string>());
+        Assert.Equal(paired, actual.AsObject().ContainsKey("call_id"));
+        if (paired) Assert.Equal("paired_call", actual["call_id"]!.GetValue<string>());
+        Assert.True(JsonNode.DeepEquals(toolOutput["output"], actual["output"]));
+        Assert.True(actual["future_metadata"]!["retained"]!.GetValue<bool>());
+    }
+
+    [Theory]
     [InlineData("collaboration.spawn_agent", "bridge_plaintext_collaboration.spawn_agent")]
     [InlineData("collaboration__spawn_agent", "bridge_plaintext_collaboration__spawn_agent")]
     public void QualifiedChoicesAndSavedCallsUseTheSameNamespace(string clientName, string wireName)
