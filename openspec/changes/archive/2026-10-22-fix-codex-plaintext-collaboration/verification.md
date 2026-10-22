@@ -120,3 +120,7 @@ The actual status script passed all 11 offline `gh`-facade contracts. Four repro
 ## Copilot review round 6
 
 The review again reported `No open issues`, using the observed variation `Protocol-sensitive dispatch and terminal handling warrant final human review of the reported client-owned execution evidence, which was not independently verified here.` The conservative classifier blocked that unrecognized wording. A regression reproduced the block before extending the same bounded evidence-only sentence pattern. All 12 offline contracts now pass, including real hidden counts, unknown concerns, extra text, unresolved threads, and API failures; all four mirrored-skill compatibility tests pass. Runtime and harness code remain unchanged from the verified head above.
+
+## Copilot review round 7
+
+The review still reported `No open issues`; the evidence-only note listed dispatch, terminal handling, and shipping-gate scope and used `independently inspected` instead of `verified`. The added case reproduced the block before replacing full-sentence matching with the bounded evidence-review grammar and an explicit allowlist of known scope words. A second case rejects an unknown `dispatch failures` concern even with the otherwise identical evidence-review sentence. All 14 offline contracts and all four mirror compatibility tests pass. Actual code findings remain blocking, and runtime/harness code and its verified client evidence are unchanged.

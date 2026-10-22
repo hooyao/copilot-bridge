@@ -118,13 +118,20 @@ fi
 BODY_STATUS="$(echo "$REVIEWS_JSON" | jq --arg head "$HEAD_SHA" '
   # Recognize only the observed evidence-only overview, with no extra body text.
   # A clean headline never cancels a positive hidden count or an unknown concern.
+  def evidence_note:
+    (capture("^(?<scope>.+) warrant (final )?human (confirmation|review) of the (documented|reported) client-owned execution evidence(, which was not independently (verified|inspected) here)?\\.$") // {}) as $note
+    | ($note.scope // "") as $scope
+    | ($scope | test("^(The native|Protocol-sensitive) "))
+      and ($scope | sub("^(The native|Protocol-sensitive) "; "")
+        | gsub(", *"; " ") | split(" ")
+        | all(.[]; IN("dispatch", "terminal", "handling", "stream-terminal", "shipping-gate", "review-gate", "changes", "and")));
   def evidence_only:
     (gsub("\r"; "") | split("\n")
       | map(gsub("^\\s+|\\s+$"; "") | select(length > 0)
         | select(test("^(<!-- ccr-overview-v2 -->|<sub>Review effort: [^<]+</sub>)$") | not))) as $lines
     | ($lines | length) == 3
       and ($lines[0] | test("^###\\s+.*Needs a closer look$"; "i"))
-      and ($lines[1] | test("^(The native|Protocol-sensitive) dispatch and (stream-terminal changes|terminal handling) warrant (final )?human (confirmation|review) of the (documented|reported) client-owned execution evidence(, which was not independently verified here)?\\.$"))
+      and ($lines[1] | evidence_note)
       and ($lines[2] | test("^\\*\\*No open issues\\*\\*(\\s+🎉)?$"; "i"));
   ([.[][]
     | select(.commit_id == $head)

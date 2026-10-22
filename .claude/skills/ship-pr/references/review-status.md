@@ -11,6 +11,11 @@ confirmation sentence, and the explicit no-open-issues headline. The known
 overview comment and review-effort footer are optional metadata. No additional
 body text is accepted by this exception.
 
+The scope may list the known dispatch, terminal-handling, or shipping/review-gate
+areas; the bounded evidence-review request is the invariant rather than one exact
+word order. Unrecognized scope concerns still block, as do extra instructions or
+additional paragraphs.
+
 The agent/operator must still inspect the saved real-client manifest, matching
 tool/output rounds, and client-owned dispatch log using `real-client-verify`.
 Missing evidence remains unverified and blocks shipment. The status script cannot
