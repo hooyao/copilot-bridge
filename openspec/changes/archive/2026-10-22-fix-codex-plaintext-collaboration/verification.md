@@ -68,3 +68,16 @@ The live current Codex Astra lifecycle was repeated after these fixes. Manifest:
 - The run-specific client SQLite window had 513 rows and zero router/dispatch fatals, ERROR rows, or retries; client execution was not aborted.
 
 The real-client decryption-detail/recovery case also passed again (manifest `codex-decryption-failure-detail-20261022-094530-815.json`, 82 SQLite rows, zero router/ERROR rows, exact diagnostic delivered, successful exec/output recovery). The live HTTP-edge capture replay passed all three variants: baseline, paired named output, and standalone named output. The named-output variants assert the actual projected upstream identities and unchanged output values.
+
+## Copilot review round 2
+
+The inline mixed-schema dispatch finding and body-only qualified-name finding were reproduced before fixing product code: 20 new cases failed. With the fixes, all 21 new contract cases passed, including an unchanged all-plain activation guard; the complete unit suite passed 1,912 tests. Solution build had zero warnings/errors and strict OpenSpec validation passed.
+
+Activation still requires an encrypted recognized message schema. Once active, every recognized string-message action receives plaintext dispatch metadata, including already-plain siblings. Qualified aliases now require a declared collaboration child. Unrelated flat functions with dotted/double-underscore prefixes retain their choices and replay identities; flat names ambiguous with declared children fail before sending.
+
+The real current Codex/Astra lifecycle passed both variants after these fixes:
+
+- Original inventory: manifest `codex-astra-plaintext-collaboration-20261022-100056-100.json`, 15 upstream requests, 12 matching call/output rounds, six custom exec calls, zero encrypted agent-message parts. Independently verified arithmetic `13688` and result-file SHA-256 `BF6154E31C7B03F4FD3A5055DB10772874EB7F16EF8CDCA9C0D887D5204DE802`. Client SQLite window: 525 rows, zero router/dispatch fatals, ERROR rows, or retries.
+- Mixed inventory: manifest `codex-astra-plaintext-collaboration-mixed-20261022-095938-535.json`, 18 upstream requests, 15 matching call/output rounds, seven custom exec calls, zero encrypted agent-message parts. A test-only ingress proxy removed only send/follow-up schema encryption before the real bridge; the encrypted-spawn/plain-send combination appeared in all 18 inbound inventories. Real client and live Copilot executed spawn, child-to-parent message, and same-child follow-up, all with restored namespaces and empty dispatch markers. Independently verified arithmetic `23308` and SHA-256 `9989A882C3B943E495BA8E15C7068A84E58C6E223E4F87C816725CE0D3BE0E1D`. Client SQLite window: 536 rows, zero router/dispatch fatals, ERROR rows, or retries.
+
+Both clients completed without aborted execution. The three live HTTP-edge captured replay variants also passed again. Verdict: **PASS** from matching real execution results, run-specific wire evidence, and each client's own nonempty dispatch log.

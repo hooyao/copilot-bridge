@@ -129,6 +129,118 @@ public sealed class CodexPlaintextCollaborationTests
     }
 
     [Theory]
+    [InlineData("send_message", false, true)]
+    [InlineData("send_message", true, true)]
+    [InlineData("followup_task", false, true)]
+    [InlineData("followup_task", true, true)]
+    [InlineData("send_message", false, false)]
+    [InlineData("send_message", true, false)]
+    [InlineData("followup_task", false, false)]
+    [InlineData("followup_task", true, false)]
+    public void MixedMessageSchemasStillSelectPlaintextDispatch(string action, bool explicitFalse, bool streaming)
+    {
+        // Once an encrypted spawn activates projection, every declared string
+        // message action needs Codex's explicit plaintext delivery marker.
+        var body = Request();
+        var child = body["tools"]![0]!["tools"]!.AsArray().Single(tool => tool!["name"]!.GetValue<string>() == action)!;
+        var schema = child["parameters"]!["properties"]!["message"]!.AsObject();
+        if (explicitFalse) schema["encrypted"] = false;
+        else schema.Remove("encrypted");
+        var adapter = new CodexPlaintextCollaboration();
+        adapter.PrepareRequest(Bytes(body));
+        var call = new JsonObject
+        {
+            ["type"] = "function_call", ["namespace"] = "bridge_plaintext_collaboration",
+            ["name"] = action, ["arguments"] = "{\"message\":\"complete child task\"}",
+        };
+        if (streaming)
+        {
+            var added = Restore(adapter, new JsonObject
+            {
+                ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = call.DeepClone(),
+            }.ToJsonString());
+            AssertPlaintext(added["item"]!, action);
+            var done = Restore(adapter, """{"type":"response.function_call_arguments.done","output_index":0,"arguments":"complete"}""");
+            AssertPlaintext(done, action);
+            var terminal = Restore(adapter, """{"type":"response.completed","response":{"output":[{"type":"function_call","arguments":"complete"}]}}""");
+            AssertPlaintext(terminal["response"]!["output"]![0]!, action);
+        }
+        else
+        {
+            var response = new JsonObject { ["output"] = new JsonArray(call) };
+            AssertPlaintext(JsonNode.Parse(adapter.RestoreResponse(Bytes(response)))!["output"]![0]!, action);
+        }
+    }
+
+    [Fact]
+    public void EntirelyPlainMessageInventoryDoesNotActivateProjection()
+    {
+        var body = Request();
+        foreach (var child in body["tools"]![0]!["tools"]!.AsArray().Take(3))
+            child!["parameters"]!["properties"]!["message"]!.AsObject().Remove("encrypted");
+        var original = Bytes(body);
+        var adapter = new CodexPlaintextCollaboration();
+        Assert.Same(original, adapter.PrepareRequest(original));
+        Assert.False(adapter.Active);
+    }
+
+    [Theory]
+    [InlineData("tools", ".")]
+    [InlineData("tools", "__")]
+    [InlineData("additional_tools", ".")]
+    [InlineData("additional_tools", "__")]
+    [InlineData("tool_search_output", ".")]
+    [InlineData("tool_search_output", "__")]
+    public void UnrelatedFlatFunctionsWithCollaborationPrefixesKeepTheirIdentity(string inventory, string separator)
+    {
+        var body = Request(inventory);
+        var tools = inventory == "tools" ? body["tools"]!.AsArray() : body["input"]![2]!["tools"]!.AsArray();
+        var name = "collaboration" + separator + "lookup";
+        tools.Add(new JsonObject { ["type"] = "function", ["name"] = name });
+        var choice = new JsonObject { ["type"] = "function", ["name"] = name };
+        body["tool_choice"] = new JsonObject
+        {
+            ["type"] = "allowed_tools", ["tools"] = new JsonArray(choice.DeepClone()),
+        };
+        foreach (var type in new[] { "function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output" })
+            body["input"]!.AsArray().Add(new JsonObject
+            {
+                ["type"] = type, ["name"] = name, ["call_id"] = type, ["output"] = "untouched",
+            });
+        var adapter = new CodexPlaintextCollaboration();
+        var wire = JsonNode.Parse(adapter.PrepareRequest(Bytes(body)))!;
+        Assert.True(JsonNode.DeepEquals(body["tool_choice"], wire["tool_choice"]));
+        foreach (var item in wire["input"]!.AsArray().TakeLast(4))
+        {
+            Assert.Equal(name, item!["name"]!.GetValue<string>());
+            Assert.False(item.AsObject().ContainsKey("namespace"));
+        }
+        // Explicit choice uses the same inventory-based identity decision.
+        body["tool_choice"] = choice.DeepClone();
+        Assert.True(JsonNode.DeepEquals(choice, JsonNode.Parse(adapter.PrepareRequest(Bytes(body)))!["tool_choice"]));
+        var response = new JsonObject { ["output"] = new JsonArray(new JsonObject { ["type"] = "function_call", ["name"] = name }) };
+        Assert.True(JsonNode.DeepEquals(response, JsonNode.Parse(adapter.RestoreResponse(Bytes(response)))));
+    }
+
+    [Theory]
+    [InlineData("tools", ".")]
+    [InlineData("tools", "__")]
+    [InlineData("additional_tools", ".")]
+    [InlineData("additional_tools", "__")]
+    [InlineData("tool_search_output", ".")]
+    [InlineData("tool_search_output", "__")]
+    public void FlatNameAmbiguousWithDeclaredCollaborationChildFailsBeforeSending(string inventory, string separator)
+    {
+        var body = Request(inventory);
+        // Flat declarations and namespaced children share the qualified alias.
+        body["tools"]!.AsArray().Add(new JsonObject
+        {
+            ["type"] = "function", ["name"] = "collaboration" + separator + "spawn_agent",
+        });
+        Assert.Throws<CodexBadRequestException>(() => new CodexPlaintextCollaboration().PrepareRequest(Bytes(body)));
+    }
+
+    [Theory]
     [InlineData("previous_response_id")]
     [InlineData("conversation")]
     public void StatefulContinuationFailsBeforeSending(string field)

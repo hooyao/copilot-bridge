@@ -34,6 +34,11 @@ Active adaptation SHALL rename the recognized collaboration namespace to a reser
 - **THEN** their names and namespaces use the same projected identities as their declarations and calls
 - **AND** output values, unrelated metadata, and the presence or absence of a call id remain unchanged.
 
+#### Scenario: Unrelated flat names retain their declared identity
+- **WHEN** an active inventory declares an ordinary function named `collaboration.lookup` or `collaboration__lookup` without a matching collaboration child
+- **THEN** its explicit/allowed choices and replayed calls/outputs retain that flat name without acquiring a namespace
+- **AND** a flat name that aliases a declared collaboration child is rejected as ambiguous before upstream sending.
+
 #### Scenario: Existing ciphertext is never discarded
 - **WHEN** historical `agent_message` or reasoning items contain ciphertext
 - **THEN** those fields retain their original values and ordering
@@ -47,6 +52,11 @@ For active adaptation, streaming and buffered Responses copies of projected mess
 - **WHEN** an added item identifies a projected `spawn_agent` and later done/terminal copies omit its namespace or name
 - **THEN** each client-visible call has its canonical collaboration identity and empty encrypted-argument array
 - **AND** the complete argument string remains unchanged.
+
+#### Scenario: Mixed encrypted and plain message schemas use plaintext dispatch
+- **WHEN** an encrypted recognized message action activates projection and another recognized string-message action in the projected inventories is already plain
+- **THEN** streaming and buffered calls for both actions restore their collaboration identities and contain `encrypted_function_args: []`
+- **AND** an inventory containing only plain message actions does not activate the workaround.
 
 #### Scenario: Nonempty encrypted marker is rejected
 - **WHEN** Copilot returns a projected message action with a nonempty `encrypted_function_args`

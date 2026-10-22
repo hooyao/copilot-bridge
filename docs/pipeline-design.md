@@ -977,6 +977,11 @@ string-message annotation on `spawn_agent`, `send_message`, and `followup_task`.
 Incremental inventories, saved calls and named outputs, and tool choices use the same projection.
 Before T3, response identities are restored and those message calls acquire
 `encrypted_function_args: []`, selecting Codex's supported plaintext delivery path.
+The encrypted-schema activation gate is distinct from dispatch recognition: after
+activation, every recognized string-message action in the projected inventories
+gets the plaintext marker, including actions whose schemas were already plain.
+Qualified aliases are mapped only for declared collaboration children; unrelated
+flat functions retain their identities and ambiguous flat/child aliases are rejected.
 This policy is an explicit native request/response fidelity exception; T1 and the
 general T2 builder remain independent of source/destination selection.
 

@@ -47,15 +47,17 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
         ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifest);
     }
 
-    [Fact]
-    public async Task Codex_AstraPlaintextCollaboration_ExecutesChildToolsAndFollowup_ForVerdict()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Codex_AstraPlaintextCollaboration_ExecutesChildToolsAndFollowup_ForVerdict(bool mixedInventory)
     {
         var credentialSource = Environment.GetEnvironmentVariable(
             "COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY")
             ?? throw new InvalidOperationException("Set COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY to an existing valid v4 success-test credential source.");
         var expectedVersion = Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_COLLAB_CODEX_VERSION")
             ?? "0.163.0-alpha.11";
-        const string caseId = "codex-astra-plaintext-collaboration";
+        var caseId = "codex-astra-plaintext-collaboration" + (mixedInventory ? "-mixed" : "");
         using var work = ClientBehaviorSupport.NewWorkDir(caseId);
         using var home = ClientBehaviorSupport.NewWorkDir(caseId + "-home");
         var numbers = Enumerable.Range(0, 7).Select(_ => Random.Shared.Next(11, 90)).ToArray();
@@ -77,6 +79,7 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
             WorkingDirectory: work.Path,
             UseCustomOAuthApp: true,
             PlaintextCollaboration: true));
+        await using var mixedProxy = mixedInventory ? new MixedCollaborationInventoryProxy(bridge.BaseUrl) : null;
         const string prompt = """
             Exercise a real native collaboration lifecycle. Use collaboration.spawn_agent once,
             task_name worker, model gpt-6-astra, reasoning_effort low, fork_turns none.
@@ -98,7 +101,7 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
             the child. Do not edit configuration or files outside the current directory.
             """;
         var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
-            BridgeBaseUrl: bridge.BaseUrl,
+            BridgeBaseUrl: mixedProxy?.BaseUrl ?? bridge.BaseUrl,
             Prompt: prompt,
             Model: "gpt-6-astra",
             CodexHome: home.Path,
@@ -132,6 +135,7 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
         output.WriteLine($"[challenge] {evidenceDir}");
         output.WriteLine($"[dispatch] {result.DispatchLogPath} [{result.StartedUnixSeconds},{result.EndedUnixSeconds}] thread={result.ThreadId}");
         output.WriteLine("[verdict] Require actual child tool/output rounds, plaintext NEW_TASK/message/follow-up delivery, exact independently checked files, and zero client dispatch/router fatals.");
+        if (mixedProxy is not null) Assert.True(mixedProxy.ChangedInventories > 0, "Mixed-schema ingress seam did not run.");
         ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
     }
 }

@@ -32,3 +32,6 @@
 - [x] 6.2 Project paired and standalone named function-output identities without changing output values or metadata.
 - [x] 6.3 Normalize malformed buffered success bodies into the typed native failure when plaintext adaptation is active.
 - [x] 6.4 Re-run the client behavior and captured HTTP-edge cases, inspect client-owned evidence, and complete regression checks after the review fixes.
+- [x] 6.5 Separate encrypted-schema activation from plaintext dispatch recognition for mixed message inventories, with streaming and buffered contracts.
+- [x] 6.6 Restrict qualified aliases to declared collaboration children, preserve unrelated flat names, and reject ambiguous aliases across inventories.
+- [x] 6.7 Verify the second-round fixes through real Astra collaboration, including a mixed-schema ingress, and inspect the client-owned execution evidence.

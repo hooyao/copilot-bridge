@@ -18,6 +18,7 @@ internal sealed class CodexPlaintextCollaboration
     internal const string UpstreamNamespace = "bridge_plaintext_collaboration";
     private static readonly string[] IdentityKeys = ["type", "namespace", "name", "call_id"];
     private readonly HashSet<string> _actions = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _tools = new(StringComparer.Ordinal);
     private readonly Dictionary<int, Dictionary<string, string>> _identities = [];
 
     internal bool Active => _actions.Count > 0;
@@ -25,16 +26,30 @@ internal sealed class CodexPlaintextCollaboration
     internal byte[] PrepareRequest(byte[] body)
     {
         _actions.Clear();
+        _tools.Clear();
         _identities.Clear();
         var root = JsonNode.Parse(body)!.AsObject();
+        var encryptedAction = false;
         foreach (var tool in Inventory(root))
         {
             if (Text(tool["type"]) != "namespace" || Text(tool["name"]) != ClientNamespace
                 || tool["tools"] is not JsonArray children) continue;
             foreach (var child in children.OfType<JsonObject>())
-                if (EncryptedAction(child) is { } action) _actions.Add(action);
+            {
+                if (Text(child["name"]) is { } name) _tools.Add(name);
+                if (StringMessageAction(child) is not { } action) continue;
+                _actions.Add(action);
+                encryptedAction |= EncryptedAction(child) is not null;
+            }
         }
-        if (!Active) return body;
+        // Activation still requires encryption, but a projected namespace can
+        // contain already-plain message actions that need the same dispatch marker.
+        if (!encryptedAction)
+        {
+            _actions.Clear();
+            _tools.Clear();
+            return body;
+        }
         if (root["previous_response_id"] is not null || root["conversation"] is not null)
             throw new CodexBadRequestException("Plaintext collaboration requires stateless Responses requests; previous_response_id and conversation are unsupported.");
         // Qualified ordinary function names share the response mapper's identity
@@ -42,6 +57,9 @@ internal sealed class CodexPlaintextCollaboration
         if (Inventory(root).Any(tool => Text(tool["name"]) is { } name
             && (name == UpstreamNamespace || QualifiedSuffix(name, UpstreamNamespace) is not null)))
             throw new CodexBadRequestException("The bridge_plaintext_collaboration tool namespace is reserved by the bridge.");
+        if (Inventory(root).Any(tool => Text(tool["name"]) is { } name
+            && QualifiedSuffix(name, ClientNamespace) is { } suffix && _tools.Contains(suffix.Name)))
+            throw new CodexBadRequestException("A flat tool name conflicts with a qualified collaboration child.");
 
         foreach (var tool in Inventory(root)) ProjectTool(tool, reverse: false);
         if (root["input"] is JsonArray input)
@@ -103,14 +121,20 @@ internal sealed class CodexPlaintextCollaboration
         }
     }
 
-    private static string? EncryptedAction(JsonObject tool)
+    private static string? StringMessageAction(JsonObject tool)
     {
         var name = Text(tool["name"]);
         if (Text(tool["type"]) != "function" || !IsMessageAction(name)) return null;
         var message = (tool["parameters"] as JsonObject)?["properties"] as JsonObject;
         return message?["message"] is JsonObject schema
-            && Text(schema["type"]) == "string"
-            && schema["encrypted"] is JsonValue encrypted
+            && Text(schema["type"]) == "string" ? name : null;
+    }
+
+    private static string? EncryptedAction(JsonObject tool)
+    {
+        var name = StringMessageAction(tool);
+        return name is not null
+            && tool["parameters"]!["properties"]!["message"]!["encrypted"] is JsonValue encrypted
             && encrypted.TryGetValue<bool>(out var enabled) && enabled ? name : null;
     }
 
@@ -131,7 +155,7 @@ internal sealed class CodexPlaintextCollaboration
         }
     }
 
-    private static void ProjectChoice(JsonNode? value, string source, string target, bool response)
+    private void ProjectChoice(JsonNode? value, string source, string target, bool response)
     {
         if (value is not JsonObject choice) return;
         if (Text(choice["type"]) == "namespace" && Text(choice["name"]) == source)
@@ -150,7 +174,8 @@ internal sealed class CodexPlaintextCollaboration
         var name = Text(choice["name"]);
         var namespacePresent = choice.ContainsKey("namespace");
         MapIdentity(choice, source, target, response);
-        if (!namespacePresent && name is not null && QualifiedSuffix(name, source) is { } suffix)
+        if (!namespacePresent && name is not null && QualifiedSuffix(name, source) is { } suffix
+            && _tools.Contains(suffix.Name))
         {
             choice.Remove("namespace");
             choice["name"] = target + suffix.Separator + suffix.Name;
@@ -206,10 +231,11 @@ internal sealed class CodexPlaintextCollaboration
         value["encrypted_function_args"] = new JsonArray();
     }
 
-    private static void MapIdentity(JsonObject value, string source, string target, bool response)
+    private void MapIdentity(JsonObject value, string source, string target, bool response)
     {
         var ns = Text(value["namespace"]);
-        if (Text(value["name"]) is { } name && QualifiedSuffix(name, source) is { } suffix)
+        if (Text(value["name"]) is { } name && QualifiedSuffix(name, source) is { } suffix
+            && _tools.Contains(suffix.Name))
         {
             if (!string.IsNullOrEmpty(ns) && ns != source)
             {
