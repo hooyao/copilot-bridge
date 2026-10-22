@@ -38,3 +38,5 @@
 - [x] 6.8 Restore the decision-log table header/delimiter adjacency identified by the third review; verify the documentation-only diff.
 - [x] 6.9 Preserve explicit encryption-dispatch metadata across buffered response reconstruction, scrub the internal carrier at the Claude edge, and cover model-changing routes at the native endpoint.
 - [x] 6.10 Drive real Astra collaboration through buffered model-changing requests, inspect final native JSON and client-owned logs, and repeat regression checks.
+- [x] 6.11 Separate the known evidence-only review overview from body findings without clearing hidden issues, unknown concerns, inline threads, or API errors.
+- [x] 6.12 Verify the offline ship-status contracts and mirrored-skill compatibility, preserve pre-existing skill edits, and resume the user-authorized review loop with its ten-round limit.

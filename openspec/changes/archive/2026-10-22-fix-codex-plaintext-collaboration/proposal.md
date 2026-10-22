@@ -9,6 +9,7 @@ Copilot's Astra Responses route can generate encrypted collaboration task argume
 - Preserve existing encrypted history without attempting to decrypt, relabel, or silently delete it. Leave the workaround disabled by default and document how to enable it for new tasks.
 - Surface bounded upstream error codes and reviewed diagnostic messages, including a trailing error after an otherwise empty failed terminal, without leaking arbitrary upstream-generated text or delaying a known completed stream.
 - Verify the change with contract tests, mutation checks, captured request replay, and a real Codex Astra spawn/message/follow-up/tool execution scenario with client-owned dispatch evidence.
+- Unblock shipping when Copilot posts only the observed client-evidence confirmation overview: report that reminder separately while retaining positive hidden findings and unknown concerns as blockers.
 
 ## Capabilities
 
@@ -17,6 +18,7 @@ Copilot's Astra Responses route can generate encrypted collaboration task argume
 
 ### Modified Capabilities
 - `codex-response-fidelity`: Preserve actionable, bounded upstream failure diagnostics and the one-terminal failure contract when Copilot separates the terminal from its error detail.
+- `agent-repository-compatibility`: Distinguish a strictly recognized clean evidence-confirmation overview from actual body-only review findings, with mirrored workflow scripts and offline contracts.
 
 ## Impact
 

@@ -108,3 +108,11 @@ Final buffered real-client manifest: `codex-astra-plaintext-collaboration-buffer
 - The completed client's SQLite window contained 476 rows, zero router/dispatch fatals, zero ERROR rows, and zero retries; no execution was aborted.
 
 Verdict: **PASS** for real execution through the buffered model-changing path. Final solution build: zero warnings/errors; 1,920 unit tests passed after restoring the mutation; strict OpenSpec validation and `git diff --check` passed.
+
+## Copilot review round 5 and status classification
+
+The current-head review explicitly reported `No open issues`; its sole remaining note asked for confirmation of the documented client-owned execution evidence. The shipping script incorrectly counted the known evidence-only overview as a suppressed code finding. The operator raised this PR's review limit from five to ten rounds and authorized continuing the existing workflow.
+
+The mirrored status scripts now distinguish the strictly recognized evidence-only overview using `COPILOT_EVIDENCE_CONFIRMATION`, while positive suppressed/open/previously-missed counts, unknown concerns, extra body text, unresolved inline threads, and API errors remain blocking. This does not waive execution verification: the shipping agent re-read the saved client digests and matching execution evidence above. Runtime and harness code are unchanged from verified head `71d86968851295f8c579778f6f39f4675cf60296`.
+
+The actual status script passed all 11 offline `gh`-facade contracts. Four reproduced incorrect classifications before the fix, including a positive previously-missed count without a closer-look heading. The other cases retain the fail-closed guardrails, current-head provenance, clean-review supersession, and API-failure behavior. All four `AgentRepositoryCompatibilityTests` passed. Existing unrelated skill-document changes remain outside the shipping commit; only the classification additions are staged from those documents.

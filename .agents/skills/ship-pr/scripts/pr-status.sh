@@ -6,6 +6,7 @@
 # Prints machine-readable lines the caller acts on:
 #   OPEN_COMMENTS=<n>     unresolved threads + current-head suppressed-review signal
 #   SUPPRESSED_FINDINGS=<0|1> latest current-head Copilot review has body-only findings
+#   COPILOT_EVIDENCE_CONFIRMATION=<0|1> clean overview requests evidence verification
 #   CI=<pending|pass|fail|none>
 #   MERGE_STATE=<CLEAN|BLOCKED|UNKNOWN|...>
 #   PR_STATE=<OPEN|MERGED|CLOSED>
@@ -114,27 +115,43 @@ if ! echo "$REVIEWS_JSON" | jq -e '
   fail "reviews response missing expected shape — treating as error, not zero"
 fi
 
-SUPPRESSED_FINDINGS="$(echo "$REVIEWS_JSON" | jq --arg head "$HEAD_SHA" '
+BODY_STATUS="$(echo "$REVIEWS_JSON" | jq --arg head "$HEAD_SHA" '
+  # Recognize only the observed evidence-only overview, with no extra body text.
+  # A clean headline never cancels a positive hidden count or an unknown concern.
+  def evidence_only:
+    (gsub("\r"; "") | split("\n")
+      | map(gsub("^\\s+|\\s+$"; "") | select(length > 0)
+        | select(test("^(<!-- ccr-overview-v2 -->|<sub>Review effort: [^<]+</sub>)$") | not))) as $lines
+    | ($lines | length) == 3
+      and ($lines[0] | test("^###\\s+.*Needs a closer look$"; "i"))
+      and ($lines[1] | test("^(The native dispatch and stream-terminal|Protocol-sensitive dispatch and stream-terminal) changes warrant human confirmation of the (documented|reported) client-owned execution evidence(, which was not independently verified here)?\\.$"))
+      and ($lines[2] | test("^\\*\\*No open issues\\*\\*(\\s+🎉)?$"; "i"));
   ([.[][]
     | select(.commit_id == $head)
     | select((.user.login // "") | test("copilot"; "i"))]
    | sort_by(.submitted_at)
    | last // {}) as $latest
-  | if (($latest.body // "")
-      | test("Suppressed comments \\([1-9][0-9]*\\)|Needs a closer look"; "i"))
-    then 1 else 0 end')" \
+  | ($latest.body // "") as $body
+  | if ($body | test("Suppressed comments \\([1-9][0-9]*\\)|\\b[1-9][0-9]* (previously missed|open) issues?\\b"; "i"))
+    then {suppressed:1,evidence:0}
+    elif ($body | test("Needs a closer look"; "i"))
+    then if ($body | evidence_only) then {suppressed:0,evidence:1} else {suppressed:1,evidence:0} end
+    else {suppressed:0,evidence:0} end')" \
   || fail "could not classify current-head Copilot review body"
+SUPPRESSED_FINDINGS="$(echo "$BODY_STATUS" | jq -r .suppressed)" || fail "could not read suppressed-finding signal"
+EVIDENCE_CONFIRMATION="$(echo "$BODY_STATUS" | jq -r .evidence)" || fail "could not read evidence-confirmation signal"
 
 OPEN=$((OPEN_THREADS + SUPPRESSED_FINDINGS))
 echo "OPEN_COMMENTS=${OPEN}"
 echo "SUPPRESSED_FINDINGS=${SUPPRESSED_FINDINGS}"
+echo "COPILOT_EVIDENCE_CONFIRMATION=${EVIDENCE_CONFIRMATION}"
 echo "CI=${CI}"
 echo "MERGE_STATE=${MERGE_STATE}"
 echo "PR_STATE=${PR_STATE}"
 
 # --- 4. Copilot review round hint ----------------------------------------------
 # Copilot review submissions show as `reviewed` timeline events. Counting them is
-# the round number; >=5 means we've exhausted Copilot's review budget.
+# the round number; use the skill default bound unless the operator overrides it.
 #
 # `gh api --paginate` applies --jq to EACH page separately, so a page-level
 # `[...]|length` yields one number per page (e.g. "1\n2" across two pages), which
