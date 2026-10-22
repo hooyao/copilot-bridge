@@ -143,6 +143,36 @@ public class ClaudeCodeBufferedResponsesAdapterTests
         BufferedAnthropicToResponses.TryTranslate(ir)
         ?? throw new Xunit.Sdk.XunitException("expected a successful IR message");
 
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("[\"message\"]")]
+    public void BufferedReconstructionPreservesExplicitEncryptionDispatchMetadata(string marker)
+    {
+        var native = "{\"object\":\"response\",\"status\":\"completed\",\"model\":\"gpt-6-astra\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_dispatch\",\"name\":\"send_message\",\"namespace\":\"collaboration\",\"arguments\":\"{}\",\"encrypted_function_args\":" + marker + "}]}";
+        using var result = JsonDocument.Parse(BufferedT4(Adapt(native)));
+        var call = result.RootElement.GetProperty("output")[0];
+        Assert.Equal(marker, call.GetProperty("encrypted_function_args").GetRawText());
+        Assert.False(call.TryGetProperty("bridge_encrypted_function_args", out _));
+    }
+
+    [Fact]
+    public async Task BufferedEncryptionDispatchCarrierDoesNotReachClaude()
+    {
+        var ir = Encoding.UTF8.GetBytes("""{"type":"message","role":"assistant","model":"gpt-6-astra","content":[{"type":"tool_use","id":"call_plain","name":"send_message","input":{},"bridge_encrypted_function_args":[]}]}""");
+        var output = await Adapter.AdaptBufferedAsync(ir, default);
+        Assert.DoesNotContain("bridge_encrypted_function_args", Encoding.UTF8.GetString(output));
+        using var doc = JsonDocument.Parse(output);
+        Assert.Equal("send_message", doc.RootElement.GetProperty("content")[0].GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public void BufferedCallsWithoutDispatchMetadataDoNotBecomePlaintext()
+    {
+        var ir = Adapt("""{"object":"response","status":"completed","model":"gpt-6-astra","output":[{"type":"function_call","call_id":"call_legacy","name":"send_message","namespace":"collaboration","arguments":"{}"}]}""");
+        using var result = JsonDocument.Parse(BufferedT4(ir));
+        Assert.False(result.RootElement.GetProperty("output")[0].TryGetProperty("encrypted_function_args", out _));
+    }
+
     [Fact]
     public void BufferedRoundTrip_RealCtcId_SurvivesToTheCodexFacingItem()
     {

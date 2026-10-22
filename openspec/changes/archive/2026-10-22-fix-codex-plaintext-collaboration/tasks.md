@@ -36,3 +36,5 @@
 - [x] 6.6 Restrict qualified aliases to declared collaboration children, preserve unrelated flat names, and reject ambiguous aliases across inventories.
 - [x] 6.7 Verify the second-round fixes through real Astra collaboration, including a mixed-schema ingress, and inspect the client-owned execution evidence.
 - [x] 6.8 Restore the decision-log table header/delimiter adjacency identified by the third review; verify the documentation-only diff.
+- [x] 6.9 Preserve explicit encryption-dispatch metadata across buffered response reconstruction, scrub the internal carrier at the Claude edge, and cover model-changing routes at the native endpoint.
+- [x] 6.10 Drive real Astra collaboration through buffered model-changing requests, inspect final native JSON and client-owned logs, and repeat regression checks.

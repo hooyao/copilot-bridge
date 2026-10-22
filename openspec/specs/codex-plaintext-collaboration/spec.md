@@ -65,6 +65,13 @@ For active adaptation, streaming and buffered Responses copies of projected mess
 - **WHEN** Copilot returns a projected message action with a nonempty `encrypted_function_args`
 - **THEN** the bridge emits a bounded failure and never labels that action as plaintext.
 
+#### Scenario: Buffered response stages preserve dispatch metadata
+- **WHEN** an enabled native buffered request is routed to another model and response stages reconstruct the response
+- **THEN** the client receives its original requested model, restored collaboration identity, and explicit empty dispatch marker
+- **AND** a model-only rewrite preserves original native item ids and all other native response values
+- **AND** the internal buffered dispatch carrier never appears at the native or Claude client boundary
+- **AND** calls without explicit encryption metadata do not acquire a plaintext marker.
+
 #### Scenario: Malformed buffered success remains a typed failure
 - **WHEN** adaptation is active and an upstream HTTP 200 buffered body is truncated or not JSON
 - **THEN** the native client receives a bounded failed response with `invalid_buffered_response`

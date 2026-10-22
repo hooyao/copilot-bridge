@@ -10,6 +10,9 @@ namespace CopilotBridge.Cli.Pipeline.Strategies.Codex;
 /// </summary>
 internal static class BufferedResponsesToAnthropic
 {
+    // Presence distinguishes explicit plaintext dispatch ([]) from legacy
+    // encrypted delivery. Carry the value across detector reconstruction.
+    internal const string EncryptedArgumentsMarker = "bridge_encrypted_function_args";
     private const string GrammarMarker = "bridge_input_is_grammar_text";
     private const string NamespaceMarker = "bridge_tool_namespace";
     // Carries the upstream custom_tool_call's real `ctc_` item id to T4, which stamps
@@ -198,6 +201,12 @@ internal static class BufferedResponsesToAnthropic
             writer.WritePropertyName("input");
             argumentsDoc.RootElement.WriteTo(writer);
             WriteNamespace(writer, item);
+            if (item.TryGetProperty("encrypted_function_args", out var encryptedArguments)
+                && encryptedArguments.ValueKind == JsonValueKind.Array)
+            {
+                writer.WritePropertyName(EncryptedArgumentsMarker);
+                encryptedArguments.WriteTo(writer);
+            }
             writer.WriteEndObject();
         }
     }

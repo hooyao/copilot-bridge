@@ -48,16 +48,20 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Codex_AstraPlaintextCollaboration_ExecutesChildToolsAndFollowup_ForVerdict(bool mixedInventory)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Codex_AstraPlaintextCollaboration_ExecutesChildToolsAndFollowup_ForVerdict(bool mixedInventory, bool bufferedModelRewrite)
     {
         var credentialSource = Environment.GetEnvironmentVariable(
             "COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY")
             ?? throw new InvalidOperationException("Set COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY to an existing valid v4 success-test credential source.");
         var expectedVersion = Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_COLLAB_CODEX_VERSION")
             ?? "0.163.0-alpha.11";
-        var caseId = "codex-astra-plaintext-collaboration" + (mixedInventory ? "-mixed" : "");
+        var caseId = "codex-astra-plaintext-collaboration" + (mixedInventory ? "-mixed" : "")
+            + (bufferedModelRewrite ? "-buffered-model-rewrite" : "");
+        var scenario = bufferedModelRewrite ? ServeScenario.Gpt56ToAstra : ServeScenario.Passthrough;
+        var model = bufferedModelRewrite ? "gpt-5.6-sol" : "gpt-6-astra";
         using var work = ClientBehaviorSupport.NewWorkDir(caseId);
         using var home = ClientBehaviorSupport.NewWorkDir(caseId + "-home");
         var numbers = Enumerable.Range(0, 7).Select(_ => Random.Shared.Next(11, 90)).ToArray();
@@ -73,13 +77,14 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
         }.ToJsonString());
 
         await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
-            ServeScenario.Passthrough,
+            scenario,
             CredentialSourceDirectory: credentialSource,
             CredentialStagingMode: CredentialStagingMode.CustomOAuthVersionFour,
             WorkingDirectory: work.Path,
             UseCustomOAuthApp: true,
             PlaintextCollaboration: true));
-        await using var mixedProxy = mixedInventory ? new MixedCollaborationInventoryProxy(bridge.BaseUrl) : null;
+        await using var ingress = mixedInventory || bufferedModelRewrite
+            ? new CollaborationIngressProxy(bridge.BaseUrl, mixedInventory, bufferedModelRewrite) : null;
         const string prompt = """
             Exercise a real native collaboration lifecycle. Use collaboration.spawn_agent once,
             task_name worker, model gpt-6-astra, reasoning_effort low, fork_turns none.
@@ -101,9 +106,9 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
             the child. Do not edit configuration or files outside the current directory.
             """;
         var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
-            BridgeBaseUrl: mixedProxy?.BaseUrl ?? bridge.BaseUrl,
+            BridgeBaseUrl: ingress?.BaseUrl ?? bridge.BaseUrl,
             Prompt: prompt,
-            Model: "gpt-6-astra",
+            Model: model,
             CodexHome: home.Path,
             WorkingDirectory: work.Path,
             ExpectedCodexVersion: expectedVersion,
@@ -121,8 +126,8 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
             CaseId: caseId,
             Client: "codex",
             Route: "/codex",
-            Model: "gpt-6-astra",
-            Scenario: ServeScenario.Passthrough,
+            Model: model,
+            Scenario: scenario,
             ClientExitCode: result.ExitCode,
             DurationSeconds: result.Duration.TotalSeconds,
             TraceDir: bridge.TraceDir,
@@ -135,7 +140,9 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
         output.WriteLine($"[challenge] {evidenceDir}");
         output.WriteLine($"[dispatch] {result.DispatchLogPath} [{result.StartedUnixSeconds},{result.EndedUnixSeconds}] thread={result.ThreadId}");
         output.WriteLine("[verdict] Require actual child tool/output rounds, plaintext NEW_TASK/message/follow-up delivery, exact independently checked files, and zero client dispatch/router fatals.");
-        if (mixedProxy is not null) Assert.True(mixedProxy.ChangedInventories > 0, "Mixed-schema ingress seam did not run.");
+        if (mixedInventory) Assert.True(ingress!.ChangedInventories > 0, "Mixed-schema ingress seam did not run.");
+        if (bufferedModelRewrite) Assert.True(ingress!.BufferedResponseCount > 0, "Buffered ingress seam did not run.");
+        Assert.Equal("completed", result.TurnStatus);
         ClientBehaviorSupport.AssertHarnessProducedEvidence(result.ExitCode, bridge.TraceDir, manifestPath);
     }
 }

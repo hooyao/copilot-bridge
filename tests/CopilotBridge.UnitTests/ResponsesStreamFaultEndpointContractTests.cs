@@ -40,6 +40,45 @@ namespace CopilotBridge.UnitTests;
 public class ResponsesStreamFaultEndpointContractTests
 {
     [Theory]
+    [InlineData("spawn_agent")]
+    [InlineData("send_message")]
+    [InlineData("followup_task")]
+    public async Task BufferedModelChangingRouteRetainsPlaintextDispatchAtNativeEndpoint(string action)
+    {
+        // Routing changes accounting metadata, never the client's dispatch mode.
+        var fixture = JsonNode.Parse(File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "Fixtures", "Codex", "plaintext-collaboration.json")))!;
+        var request = fixture["body"]!.DeepClone();
+        request["model"] = "gpt-5.6-sol";
+        request["stream"] = false;
+        var upstream = new JsonObject
+        {
+            ["object"] = "response", ["id"] = "resp_routed", ["status"] = "completed", ["model"] = "gpt-6-astra",
+            ["output"] = new JsonArray(new JsonObject
+            {
+                ["type"] = "function_call", ["namespace"] = "bridge_plaintext_collaboration", ["name"] = action,
+                ["id"] = "fc_routed", ["call_id"] = "call_routed", ["arguments"] = "{\"message\":\"complete task\"}",
+                ["future_dispatch_metadata"] = new JsonObject { ["retained"] = true },
+            }),
+        };
+        var outcome = await RunCodexBufferedAsync(Encoding.UTF8.GetBytes(upstream.ToJsonString()),
+            plaintextCollaboration: true, nativeRequest: request.ToJsonString(), routedModel: "gpt-6-astra");
+        Assert.Equal(StatusCodes.Status200OK, outcome.Status);
+        var response = JsonNode.Parse(outcome.Body)!;
+        Assert.Equal("gpt-5.6-sol", response["model"]!.GetValue<string>());
+        var call = Assert.Single(response["output"]!.AsArray())!;
+        Assert.Equal("collaboration", call["namespace"]!.GetValue<string>());
+        Assert.Equal(action, call["name"]!.GetValue<string>());
+        Assert.Equal("call_routed", call["call_id"]!.GetValue<string>());
+        Assert.Equal("fc_routed", call["id"]!.GetValue<string>());
+        Assert.True(call["future_dispatch_metadata"]!["retained"]!.GetValue<bool>());
+        Assert.Equal("complete task", JsonNode.Parse(call["arguments"]!.GetValue<string>())!["message"]!.GetValue<string>());
+        Assert.True(call.AsObject().ContainsKey("encrypted_function_args"), "Model rewriting must preserve the explicit dispatch marker.");
+        Assert.Empty(call["encrypted_function_args"]!.AsArray());
+        Assert.DoesNotContain("bridge_encrypted_function_args", outcome.Body);
+    }
+
+    [Theory]
     [InlineData("not-json-private-upstream-body")]
     [InlineData("{\"object\":\"response\",\"output\":")]
     public async Task EnabledPlaintextMalformedBufferedResponseRemainsABoundedNativeFailure(string upstreamBody)
@@ -170,11 +209,14 @@ public class ResponsesStreamFaultEndpointContractTests
 
     private sealed class ResponsesRunner(
         BridgeContext<MessagesRequest> context,
-        CopilotResponsesStrategy strategy) : IPipelineRunner<MessagesRequest>
+        CopilotResponsesStrategy strategy,
+        string? routedModel = null) : IPipelineRunner<MessagesRequest>
     {
         public async Task RunAsync(Pipeline<MessagesRequest> pipeline)
         {
             context.OriginalRequestedModel = context.Request.Body.Model;
+            if (routedModel is not null)
+                context.Request.Body = context.Request.Body with { Model = routedModel };
             context.Target = new RouteTarget(
                 BackendVendor.CopilotResponses,
                 "/responses",
@@ -475,7 +517,8 @@ public class ResponsesStreamFaultEndpointContractTests
     }
 
     private static async Task<Outcome> RunCodexBufferedAsync(
-        byte[] upstreamBody, bool plaintextCollaboration = false, string? nativeRequest = null)
+        byte[] upstreamBody, bool plaintextCollaboration = false, string? nativeRequest = null,
+        string? routedModel = null)
     {
         var recorder = new RecordingLoggerProvider();
         using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(recorder));
@@ -486,11 +529,20 @@ public class ResponsesStreamFaultEndpointContractTests
 
         var request = nativeRequest ?? CodexRequest.Replace("\"stream\":true", "\"stream\":false", StringComparison.Ordinal);
         var http = BuildHttpContext("/codex/responses", request, out var responseBytes);
+        var pipeline = routedModel is null ? DummyPipeline : new Pipeline<MessagesRequest>
+        {
+            Name = "native-buffered-model-rewrite-contract", RequestStages = [],
+            ResponseStages = [new ResponseInspectionStage(
+                [new ModelRewriteDetector(new DetectorOrder<ModelRewriteDetector>(0),
+                    TestOptions.Snapshot(new ResponseModelRewriteOptions { Enabled = true }), context)],
+                context, loggerFactory.CreateLogger<ResponseInspectionStage>())],
+            Strategies = new StrategyRegistry<MessagesRequest>([]),
+        };
         await CodexResponsesEndpoint.HandleAsync(
             http,
             context,
-            new ResponsesRunner(context, strategy),
-            DummyPipeline,
+            new ResponsesRunner(context, strategy, routedModel),
+            pipeline,
             new ResponsesToIrInboundAdapter(loggerFactory.CreateLogger<ResponsesToIrInboundAdapter>()),
             new IrToResponsesOutboundAdapter(context, loggerFactory.CreateLogger<IrToResponsesOutboundAdapter>()),
             new RequestSummaryLogger(loggerFactory.CreateLogger<RequestSummaryLogger>()),

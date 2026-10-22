@@ -234,8 +234,9 @@ internal sealed class BridgeResponse
     /// <summary>
     /// Successful buffered Responses bytes and the exact IR array produced from
     /// them. T4 uses the pair to preserve a native Codex response byte-for-byte
-    /// when no response stage replaced the IR array. If a stage rewrites or aborts,
-    /// the reference changes and T4 serializes the mutated IR instead.
+    /// when no response stage replaced the IR array. A model-only rewrite patches
+    /// the native model while preserving other fields; semantic rewrites and aborts
+    /// instead serialize the mutated IR.
     /// </summary>
     public byte[]? BufferedResponsesWireBody { get; set; }
     public byte[]? InitialBufferedIrBody { get; set; }

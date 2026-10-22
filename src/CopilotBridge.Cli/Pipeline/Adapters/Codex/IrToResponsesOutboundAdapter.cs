@@ -107,11 +107,16 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         // a real buffered HTTP error before this adapter's streaming enumerator is
         // ever created. Release any native-event references that T3 accumulated.
         _ctx.Response.NativeResponsesEvents?.Clear();
-        if (ReferenceEquals(irBody, _ctx.Response.InitialBufferedIrBody)
-            && _ctx.Response.BufferedResponsesWireBody is { } original)
+        var nativeBody = _ctx.Response.BufferedResponsesWireBody;
+        if (nativeBody is not null && _ctx.Response.InitialBufferedIrBody is { } initialIr)
+            nativeBody = ReferenceEquals(irBody, initialIr)
+                ? nativeBody
+                : PreserveModelOnlyRewrite(initialIr, irBody, nativeBody);
+        else nativeBody = null;
+        if (nativeBody is { } original)
         {
-            // The byte-preserving shortcut sends the ORIGINAL upstream bytes back to
-            // Codex verbatim — LOSSLESS, which is its whole point (a buffered response
+            // The native shortcut preserves upstream fields (a model-only rewrite
+            // above has already patched that one field). A buffered response
             // can carry reasoning/encrypted_content and fields the IR does not model).
             // The one exception: a custom_tool_call whose id is not `ctc`-prefixed would,
             // passed through unchanged, be echoed next turn and 400 ("Expected an ID
@@ -139,6 +144,29 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
         // not represent successful response IR; preserve their existing surface.
         _log.LogDebug("adapter {Name}: buffered non-message passthrough bytes={Bytes}", Name, irBody.Length);
         return ValueTask.FromResult(irBody);
+    }
+
+    private static byte[]? PreserveModelOnlyRewrite(byte[] initialIr, byte[] currentIr, byte[] nativeBody)
+    {
+        // A model-only detector rewrite must retain native dispatch metadata,
+        // replay-valid item ids, reasoning and future fields. Semantic changes
+        // still go through T4 reconstruction; never bypass a detector edit.
+        try
+        {
+            if (JsonNode.Parse(initialIr) is not JsonObject initial
+                || JsonNode.Parse(currentIr) is not JsonObject current
+                || current["model"] is not JsonValue model
+                || !model.TryGetValue<string>(out var name)
+                || !initial.ContainsKey("model")) return null;
+            initial["model"] = name;
+            if (!JsonNode.DeepEquals(initial, current)
+                || JsonNode.Parse(nativeBody) is not JsonObject native) return null;
+            native["model"] = name;
+            using var buffer = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(buffer)) native.WriteTo(writer);
+            return buffer.ToArray();
+        }
+        catch (JsonException) { return null; }
     }
 
     /// <summary>

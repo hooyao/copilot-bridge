@@ -982,6 +982,12 @@ activation, every recognized string-message action in the projected inventories
 gets the plaintext marker, including actions whose schemas were already plain.
 Qualified aliases are mapped only for declared collaboration children; unrelated
 flat functions retain their identities and ambiguous flat/child aliases are rejected.
+Buffered T3/T4 carry explicit encryption-dispatch metadata across response-stage
+reconstruction, including model rewrites. The private buffered carrier is removed
+at the Claude edge and is never used to infer plaintext for an unmarked call.
+When only the top-level model changes, native buffered delivery patches that
+field in the adapted Responses object, preserving replay-valid item ids and all
+other native fields. Additional semantic detector edits still reconstruct from IR.
 This policy is an explicit native request/response fidelity exception; T1 and the
 general T2 builder remain independent of source/destination selection.
 

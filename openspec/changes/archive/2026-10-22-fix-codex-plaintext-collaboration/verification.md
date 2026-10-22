@@ -85,3 +85,26 @@ Both clients completed without aborted execution. The three live HTTP-edge captu
 ## Copilot review round 3
 
 The review reported no remaining code issues and one body-only documentation finding: the new decision row separated the Markdown table header from its delimiter. Moved that row below the delimiter and verified header/delimiter adjacency and `git diff --check`. No product or harness code changed; the second-round execution evidence above remains applicable.
+
+## Copilot review round 4
+
+Six new contracts reproduced lost dispatch metadata through a model-changing buffered endpoint, buffered translators, and the Claude carrier scrub. All failed before the fix. Buffered T3/T4 now preserve explicit dispatch metadata, and the Claude buffered edge removes its internal carrier. Calls without metadata remain unmarked. The complete unit suite passes 1,920 tests.
+
+The real buffered lifecycle initially exposed an additional reconstruction problem: a native function item id became `item_1`, and Copilot rejected its next-turn echo. The model-only native path now preserves all original response values except the model, including item ids, dispatch markers, phases, reasoning, and future fields. Endpoint regressions caught all three message-action id changes before that correction. Semantic detector edits still reconstruct from IR and retain dispatch metadata. Temporarily bypassing the semantic-equality guard made the detector-edit test fail (`before detector` instead of `after detector`); the original source was restored and the full suite passed again.
+
+Streaming controls passed after the dispatch-carrier fix:
+
+- Original inventory: manifest `codex-astra-plaintext-collaboration-20261022-102326-087.json`; 15 upstream requests, 12 matching call/output rounds, six custom exec calls, no encrypted agent-message parts, independently verified arithmetic `9642` and file hash. Client SQLite: 498 rows, zero router fatals, ERROR rows, or retries.
+- Mixed inventory: manifest `codex-astra-plaintext-collaboration-mixed-20261022-102432-849.json`; 15 upstream requests, 12 matching call/output rounds, six custom exec calls, 15 mixed inbound inventories, no encrypted agent-message parts, independently verified arithmetic `23558` and file hash. Client SQLite: 512 rows, zero router fatals, ERROR rows, or retries.
+
+All four live captured-inventory HTTP-edge variants passed, including `stream:false` routed from `gpt-5.6-sol` to live Astra. That buffered contract asserts the restored model, complete plaintext task, empty dispatch marker, and exact preservation of the actual upstream item id.
+
+Final buffered real-client manifest: `codex-astra-plaintext-collaboration-buffered-model-rewrite-20261022-103123-833.json`. The test-only ingress sends `stream:false` to the real bridge and wraps its actual JSON output in a transport-only SSE lifecycle for Codex's parser. It never changes returned tool identities, arguments, ids, or dispatch metadata; model-catalog requests remain untouched.
+
+- 18 upstream requests, all buffered and targeting exact live `gpt-6-astra`; nine native responses restored the parent's requested `gpt-5.6-sol` model.
+- 15 matching tool/output rounds, seven custom exec calls, successful spawn/child-to-parent message/same-child follow-up, and zero encrypted agent-message parts.
+- All three native JSON message-action calls retained the collaboration namespace and explicit empty dispatch marker. No internal carrier crossed the native boundary.
+- Independently verified arithmetic `22538`, child GUID `c2bc67d6-dba7-404c-8b96-17c4c3f9ae00`, and result-file SHA-256 `5CF7816A31432EEF2E508F8AECFC510B6FB121A6ADA5275859CEC73BA68371F6`.
+- The completed client's SQLite window contained 476 rows, zero router/dispatch fatals, zero ERROR rows, and zero retries; no execution was aborted.
+
+Verdict: **PASS** for real execution through the buffered model-changing path. Final solution build: zero warnings/errors; 1,920 unit tests passed after restoring the mutation; strict OpenSpec validation and `git diff --check` passed.

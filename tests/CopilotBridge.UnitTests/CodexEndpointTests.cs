@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net.ServerSentEvents;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CopilotBridge.Cli.Endpoints.ClaudeCode;
 using CopilotBridge.Cli.Endpoints.Codex;
 using CopilotBridge.Cli.Hosting.Logging;
@@ -503,6 +504,32 @@ public class CodexEndpointTests
 
         Assert.Equal(StatusCodes.Status200OK, status);
         Assert.Equal(original, body);
+    }
+
+    [Fact]
+    public async Task BufferedModelAndSemanticRewriteKeepsDetectorEditsAndDispatchMetadata()
+    {
+        var native = Encoding.UTF8.GetBytes("""{"object":"response","id":"resp_edit","model":"gpt-6-astra","status":"completed","output":[{"type":"function_call","id":"fc_edit","call_id":"call_edit","namespace":"collaboration","name":"send_message","arguments":"{\"message\":\"before detector\"}","encrypted_function_args":[]}]}""");
+        var initial = BufferedResponsesToAnthropic.TryTranslate(native)!;
+        var changed = JsonNode.Parse(initial)!;
+        changed["model"] = "gpt-5.6-sol";
+        changed["content"]![0]!["input"]!["message"] = "after detector";
+        var (status, body) = await Invoke(ValidRequest, ctx =>
+        {
+            ctx.Response.Status = StatusCodes.Status200OK;
+            ctx.Response.Mode = ResponseMode.Buffered;
+            ctx.Response.BufferedBody = Encoding.UTF8.GetBytes(changed.ToJsonString());
+            ctx.Response.InitialBufferedIrBody = initial;
+            ctx.Response.BufferedResponsesWireBody = native;
+            ctx.Response.Headers["Content-Type"] = "application/json";
+        });
+        Assert.Equal(StatusCodes.Status200OK, status);
+        var result = JsonNode.Parse(body)!;
+        Assert.Equal("gpt-5.6-sol", result["model"]!.GetValue<string>());
+        var call = result["output"]![0]!;
+        Assert.Equal("after detector", JsonNode.Parse(call["arguments"]!.GetValue<string>())!["message"]!.GetValue<string>());
+        Assert.Empty(call["encrypted_function_args"]!.AsArray());
+        Assert.DoesNotContain("bridge_encrypted_function_args", body);
     }
 
     [Fact]
