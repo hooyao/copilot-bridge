@@ -124,7 +124,7 @@ BODY_STATUS="$(echo "$REVIEWS_JSON" | jq --arg head "$HEAD_SHA" '
         | select(test("^(<!-- ccr-overview-v2 -->|<sub>Review effort: [^<]+</sub>)$") | not))) as $lines
     | ($lines | length) == 3
       and ($lines[0] | test("^###\\s+.*Needs a closer look$"; "i"))
-      and ($lines[1] | test("^(The native dispatch and stream-terminal|Protocol-sensitive dispatch and stream-terminal) changes warrant human confirmation of the (documented|reported) client-owned execution evidence(, which was not independently verified here)?\\.$"))
+      and ($lines[1] | test("^(The native|Protocol-sensitive) dispatch and (stream-terminal changes|terminal handling) warrant (final )?human (confirmation|review) of the (documented|reported) client-owned execution evidence(, which was not independently verified here)?\\.$"))
       and ($lines[2] | test("^\\*\\*No open issues\\*\\*(\\s+🎉)?$"; "i"));
   ([.[][]
     | select(.commit_id == $head)

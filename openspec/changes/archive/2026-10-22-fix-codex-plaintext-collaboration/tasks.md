@@ -40,3 +40,4 @@
 - [x] 6.10 Drive real Astra collaboration through buffered model-changing requests, inspect final native JSON and client-owned logs, and repeat regression checks.
 - [x] 6.11 Separate the known evidence-only review overview from body findings without clearing hidden issues, unknown concerns, inline threads, or API errors.
 - [x] 6.12 Verify the offline ship-status contracts and mirrored-skill compatibility, preserve pre-existing skill edits, and resume the user-authorized review loop with its ten-round limit.
+- [x] 6.13 Cover the sixth review's final-human-review wording as the same evidence-only reminder while retaining the existing fail-closed cases and mirror parity.
