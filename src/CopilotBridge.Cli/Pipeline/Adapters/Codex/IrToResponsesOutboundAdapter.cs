@@ -75,7 +75,8 @@ internal sealed class IrToResponsesOutboundAdapter : IClientOutboundAdapter<Mess
                     : null;
                 foreach (var tail in sm.FlushTerminal(
                              failed: fault is not null,
-                             failureCode: failureCode))
+                             failureCode: failureCode,
+                             failureMessage: (fault as UpstreamResponseFailedException)?.ClientMessage))
                     yield return tail;
             }
         }
@@ -333,6 +334,7 @@ internal sealed class AnthropicToResponsesStream
     private int _nativeExpectedOrdinal;
     private string? _nativeModelOverride;
     private string _failureCode = "upstream_error";
+    private string _failureMessage = UpstreamResponseFailedException.GenericClientMessage;
     private readonly List<SseItem<string>> _nativeActualSemantic = [];
     private readonly Dictionary<int, NativeCustomToolCall> _nativeCustomToolsByOutput = [];
     private readonly Dictionary<string, NativeCustomToolCall> _nativeCustomToolsByCallId =
@@ -555,13 +557,16 @@ internal sealed class AnthropicToResponsesStream
     /// </summary>
     public IEnumerable<SseItem<string>> FlushTerminal(
         bool failed,
-        string? failureCode = null)
+        string? failureCode = null,
+        string? failureMessage = null)
     {
         if (_nativeTerminalDelivered) yield break;
         if (failed && _stopReason != FailedStopReason)
             _stopReason = FailedStopReason;
         if (failed && !string.IsNullOrEmpty(failureCode))
             _failureCode = failureCode;
+        if (failed && failureMessage == UpstreamResponseFailedException.EncryptedContentMessage)
+            _failureMessage = UpstreamResponseFailedException.EncryptedContentMessage;
         if (!_created)
         {
             _created = true;
@@ -1100,7 +1105,7 @@ internal sealed class AnthropicToResponsesStream
         // Honest failure terminal. Codex's parser models response.failed; carry
         // whatever output was assembled before the failure plus an error object.
         var output = "[" + string.Join(",", _completedItems.Select(static item => item.Json)) + "]";
-        return $"{{\"type\":\"response.failed\",\"sequence_number\":{_seq++},\"response\":{{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":\"failed\",\"model\":{Enc(_model)},\"output\":{output},\"error\":{{\"code\":{Enc(_failureCode)},\"message\":\"the upstream model backend failed mid-stream\"}},\"usage\":{UsageJson()}}}}}";
+        return $"{{\"type\":\"response.failed\",\"sequence_number\":{_seq++},\"response\":{{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":\"failed\",\"model\":{Enc(_model)},\"output\":{output},\"error\":{{\"code\":{Enc(_failureCode)},\"message\":{Enc(_failureMessage)}}},\"usage\":{UsageJson()}}}}}";
     }
 
     private string UsageJson() =>

@@ -330,10 +330,21 @@ internal static class CodexResponsesEndpoint
                 responseStatus = StatusCodes.Status502BadGateway;
                 httpCtx.Response.StatusCode = responseStatus;
                 httpCtx.Response.ContentType = "application/json";
-                var bytes = Encoding.UTF8.GetBytes(
-                    "{\"id\":\"resp_bridge\",\"object\":\"response\",\"status\":\"failed\","
-                    + "\"model\":\"unknown\",\"output\":[],\"error\":{\"code\":\"upstream_error\","
-                    + "\"message\":\"the upstream model backend failed\"}}");
+                using var buffer = new MemoryStream();
+                using (var writer = new Utf8JsonWriter(buffer))
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("id", "resp_bridge");
+                    writer.WriteString("object", "response");
+                    writer.WriteString("status", "failed");
+                    writer.WriteString("model", "unknown");
+                    writer.WriteStartArray("output"); writer.WriteEndArray();
+                    writer.WriteStartObject("error");
+                    writer.WriteString("code", ex.Code);
+                    writer.WriteString("message", ex.ClientMessage);
+                    writer.WriteEndObject(); writer.WriteEndObject();
+                }
+                var bytes = buffer.ToArray();
                 responseBody = bytes;
                 responseBodyLen = bytes.Length;
                 httpCtx.Response.ContentLength = bytes.Length;

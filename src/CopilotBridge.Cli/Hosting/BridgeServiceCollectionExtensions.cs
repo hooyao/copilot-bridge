@@ -83,6 +83,7 @@ internal static class BridgeServiceCollectionExtensions
             services.PostConfigure<BridgeServerOptions>(opts => opts.Port = port);
         }
         services.Configure<TracingOptions>(config.GetSection("Tracing"));
+        services.Configure<CodexPlaintextCollaborationOptions>(config.GetSection("Codex:PlaintextCollaboration"));
         services.AddOptions<CodexModelCatalogOptions>()
             .Bind(config.GetSection("Codex:ModelCatalog"))
             .ValidateOnStart();

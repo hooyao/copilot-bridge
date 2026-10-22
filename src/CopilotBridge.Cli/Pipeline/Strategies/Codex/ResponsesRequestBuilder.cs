@@ -20,6 +20,7 @@ internal enum ResponsesRequestMutation
     RecursiveAgentToolDropped = 1 << 6,
     ProviderConflictDropped = 1 << 7,
     MinimalWebSearchEffortRaised = 1 << 8,
+    PlaintextCollaboration = 1 << 9,
 }
 
 /// <summary>
@@ -52,6 +53,7 @@ internal static class ResponsesRequestBuilder
         if ((mutations & ResponsesRequestMutation.InvalidMessageIdDropped) != 0) codes.Add("protocol.message_id");
         if ((mutations & ResponsesRequestMutation.RecursiveAgentToolDropped) != 0) codes.Add("guard.recursive_agent");
         if ((mutations & ResponsesRequestMutation.ProviderConflictDropped) != 0) codes.Add("protocol.provider_conflict");
+        if ((mutations & ResponsesRequestMutation.PlaintextCollaboration) != 0) codes.Add("policy.plaintext_collaboration");
         return string.Join(',', codes);
     }
 

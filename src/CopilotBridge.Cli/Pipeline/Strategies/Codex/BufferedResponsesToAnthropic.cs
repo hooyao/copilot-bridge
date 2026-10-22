@@ -55,7 +55,7 @@ internal static class BufferedResponsesToAnthropic
 
             var status = statusElement.GetString();
             if (status == "failed")
-                throw new UpstreamResponseFailedException(ReadFailureCode(root));
+                throw UpstreamResponseFailedException.FromEvent(root);
             if (status is not ("completed" or "incomplete"))
                 return null;
 
@@ -280,14 +280,6 @@ internal static class BufferedResponsesToAnthropic
         if (!element.TryGetProperty(property, out var value) || !value.TryGetInt64(out var number))
             return 0;
         return (int)Math.Clamp(number, 0, int.MaxValue);
-    }
-
-    private static string? ReadFailureCode(JsonElement root)
-    {
-        if (root.TryGetProperty("error", out var error)
-            && error.ValueKind == JsonValueKind.Object)
-            return ReadString(error, "code");
-        return null;
     }
 
     private static UpstreamResponseFailedException InvalidResponse() =>

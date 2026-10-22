@@ -1,0 +1,27 @@
+## 1. Contract and configuration
+
+- [x] 1.1 Update the architectural contract and document the explicit native plaintext-collaboration policy and bounded diagnostic enrichment.
+- [x] 1.2 Add and bind the disabled-by-default Codex plaintext-collaboration option, including shipped configuration guidance.
+
+## 2. Plaintext collaboration adapter
+
+- [x] 2.1 Implement request-local stateless namespace/schema projection for complete and incremental inventories, replay, and tool choices with collision/continuation guards.
+- [x] 2.2 Implement streaming and buffered identity restoration, explicit plaintext metadata, sparse event tracking, and fail-closed conflict validation.
+- [x] 2.3 Integrate the adapter at the native strategy boundary with truthful wire auditing and mutation diagnostics.
+
+## 3. Actionable upstream failures
+
+- [x] 3.1 Carry normalized codes and the reviewed decryption diagnostic through typed streaming/buffered failures and native client delivery.
+- [x] 3.2 Add one bounded trailing-error read for empty native failed terminals while preserving completion, cancellation, and single-terminal semantics.
+
+## 4. Contract verification
+
+- [x] 4.1 Add contract tests for opt-in isolation, schema/inventory/replay/tool-choice fidelity, sparse response restoration, stateless/conflict guards, and old ciphertext preservation.
+- [x] 4.2 Add endpoint/stream contracts for actionable decryption errors, unknown-message sanitization, trailing-detail EOF/stall/cancellation, and buffered behavior.
+- [x] 4.3 Mutation-check the core plaintext-dispatch and failure-detail assertions, then run the relevant regression suites and solution build.
+
+## 5. Real-client acceptance and documentation
+
+- [x] 5.1 Add a real current Codex behavior scenario through an isolated bridge subprocess exercising Astra spawn, child-to-parent message, same-child follow-up, and multiple tool executions.
+- [x] 5.2 Run the scenario and judge the run-specific trace and client-owned dispatch log; retain a captured-byte regression case for the collaboration edge.
+- [x] 5.3 Update user-facing documentation, design decisions, and OpenSpec validation with the final verified behavior and limitations.

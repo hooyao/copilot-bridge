@@ -1,0 +1,180 @@
+{
+  "provenance": {
+    "source": "Real Codex app-server 0.163.0-alpha.11 Astra collaboration behavior run, 2026-10-22",
+    "capture": "20261022-090326-0001-inbound-req.json",
+    "sanitization": "Retained the exact public collaboration namespace from the real additional_tools inventory. Replaced private context with a bounded synthetic diagnostic prompt."
+  },
+  "body": {
+    "model": "gpt-6-astra",
+    "stream": true,
+    "store": false,
+    "reasoning": {
+      "effort": "low"
+    },
+    "input": [
+      {
+        "tools": [
+          {
+            "type": "namespace",
+            "name": "collaboration",
+            "description": "Tools for spawning and managing sub-agents.",
+            "tools": [
+              {
+                "type": "function",
+                "name": "followup_task",
+                "description": "Send a follow-up task to an existing non-root target agent and trigger a turn if it is idle. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes.",
+                "strict": false,
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Message text to send to the target agent.",
+                      "encrypted": true
+                    },
+                    "target": {
+                      "type": "string",
+                      "description": "Agent id or canonical task name to send a follow-up task to (from spawn_agent)."
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "interrupt_agent",
+                "description": "Interrupt an agent's current turn, if any, and return its previous status. The agent remains available for messages and follow-up tasks.",
+                "strict": false,
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "target": {
+                      "type": "string",
+                      "description": "Agent id or canonical task name to interrupt (from spawn_agent)."
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "list_agents",
+                "description": "List live agents in the current root thread tree. Optionally filter by task-path prefix.",
+                "strict": false,
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "path_prefix": {
+                      "type": "string",
+                      "description": "Task-path prefix filter without a trailing slash. Omit to list all live agents."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "send_message",
+                "description": "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn.",
+                "strict": false,
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Message text to queue on the target agent.",
+                      "encrypted": true
+                    },
+                    "target": {
+                      "type": "string",
+                      "description": "Relative or canonical task name to message (from spawn_agent)."
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "\n        Available model overrides (optional; inherited parent model is preferred):\n- `gpt-6.1-sol`: Latest workhorse model for coding and everyday work. Reasoning efforts: low (default), medium, high, xhigh, max. Service tiers: priority.\n- `gpt-6-astra`: Frontier intelligence for the most demanding work. Reasoning efforts: low (default), medium, high, xhigh, max, ultra. Service tiers: priority.\n- `gpt-6-sol`: Previous generation workhorse model. Reasoning efforts: low, medium (default), high, xhigh, max, ultra. Service tiers: priority.\n- `gpt-6-luna`: Fast and affordable model for easier tasks. Reasoning efforts: low, medium (default), high, xhigh, max. Service tiers: priority.\n- `gpt-5.6-sol`: Older generation workhorse model. Reasoning efforts: low (default), medium, high, xhigh, max, ultra. Service tiers: priority.\n        Spawns an agent to work on the specified task. If your current task is `/root/task1` and you spawn_agent with task_name \"task_3\" the agent will have canonical task name `/root/task1/task_3`.\nYou are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.\nThe spawned agent will have the same tools as you and the ability to spawn its own subagents.\n\nIt will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.\nThe new agent's canonical task name will be provided to it along with the message.\n\nNote that passing `fork_turns=\"none\"` will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns=\"all\"` will provide the subagent with all surrounding context.",
+                "strict": false,
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "fork_turns": {
+                      "type": "string",
+                      "description": "Parent history to inherit. Defaults to `all`; use `none` to start without parent history. Only `all` and `none` are supported."
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "Initial plain-text task for the new agent.",
+                      "encrypted": true
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "Model override for the new agent. Omit unless an explicit override is needed."
+                    },
+                    "reasoning_effort": {
+                      "type": "string",
+                      "description": "Reasoning effort override for the new agent. Omit to inherit the parent effort."
+                    },
+                    "task_name": {
+                      "type": "string",
+                      "description": "Task name for the new agent. Use lowercase letters, digits, and underscores."
+                    }
+                  },
+                  "required": [
+                    "task_name",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "wait_agent",
+                "description": "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline.",
+                "strict": false,
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "timeout_ms": {
+                      "type": "number",
+                      "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            ]
+          }
+        ],
+        "role": "developer",
+        "type": "additional_tools"
+      },
+      {
+        "role": "user",
+        "type": "message",
+        "content": [
+          {
+            "text": "Call collaboration.spawn_agent exactly once with task_name capture_worker, fork_turns none, model gpt-6-astra, reasoning_effort low, and message exactly \"Reply CAPTURED_PLAINTEXT_TASK_OK.\". Do not solve the task or call another tool.",
+            "type": "input_text"
+          }
+        ]
+      }
+    ],
+    "tools": [],
+    "tool_choice": "required"
+  }
+}

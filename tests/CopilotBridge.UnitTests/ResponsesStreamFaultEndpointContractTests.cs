@@ -39,6 +39,83 @@ namespace CopilotBridge.UnitTests;
 /// </summary>
 public class ResponsesStreamFaultEndpointContractTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NativeDecryptionFailurePreservesReviewedDiagnosticAndMachineCode(bool trailingDetail)
+    {
+        // Contract: Copilot may separate its failed terminal from the actionable
+        // structured error. The client must still receive exactly one honest,
+        // specific failure, and the summary must record the same diagnosis.
+        const string error = """{"code":"invalid_request_body","message":"Encrypted function output content could not be decrypted or decoded."}""";
+        var tail = trailingDetail
+            ? "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":null}}\n\nevent: error\ndata: {\"type\":\"error\",\"code\":\"invalid_request_body\",\"message\":\"Encrypted function output content could not be decrypted or decoded.\"}\n\n"
+            : "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":" + error + "}}\n\n";
+        var bytes = PartialTextPrefix().Concat(Encoding.UTF8.GetBytes(tail)).ToArray();
+        var outcome = await RunCodexAsync(new MemoryStream(bytes));
+        Assert.Equal(1, Count(outcome.Body, "event: response.failed"));
+        Assert.DoesNotContain("event: response.completed", outcome.Body);
+        var failed = outcome.Body.Split('\n').Where(line => line.StartsWith("data: ", StringComparison.Ordinal))
+            .Select(line => JsonNode.Parse(line[6..])!)
+            .Single(item => item["type"]?.GetValue<string>() == "response.failed");
+        Assert.Equal("invalid_request_body", failed["response"]!["error"]!["code"]!.GetValue<string>());
+        Assert.Equal("Encrypted function output content could not be decrypted or decoded.", failed["response"]!["error"]!["message"]!.GetValue<string>());
+        Assert.Contains("Encrypted function output content could not be decrypted or decoded.", outcome.Summary["ErrorDisplay"]?.ToString());
+        Assert.Contains("invalid_request_body", outcome.Summary["ErrorDisplay"]?.ToString());
+        var upstream = outcome.Audits.Single(a => a.Kind == "upstream-resp");
+        Assert.Equal(bytes, upstream.Body.AsSpan(0, upstream.BodyLength).ToArray());
+    }
+
+    [Fact]
+    public async Task NativeStandaloneStructuredErrorIsAFailureAndUnknownTextRemainsPrivate()
+    {
+        var bytes = PartialTextPrefix().Concat(Encoding.UTF8.GetBytes(
+            "event: error\ndata: {\"type\":\"error\",\"code\":\"invalid_request_body\",\"message\":\"private arbitrary upstream prompt text\"}\n\n")).ToArray();
+        var outcome = await RunCodexAsync(new MemoryStream(bytes));
+        Assert.Equal(1, Count(outcome.Body, "event: response.failed"));
+        Assert.Contains("invalid_request_body", outcome.Body);
+        Assert.DoesNotContain("private arbitrary upstream prompt text", outcome.Body);
+        Assert.DoesNotContain("private arbitrary upstream prompt text", outcome.Summary["ErrorDisplay"]?.ToString());
+    }
+
+    [Fact]
+    public async Task NativeEmptyFailedTerminalWithEOFStaysOneFailure()
+    {
+        var bytes = PartialTextPrefix().Concat(Encoding.UTF8.GetBytes(
+            "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":null}}\n\n")).ToArray();
+        var outcome = await RunCodexAsync(new MemoryStream(bytes));
+        Assert.Equal(1, Count(outcome.Body, "event: response.failed"));
+        Assert.DoesNotContain("event: response.completed", outcome.Body);
+        Assert.Contains("unknown", outcome.Body);
+    }
+
+    [Fact]
+    public async Task UnreadableDiagnosticTailRetainsTheAlreadyReceivedFailure()
+    {
+        var bytes = PartialTextPrefix().Concat(Encoding.UTF8.GetBytes(
+            "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":null}}\n\n")).ToArray();
+        var stream = new ReadCountingTailFaultStream(bytes, new IOException("private tail error"));
+        var outcome = await RunCodexAsync(stream);
+        Assert.Equal(1, stream.ReadsAfterPrefix);
+        Assert.Equal(1, Count(outcome.Body, "event: response.failed"));
+        Assert.Contains("unknown", outcome.Body);
+        Assert.DoesNotContain("private tail error", outcome.Summary["ErrorDisplay"]?.ToString());
+    }
+
+    [Fact]
+    public async Task BufferedDecryptionFailureRetainsTheSameReviewedDiagnostic()
+    {
+        var outcome = await RunCodexBufferedAsync(Encoding.UTF8.GetBytes("""
+            {"id":"failed","object":"response","status":"failed","model":"gpt-6-astra","output":[],
+             "error":{"code":"invalid_request_body","message":"Encrypted function output content could not be decrypted or decoded."}}
+            """));
+        Assert.Equal(StatusCodes.Status502BadGateway, outcome.Status);
+        var body = JsonNode.Parse(outcome.Body)!;
+        Assert.Equal("failed", body["status"]!.GetValue<string>());
+        Assert.Equal("invalid_request_body", body["error"]!["code"]!.GetValue<string>());
+        Assert.Equal("Encrypted function output content could not be decrypted or decoded.", body["error"]!["message"]!.GetValue<string>());
+    }
+
     private const string CcRequest =
         """{"model":"gpt-5.6-sol","max_tokens":128,"stream":true,"messages":[{"role":"user","content":"continue"}]}""";
 

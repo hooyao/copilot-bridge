@@ -356,7 +356,10 @@ internal sealed class ResponsesToAnthropicStream
                     // A failed Responses terminal is not a successful Anthropic
                     // stop. Keep it exceptional until the downstream client edge;
                     // carry only the bounded machine code, never generated detail.
-                    throw new UpstreamResponseFailedException(ExtractErrorCode(root));
+                    throw UpstreamResponseFailedException.FromEvent(root);
+
+                case "error":
+                    throw UpstreamResponseFailedException.FromEvent(root);
 
                     // in_progress, content_part.*, reasoning_*, etc. — no IR equivalent
                     // needed for the bridge's purposes; swallow.
@@ -548,24 +551,6 @@ internal sealed class ResponsesToAnthropicStream
             && itd.TryGetProperty("cached_tokens", out var ct) && ct.TryGetInt64(out var c)) _cacheReadInputTokens = c;
         if (usage.TryGetProperty("output_tokens_details", out var otd) && otd.ValueKind == JsonValueKind.Object
             && otd.TryGetProperty("reasoning_tokens", out var rt) && rt.TryGetInt64(out var r)) _reasoningOutputTokens = r;
-    }
-
-    private static string? ExtractErrorCode(JsonElement root)
-    {
-        // response.failed carries detail on response.error (or a top-level error).
-        // Only the bounded code may leave T3; messages can contain generated text.
-        if (root.TryGetProperty("response", out var resp)
-            && resp.TryGetProperty("error", out var err)
-            && err.ValueKind == JsonValueKind.Object
-            && err.TryGetProperty("code", out var code)
-            && code.ValueKind == JsonValueKind.String)
-            return code.GetString();
-        if (root.TryGetProperty("error", out var topErr)
-            && topErr.ValueKind == JsonValueKind.Object
-            && topErr.TryGetProperty("code", out var topCode)
-            && topCode.ValueKind == JsonValueKind.String)
-            return topCode.GetString();
-        return null;
     }
 
     private string MessageStartJson() =>
