@@ -1,4 +1,5 @@
 using System.Runtime.Versioning;
+using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Xunit;
 using Xunit.Abstractions;
@@ -51,7 +52,16 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
     [InlineData(false, false)]
     [InlineData(true, false)]
     [InlineData(false, true)]
-    public async Task Codex_AstraPlaintextCollaboration_ExecutesChildToolsAndFollowup_ForVerdict(bool mixedInventory, bool bufferedModelRewrite)
+    public Task Codex_AstraPlaintextCollaboration_ExecutesChildToolsAndFollowup_ForVerdict(bool mixedInventory, bool bufferedModelRewrite) =>
+        RunCollaborationAsync(mixedInventory, bufferedModelRewrite, "low", true);
+
+    [Fact]
+    public Task Codex_AstraDefaultPlaintextCollaboration_Xhigh_ExecutesChildToolsAndFollowup_ForVerdict() =>
+        RunCollaborationAsync(false, false, "xhigh", null,
+            Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_NATIVE_BINARY_DIRECTORY"));
+
+    private async Task RunCollaborationAsync(bool mixedInventory, bool bufferedModelRewrite,
+        string reasoningEffort, bool? plaintextOverride, string? binaryDirectory = null)
     {
         var credentialSource = Environment.GetEnvironmentVariable(
             "COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY")
@@ -59,7 +69,8 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
         var expectedVersion = Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_COLLAB_CODEX_VERSION")
             ?? "0.163.0-alpha.11";
         var caseId = "codex-astra-plaintext-collaboration" + (mixedInventory ? "-mixed" : "")
-            + (bufferedModelRewrite ? "-buffered-model-rewrite" : "");
+            + (bufferedModelRewrite ? "-buffered-model-rewrite" : "")
+            + (plaintextOverride is null ? "-default-" + reasoningEffort : "");
         var scenario = bufferedModelRewrite ? ServeScenario.Gpt56ToAstra : ServeScenario.Passthrough;
         var model = bufferedModelRewrite ? "gpt-5.6-sol" : "gpt-6-astra";
         using var work = ClientBehaviorSupport.NewWorkDir(caseId);
@@ -82,10 +93,11 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
             CredentialStagingMode: CredentialStagingMode.CustomOAuthVersionFour,
             WorkingDirectory: work.Path,
             UseCustomOAuthApp: true,
-            PlaintextCollaboration: true));
+            PlaintextCollaboration: plaintextOverride,
+            BridgeBinaryDirectory: binaryDirectory));
         await using var ingress = mixedInventory || bufferedModelRewrite
             ? new CollaborationIngressProxy(bridge.BaseUrl, mixedInventory, bufferedModelRewrite) : null;
-        const string prompt = """
+        var prompt = """
             Exercise a real native collaboration lifecycle. Use collaboration.spawn_agent once,
             task_name worker, model gpt-6-astra, reasoning_effort low, fork_turns none.
             Give the child this complete task: Read numbers.json using a shell tool. Compute the
@@ -104,7 +116,7 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
             verify the arithmetic and file hash, and finish with the three observed values:
             numeric sum, child-generated GUID, and SHA-256. Do not guess any value or bypass
             the child. Do not edit configuration or files outside the current directory.
-            """;
+            """.Replace("reasoning_effort low", "reasoning_effort " + reasoningEffort, StringComparison.Ordinal);
         var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
             BridgeBaseUrl: ingress?.BaseUrl ?? bridge.BaseUrl,
             Prompt: prompt,
@@ -113,7 +125,8 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
             WorkingDirectory: work.Path,
             ExpectedCodexVersion: expectedVersion,
             Timeout: TimeSpan.FromMinutes(8),
-            ModelReasoningEffort: "low",
+            ModelReasoningEffort: reasoningEffort,
+            ModelReasoningSummary: reasoningEffort == "xhigh" ? "detailed" : null,
             StreamMaxRetries: 1,
             RequestMaxRetries: 0,
             EnableMultiAgent: true));
@@ -138,6 +151,19 @@ public sealed class CodexCollaborationBehaviorTests(ITestOutputHelper output)
             DispatchThreadId: result.ThreadId), result.Stdout, result.Stderr, stamp, out _, out _);
         output.WriteLine($"[manifest] {manifestPath}");
         output.WriteLine($"[challenge] {evidenceDir}");
+        if (binaryDirectory is not null)
+        {
+            var binary = Path.Combine(Path.GetFullPath(binaryDirectory), "copilot-bridge.exe");
+            var evidence = new JsonObject
+            {
+                ["path"] = binary,
+                ["sha256"] = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(binary))),
+                ["reasoningEffort"] = reasoningEffort,
+                ["plaintextOverride"] = plaintextOverride,
+            };
+            File.WriteAllText(Path.Combine(evidenceDir, "binary.json"), evidence.ToJsonString());
+            output.WriteLine($"[binary] {evidence.ToJsonString()}");
+        }
         output.WriteLine($"[dispatch] {result.DispatchLogPath} [{result.StartedUnixSeconds},{result.EndedUnixSeconds}] thread={result.ThreadId}");
         output.WriteLine("[verdict] Require actual child tool/output rounds, plaintext NEW_TASK/message/follow-up delivery, exact independently checked files, and zero client dispatch/router fatals.");
         if (mixedInventory) Assert.True(ingress!.ChangedInventories > 0, "Mixed-schema ingress seam did not run.");

@@ -969,8 +969,10 @@ observation of that revocation and was not the GitHub token lifetime. See
 
 ### 4.11 Native Codex plaintext collaboration and failure diagnostics
 
-`Codex:PlaintextCollaboration:Enabled` is an explicit, disabled-by-default native
-Codex policy for Copilot Responses. The request-scoped strategy projects recognized
+`Codex:PlaintextCollaboration:Enabled` is an enabled-by-default native Codex policy
+for Copilot Responses. Runtime options and packaged configuration both enable it;
+omitted settings retain that default, while an explicit false disables it.
+The request-scoped strategy projects recognized
 encrypted `collaboration` message-tool inventories to the ordinary reserved
 `bridge_plaintext_collaboration` namespace after T2, removing only the encrypted
 string-message annotation on `spawn_agent`, `send_message`, and `followup_task`.
