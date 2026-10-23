@@ -143,6 +143,17 @@ A bridge-side 200 alone is **INCONCLUSIVE**, never PASS.
    ```
    Target one case with an extra `FullyQualifiedName~` filter (e.g.
    `~CodexBehaviorTests`) while iterating.
+   For a native distribution/default-setting check, set
+   `COPILOT_BRIDGE_TEST_NATIVE_BINARY_DIRECTORY` to an already-published directory
+   containing the bridge executable, updater, and appsettings. The
+   `Codex_AstraDefaultPlaintextCollaboration_Xhigh_ExecutesChildToolsAndFollowup_ForVerdict`
+   case launches that executable through the same isolated `ServeProcess` harness,
+   leaves the collaboration option unforced, and records its path/SHA-256 in
+   `binary.json`. It must prove the actual default path at xhigh effort, including
+   projected upstream schemas, complete child tasks, matching tool outputs and
+   the client's own dispatch log. A source/JIT run must not be described as a
+   verification of a downloaded release binary. Installed bridges remain untouched.
+
 3. **Render the verdict — for THIS run's manifests only.** The
    `tests/behavior-runs/manifests/` dir is **append-only**, so it accumulates every past
    run; do NOT scan all of it or you'll report a stale failure (or an old model/scenario)

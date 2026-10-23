@@ -20,7 +20,7 @@ using Xunit;
 namespace CopilotBridge.UnitTests;
 
 /// <summary>
-/// Contract: an explicitly enabled native stateless request must obtain complete
+/// Contract: a default-enabled native stateless request must obtain complete
 /// plaintext tasks and select Codex's plaintext dispatcher, while every unrelated
 /// field and historical encrypted task remains unchanged. No assertions depend on
 /// how the adapter stores or traverses its request-local data.
@@ -55,13 +55,38 @@ public sealed class CodexPlaintextCollaborationTests
     private static byte[] Bytes(JsonNode body) => Encoding.UTF8.GetBytes(body.ToJsonString());
 
     [Fact]
-    public void DefaultIsOffAndExplicitConfigurationBinds()
+    public void RuntimeDefaultEnablesPlaintextCollaboration()
     {
-        Assert.False(new CodexPlaintextCollaborationOptions().Enabled);
-        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        {
-            ["Codex:PlaintextCollaboration:Enabled"] = "true",
-        }).Build();
+        Assert.True(new CodexPlaintextCollaborationOptions().Enabled);
+    }
+
+    [Theory]
+    [InlineData(false, null, true)]
+    [InlineData(true, null, true)]
+    [InlineData(true, "true", true)]
+    [InlineData(true, "false", false)]
+    public void OmittedConfigurationEnablesAndExplicitFalseDisables(bool sectionPresent, string? value, bool expected)
+    {
+        var settings = new Dictionary<string, string?>();
+        if (sectionPresent) settings["Codex:PlaintextCollaboration:_comment"] = "existing section";
+        if (value is not null) settings["Codex:PlaintextCollaboration:Enabled"] = value;
+        var config = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+        var services = new ServiceCollection();
+        services.Configure<CodexPlaintextCollaborationOptions>(config.GetSection("Codex:PlaintextCollaboration"));
+        using var provider = services.BuildServiceProvider();
+        Assert.Equal(expected, provider.GetRequiredService<IOptions<CodexPlaintextCollaborationOptions>>().Value.Enabled);
+    }
+
+    [Fact]
+    public void PackagedConfigurationEnablesPlaintextCollaboration()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "CopilotBridge.slnx")))
+            directory = directory.Parent;
+        Assert.NotNull(directory);
+        var config = new ConfigurationBuilder().AddJsonFile(Path.Combine(directory.FullName,
+            "src", "CopilotBridge.Cli", "appsettings.json"), optional: false).Build();
+        Assert.True(config.GetValue<bool>("Codex:PlaintextCollaboration:Enabled"));
         var services = new ServiceCollection();
         services.Configure<CodexPlaintextCollaborationOptions>(config.GetSection("Codex:PlaintextCollaboration"));
         using var provider = services.BuildServiceProvider();
@@ -398,7 +423,9 @@ public sealed class CodexPlaintextCollaborationTests
     [InlineData(false, "/codex/responses", false)]
     [InlineData(true, "/cc/v1/messages", false)]
     [InlineData(true, "/codex/responses", true)]
-    public async Task StrategyAppliesOnlyToExplicitlyEnabledNativeRequests(bool enabled, string path, bool projected)
+    [InlineData(null, "/codex/responses", true)]
+    [InlineData(null, "/cc/v1/messages", false)]
+    public async Task StrategyAppliesToDefaultOrExplicitlyEnabledNativeRequests(bool? enabled, string path, bool projected)
     {
         var body = Request();
         body["stream"] = false;
@@ -415,7 +442,8 @@ public sealed class CodexPlaintextCollaborationTests
         var strategy = new CopilotResponsesStrategy(client, new CodexModelProfileCatalog(), context,
             TestAudit.Create(false), Options.Create(new UpstreamTimeoutOptions()),
             NullLogger<CopilotResponsesStrategy>.Instance,
-            collaborationOptions: Options.Create(new CodexPlaintextCollaborationOptions { Enabled = enabled }));
+            collaborationOptions: enabled is { } selected
+                ? Options.Create(new CodexPlaintextCollaborationOptions { Enabled = selected }) : null);
         await strategy.ForwardAsync();
         var sent = JsonNode.Parse(client.Sent!)!;
         Assert.Equal(projected ? "bridge_plaintext_collaboration" : "collaboration", sent["tools"]![0]!["name"]!.GetValue<string>());

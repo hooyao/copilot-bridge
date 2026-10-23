@@ -71,7 +71,10 @@ internal sealed record ServeInvocation(
     string? WorkingDirectory = null,
     bool SimulateUpdaterTargetActivation = false,
     bool UseCustomOAuthApp = false,
-    bool PlaintextCollaboration = false);
+    // Null leaves the packaged configuration unforced; false is an actual override.
+    bool? PlaintextCollaboration = null,
+    // Optional publish/release directory, copied into the same isolated subprocess.
+    string? BridgeBinaryDirectory = null);
 
 internal enum CredentialStagingMode
 {
@@ -261,7 +264,8 @@ internal static class ServeProcess
     /// </summary>
     public static async Task<ServeHandle> StartAsync(ServeInvocation inv, CancellationToken ct = default)
     {
-        var buildOutputDir = LocateBuildOutputDir();
+        var buildOutputDir = inv.BridgeBinaryDirectory is { } selectedDirectory
+            ? Path.GetFullPath(selectedDirectory) : LocateBuildOutputDir();
         var exe = Path.Combine(buildOutputDir, "copilot-bridge.exe");
         if (!File.Exists(exe))
             throw new FileNotFoundException(
@@ -551,7 +555,7 @@ internal static class ServeProcess
         string? codexCatalogCacheDirectory,
         int? liveOverlayFailureCooldownSeconds,
         bool useCustomOAuthApp,
-        bool plaintextCollaboration)
+        bool? plaintextCollaboration)
     {
         var root = JsonNode.Parse(File.ReadAllText(path))?.AsObject()
             ?? throw new ServeStartupException($"appsettings.json at {path} is not a JSON object.");
@@ -563,11 +567,11 @@ internal static class ServeProcess
             ?? throw new ServeStartupException("appsettings.json has no Tracing section to enable.");
         tracing["Enabled"] = true;
         tracing["Directory"] = traceDir;
-        if (plaintextCollaboration)
+        if (plaintextCollaboration is { } plaintextEnabled)
         {
             var collaboration = root["Codex"]?["PlaintextCollaboration"]?.AsObject()
                 ?? throw new ServeStartupException("appsettings.json has no Codex.PlaintextCollaboration section.");
-            collaboration["Enabled"] = true;
+            collaboration["Enabled"] = plaintextEnabled;
         }
 
         if (useCustomOAuthApp)
