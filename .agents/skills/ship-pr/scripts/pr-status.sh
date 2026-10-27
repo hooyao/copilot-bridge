@@ -118,7 +118,7 @@ fi
 BODY_STATUS="$(echo "$REVIEWS_JSON" | jq --arg head "$HEAD_SHA" '
   # Recognize only the observed evidence-only overview, with no extra body text.
   # A clean headline never cancels a positive hidden count or an unknown concern.
-  def evidence_note:
+  def protocol_evidence_note:
     (capture("^(?<scope>.+) (warrants?|needs?|requires?|merits?|calls? for) (?<request>.+)\\.$") // {}) as $note
     | ($note.scope // "") as $scope
     | ($note.request // "") as $request
@@ -130,6 +130,11 @@ BODY_STATUS="$(echo "$REVIEWS_JSON" | jq --arg head "$HEAD_SHA" '
       and ($request | contains("client-owned execution evidence"))
       and ($request | gsub("[,.] *"; " ") | gsub("^\\s+|\\s+$"; "") | split(" ")
         | all(.[]; IN("final", "human", "confirmation", "review", "assessment", "verification", "validation", "including", "inspection", "and", "of", "the", "reported", "documented", "client-owned", "execution", "evidence", "which", "was", "not", "independently", "verified", "inspected", "here")));
+  # A second observed reminder refers to the committed verification report.
+  # Match its complete sentence, never a generic native-client/human-review prefix.
+  def evidence_note:
+    . == "Native-client compatibility is supported by a detailed verification report, but the locally retained execution evidence still needs human confirmation."
+    or protocol_evidence_note;
   def evidence_only:
     (gsub("\r"; "") | split("\n")
       | map(gsub("^\\s+|\\s+$"; "") | select(length > 0)

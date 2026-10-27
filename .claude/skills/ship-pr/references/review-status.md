@@ -21,6 +21,13 @@ client-owned execution evidence. Its vocabulary is limited to that verification 
 including the observed inspection wording; an unknown concern inside the same
 sentence or a generic human-review request remains blocking.
 
+One additional exact observed sentence is recognized: "Native-client
+compatibility is supported by a detailed verification report, but the locally
+retained execution evidence still needs human confirmation." It is an evidence
+inspection reminder only when the rest of the overview has the same strict
+three-line no-open-issues structure. Changed failure wording, extra instructions,
+missing clean headlines, hidden issue counts, and inline threads still block.
+
 The agent/operator must still inspect the saved real-client manifest, matching
 tool/output rounds, and client-owned dispatch log using `real-client-verify`.
 Missing evidence remains unverified and blocks shipment. The status script cannot

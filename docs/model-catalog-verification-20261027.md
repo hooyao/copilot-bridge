@@ -5,8 +5,8 @@ confirmation of the reported live checks. This is an execution-evidence verdict,
 not an inference from bridge HTTP status or the xUnit actuator's exit code.
 
 The fresh runs below executed the product source at
-`1c73dcf309d630aa3267c20a14fcea149bc27cbe` on 2026-10-27 UTC. Subsequent changes
-in this verification commit only document the evidence.
+`1c73dcf309d630aa3267c20a14fcea149bc27cbe` on 2026-10-27 UTC. Later verification
+and review-workflow changes do not alter the product runtime exercised here.
 
 - Client: real Codex app-server `0.164.0-alpha.11.1`, command-backed provider auth.
 - Client executable SHA-256:
@@ -59,6 +59,13 @@ checks passed, and the same checks were repeated against these fresh captures.
 Eight mutation checks previously detected altered accepted efforts, fallback
 policy, multimodal support, minimal/search behavior, picker merge, and Ultra
 filtering; restored product values passed the complete offline suite again.
+
+The review-status helper separately passed 25 offline contracts. Its exact
+verification-report reminder is an evidence-inspection signal, not a code finding
+or an automatic evidence waiver. Inline findings, hidden counts, unknown failure
+wording, extra instructions, and missing clean headlines remain blocking. A
+deliberately overbroad native-client-prefix mutant failed the unknown-failure
+case, and the repository's four mirror/compatibility checks passed.
 
 Administrator-disabled Claude models were not probed. The client runs do not
 extend the contract for Codex-to-Grok beyond faithful passthrough or claim a
