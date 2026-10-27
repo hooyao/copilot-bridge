@@ -12,14 +12,29 @@ overview comment and review-effort footer are optional metadata. No additional
 body text is accepted by this exception.
 
 The scope may list the known dispatch, terminal-handling, or shipping/review-gate
-areas; the bounded evidence-review request is the invariant rather than one exact
-word order. Unrecognized scope concerns still block, as do extra instructions or
+areas, or the observed native-client compatibility/revised shipping-status
+classification scope. The native-client scope can name locally retained
+execution evidence; the client context remains explicit. Scope and request
+vocabularies are bounded rather than accepting a generic prefix. Unrecognized
+scope concerns still block, as do extra instructions or
 additional paragraphs.
+
+The observed request-first form (`Final human review should confirm ...`) also
+requires an explicit reference to privately retained client-execution evidence.
+Its evidence/classification vocabulary is bounded in the same way: adding a
+failure concern or omitting the client-execution evidence makes it a finding.
 
 The request must explicitly name human review, assessment, or verification and
 client-owned execution evidence. Its vocabulary is limited to that verification reminder,
 including the observed inspection wording; an unknown concern inside the same
 sentence or a generic human-review request remains blocking.
+
+One additional exact observed sentence is recognized: "Native-client
+compatibility is supported by a detailed verification report, but the locally
+retained execution evidence still needs human confirmation." It is an evidence
+inspection reminder only when the rest of the overview has the same strict
+three-line no-open-issues structure. Changed failure wording, extra instructions,
+missing clean headlines, hidden issue counts, and inline threads still block.
 
 The agent/operator must still inspect the saved real-client manifest, matching
 tool/output rounds, and client-owned dispatch log using `real-client-verify`.

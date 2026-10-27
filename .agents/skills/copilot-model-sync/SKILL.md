@@ -1,8 +1,8 @@
 ---
 name: copilot-model-sync
 description: >-
-  Reconcile the bridge's model catalog with GitHub Copilot's live model list —
-  add support for a new model, or remove support for a model Copilot retired.
+  Reconcile the bridge's request profiles and Codex /codex/models picker
+  metadata with GitHub Copilot's live models — add a model or remove a retired one.
   Use this whenever the user wants to add/support a new model (e.g. "add Sonnet
   5", "support gpt-5.6", "Copilot shipped opus-5"), remove/drop a model ("opus-4.6-1m
   is gone from Copilot, delete it"), reconcile/sync/align the catalog with
@@ -14,7 +14,7 @@ compatibility: >-
   ability to run the Playground integration probes (Windows + DPAPI, live Copilot).
 metadata:
   author: cc-copilot-bridge
-  version: "1.0"
+  version: "1.1"
 ---
 
 # Copilot model sync
@@ -24,6 +24,22 @@ GitHub Copilot actually serves on this account. Two operations:
 
 - **Add** a model the bridge doesn't know yet (new profile from a live probe).
 - **Remove** a model Copilot retired (prune its profile + every reference).
+
+Choose the client/model contract before probing. Codex is a client and the bridge
+forwards to Copilot; a backend protocol or catalog class name does not define a
+native client/model pairing. Native Codex → GPT requires full client compatibility
+and real tool execution. Codex → Grok requires passthrough fidelity only: preserve
+the request, response, tool fields, and upstream errors. Do not strip rejected
+Codex fields or emulate Codex behavior to force that pairing to work. A faithful
+upstream rejection does not fail the passthrough contract. Grok coding-agent
+compatibility is not currently planned. Passthrough models may be routed or have
+backend facts recorded without a native-client compatibility promise.
+
+For every candidate proposed for the Codex picker, report inference and picker support
+separately. Updating `/codex/models` metadata is part of adding picker support,
+with its own official-resource, projection, and real-client checks (steps 5a–7).
+Verified explicit-id inference without an official resource is a limited outcome;
+do not describe it as complete picker support.
 
 ## The one rule everything follows from
 
@@ -51,6 +67,10 @@ a code comment.
 
 ## Step 0 — Snapshot the live set
 
+Honor the user's scope before probing. If a family is administrator-disabled or
+explicitly excluded, leave its profiles and metadata unchanged and skip its live
+tests. Account policy or entitlement denial is not proof of global retirement.
+
 Run the discovery command and read what Copilot actually exposes:
 
 ```bash
@@ -59,14 +79,18 @@ dotnet run --project src/CopilotBridge.Cli -- debug list-models --all
 
 - `claude-*` rows with `/v1/messages` in `endpoints=[…]` → Anthropic catalog
   (`ModelProfileCatalog`).
-- `gpt-*` / `mai-code-*` rows with `/responses` → Codex catalog
+- `gpt-*` / `mai-code-*` rows with `/responses` → Responses backend catalog
   (`CodexModelProfileCatalog` + the `ResponsesModelIds` allowlist in
   `CopilotModelRegistry`).
+- Other families advertising `/responses` can be passthrough routing candidates.
+  Establish their backend/transport facts without requiring them to understand
+  Codex-specific tools or adding them to a native Codex execution matrix.
 - Also capture the **integrator allowlist** — when any model 400s, Copilot's
   error body lists the currently-available models for `vscode-chat`. That list is
   a second source of truth and often more current than `/models`.
 
-Diff that live set against the catalog's `KnownIds`. Every id that differs is a
+Filter to the requested native-compatibility or passthrough scope, then diff against that catalog's
+`KnownIds`. Every applicable id that differs is a
 candidate — but a candidate for **probing**, not for editing yet.
 
 ## Adding a model
@@ -78,11 +102,18 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    client id → the canonical catalog id (usually identity for dotted ids; add a
    `Normalize` test if a date suffix or digit-pair merge is involved). For a
    Claude model, consult the `claude-api` skill for the authoritative id string.
-2. **Probe the wire contract.** Add the new id to `ModelProfileProbe.AllModels`
-   (drives the thinking × effort matrix) plus targeted probes mirroring the
-   nearest known model: combined effort+adaptive-thinking (the shape Claude Code
+2. **Probe the wire contract for the actual backend.** For Anthropic, add the
+   new id to `ModelProfileProbe.AllModels` (thinking × effort) and probes mirroring
+   the nearest known model: combined effort+adaptive-thinking (the shape Claude Code
    really sends), mid-conv-`role:"system"` placement matrix, and a >200k-token
-   1M-context probe. Run them live:
+   1M-context probe. For Responses backend facts, use `ResponsesProbe`: exact-id liveness,
+   the complete effort vocabulary, field/tool acceptance, and the two-turn
+   structured image function-output probe. Probe minimal plus web search and
+   its proposed replacement effort whenever minimal is accepted alone. Add only
+   reviewed working ids to `ResponsesProbe.AllModels` and the asserting snapshot.
+   For passthrough-only models, those facts describe the backend; they do not
+   authorize coercing Codex-specific fields or require a Codex task to complete.
+   Run the relevant probes live:
    ```bash
    dotnet test tests/CopilotBridge.Playground --filter "FullyQualifiedName~<YourProbe>" --logger "console;verbosity=detailed"
    ```
@@ -122,9 +153,6 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    // that sibling — and rewriting model here would change a second variable,
    // which is exactly what makes a model-specific rejection look "confirmed" on
    // the wrong model. Assert, don't coerce.
-   var capturedModel = captured["body"]!["model"]?.GetValue<string>()
-       ?? throw new InvalidOperationException("capture has no body.model");
-   Assert.Equal(modelUnderTest, capturedModel);   // pick a different capture if this fails
 
    // BridgeIoSink writes a parseable body as a NESTED OBJECT and only falls back
    // to a string when parsing failed, so handle both shapes.
@@ -132,6 +160,9 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    var body = raw is JsonValue v
        ? JsonNode.Parse(v.GetValue<string>())!.AsObject()
        : raw.DeepClone().AsObject();
+   var capturedModel = body["model"]?.GetValue<string>()
+       ?? throw new InvalidOperationException("capture has no body.model");
+   Assert.Equal(modelUnderTest, capturedModel);   // pick a different capture if this fails
 
    // Leave `stream` exactly as captured. Streaming is one of the things that
    // could plausibly change the answer, so flipping it off would silently drop a
@@ -186,7 +217,7 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    **A new Codex id needs routing before it can produce a capture at all.**
    Pointing a behavior case at the id is not enough: until it is in
    `ResponsesModelIds`, `CopilotModelRegistry` sends it to the unimplemented
-   chat-completions branch (`CopilotModelRegistry.cs:51-64`), so no `/responses`
+   chat-completions/unknown-model branch, so no `/responses`
    capture is written — and if no catalog entry fuzzy-matches, `ModelRouterStage`
    fails the request outright before any upstream call. So for a Codex candidate
    the order is: allowlist the id (+ a provisional `CodexModelProfile` if nothing
@@ -194,6 +225,11 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    → only then finalize the profile in step 4. The provisional entry is scaffolding
    to obtain evidence, not a probed fact; it must be replaced by probed values
    before you ship.
+
+   A rejection must identify the axis being guarded. If a different constraint
+   masks it (for example search rejects minimal before model effort validation),
+   establish an accepted captured baseline without that confounder, then change
+   only the tested axis. An unrelated 400 does not confirm the intended rule.
 4. **Write the `ModelProfile`** in `ModelProfileCatalog.BuildDefault()` (or a
    `CodexModelProfile` in `CodexModelProfileCatalog`) with every field grounded
    in a probe result, and a code comment citing the probe method name for each
@@ -207,13 +243,16 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    > user's explicit `thinking:disabled` back to adaptive (re-enabling and billing
    > reasoning they turned off) and makes any disabled-thinking constraint
    > unreachable. That is exactly opus-5's case.
-5. **Routing check.** Vendor dispatch is prefix-only (`claude-*` → `/v1/messages`,
-   gpt/mai-code in `ResponsesModelIds` → `/responses`), so a claude id needs no
-   registry change. A new Codex id must be **added to `ResponsesModelIds`** in
-   `CopilotModelRegistry` or it falls through to the OpenAI-chat branch. Add a
+5. **Routing check.** Claude dispatch is prefix-based (`claude-*` → `/v1/messages`);
+   Responses dispatch uses explicit `ResponsesModelIds` membership. A Claude id
+   needs no registry change. A new Responses route must be **added to
+   `ResponsesModelIds`** in `CopilotModelRegistry` or it reaches a legacy/unknown
+   route. Add a
    `Routing.Locations` entry in `appsettings.json` only if the model needs a
    deliberate remap (e.g. a context-window alias like `gpt-5.5-1m`).
-5a. **Codex picker catalog — MANDATORY for `gpt-*` / `mai-code-*`.** Routing and a
+   A passthrough-only route must preserve its wire contract and upstream errors;
+   registration is not permission to apply native Codex compatibility rewrites.
+5a. **Codex picker catalog — MANDATORY for native Codex → GPT support.** Routing and a
    live Copilot `/responses` success prove inference only; they do not make the id
    selectable in Codex. Inspect the exact installed Codex binary's bundled catalog
    (`codex debug models --bundled`), its cached/remote catalog, and the bridge's
@@ -237,21 +276,35 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    baseline records while keeping the pinned source resource byte-identical.
    Do not leave an unsupported picker choice that silently coerces to another
    effort on inference.
+   For another model family, perform these picker checks only when picker support
+   is explicitly part of the task. Passthrough routing does not require inventing
+   Codex-owned resources for Grok, MAI, or another vendor.
+   Review the full metadata projection too: `context_window`, `max_context_window`,
+   `auto_compact_token_limit`, `default_reasoning_level`, visibility, availability,
+   and minimum client version. Client-owned fields stay official; backend-owned
+   capacity updates require positive coherent live total/prompt/output limits.
+   If prompt plus output exceeds total, retain the reviewed official limits and
+   compaction behavior (including null) and report that limitation. Do not repair
+   inconsistent discovery metadata by guessing a capacity or changing pinned bytes.
 6. **Tests (from the contract, not the code).** Add from-contract unit tests
    asserting the profile's behavior (see `ProfileAdjusterTests`,
    `CodexRoutingAndCatalogTests`) and **mutation-check** each new assertion:
    break the product value, confirm the test goes red. A new test that passes on
    the first run guards nothing.
 
-   For Codex ids, test `/codex/models` projection against a client baseline
-   predating the id: exactly one visible, supported row with complete official
-   instructions, reviewed limits, and **only** live-supported effort choices.
+   When a complete official resource exists, test `/codex/models` projection
+   against a client baseline predating the id: exactly one visible, supported row
+   with complete official instructions, reviewed limits, and **only** live-supported
+   effort choices.
    Also test a newer baseline containing that
    slug: exactly one row, with the baseline's complete metadata taking precedence.
    Assert the exact offered effort set for both cases, including the absence of
    every probed-rejected level; the source capture itself must stay unchanged.
    Mutation-check the visibility/availability assertion by removing the
    supplement or disabling its merge and watching the test fail.
+   Cover inconsistent live limits retaining official context/compaction values.
+   Without a complete official resource, verify no picker entry is synthesized
+   and document explicit-id inference as a separate outcome.
 
    **A rewrite rule needs a BACKEND-fact guard too, not just a behavior test.** A
    unit test pinning "the bridge clamps" stays green forever if Copilot drops the
@@ -264,23 +317,30 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
 
    | Sweep | B2 snapshot | B3 catalog-vs-live |
    | --- | --- | --- |
-   | `AnthropicContractSweep` | effort (accepted+rejected), thinking (accepted+rejected), mid-conv-system, effort×thinking-disabled | same four; `AcceptedEfforts` and `EffortsRejectedWhenThinkingDisabled` are exact-set both ways, `Thinking` is catalog→live only |
-   | `ResponsesContractSweep` | effort (accepted+rejected), `fields_rejected`, `tools_rejected`, plus a backend-wide `sse_event_types` | **none** — the Codex catalog/coercions post-date it |
+   | `AnthropicContractSweep` | effort, thinking, mid-conv-system, tool choice, effort×thinking-disabled | exact effort/thinking/cross-field sets, mid-conv-system, forced tool choice |
+   | `ResponsesContractSweep` | effort, rejected fields/tools, structured image function output, minimal/low with web search when minimal is accepted, backend-wide SSE event types | exact accepted efforts, uniform store/service-tier/image-generation rejections, custom-tool rejection, multimodal output, minimal+search rejection and low+search replacement acceptance |
 
-   Read that B2 column before adding a probe: if the axis is already snapshotted,
-   the work is adding the **B3 comparison**, not re-probing the field.
+   Inspect the current sweep and `AssertCatalogMatchesLive` before extending it.
+   An existing snapshot axis may already have B3 coverage; reuse it and run it
+   for the candidate. A targeted subset can share the full sweep's observation
+   and B3 logic when unrelated or excluded models prevent an all-model run.
+   Comparing committed facts offline is useful for mutation checks but does not
+   replace the candidate's live B2/B3 run.
 
-   Not covered by any B3: **`StripBetas`**, **`MaxThinkingBudget`**, every Codex
-   (`CodexModelProfile`) field, and the live→catalog direction of `Thinking`. If
-   your rewrite rule lands on one of those, **extend the sweep as part of this
-   step** — don't assume writing the profile field gave you a guard. Adding the
+   `StripBetas` and `MaxThinkingBudget` still lack B3 coverage. A Codex
+   `DefaultEffort` is a deliberate bridge fallback policy: unit-test that policy
+   and live-confirm acceptance of the replacement, without pretending the backend
+   specifies that preference. Extend the sweep for any genuinely new rewrite
+   fact missing from the table; merely writing a profile gives no guard. Adding the
    axis is the same shape as the 2026-07 `effort_rejected_when_thinking_disabled`
    addition: probe it per model in the sweep loop, add it to the facts object, and
    assert it in `AssertCatalogMatchesLive`. Mutation-check the new assertion the
    same way (break the catalog value, watch B3 redden).
-7. **Real-client picker and execution — MANDATORY for a Codex model.** Use the
+7. **Real-client picker and execution — MANDATORY for native or explicitly
+   promised client compatibility.** Use the
    `real-client-verify` skill and a `Kind=ClientBehavior` app-server case through
-   a bridge subprocess on a non-8765 port. With command-backed provider auth,
+   a bridge subprocess on a non-8765 port. When step 5a has an official
+   resource, use command-backed provider auth,
    call the real client's `model/list` and require one **visible** exact-id row;
    check that its offered reasoning efforts exclude every rejected backend level;
    then select that id and complete a multi-step, multi-tool task. Read the
@@ -289,8 +349,20 @@ Full worked example (Sonnet 5): `references/add-model-walkthrough.md`. The loop:
    model. A bridge 200, exit code, canary, or `CodexLoadTaskSmoke` alone is not
    acceptance: none proves the picker offered the id or the client's dispatcher
    executed the tools. If the installed client's catalog lacks the id, first fix
-   step 5a; do not use a local alias as picker evidence. If it 400s on
-   an unmodeled inbound shape (`Polymorphism_UnrecognizedTypeDiscriminator`, a new
+   step 5a; do not use a local alias as picker evidence. If no complete official
+   resource exists, require the same exact-id multi-tool execution and client-log
+   verdict for explicit-id support, and report picker support unavailable.
+   A minimal probe can pass while actual client payloads receive 400/422: do not
+   promote provisional profiles/allowlist entries to supported models in that
+   state. Record this as **backend available, client-path incompatible**, distinct
+   from account denial or retirement, only for an intended, in-scope pairing.
+   Resolve the real payload incompatibility before claiming that client path works.
+   **Passthrough-only pairings use a different verdict:** prove that requests,
+   responses, tool fields, and upstream errors are faithfully forwarded. A Grok
+   rejection of a Codex field is not a bridge defect when forwarded faithfully;
+   do not require a Grok-driven Codex tool task or mutate fields to get 200.
+   Keep this transport verdict separate from a native client-execution PASS.
+   If it 400s on an unmodeled inbound shape (`Polymorphism_UnrecognizedTypeDiscriminator`, a new
    `input[]`/tool `type`), that shape is a NEW change: probe whether Copilot
    accepts it natively (`ResponsesProbe`), then model + carry it — the
    `add-codex-additional-tools-item` change under `openspec/changes/` (or
@@ -314,10 +386,12 @@ Full worked example (opus-4.6-1m, the -internal/-high/-xhigh variants):
 1. **Prove it's retired — don't infer from the list.** For each id missing from
    the live set, add a liveness probe (`RetiredCandidate_LivenessProbe` in
    `ModelProfileProbe.cs`, `MaiCode_LivenessProbe` in `ResponsesProbe.cs`) that
-   sends a minimal request and logs the status. Run it. **A `400` "not available
-   for integrator" / "model_not_supported" is the delete license; a `200` means
-   keep it** (unadvertised-but-working — exactly the trap the `-1m-internal` ids
-   were).
+   sends a minimal request and logs the status. Run it. A confirmed model/integrator
+   retirement (`400` "not available for integrator" / "model_not_supported")
+   permits removal only after ruling out authentication, entitlement, or policy
+   denial. **A `200` means keep it** (unadvertised-but-working — exactly the trap
+   the `-1m-internal` ids were). Record account-disabled models as excluded or
+   unavailable on this account; do not prune their existing support as retired.
 2. **Prune every reference.** Remove the profile from the catalog AND the id from
    `ModelProfileProbe.AllModels` / `ResponsesModelIds`. Grep the repo for the id
    and fix each real reference (skip `bin/`, `obj/`, `request-traces/`, logs):
@@ -345,22 +419,28 @@ Full worked example (opus-4.6-1m, the -internal/-high/-xhigh variants):
   `[Trait("Category","Integration")]`).
 - CI-safe unit suite (no network):
   `dotnet test tests/CopilotBridge.UnitTests --filter "Category!=Integration"`.
-- End-to-end acceptance: the real-client-verify workflow checks a real client,
-  its selectable catalog, selected tool execution, and client-owned dispatch log.
+- Native client-compatibility acceptance: the real-client-verify workflow checks a real client,
+  its catalog outcome, selected tool execution, and client-owned dispatch log.
   - **Claude (`claude-*`)** → `claude.exe` (`HeadlessSmokeTests`,
     `CcOnGpt5*HeadlessTests`).
-  - **Codex (`gpt-*` / `mai-code-*`)** → app-server `model/list` plus exact-id
+  - **Native Codex → GPT, or another explicitly promised pairing** → app-server `model/list` plus exact-id
     multi-tool behavior case and client-owned SQLite verdict (step 7).
     `CodexLoadTaskSmokeTests` remains a complementary wire assertion, not the
-    picker or dispatch verdict. The CLI does not cover the desktop app's
+    picker or dispatch verdict. Missing official resources mean explicit-id-only
+    verification, never a fabricated picker entry. The CLI does not cover the
+    desktop app's
     `additional_tools` preamble (the `codex exec` CLI doesn't emit it) — that shape
     is checked by the HTTP-edge replay `CodexAdditionalToolsHeadlessTests`.
+- Passthrough-only pairings such as Codex → Grok use request/response/error
+  wire-fidelity checks; downstream agent task completion is not their verdict.
 
 ## Guardrails
 
 - **Probe before you edit.** No catalog change without a cited probe result.
 - **Never delete on `/models` absence alone** — require a live 400.
 - **Match the nearest model by CONTRACT, not by name** — probe every axis.
+- **Separate passthrough from native client compatibility.** Codex → Grok needs
+  faithful transport, not Codex emulation or a Grok coding-agent integration.
 - **Re-confirm every REWRITE-causing finding on real captured client bytes**
   (step 3). A minimal synthetic probe proves the shape works *in isolation*; it
   does not prove the rule survives 3 system blocks, 8 betas and streaming. Only
@@ -371,13 +451,14 @@ Full worked example (opus-4.6-1m, the -internal/-high/-xhigh variants):
   A unit test pinning "the bridge clamps" stays green forever if Copilot drops the
   constraint. Sweep the finding into the contract sweep (B2 catches the backend
   adding it elsewhere, B3 catches it being dropped) — but check the coverage table
-  in step 6 first: `StripBetas`, `MaxThinkingBudget` and every Codex field have
-  **no** B3 today, so landing a rewrite there means extending the sweep, not just
-  writing the profile field.
-- **A Codex model isn't done until real app-server `model/list` visibly offers
-  the exact id and a selected multi-tool task passes the client-owned dispatch
-  verdict.** Routing and live `/responses` alone leave a model absent from the
-  picker. Inbound shapes the `codex exec` CLI
+  in step 6 first and extend only the missing backend-fact guard. `StripBetas`
+  and `MaxThinkingBudget` still need added coverage when used for a new rewrite.
+- **Codex picker support requires real app-server `model/list` to visibly offer
+  the exact id with supported effort choices, plus a selected multi-tool task
+  passing the client-owned dispatch verdict.** Without a complete official
+  resource, report verified explicit-id inference separately and picker support
+  unavailable. Routing and live `/responses` alone establish neither outcome.
+  Inbound shapes the `codex exec` CLI
   doesn't emit (e.g. the desktop `additional_tools` preamble) need a direct
   HTTP-edge replay instead (`CodexAdditionalToolsHeadlessTests`).
 - **Repo files are English** (code, comments, docs, commit messages); chat replies

@@ -1,10 +1,9 @@
 ---
 name: real-client-verify
 description: >-
-  Verify a copilot-bridge change by driving the REAL headless client (codex.exe /
-  claude.exe) through a running bridge and reading the CLIENT'S OWN evidence — the
-  flywheel that turns "did the client actually execute?" into the thing that drives
-  the next fix. Use this WHENEVER you touched bridge code that affects a client
+  Verify native or promised client compatibility using a real headless codex.exe
+  or claude.exe through the bridge and the CLIENT'S OWN execution evidence.
+  Use this WHENEVER you touched bridge code that affects a client
   (tool protocol, Codex /responses T1–T4, Claude /cc, routing, streaming, detectors),
   are about to ship/PR a fix, or say things like "test through real codex/claude",
   "verify this fix end to end", "does the client actually run the tool", "did the
@@ -37,13 +36,24 @@ compatibility: >-
   or the reusable B13 source, because GitHub rotation invalidates the copied token pair.
 metadata:
   author: cc-copilot-bridge
-  version: "1.0"
+  version: "1.1"
 ---
 
 # Real-client verify — the behavior flywheel
 
-The bridge is a translator between a real agent client (Claude Code, Codex CLI) and
-Copilot. **Its correctness is defined by whether the client can parse and execute what
+Apply the execution verdict to native or explicitly promised client/model
+compatibility, including native Codex → GPT. Codex is a client; Copilot is the
+backend, and the bridge forwards between them. A cross-family Codex → Grok
+route has a passthrough-only contract: preserve requests, responses, tool fields,
+and upstream errors. Verify that contract with wire-fidelity evidence rather
+than requiring Grok to understand Codex-specific tools or finish a Codex task.
+A faithfully forwarded upstream rejection is not a bridge compatibility defect.
+Do not add field stripping or Codex emulation to force it to succeed. Grok's own
+coding-agent compatibility is not currently planned. Shared pipeline changes
+still require the real-client gates below on the native paths they affect.
+
+For those compatibility paths, the bridge translates between a real agent client
+(Claude Code, Codex CLI) and Copilot. **Correctness requires the client to parse and execute what
 the bridge sends back — not by whether Copilot accepted what the bridge sent up.** A
 `200` from the bridge means only the *upstream* was happy. This skill closes that gap:
 drive the real client on a task that exercises the code you changed, then render the
@@ -98,7 +108,7 @@ in xUnit is exactly what shipped the three green-but-broken releases.)
 
 ## The two non-negotiable gates
 
-Before you call anything verified, both must hold. If you cannot satisfy one, say so
+Before you call native client compatibility verified, both must hold. If you cannot satisfy one, say so
 and mark the leg **UNVERIFIED** — never dress a bridge 200 up as a pass.
 
 ### Gate 1 — the task must exercise the code path you changed

@@ -33,6 +33,9 @@ public class CodexRoutingAndCatalogTests
         new object[] { "gpt-6-luna" },
         new object[] { "gpt-6-sol" },
         new object[] { "gpt-6.1-sol" },
+        new object[] { "gpt-5.4-nano" },
+        new object[] { "gpt-6.1-terra" },
+        new object[] { "mai-code-2-flash" },
         new object[] { "gpt-5-mini" },
         new object[] { "mai-code-1.1-flash" },
     };
@@ -58,6 +61,7 @@ public class CodexRoutingAndCatalogTests
     [Theory]
     [InlineData("gpt-5-mini", true)]
     [InlineData("mai-code-1.1-flash", true)]
+    [InlineData("mai-code-2-flash", true)]
     [InlineData("gpt-6.1-sol", false)]
     [InlineData("gpt-5.3-codex", false)]
     public void MinimalWithWebSearchFact_IsPerExactModel(string id, bool rejectsCombination)
@@ -136,6 +140,9 @@ public class CodexRoutingAndCatalogTests
     [InlineData("gpt-6-luna",     "none,low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-6-sol",      "none,low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-6.1-sol",    "low,medium,high,xhigh,max", false, true)]
+    [InlineData("gpt-5.4-nano",   "none,low,medium,high,xhigh", false, true)]
+    [InlineData("gpt-6.1-terra",  "none,low,medium,high,xhigh,max", false, true)]
+    [InlineData("mai-code-2-flash", "minimal,none,low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-5-mini",    "minimal,low,medium,high", false, true)]
     [InlineData("mai-code-1.1-flash", "minimal,low,medium,high", false, true)]
     public void Catalog_ProfilesMatchLiveContract(
@@ -176,10 +183,10 @@ public class CodexRoutingAndCatalogTests
     }
 
     [Fact]
-    public void Catalog_HasAllFourteenModels_AndUniformCoercions()
+    public void Catalog_HasAllSeventeenModels_AndUniformCoercions()
     {
         var catalog = new CodexModelProfileCatalog();
-        Assert.Equal(14, catalog.Count);
+        Assert.Equal(17, catalog.Count);
         // The three uniform coercions are catalog-level facts (apply to every model).
         Assert.True(CodexModelProfileCatalog.StripsServiceTier);
         Assert.True(CodexModelProfileCatalog.StripsStoreTrue);

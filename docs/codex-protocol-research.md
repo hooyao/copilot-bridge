@@ -99,6 +99,28 @@ OpenAI-Chat translation" assumption (§4.4).
 > The rejection and replacement-acceptance facts are per model and are not
 > borrowed by a fuzzy-nearest unknown id. These are current facts; the September
 > snapshot and historical picker observations below remain dated research.
+
+> **2026-10-27 additions:** exact live and real Codex tests support
+> `gpt-5.4-nano`, `gpt-6.1-terra`, and `mai-code-2-flash`. Their accepted effort
+> sets are respectively `none/low/medium/high/xhigh`,
+> `none/low/medium/high/xhigh/max`, and
+> `minimal/none/low/medium/high/xhigh/max`; rejected values fall back to `low`.
+> All three accept function/custom/web-search tools, prompt-cache and reasoning
+> fields, and a two-turn structured image function result. The ordinary
+> `store:true`, `service_tier`, and `image_generation` rejections remain.
+> MAI 2 rejects `minimal + web_search` but accepts low with that tool and minimal
+> without it. Real exact-model streaming requests reconfirmed all rewrite axes,
+> including Nano's standalone minimal rejection after removing search as a
+> validation-order confounder. Each model completed three actual client tool
+> round-trips with no router fatals, ERROR rows, or retries. Terra additionally
+> appeared visibly in real Codex `model/list` with precisely
+> low/medium/high/xhigh/max, backed by a pinned complete official resource.
+> Nano/MAI 2 have no complete official Codex resource and stay explicit-id only.
+> `gpt-5.6-luna-utility` returned integrator-unavailable 400. Native Codex → GPT
+> requires full client compatibility. Cross-family Codex → Grok requires faithful
+> passthrough, including upstream errors; rejecting a forwarded Codex-specific
+> field does not imply a bridge compatibility defect. Grok coding-agent
+> compatibility is not currently planned. No Claude calls were made here.
 >
 > | models | total context | max prompt | max output |
 > | --- | ---: | ---: | ---: |

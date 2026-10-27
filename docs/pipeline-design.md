@@ -782,7 +782,7 @@ Codex (three-part query + corroborating complete User-Agent when prerelease)
       │    ├─ fresh/stale validated per-user disk record
       │    └─ exact official openai/codex tag (anonymous HTTPS, TTL + ETag)
       ├─ CodexCatalogOverlayService → independent bounded live Copilot /models facts
-      ├─ CodexSupplementalCatalog   → three digest-pinned reviewed GPT-6 resources
+      ├─ CodexSupplementalCatalog   → four digest-pinned reviewed GPT-6 resources
       └─ CodexCatalogProjector      → exact-slug merge + live overlay + stable ETag
 ```
 
@@ -794,14 +794,16 @@ Ownership is strict:
   exact requesting version's official
   `openai/codex/rust-v{client_version}/codex-rs/models-manager/models.json`.
   Stable and prerelease identities are never shortened or substituted.
-  Three reviewed exceptions are embedded complete from pinned official
+  Four reviewed exceptions are embedded complete from pinned official
   `openai/codex` revisions: `gpt-6-luna` and `gpt-6-sol` from
   `8a3c4ea3b5a7c0e92cf24dae46ec87629a26bb7f` (minimum client `0.155.0`),
   and `gpt-6.1-sol` from `a20fe6335f960a350483d0079db2ec281c68202c`
-  (minimum client `0.153.0`). They fill an absent exact slug in any selected
+  (minimum client `0.153.0`), plus `gpt-6.1-terra` from
+  `126a0ee92ed2c5e73cd8a8f7e37563e8527552d7` (minimum client `0.153.0`).
+  They fill an absent exact slug in any selected
   baseline that has not yet incorporated the reviewed resource. A baseline's
   same-slug record always wins, so an official source can update the client-owned
-  record without a bridge release. The exact GPT-6.1 Sol picker effort list is
+  record without a bridge release. The exact GPT-6.1 Sol/Terra picker effort list is
   then filtered against its probed Copilot profile for either source: Ultra is
   removed while low, medium, high, xhigh, and max remain. This is a
   closed, digest-pinned exception: it does not turn live Copilot model discovery
@@ -1948,6 +1950,15 @@ the bridge's runtime log without needing the client transcript.
 
 ### 7.6 Refreshing model profiles and the Codex client catalog
 
+The compatibility promise belongs to a client/model pairing. Native
+Codex-to-GPT traffic requires full client protocol and tool-execution compatibility.
+Cross-family Codex-to-Grok traffic has a passthrough contract: preserve the
+request, response, tool fields, and upstream errors rather than rewriting them
+to emulate native Codex behavior. A backend rejecting a faithfully forwarded
+Codex-specific field is not a bridge compatibility defect. Routing or recording
+a model's backend facts does not promise native client compatibility or picker
+metadata. Compatibility with a Grok coding agent is not currently planned.
+
 These are two different maintenance loops. Do not use catalog metadata as a
 substitute for live request-shape probes.
 
@@ -1971,6 +1982,25 @@ that `minimal` plus `web_search` is rejected even though minimal alone is
 accepted; the same cross-field rule holds on `gpt-5-mini`. T2 therefore sends
 `low` only for that combination and retains the search tool. The Responses
 snapshot and live sweep guard both affected model ids.
+
+The 2026-10-27 reconciliation brings the Responses catalog to **17 exact
+profiles**, adding `gpt-5.4-nano`, `gpt-6.1-terra`, and `mai-code-2-flash`.
+`ResponsesProbe.October2026_CandidateContracts_Probe` established Nano's
+`none/low/medium/high/xhigh`, Terra's `none/low/medium/high/xhigh/max`, and
+MAI 2's `minimal/none/low/medium/high/xhigh/max` effort sets. Each falls back
+to `low` for rejected efforts. All three accept function/custom/web-search tools
+and structured image function output, and retain the three uniform rejections.
+MAI 2 rejects minimal only when web search is present, so the existing
+combination-specific rule applies to its exact profile too. Real streaming
+Codex captures reconfirm these rewrite boundaries; targeted B2/B3 checks share
+the all-model sweep's observation and comparison logic. Terra's complete
+official supplement adds picker support without inventing client behavior;
+Ultra is filtered for both the supplement and a future same-slug baseline.
+Nano/MAI 2 have explicit-id inference support only until official complete
+Codex resources exist. Listed `gpt-5.6-luna-utility` returns integrator-unavailable
+400. Backend routing and passthrough are distinct from the native Codex-to-GPT
+compatibility promise; endpoint discovery alone establishes neither contract.
+Administrator-disabled Claude models were not probed or changed.
 
 1. Run `tests/CopilotBridge.Playground/CopilotGapProbes.DumpClaudeModelsAndCapabilities`
    to see what Copilot exposes on the current account.

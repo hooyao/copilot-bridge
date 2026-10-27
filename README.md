@@ -217,6 +217,14 @@ account's live model access. Its picker offers low, medium, high, xhigh, and
 max reasoning; Copilot rejects Ultra for this exact id, so the bridge removes
 that choice from projected metadata while preserving the official source record.
 
+The 2026-10-27 reconciliation adds exact Responses support for `gpt-5.4-nano`,
+`gpt-6.1-terra`, and `mai-code-2-flash`. Terra also has a complete official
+Codex catalog supplement, so `/codex/models` offers it to clients whose own
+catalog predates it, with low/medium/high/xhigh/max reasoning (Ultra is rejected
+by Copilot). Nano and MAI 2 can be selected explicitly; no complete official
+Codex resource was found for either, so the bridge does not invent picker
+entries. `gpt-5.6-luna-utility` is unavailable to `vscode-chat`.
+
 **Or do it by hand** — edit `~/.codex/config.toml`, set the default model +
 provider at the top and add the provider block:
 

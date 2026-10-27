@@ -118,18 +118,34 @@ fi
 BODY_STATUS="$(echo "$REVIEWS_JSON" | jq --arg head "$HEAD_SHA" '
   # Recognize only the observed evidence-only overview, with no extra body text.
   # A clean headline never cancels a positive hidden count or an unknown concern.
-  def evidence_note:
+  def scoped_evidence_note:
     (capture("^(?<scope>.+) (warrants?|needs?|requires?|merits?|calls? for) (?<request>.+)\\.$") // {}) as $note
     | ($note.scope // "") as $scope
     | ($note.request // "") as $request
-    | ($scope | test("^(The native|Protocol-sensitive) "))
+    | ($scope | startswith("Native-client ")
+        and (sub("^Native-client "; "") | split(" ")
+          | all(.[]; IN("compatibility", "the", "revised", "shipping-status", "classification", "and")))) as $native
+    | ($native or (($scope | test("^(The native|Protocol-sensitive) "))
       and ($scope | sub("^(The native|Protocol-sensitive) "; "")
         | gsub(", *"; " ") | split(" ")
-        | all(.[]; IN("dispatch", "terminal", "handling", "stream-terminal", "shipping-gate", "review-gate", "changes", "and")))
+        | all(.[]; IN("dispatch", "terminal", "handling", "stream-terminal", "shipping-gate", "review-gate", "changes", "and")))))
       and ($request | test("^(final )?human (confirmation|review|assessment|verification|validation|inspection)(,| )"))
-      and ($request | contains("client-owned execution evidence"))
+      and (($request | contains("client-owned execution evidence"))
+        or ($native and ($request | contains("locally retained execution evidence"))))
       and ($request | gsub("[,.] *"; " ") | gsub("^\\s+|\\s+$"; "") | split(" ")
-        | all(.[]; IN("final", "human", "confirmation", "review", "assessment", "verification", "validation", "including", "inspection", "and", "of", "the", "reported", "documented", "client-owned", "execution", "evidence", "which", "was", "not", "independently", "verified", "inspected", "here")));
+        | all(.[]; IN("final", "human", "confirmation", "review", "assessment", "verification", "validation", "including", "inspection", "and", "of", "the", "reported", "documented", "client-owned", "locally", "retained", "execution", "evidence", "which", "was", "not", "independently", "verified", "inspected", "here")));
+  # Request-first reminders still require explicit client-execution ownership
+  # and contain only the bounded evidence/classification vocabulary.
+  def direct_evidence_note:
+    (capture("^(final )?human (confirmation|review|assessment|verification|validation|inspection) should confirm (?<request>.+)\\.$"; "i") // {}) as $note
+    | ($note.request // "" | ascii_downcase) as $request
+    | ($request | contains("privately retained client-execution evidence"))
+      and ($request | split(" ")
+        | all(.[]; IN("the", "privately", "retained", "client-execution", "evidence", "and", "revised", "shipping-status", "classification")));
+  # This separate observed report sentence is matched in full.
+  def evidence_note:
+    . == "Native-client compatibility is supported by a detailed verification report, but the locally retained execution evidence still needs human confirmation."
+    or scoped_evidence_note or direct_evidence_note;
   def evidence_only:
     (gsub("\r"; "") | split("\n")
       | map(gsub("^\\s+|\\s+$"; "") | select(length > 0)

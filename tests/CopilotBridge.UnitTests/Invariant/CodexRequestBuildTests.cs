@@ -70,6 +70,9 @@ public class CodexRequestBuildTests
     [InlineData("mai-code-1.1-flash", "web_search", "minimal", "low")]
     [InlineData("mai-code-1.1-flash", "function", "minimal", "minimal")]
     [InlineData("mai-code-1.1-flash", "web_search", "high", "high")]
+    [InlineData("mai-code-2-flash", "web_search", "minimal", "low")]
+    [InlineData("mai-code-2-flash", "function", "minimal", "minimal")]
+    [InlineData("mai-code-2-flash", "web_search", "max", "max")]
     [InlineData("gpt-5.3-codex", "web_search", "minimal", "xhigh")]
     public void MinimalWithWebSearch_UsesLowOnlyForRejectedCombination(
         string model, string toolType, string inboundEffort, string expectedEffort)
@@ -166,6 +169,18 @@ public class CodexRequestBuildTests
     [InlineData("gpt-6.1-sol", "ultra", "low")]
     [InlineData("gpt-6.1-sol", "low", "low")]
     [InlineData("gpt-6.1-sol", "max", "max")]
+    [InlineData("gpt-5.4-nano", "minimal", "low")]
+    [InlineData("gpt-5.4-nano", "max", "low")]
+    [InlineData("gpt-5.4-nano", "ultra", "low")]
+    [InlineData("gpt-5.4-nano", "none", "none")]
+    [InlineData("gpt-6.1-terra", "minimal", "low")]
+    [InlineData("gpt-6.1-terra", "ultra", "low")]
+    [InlineData("gpt-6.1-terra", "none", "none")]
+    [InlineData("gpt-6.1-terra", "max", "max")]
+    [InlineData("mai-code-2-flash", "ultra", "low")]
+    [InlineData("mai-code-2-flash", "none", "none")]
+    [InlineData("mai-code-2-flash", "minimal", "minimal")]
+    [InlineData("mai-code-2-flash", "max", "max")]
     // small profile (gpt-5-mini): accepts minimal/low/medium/high; DefaultEffort=high.
     [InlineData("gpt-5-mini", "max", "high")]         // unaccepted → small default high
     [InlineData("gpt-5-mini", "xhigh", "high")]       // unaccepted (small rejects xhigh) → default high
@@ -178,9 +193,9 @@ public class CodexRequestBuildTests
     [InlineData("totally-unknown-model", "max", "max")]     // no profile → 'max' passes through untouched
     // unknown-but-CLOSE Codex id → GetNearest borrows the nearest profile's default.
     // 'gpt-5.6' is closest to the large profiles (accept xhigh, default xhigh);
-    // a close SMALL-family id ('gpt-5-nano' ~ gpt-5-mini) borrows the small default high.
+    // a close SMALL-family id borrows the small default high.
     [InlineData("gpt-5.6", "max", "xhigh")]
-    [InlineData("gpt-5-nano", "max", "high")]
+    [InlineData("gpt-5-mini-preview", "max", "high")]
     // case-insensitivity: the accepted check is OrdinalIgnoreCase, so an accepted
     // value keeps its original case; an unaccepted value is replaced by the profile
     // default (emitted in the default's own case).

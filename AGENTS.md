@@ -309,7 +309,17 @@ transformation lives in `Pipeline/` (`Stages/`, `Strategies/`, `Adapters/`,
   `CodexLoadTaskSmokeTests`, `CodexE2EHeadlessTests`, …) are ApiContract by this rule:
   they drive a client but their verdict is an in-xUnit wire assertion, not the skill's
   log-read — so they're strong-assertion regression tests, not flywheel actuators.
-- **🔴 A FIX IS NOT DONE UNTIL A REAL HEADLESS CLIENT EXECUTED A COMPLEX TASK
+- **Compatibility is defined per client/model pairing.** Native Codex → GPT
+  requires full client protocol and tool-execution compatibility. Cross-family
+  Codex → Grok has a passthrough contract: preserve request/response fields and
+  upstream errors, without adding Codex-specific model emulation or stripping
+  rejected fields to make the pairing work. A faithfully forwarded upstream
+  rejection is not a bridge compatibility defect or evidence of model retirement.
+  Verify that transport with wire-fidelity evidence; Grok coding-agent
+  compatibility is not currently planned. Routing/profile registration does not
+  by itself promise native client behavior or picker support.
+- **🔴 FOR NATIVE OR EXPLICITLY PROMISED CLIENT-COMPATIBILITY FIXES, A FIX IS NOT
+  DONE UNTIL A REAL HEADLESS CLIENT EXECUTED A COMPLEX TASK
   THROUGH IT — THIS STEP IS NEVER OPTIONAL AND NEVER SKIPPABLE.** Unit tests,
   offline round-trips, and "the bridge returned HTTP 200" are necessary but NOT
   sufficient, and treating any of them as proof is forbidden. They missed *four*
