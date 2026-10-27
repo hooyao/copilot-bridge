@@ -60,7 +60,7 @@ Eight mutation checks previously detected altered accepted efforts, fallback
 policy, multimodal support, minimal/search behavior, picker merge, and Ultra
 filtering; restored product values passed the complete offline suite again.
 
-The review-status helper separately passed 25 offline contracts. Its exact
+The review-status helper separately passed 32 offline contracts. Its bounded
 verification-report reminder is an evidence-inspection signal, not a code finding
 or an automatic evidence waiver. Inline findings, hidden counts, unknown failure
 wording, extra instructions, and missing clean headlines remain blocking. A

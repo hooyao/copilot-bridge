@@ -12,8 +12,11 @@ overview comment and review-effort footer are optional metadata. No additional
 body text is accepted by this exception.
 
 The scope may list the known dispatch, terminal-handling, or shipping/review-gate
-areas; the bounded evidence-review request is the invariant rather than one exact
-word order. Unrecognized scope concerns still block, as do extra instructions or
+areas, or the observed native-client compatibility/revised shipping-status
+classification scope. The native-client scope can name locally retained
+execution evidence; the client context remains explicit. Scope and request
+vocabularies are bounded rather than accepting a generic prefix. Unrecognized
+scope concerns still block, as do extra instructions or
 additional paragraphs.
 
 The request must explicitly name human review, assessment, or verification and
