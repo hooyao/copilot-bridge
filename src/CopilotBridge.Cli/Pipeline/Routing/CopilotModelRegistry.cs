@@ -46,6 +46,11 @@ internal sealed class CopilotModelRegistry : IModelRegistry
         "gpt-6-sol",
         // ResponsesProbe.Gpt61Sol_LivenessProbe (2026-10-02): exact id serves /responses.
         "gpt-6.1-sol",
+        // October2026_CandidateContracts_Probe (2026-10-27): exact-id /responses
+        // liveness and request contracts confirmed; luna-utility remains unavailable.
+        "gpt-5.4-nano",
+        "gpt-6.1-terra",
+        "mai-code-2-flash",
         "gpt-5-mini",
         // The 2026-10-02 exact-id probes retired mai-code-1-flash-picker (400
         // unavailable for vscode-chat) and confirmed mai-code-1.1-flash serves

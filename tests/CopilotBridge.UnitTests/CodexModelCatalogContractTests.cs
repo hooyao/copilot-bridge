@@ -216,6 +216,44 @@ public sealed class CodexModelCatalogContractTests
         Assert.Equal("low", model.GetProperty("default_reasoning_level").GetString());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Gpt61TerraPickerPreservesOfficialResourceAndFiltersRejectedUltra(bool newerBaseline)
+    {
+        // Contract: old clients get a complete official supplement; a same-slug
+        // newer baseline wins. Copilot rejects Ultra in both cases. Its live
+        // 1M prompt + 128K output exceeds the reported 1M total, so retain the
+        // reviewed official limits rather than inventing a larger window.
+        const string slug = "gpt-6.1-terra";
+        var baseline = LoadBaseline();
+        Assert.DoesNotContain(baseline.Models, row => row.GetProperty("slug").GetString() == slug);
+        var official = CodexSupplementalCatalog.Load().Models.Single(
+            row => row.GetProperty("slug").GetString() == slug);
+        var source = newerBaseline
+            ? ReplaceProperty(official, "description", "newer baseline owns Terra metadata")
+            : official;
+        if (newerBaseline) baseline = baseline with { Models = [.. baseline.Models, source] };
+
+        var result = Project(baseline, [Live(slug, 1_000_000, 1_000_000, 128_000)]);
+        var model = Assert.Single(result.Models, row => row.GetProperty("slug").GetString() == slug);
+        Assert.True(model.GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal("list", model.GetProperty("visibility").GetString());
+        Assert.Equal("0.153.0", model.GetProperty("minimal_client_version").GetString());
+        Assert.Equal(source.GetProperty("description").GetString(), model.GetProperty("description").GetString());
+        AssertGpt61PickerEfforts(model);
+        Assert.Contains(official.GetProperty("supported_reasoning_levels").EnumerateArray(),
+            level => level.GetProperty("effort").GetString() == "ultra");
+        Assert.Equal(500_000, model.GetProperty("context_window").GetInt32());
+        Assert.Equal(872_000, model.GetProperty("max_context_window").GetInt32());
+        Assert.Equal(JsonValueKind.Null, model.GetProperty("auto_compact_token_limit").ValueKind);
+        var template = source.GetProperty("model_messages").GetProperty("instructions_template").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(template));
+        Assert.Equal(template, model.GetProperty("model_messages").GetProperty("instructions_template").GetString());
+        if (!newerBaseline)
+            Assert.Equal(template, model.GetProperty("base_instructions").GetString());
+    }
+
     [Fact]
     public void SupplementalResourceValidationRejectsUnreviewedOrIncompleteContent()
     {

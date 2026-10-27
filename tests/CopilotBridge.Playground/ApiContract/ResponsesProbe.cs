@@ -58,6 +58,9 @@ public partial class ResponsesProbe
         "gpt-6-luna",
         "gpt-6-sol",
         "gpt-6.1-sol",
+        "gpt-5.4-nano",
+        "gpt-6.1-terra",
+        "mai-code-2-flash",
         "gpt-5-mini",
         "mai-code-1.1-flash",
     ];
@@ -70,6 +73,7 @@ public partial class ResponsesProbe
         "gpt-6-astra",
         "gpt-6-luna", "gpt-6-sol",
         "gpt-6.1-sol",
+        "gpt-5.4-nano", "gpt-6.1-terra", "mai-code-2-flash",
         "gpt-5-mini",
         "mai-code-1.1-flash",
     ];

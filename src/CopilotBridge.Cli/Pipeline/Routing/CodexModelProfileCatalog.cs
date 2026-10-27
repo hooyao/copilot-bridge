@@ -238,6 +238,39 @@ internal sealed class CodexModelProfileCatalog
             SupportsMultimodalFunctionOutput = true,
         };
 
+        // October2026_CandidateContracts_Probe (2026-10-27) uses the same
+        // per-model effort/field/tool/image-output probes as the B2/B3 sweep.
+        // Nano accepts none/low/medium/high/xhigh; minimal/max/ultra are rejected.
+        // Terra additionally accepts max (and none, contrary to its advertised
+        // effort set), but rejects minimal/ultra. Unsupported values fall back
+        // to the least expensive accepted reasoning tier, low.
+        yield return new CodexModelProfile
+        {
+            CanonicalId = "gpt-5.4-nano",
+            AcceptedEfforts = large,
+            DefaultEffort = "low",
+            SupportsMultimodalFunctionOutput = true,
+        };
+        yield return new CodexModelProfile
+        {
+            CanonicalId = "gpt-6.1-terra",
+            AcceptedEfforts = xlarge,
+            DefaultEffort = "low",
+            SupportsMultimodalFunctionOutput = true,
+        };
+        // MAI 2 accepts every swept tier except ultra, including none/minimal
+        // omitted from /models. Minimal with web_search is rejected; low with
+        // the same tool is accepted. Function/custom/web-search and structured
+        // image function output succeed on this exact id.
+        yield return new CodexModelProfile
+        {
+            CanonicalId = "mai-code-2-flash",
+            AcceptedEfforts = ["minimal", "none", "low", "medium", "high", "xhigh", "max"],
+            DefaultEffort = "low",
+            RejectsMinimalWithWebSearch = true,
+            SupportsMultimodalFunctionOutput = true,
+        };
+
         // ── "small" effort profile: accept minimal/low/medium/high, reject none+xhigh ──
         // DefaultEffort=high: small rejects xhigh, so its fallback is 'high' (its
         // top accepted tier) — an inbound 'max'/'xhigh' lands here.

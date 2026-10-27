@@ -158,6 +158,34 @@ public class CodexBehaviorTests
             resolvedModel: model);
     }
 
+    [Theory]
+    [InlineData("gpt-5.4-nano")]
+    [InlineData("gpt-6.1-terra")]
+    [InlineData("mai-code-2-flash")]
+    public async Task Codex_October2026Models_MultiToolTask_ProducesDispatchLogForVerdict(string model)
+    {
+        var source = Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_DIRECT_CREDENTIAL_SOURCE_DIRECTORY")
+            ?? throw new InvalidOperationException("Set the purpose-built direct credential source directory.");
+        var canary = model.Replace('-', '_') + "_model_sync_canary_102726";
+        var prompt =
+            "Use separate real shell tool calls in order. Do not fabricate output:\n"
+            + "1. Run a shell command that computes 43 * 47 and writes the result to model_probe.txt.\n"
+            + $"2. Use a second shell call to append the exact line {canary} to model_probe.txt.\n"
+            + "3. Use a third shell call to read the file. Report both lines verbatim, then stop.";
+        var terra = model == "gpt-6.1-terra";
+        await DriveAndRecordAsync(
+            "codex-october2026-" + model,
+            prompt,
+            modelReasoningEffort: model == "mai-code-2-flash" ? "minimal" : "low",
+            expectedCodexVersion: "0.164.0-alpha.11.1",
+            credentialSourceDirectory: source,
+            credentialStagingMode: CredentialStagingMode.PurposeBuiltDirectVersionTwo,
+            model: model,
+            requiredListedModel: terra ? model : null,
+            requiredListedReasoningEfforts: terra ? ["low", "medium", "high", "xhigh", "max"] : null,
+            resolvedModel: model);
+    }
+
     /// <summary>
     /// Candidate-targeted evidence for Copilot's internal-only Sol Fast id. This
     /// must remain separate from <see cref="ClientBehaviorSupport.LatestGpt"/>:

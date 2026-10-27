@@ -15,7 +15,7 @@ internal sealed class CodexSupplementalCatalog
 {
     private const string ModelsResourceName = "CopilotBridge.Cli.Catalogs.Codex.Supplemental.models.json";
     private const string CaptureResourceName = "CopilotBridge.Cli.Catalogs.Codex.Supplemental.capture.json";
-    private static readonly string[] ReviewedSlugs = ["gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"];
+    private static readonly string[] ReviewedSlugs = ["gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra"];
 
     private CodexSupplementalCatalog(IReadOnlyList<JsonElement> models)
     {

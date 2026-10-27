@@ -94,6 +94,15 @@
   128,000 output tokens. The exact `mai-code-1-flash-picker` id now returns 400
   for this integrator. These are discovery limits; no near-limit admission test
   was run, and the bridge does not invent client catalog instructions for MAI.
+- **2026-10-27 additions:** `gpt-5.4-nano` reports 400,000 total / 272,000
+  prompt / 128,000 output; `mai-code-2-flash` reports 1,050,000 total /
+  922,000 prompt / 128,000 output. Both support explicit-id inference; neither
+  currently has a complete official Codex picker resource to supplement.
+  `gpt-6.1-terra` reports 1,000,000 total / 1,000,000 prompt / 128,000 output,
+  which is inconsistent. `/codex/models` therefore keeps its official Codex
+  resource's 500,000 context / 872,000 maximum context / null explicit compaction
+  threshold until coherent live limits permit the normal uplift. All are
+  discovery metadata, not near-limit prompt admission results.
 
 ## 1. Where the context window comes from — the client, not the server
 
