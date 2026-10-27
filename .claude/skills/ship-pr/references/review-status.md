@@ -19,6 +19,11 @@ vocabularies are bounded rather than accepting a generic prefix. Unrecognized
 scope concerns still block, as do extra instructions or
 additional paragraphs.
 
+The observed request-first form (`Final human review should confirm ...`) also
+requires an explicit reference to privately retained client-execution evidence.
+Its evidence/classification vocabulary is bounded in the same way: adding a
+failure concern or omitting the client-execution evidence makes it a finding.
+
 The request must explicitly name human review, assessment, or verification and
 client-owned execution evidence. Its vocabulary is limited to that verification reminder,
 including the observed inspection wording; an unknown concern inside the same

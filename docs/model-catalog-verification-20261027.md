@@ -60,12 +60,13 @@ Eight mutation checks previously detected altered accepted efforts, fallback
 policy, multimodal support, minimal/search behavior, picker merge, and Ultra
 filtering; restored product values passed the complete offline suite again.
 
-The review-status helper separately passed 32 offline contracts. Its bounded
+The review-status helper separately passed 40 offline contracts. Its bounded
 verification-report reminder is an evidence-inspection signal, not a code finding
 or an automatic evidence waiver. Inline findings, hidden counts, unknown failure
 wording, extra instructions, and missing clean headlines remain blocking. A
 deliberately overbroad native-client-prefix mutant failed the unknown-failure
-case, and the repository's four mirror/compatibility checks passed.
+case; scope and request-first failure-vocabulary mutants were caught too. The
+repository's four mirror/compatibility checks passed.
 
 Administrator-disabled Claude models were not probed. The client runs do not
 extend the contract for Codex-to-Grok beyond faithful passthrough or claim a

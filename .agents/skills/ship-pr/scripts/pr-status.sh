@@ -134,11 +134,18 @@ BODY_STATUS="$(echo "$REVIEWS_JSON" | jq --arg head "$HEAD_SHA" '
         or ($native and ($request | contains("locally retained execution evidence"))))
       and ($request | gsub("[,.] *"; " ") | gsub("^\\s+|\\s+$"; "") | split(" ")
         | all(.[]; IN("final", "human", "confirmation", "review", "assessment", "verification", "validation", "including", "inspection", "and", "of", "the", "reported", "documented", "client-owned", "locally", "retained", "execution", "evidence", "which", "was", "not", "independently", "verified", "inspected", "here")));
-  # A second observed reminder refers to the committed verification report.
-  # Match its complete sentence, never a generic native-client/human-review prefix.
+  # Request-first reminders still require explicit client-execution ownership
+  # and contain only the bounded evidence/classification vocabulary.
+  def direct_evidence_note:
+    (capture("^(final )?human (confirmation|review|assessment|verification|validation|inspection) should confirm (?<request>.+)\\.$"; "i") // {}) as $note
+    | ($note.request // "" | ascii_downcase) as $request
+    | ($request | contains("privately retained client-execution evidence"))
+      and ($request | split(" ")
+        | all(.[]; IN("the", "privately", "retained", "client-execution", "evidence", "and", "revised", "shipping-status", "classification")));
+  # This separate observed report sentence is matched in full.
   def evidence_note:
     . == "Native-client compatibility is supported by a detailed verification report, but the locally retained execution evidence still needs human confirmation."
-    or scoped_evidence_note;
+    or scoped_evidence_note or direct_evidence_note;
   def evidence_only:
     (gsub("\r"; "") | split("\n")
       | map(gsub("^\\s+|\\s+$"; "") | select(length > 0)
