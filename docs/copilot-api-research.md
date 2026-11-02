@@ -589,7 +589,7 @@ whose client requires top-level `base_instructions`, the projector duplicates
 the official resource's exact `model_messages.instructions_template` value into
 that older field; it does not author a new prompt.
 
-Captured Copilot metadata for the current Responses models:
+Captured backend metadata and compaction examples for direct Responses routes:
 
 | Models | Total context | Maximum prompt | Maximum output | Bridge auto-compact |
 | --- | ---: | ---: | ---: | ---: |
@@ -603,6 +603,15 @@ Captured Copilot metadata for the current Responses models:
 | `gpt-5.3-codex`, `gpt-5.4-mini` | 400,000 | 272,000 | 128,000 | 128,000 |
 | `gpt-5-mini` | 264,000 | 128,000 | 64,000 | 48,000 |
 | `mai-code-1.1-flash` (2026-10-02 exact-id live replacement) | 256,000 | 128,000 | 128,000 | official client catalog dependent |
+
+The table describes the named backend ids directly. A catalog alias uses its
+resolved target's capacities instead. In particular, the shipped
+`gpt-5.6-sol -> gpt-6-astra` alias does not inherit direct Sol's 778,000 threshold.
+With a validated overlay, missing or internally inconsistent Astra target limits
+hide that alias; direct Astra selection retains its reviewed resource. The
+historical coherent Astra probe values are not a substitute for valid live
+projection metadata. Missing live-overlay data retains the separate reviewed
+baseline degradation behavior.
 
 The projection publishes total context as `context_window` and
 `max_context_window`, then compacts at `min(85% total, 97.5% prompt, prompt - output - 16,000)`

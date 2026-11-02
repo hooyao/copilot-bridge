@@ -190,17 +190,22 @@ This bridge command intentionally targets the global file, so it has no `--scope
 Codex project/profile/CLI layers can still affect a particular future process.
 `--dry-run` and `--port` work the same as above.
 
-For the current official-catalog-backed 1M-class gpt models (`gpt-5.4`,
-`gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-5.6-terra`), Copilot reports
-**1,050,000 total context**, **922,000
-maximum prompt**, and 128,000 maximum output. The bridge advertises the truthful
-1.05M total window and tells Codex to auto-compact at **778,000 tokens**. This
-reserves one maximum-size reply returning as history plus a 16,000-token margin,
-while retaining the lower total/prompt percentage ceilings and whole-thousand
-rounding. Output-heavy small windows that cannot fit that full reserve keep the
-existing positive percentage policy. The advertised total is distinct from prompt
-capacity. Explicit user context overrides are preserved and may intentionally
-select a smaller window.
+For **direct routes** to the official-catalog-backed 1M-class gpt models
+(`gpt-5.4`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-5.6-terra`),
+Copilot reports **1,050,000 total context**, **922,000 maximum prompt**, and
+128,000 maximum output. With those validated target limits, the bridge advertises
+1.05M total context and auto-compaction at **778,000 tokens**. This reserves one
+maximum-size reply returning as history plus a 16,000-token margin, while retaining
+the lower percentage ceilings and whole-thousand rounding. Output-heavy small
+windows that cannot fit the reserve keep the existing positive percentage policy.
+Explicit user context overrides are preserved and may select a smaller window.
+
+The shipped `gpt-5.6-sol -> gpt-6-astra` location is an **alias**, so the direct-Sol
+778,000 example does not describe that default route. Its catalog limits come from
+Astra's validated target metadata. If the validated target limits are missing or
+internally inconsistent, the alias is hidden rather than advertised with Sol's
+capacity; direct Astra selection retains its reviewed baseline resource in that
+case. See [routing configuration](docs/routing.md).
 
 Copilot reports the same live limits for `gpt-5.6-sol-fast` and labels it
 **Internal only**. The bridge accepts it when selected explicitly

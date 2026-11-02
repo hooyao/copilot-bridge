@@ -68,13 +68,15 @@
   output tokens, and a real Codex-shaped request reported 310,465 input tokens
   with HTTP 200. Select it explicitly; it is absent from the official Codex
   catalog and the bridge does not invent a model-catalog entry for it.
-- **Astra uses the last coherent, live-probed Copilot capacity**: direct probes
-  established 1,000,000 total / 872,000 prompt / 128,000 output. The current
-  `/models` hint reports 1,050,000 prompt plus 128,000 output inside a 1,050,000
-  total window, which is internally inconsistent, so projection fails closed
-  rather than advertising that uplift. The fresh-install
-  `gpt-5.6-sol → gpt-6-astra` route therefore never lets the client approach an
-  unvalidated higher prompt ceiling.
+- **Astra's current discovery hint is internally inconsistent**: historical direct
+  probes established 1,000,000 total / 872,000 prompt / 128,000 output, but those
+  measurements are not a guarantee of the current catalog projection. The
+  documented `/models` hint reports 1,050,000 prompt plus 128,000 output inside
+  1,050,000 total. A direct Astra catalog entry therefore retains its reviewed
+  baseline resource. The fresh-install `gpt-5.6-sol -> gpt-6-astra` alias is hidden
+  from a validated catalog while its target limits cannot map safely; it does not
+  inherit literal Sol's 778,000 threshold. Missing live-overlay data follows the
+  separate reviewed-baseline degradation contract.
 - **GPT-6 Luna and Sol use Copilot's 1M-class deployment**: live Copilot reports
   1,000,000 total / 872,000 prompt / 128,000 output for both exact ids, and a
   real Codex-shaped 310,101-token request succeeded. Their reviewed official

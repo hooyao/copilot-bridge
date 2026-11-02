@@ -49,6 +49,8 @@ PR #98's third review requested assessment of configuration-dependent model-rout
 
 This assessment found no additional routing change needed for the compaction policy. Runtime request-dependent routing remains governed by the existing conservative catalog contract.
 
+PR #98's fourth review identified a documentation ambiguity between direct backend capacities and the default alias. README and capacity references now explicitly scope the 778,000 examples to direct routes with coherent target metadata. The shipped `gpt-5.6-sol -> gpt-6-astra` alias uses Astra target limits, not literal Sol limits; it remains hidden from a validated catalog while those target limits are missing or incoherent. Historical coherent Astra probe values do not substitute for valid live projection metadata. The two accepted real-client cases in this report use passthrough `gpt-6.1-sol`; they do not establish the default Astra alias's capacity. This is a clarified existing limitation, not a routing or capacity uplift introduced by this change.
+
 ## Limits
 
 This verifies catalog-driven compaction and continued real tool execution, plus ordinary live-Copilot compatibility. It does not repair an already oversized history, bound abnormal reasoning output, or establish new backend token limits. The 16,000-token margin is bridge policy; it is not reported as an upstream capability.
