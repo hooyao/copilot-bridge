@@ -78,7 +78,7 @@ public sealed class PinnedCodexCatalogConsumerTests
 
         var expectedLatest = endpointModels[ClientBehaviorSupport.LatestGpt];
         Assert.Equal(1_050_000, expectedLatest.GetProperty("context_window").GetInt32());
-        Assert.Equal(892_000, expectedLatest.GetProperty("auto_compact_token_limit").GetInt32());
+        Assert.Equal(778_000, expectedLatest.GetProperty("auto_compact_token_limit").GetInt32());
 
         var cachePath = Path.Combine(home.Path, "models_cache.json");
         Assert.True(File.Exists(cachePath), "real Codex did not persist the remote catalog");
@@ -86,7 +86,7 @@ public sealed class PinnedCodexCatalogConsumerTests
         Assert.Equal(PinnedVersion, cache.RootElement.GetProperty("client_version").GetString());
         var cachedLatest = BySlug(cache.RootElement)[ClientBehaviorSupport.LatestGpt];
         Assert.Equal(1_050_000, cachedLatest.GetProperty("context_window").GetInt32());
-        Assert.Equal(892_000, cachedLatest.GetProperty("auto_compact_token_limit").GetInt32());
+        Assert.Equal(778_000, cachedLatest.GetProperty("auto_compact_token_limit").GetInt32());
 
         _output.WriteLine(
             $"Codex {PinnedVersion} consumed {renderedModels.Count} endpoint entries; " +

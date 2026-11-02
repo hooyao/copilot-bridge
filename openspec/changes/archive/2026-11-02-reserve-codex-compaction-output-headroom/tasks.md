@@ -14,3 +14,7 @@
 ## 3. Integration checks
 
 - [x] 3.1 Run the unit suite, captured-model snapshot contract, and OpenSpec validation; inspect the final diff and record verification evidence in the change.
+
+## PR review follow-up
+
+- PR #98: updated both pinned catalog-consumer expectations from 892,000 to 778,000. The real Codex 0.144.1 consumer test passed with 12 remote entries and the revised threshold in its persisted cache.

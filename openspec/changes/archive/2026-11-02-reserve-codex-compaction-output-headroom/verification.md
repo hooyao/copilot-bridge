@@ -9,6 +9,7 @@ PASS for the output-headroom catalog policy. Only prevention item 1 is implement
 - Full unit suite: 1,966 passed.
 - Final focused catalog/endpoint/fallback suite after mutation restoration: 91 passed.
 - Captured live-model snapshot contract: passed.
+- Pinned Codex 0.144.1 catalog consumer: passed with 12 remote entries, preserved instructions/capacities, and the 778,000 threshold persisted in the real client's cache. The official release archive's SHA-256 was checked before running the isolated binary.
 - OpenSpec validation and `git diff --check`: passed.
 - Added contract cases were red against the original implementation. Disabling only the new growth ceiling made 6 of 12 policy cases fail; restoring it made the suite green. Cases also cover whole-thousand rounding, the 1,000-token representability boundary, output-heavy small contexts, percentage ceilings, resolved aliases, unchanged capacities, invalid metadata, and 32-bit upper limits with 64-bit arithmetic.
 
