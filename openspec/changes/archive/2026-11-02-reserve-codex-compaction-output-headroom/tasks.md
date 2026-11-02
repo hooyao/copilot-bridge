@@ -19,3 +19,4 @@
 
 - PR #98: updated both pinned catalog-consumer expectations from 892,000 to 778,000. The real Codex 0.144.1 consumer test passed with 12 remote entries and the revised threshold in its persisted cache.
 - PR #98 second review: moved the catalog snapshot into a subdirectory so it cannot satisfy the top-level audit health check. A new real-Codex run automatically compacted, completed both tool operations, produced 16 request-audit files, and had zero router fatals, ERROR rows, or retries in its isolated client log.
+- PR #98 third review: assessed configuration-dependent route capacities and reran 28 routing/limit cases. Fixed aliases use resolved-target limits; ambiguous request-dependent routes and unavailable/unmappable targets retain their existing safe behavior. The verification report records the assessment; no further routing code change was needed.

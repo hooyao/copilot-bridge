@@ -37,6 +37,18 @@ The same real client fetched the bridge catalog and called live `gpt-6.1-sol` th
 
 Authentication used the existing test helper to stage a disposable, non-refreshable GitHub CLI credential; no installed refresh-bearing credential was copied or rotated.
 
+## Configuration-dependent routing assessment
+
+PR #98's third review requested assessment of configuration-dependent model-routing limits without identifying an additional code defect. The new ceiling consumes the validated limits of the already-resolved target; it changes neither location matching nor model-availability rules. The targeted recheck passed 28 cases covering routing, capacity validation, and output-growth boundaries:
+
+- `ExactAliasedResponsesTargetKeepsSourceInstructionsAndUsesTargetLimits` and `ConfiguredModelLocationProjectsResolvedAstraLimitsUnderGpt56Slug` preserve source instructions and use the actual target's capacities, including the revised 728,000 threshold for the coherent 1,000,000/872,000/128,000 fixture.
+- `EarlierRequestDependentRouteHidesAliasInsteadOfAdvertisingLaterFallbackLimits` rejects ambiguous capacity projection when an earlier effort-dependent location may select a smaller target. The projector does not advertise the later fixed target's larger capacity in that case.
+- `CrossModelAliasWithUnmappableTargetLimitsIsHidden` and `ConfiguredModelLocationHidesAliasWhenValidatedAstraIsAbsent` preserve the existing validated-alias availability guards. Direct models with invalid capacities retain their reviewed limits; no invalid live capability becomes a capacity uplift.
+- `ConfiguredModelLocationKeepsReviewedBaselineWhenOverlayIsUnavailable` preserves the existing degraded-baseline behavior.
+- The output-growth contract cases retain the existing positive percentage policy when a full output reserve is not representable. The additional ceiling therefore does not invalidate coherent capacities or change alias visibility merely because maximum output is large.
+
+This assessment found no additional routing change needed for the compaction policy. Runtime request-dependent routing remains governed by the existing conservative catalog contract.
+
 ## Limits
 
 This verifies catalog-driven compaction and continued real tool execution, plus ordinary live-Copilot compatibility. It does not repair an already oversized history, bound abnormal reasoning output, or establish new backend token limits. The 16,000-token margin is bridge policy; it is not reported as an upstream capability.
