@@ -158,6 +158,107 @@ public class CodexBehaviorTests
             resolvedModel: model);
     }
 
+    [Fact]
+    public async Task Codex_Gpt61Sol_OutputHeadroomCatalog_ExecutesLiveMultiToolTask_ForVerdict()
+    {
+        using var credential = await StageDirectCredentialFromGitHubCliAsync();
+        const string model = "gpt-6.1-sol";
+        const string canary = "catalog_headroom_live_canary_1102";
+        var prompt =
+            "Complete this task with separate real tool operations; do not fabricate results.\n"
+            + "1. Create input.json containing three records with value/weight pairs (7,2), (11,3), (13,5).\n"
+            + "2. Read input.json using a shell command, compute the weighted sum, and write result.json.\n"
+            + "3. Use a separate shell command to independently check that result.json contains 112; fail the command if it does not.\n"
+            + $"4. Append the exact line {canary} to receipt.txt using another tool call.\n"
+            + "5. Read both output files with a final tool call and report the checked value and receipt verbatim.";
+
+        await DriveAndRecordAsync(
+            "codex-gpt61-output-headroom-live",
+            prompt,
+            modelReasoningEffort: "high",
+            expectedCodexVersion: "0.166.0-alpha.5.1",
+            credentialSourceDirectory: credential.Path,
+            credentialStagingMode: CredentialStagingMode.PurposeBuiltDirectVersionTwo,
+            model: model,
+            requiredListedModel: model,
+            resolvedModel: model);
+    }
+
+    [Fact]
+    public async Task Codex_CatalogOutputHeadroom_AutomaticallyCompactsAndExecutesTools_ForVerdict()
+    {
+        const string caseId = "codex-catalog-output-headroom";
+        const string model = "gpt-6.1-sol";
+        const string version = "0.166.0-alpha.5.1";
+        const string canary = "catalog_headroom_compact_canary_1102";
+        const string firstPrompt = "Seed the first turn, report that it is ready, and stop.";
+        const string secondPrompt =
+            "Continue the pending task: execute the real custom-exec file write and read operations, "
+            + "then report their exact output.";
+
+        using var work = ClientBehaviorSupport.NewWorkDir(caseId);
+        using var codexHome = ClientBehaviorSupport.NewWorkDir(caseId + "-home");
+        using var cache = ClientBehaviorSupport.NewWorkDir(caseId + "-catalog");
+        await using var upstream = CodexContextRecoveryUpstreamServer.Start(
+            work.Path, canary, catalogHeadroom: true);
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.PassthroughTestUpstream,
+            TestUpstreamBaseUrl: upstream.BaseUrl,
+            StreamIdleTimeoutSeconds: 30,
+            KeepAliveIntervalSeconds: 0,
+            CodexCatalogCacheDirectory: cache.Path,
+            ForceCodexCatalogSourceAbsent: true));
+
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        var catalog = await http.GetStringAsync(
+            $"{bridge.BaseUrl}/codex/models?client_version={version}");
+        await File.WriteAllTextAsync(Path.Combine(bridge.TraceDir, "catalog-headroom.json"), catalog);
+
+        // The real client must consume the bridge resource. Deliberately omit
+        // ModelContextWindow, ModelAutoCompactTokenLimit, and local catalog aliases.
+        var result = await CodexAppServerProcess.RunAsync(new CodexAppServerInvocation(
+            BridgeBaseUrl: bridge.BaseUrl,
+            Prompt: firstPrompt,
+            FollowUpPrompt: secondPrompt,
+            Model: model,
+            Timeout: TimeSpan.FromMinutes(3),
+            CodexHome: codexHome.Path,
+            WorkingDirectory: work.Path,
+            ExpectedCodexVersion: version,
+            ModelReasoningEffort: "high",
+            RequiredListedModel: model));
+
+        var manifestPath = BehaviorRun.Write(
+            new BehaviorManifest(
+                CaseId: caseId,
+                Client: "codex",
+                Route: "/codex",
+                Model: model,
+                Scenario: ServeScenario.PassthroughTestUpstream,
+                ClientExitCode: result.ExitCode,
+                DurationSeconds: result.Duration.TotalSeconds,
+                TraceDir: bridge.TraceDir,
+                DispatchLogPath: result.DispatchLogPath,
+                DispatchSinceUnix: result.StartedUnixSeconds,
+                DispatchUntilUnix: result.EndedUnixSeconds,
+                Prompt: $"turn1={firstPrompt} turn2={secondPrompt} "
+                    + $"seed_usage=800020 catalog_limit=778000 canary={canary}",
+                DispatchThreadId: result.ThreadId),
+            result.Stdout, result.Stderr, ClientBehaviorSupport.Stamp(), out _, out _);
+
+        _output.WriteLine(
+            $"headroom models={upstream.ModelRequests} compactions={upstream.CompactionRequests} "
+            + $"context-rejections={upstream.ContextRejections} tool-output={upstream.ToolOutputRequests}");
+        _output.WriteLine($"[manifest] {manifestPath}");
+        _output.WriteLine(
+            "[verdict] require catalog context=1050000/compact=778000, seed usage 800020, "
+            + "an automatic compaction before the second ordinary turn with no context rejection, "
+            + "a custom_tool_call and matching actual output, the final canary, "
+            + "and zero router/dispatch fatals in the client's own SQLite log.");
+        ClientBehaviorSupport.AssertHarnessProducedEvidence(
+            result.ExitCode, bridge.TraceDir, manifestPath);
+    }
+
     [Theory]
     [InlineData("gpt-5.4-nano")]
     [InlineData("gpt-6.1-terra")]

@@ -147,7 +147,7 @@ public sealed class CodexModelCatalogContractTests
                 model.GetProperty("base_instructions").GetString());
             Assert.Equal(1_000_000, model.GetProperty("context_window").GetInt32());
             Assert.Equal(1_000_000, model.GetProperty("max_context_window").GetInt32());
-            Assert.Equal(850_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+            Assert.Equal(728_000, model.GetProperty("auto_compact_token_limit").GetInt32());
         }
     }
 
@@ -172,7 +172,7 @@ public sealed class CodexModelCatalogContractTests
         AssertGpt61PickerEfforts(model);
         Assert.Equal(1_050_000, model.GetProperty("context_window").GetInt32());
         Assert.Equal(1_050_000, model.GetProperty("max_context_window").GetInt32());
-        Assert.Equal(892_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+        Assert.Equal(778_000, model.GetProperty("auto_compact_token_limit").GetInt32());
         var template = model.GetProperty("model_messages").GetProperty("instructions_template").GetString();
         Assert.False(string.IsNullOrWhiteSpace(template));
         Assert.Equal(template, model.GetProperty("base_instructions").GetString());
@@ -202,7 +202,7 @@ public sealed class CodexModelCatalogContractTests
         {
             AssertGpt61PickerEfforts(model);
             Assert.Equal(1_050_000, model.GetProperty("context_window").GetInt32());
-            Assert.Equal(892_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+            Assert.Equal(778_000, model.GetProperty("auto_compact_token_limit").GetInt32());
         }
     }
 
@@ -272,25 +272,59 @@ public sealed class CodexModelCatalogContractTests
     }
 
     [Fact]
-    public void OneMillionClassLimitsMapTotalAndCompactAtEightyFivePercent()
+    public void OneMillionClassLimitsReserveOneMaximumOutputAndSafetyMargin()
     {
         var result = Project(LoadBaseline(), [Live("gpt-5.4", 1_050_000, 922_000, 128_000)]);
         var model = Find(result.Models, "gpt-5.4");
 
         Assert.Equal(1_050_000, model.GetProperty("context_window").GetInt32());
         Assert.Equal(1_050_000, model.GetProperty("max_context_window").GetInt32());
-        Assert.Equal(892_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+        Assert.Equal(778_000, model.GetProperty("auto_compact_token_limit").GetInt32());
         Assert.True(model.GetProperty("auto_compact_token_limit").GetInt32() < 922_000);
     }
 
     [Fact]
-    public void PromptDerivedGuardWinsWhenLowerThanEightyFivePercentOfTotal()
+    public void OutputGrowthGuardCanLowerThePromptPercentageThreshold()
     {
         var result = Project(LoadBaseline(), [Live("gpt-5.4", 1_000_000, 800_000, 200_000)]);
         var model = Find(result.Models, "gpt-5.4");
 
-        Assert.Equal(780_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+        Assert.Equal(584_000, model.GetProperty("auto_compact_token_limit").GetInt32());
         Assert.True(model.GetProperty("auto_compact_token_limit").GetInt32() < 800_000);
+    }
+
+    // Contract: a representable full-output reserve leaves room for the next
+    // response to return as history. An unrepresentable reserve must preserve
+    // the existing positive policy and model availability, not invalidate capacity.
+    [Theory]
+    [InlineData(1_050_000, 922_000, 128_000, 778_000)]
+    [InlineData(1_000_000, 872_000, 128_000, 728_000)]
+    [InlineData(400_000, 272_000, 128_000, 128_000)]
+    [InlineData(264_000, 128_000, 64_000, 48_000)]
+    [InlineData(256_000, 128_000, 128_000, 124_000)]
+    [InlineData(300_000, 128_000, 150_000, 124_000)]
+    [InlineData(100_000, 58_000, 41_001, 56_000)]
+    [InlineData(100_000, 58_000, 41_000, 1_000)]
+    [InlineData(1_100_000, 922_999, 128_000, 778_000)]
+    [InlineData(1_000_000, 999_000, 1_000, 850_000)]
+    [InlineData(2_000_000, 1_000_000, 1_000, 975_000)]
+    [InlineData(int.MaxValue, int.MaxValue - 1, 1, 1_825_361_000)]
+    public void CompactionPolicyReservesOutputWhereRepresentableAndKeepsExistingCeilings(
+        int total, int prompt, int output, int expected)
+    {
+        var result = Project(LoadBaseline(), [Live("gpt-5.4", total, prompt, output)]);
+        var model = Find(result.Models, "gpt-5.4");
+        var compact = model.GetProperty("auto_compact_token_limit").GetInt32();
+
+        Assert.True(model.GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal(total, model.GetProperty("context_window").GetInt32());
+        Assert.Equal(total, model.GetProperty("max_context_window").GetInt32());
+        Assert.Equal(expected, compact);
+        Assert.Equal(0, compact % 1_000);
+        Assert.InRange(compact, 1, prompt - 1);
+        if ((long)prompt - output - 16_000 >= 1_000)
+            Assert.True((long)compact + output + 16_000 <= prompt,
+                "Compaction must leave room for one maximum output and the policy margin.");
     }
 
     [Theory]
@@ -481,7 +515,7 @@ public sealed class CodexModelCatalogContractTests
             source.GetProperty("base_instructions"), alias.GetProperty("base_instructions")));
         Assert.Equal(1_000_000, alias.GetProperty("context_window").GetInt32());
         Assert.Equal(1_000_000, alias.GetProperty("max_context_window").GetInt32());
-        Assert.Equal(850_000, alias.GetProperty("auto_compact_token_limit").GetInt32());
+        Assert.Equal(728_000, alias.GetProperty("auto_compact_token_limit").GetInt32());
     }
 
     [Fact]
@@ -498,7 +532,7 @@ public sealed class CodexModelCatalogContractTests
 
         Assert.True(alias.GetProperty("supported_in_api").GetBoolean());
         Assert.Equal(1_000_000, alias.GetProperty("context_window").GetInt32());
-        Assert.Equal(850_000, alias.GetProperty("auto_compact_token_limit").GetInt32());
+        Assert.Equal(728_000, alias.GetProperty("auto_compact_token_limit").GetInt32());
     }
 
     [Fact]

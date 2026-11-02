@@ -210,6 +210,14 @@ full set:
 > the production failure occurred during pre-turn compaction, the catalog safety
 > policy also caps `auto_compact_token_limit` at 85% of total context (still
 > subject to the lower prompt-derived guard and whole-thousand rounding).
+> The threshold additionally reserves one maximum output returning as history:
+> cap it by `max_prompt_tokens - max_output_tokens - 16,000` when this leaves
+> at least 1,000 tokens, then round down to a whole thousand. Thus coherent
+> 1,050,000 total / 922,000 prompt / 128,000 output yields 778,000. The 16,000
+> margin is bridge policy, not backend capacity. If the full reserve cannot
+> fit, retain the existing positive percentage policy and model availability;
+> missing or incoherent capacities still retain the reviewed baseline. This
+> changes catalog policy only, not usage accounting or failed-stream recovery.
 
 > **2026-08 — native Codex request fidelity.** The request remains a real
 > `Responses → T1 → IR → T2 → Responses` traversal; it does not bypass the IR.
@@ -828,9 +836,12 @@ Ownership is strict:
     alias from a validated catalog rather than advertising a later fallback's limit.
     A validated cross-model target with missing or inconsistent limits is likewise
     hidden; only direct models retain reviewed source limits when live limits cannot map.
-    `auto_compact_token_limit` is the lower of 85% total
-  and 97.5% maximum prompt, rounded down to 1,000. Invalid or missing limits do
-  not raise the validated exact-version baseline.
+    `auto_compact_token_limit` is the lower of 85% total and 97.5% maximum
+  prompt, additionally capped by `max_prompt_tokens - max_output_tokens - 16,000`
+  whenever that budget leaves at least 1,000 tokens, then rounded down to 1,000.
+  A full output reserve that cannot fit leaves the existing positive percentage
+  policy in effect without hiding a valid model or alias. Invalid or missing
+  limits do not raise the validated exact-version baseline.
 - **The bridge owns the safe join.** Apart from the three explicitly reviewed,
   digest-pinned supplements above, live-only models are never synthesized,
   retired/baseline-only models are hidden, and review overrides are retained

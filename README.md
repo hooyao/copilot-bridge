@@ -194,9 +194,11 @@ For the current official-catalog-backed 1M-class gpt models (`gpt-5.4`,
 `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-5.6-terra`), Copilot reports
 **1,050,000 total context**, **922,000
 maximum prompt**, and 128,000 maximum output. The bridge advertises the truthful
-1.05M total window but tells Codex to auto-compact at **892,000 tokens** (85% of
-total context, rounded down to a whole thousand). Think of it as a safe roughly
-890k working threshold — not 1.05M tokens of prompt
+1.05M total window and tells Codex to auto-compact at **778,000 tokens**. This
+reserves one maximum-size reply returning as history plus a 16,000-token margin,
+while retaining the lower total/prompt percentage ceilings and whole-thousand
+rounding. Output-heavy small windows that cannot fit that full reserve keep the
+existing positive percentage policy. The advertised total is distinct from prompt
 capacity. Explicit user context overrides are preserved and may intentionally
 select a smaller window.
 

@@ -314,8 +314,11 @@ verified during implementation (was Q5).
   using that complete identity; contradictory recognized identity fails before I/O.
 - Copilot `/models` owns backend membership and limits. Current 1M-class entries
   report 1,050,000 total / 922,000 maximum prompt / 128,000 maximum output;
-  Codex receives 1,050,000 total and an explicit 892,000 auto-compact threshold
-  (85% of total context, rounded down, while retaining the lower prompt guard).
+  Codex receives 1,050,000 total and an explicit 778,000 auto-compact threshold
+  (maximum prompt minus maximum output minus a 16,000-token policy margin,
+  still bounded by the existing total/prompt percentages and rounded down).
+  If the full reserve cannot leave at least 1,000 tokens, keep the existing
+  positive percentage policy and model availability.
 - The reviewed supplemental Codex catalog includes a complete, provenance-pinned
   `gpt-6.1-sol` resource for client versions whose exact official catalog still
   omits that slug. It supplies Codex-owned picker metadata only when absent;
