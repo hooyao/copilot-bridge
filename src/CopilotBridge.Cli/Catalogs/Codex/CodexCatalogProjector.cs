@@ -17,6 +17,7 @@ internal sealed record CodexCatalogProjection
 internal sealed class CodexCatalogProjector
 {
     private const string ResponsesEndpoint = "/responses";
+    private const int CompactionGrowthMarginTokens = 16_000;
     private readonly CodexModelProfileCatalog _profiles;
     private readonly IModelRegistry _routes;
     private readonly RoutesConfig _configuredRoutes;
@@ -342,7 +343,16 @@ internal sealed class CodexCatalogProjector
         total = limits.MaxContextWindowTokens.Value;
         var totalPolicy = total * 85L / 100L;
         var promptPolicy = limits.MaxPromptTokens.Value * 975L / 1000L;
-        compact = checked((int)(Math.Min(totalPolicy, promptPolicy) / 1000L * 1000L));
+        var compactPolicy = Math.Min(totalPolicy, promptPolicy);
+        // The next response returns as input history. Reserve its maximum output
+        // plus a policy margin before Codex starts another sampling request.
+        var growthPolicy = (long)limits.MaxPromptTokens.Value
+            - limits.MaxOutputTokens.Value - CompactionGrowthMarginTokens;
+        // Output-heavy small windows cannot fit that full reserve. Keep their
+        // existing positive policy instead of invalidating otherwise valid limits.
+        if (growthPolicy >= 1_000)
+            compactPolicy = Math.Min(compactPolicy, growthPolicy);
+        compact = checked((int)(compactPolicy / 1000L * 1000L));
         return compact > 0 && compact < limits.MaxPromptTokens.Value;
     }
 

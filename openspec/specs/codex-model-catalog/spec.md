@@ -6,7 +6,9 @@ Define how the bridge resolves the exact official Codex-native model catalog,
 caches and revalidates it safely, overlays validated GitHub Copilot backend
 capacity without leaking credentials, and preserves otherwise healthy Codex
 inference when metadata sources are unavailable.
+
 ## Requirements
+
 ### Requirement: Exact official Codex source resolution
 
 For every valid request, the bridge SHALL resolve the canonical catalog source from the exact complete version as `https://raw.githubusercontent.com/openai/codex/rust-v{complete-version}/codex-rs/models-manager/models.json`. The identity parser SHALL accept a stable or complete SemVer query and SHALL recognize the complete version in a leading `Codex Desktop/{version}`, `codex_cli_rs/{version}`, or headless `codex_exec/{version}` user-agent product. When Codex truncates a prerelease query to `major.minor.patch`, the bridge SHALL use the complete user-agent version only if its three-part core exactly matches the query. An explicit complete query and recognized Codex user-agent version SHALL match exactly. Malformed or contradictory recognized Codex identity SHALL be rejected before network or filesystem access. The bridge MUST NOT substitute a neighboring version, a stable version for a prerelease, a branch, or the newest available tag. When the exact tag is confirmed absent, the bridge MAY serve the single compile-time bundled snapshot under the separate bundled-fallback requirements; that snapshot is a fixed reviewed artifact and its use MUST NOT be implemented as a search over, or comparison between, available tags.
@@ -281,18 +283,17 @@ A returned model SHALL be API-supported and picker-visible only when the resolve
 
 ### Requirement: Context uplift respects total and prompt limits
 
-The bridge SHALL treat Copilot `max_context_window_tokens` as the total context ceiling and `max_prompt_tokens` as the distinct input ceiling. A valid uplift SHALL set `context_window` and `max_context_window` no higher than the total ceiling and SHALL set an explicit `auto_compact_token_limit` no higher than 85 percent of total context, rounded down to a whole thousand tokens, and strictly below the maximum prompt with a non-zero safety reserve. Missing, non-positive, or internally inconsistent live limits MUST NOT raise the exact official Codex baseline.
+The bridge SHALL treat Copilot `max_context_window_tokens` as the total context ceiling and `max_prompt_tokens` as the distinct input ceiling. A valid uplift SHALL set `context_window` and `max_context_window` no higher than the total ceiling and SHALL set an explicit `auto_compact_token_limit` no higher than 85 percent of total context, rounded down to a whole thousand tokens, and strictly below the maximum prompt with a non-zero safety reserve. Missing, non-positive, or internally inconsistent live limits MUST NOT raise the exact official Codex baseline. When maximum prompt minus maximum output minus 16,000 permits at least 1,000 tokens, the compaction threshold SHALL additionally be capped by that growth budget. Otherwise the existing percentage-based threshold SHALL remain in effect without changing model availability.
 
-#### Scenario: Current 1M-class model receives the 85-percent uplift
+#### Scenario: Current 1M-class model reserves one response of history growth
 
-- **WHEN** Copilot reports a bridge-routable model with total context 1,050,000 and maximum prompt 922,000
-- **THEN** Codex receives a total/max context no greater than 1,050,000
-- **AND** its explicit auto-compaction threshold is 892,000 under the documented rounding policy.
+- **WHEN** Copilot reports a bridge-routable model with total context 1,050,000, maximum prompt 922,000, and maximum output 128,000
+- **THEN** Codex receives total/max context 1,050,000 and an explicit auto-compaction threshold of 778,000.
 
 #### Scenario: Prompt ceiling remains an independent guard
 
 - **WHEN** 85 percent of total context is not strictly below the validated maximum prompt with a non-zero reserve
-- **THEN** the bridge uses the lower prompt-derived safety limit rather than the total-context percentage.
+- **THEN** the bridge uses the lower prompt-derived safety limit rather than the total-context percentage, also applying the output-growth ceiling whenever it permits a positive whole-thousand threshold.
 
 #### Scenario: Total context is not mistaken for prompt capacity
 
@@ -303,6 +304,21 @@ The bridge SHALL treat Copilot `max_context_window_tokens` as the total context 
 
 - **WHEN** the live capability omits a required limit, contains a non-positive value, or reports maximum prompt greater than total context
 - **THEN** the returned entry retains the exact official baseline limits and the bridge logs why no uplift was applied.
+
+#### Scenario: Output-heavy small window keeps its existing positive threshold
+
+- **WHEN** coherent capacities report total context 256,000, maximum prompt 128,000, and maximum output 128,000
+- **THEN** the bridge keeps the existing 124,000 compaction threshold and the model's availability, without claiming to reserve a maximum-size output.
+
+#### Scenario: Output reserve uses the resolved alias target
+
+- **WHEN** an invariant alias targets coherent capacities of 1,000,000 total, 872,000 maximum prompt, and 128,000 maximum output
+- **THEN** the alias keeps its source instructions and receives total/max context 1,000,000 with a compaction threshold of 728,000.
+
+#### Scenario: Real Codex compacts using the projected resource
+
+- **WHEN** a real headless Codex client fetches the projected 778,000 threshold without local context or compaction overrides and then observes authoritative context usage above 778,000 but below 892,000
+- **THEN** the client automatically compacts, continues a multi-operation tool task, and its own dispatch evidence contains no router fatal.
 
 ### Requirement: Metadata refresh is bounded and fail-open
 

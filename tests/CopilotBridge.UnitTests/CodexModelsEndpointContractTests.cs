@@ -133,7 +133,7 @@ public sealed class CodexModelsEndpointContractTests
                 model.GetProperty("base_instructions").GetString());
             Assert.Equal(1_000_000, model.GetProperty("context_window").GetInt32());
             Assert.Equal(1_000_000, model.GetProperty("max_context_window").GetInt32());
-            Assert.Equal(850_000, model.GetProperty("auto_compact_token_limit").GetInt32());
+            Assert.Equal(728_000, model.GetProperty("auto_compact_token_limit").GetInt32());
         }
     }
 

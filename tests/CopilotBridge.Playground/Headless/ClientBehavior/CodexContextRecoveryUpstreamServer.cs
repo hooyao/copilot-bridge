@@ -22,12 +22,15 @@ internal sealed class CodexContextRecoveryUpstreamServer : IAsyncDisposable
     private readonly Task _acceptLoop;
     private readonly string _workDirectory;
     private readonly string _canary;
+    private readonly bool _catalogHeadroom;
+    private readonly string _model;
     private long _firstCompactionBytes;
     private int _turnRequests;
     private int _compactionRequests;
     private int _contextRejections;
     private int _reducedCompactionRequests;
     private int _toolOutputRequests;
+    private int _modelRequests;
 
     public string BaseUrl { get; }
     public int TurnRequests => Volatile.Read(ref _turnRequests);
@@ -35,15 +38,19 @@ internal sealed class CodexContextRecoveryUpstreamServer : IAsyncDisposable
     public int ContextRejections => Volatile.Read(ref _contextRejections);
     public int ReducedCompactionRequests => Volatile.Read(ref _reducedCompactionRequests);
     public int ToolOutputRequests => Volatile.Read(ref _toolOutputRequests);
+    public int ModelRequests => Volatile.Read(ref _modelRequests);
 
     private CodexContextRecoveryUpstreamServer(
         string baseUrl,
         string workDirectory,
-        string canary)
+        string canary,
+        bool catalogHeadroom)
     {
         BaseUrl = baseUrl;
         _workDirectory = workDirectory;
         _canary = canary;
+        _catalogHeadroom = catalogHeadroom;
+        _model = catalogHeadroom ? "gpt-6.1-sol" : "gpt-5.6-sol";
         _listener.Prefixes.Add(baseUrl + "/");
         _listener.Start();
         _acceptLoop = AcceptLoopAsync();
@@ -51,14 +58,15 @@ internal sealed class CodexContextRecoveryUpstreamServer : IAsyncDisposable
 
     public static CodexContextRecoveryUpstreamServer Start(
         string workDirectory,
-        string canary)
+        string canary,
+        bool catalogHeadroom = false)
     {
         using var socket = new TcpListener(IPAddress.Loopback, 0);
         socket.Start();
         var port = ((IPEndPoint)socket.LocalEndpoint).Port;
         socket.Stop();
         return new CodexContextRecoveryUpstreamServer(
-            $"http://127.0.0.1:{port}", workDirectory, canary);
+            $"http://127.0.0.1:{port}", workDirectory, canary, catalogHeadroom);
     }
 
     public async ValueTask DisposeAsync()
@@ -86,6 +94,35 @@ internal sealed class CodexContextRecoveryUpstreamServer : IAsyncDisposable
     {
         try
         {
+            if (_catalogHeadroom && context.Request.Url?.AbsolutePath == "/models")
+            {
+                Interlocked.Increment(ref _modelRequests);
+                context.Response.StatusCode = 200;
+                context.Response.ContentType = "application/json";
+                var models = JsonSerializer.Serialize(new
+                {
+                    data = new[]
+                    {
+                        new
+                        {
+                            id = _model,
+                            supported_endpoints = new[] { "/responses" },
+                            capabilities = new
+                            {
+                                limits = new
+                                {
+                                    max_context_window_tokens = 1_050_000,
+                                    max_prompt_tokens = 922_000,
+                                    max_output_tokens = 128_000,
+                                },
+                            },
+                        },
+                    },
+                });
+                await context.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(models));
+                return;
+            }
+
             if (context.Request.Url?.AbsolutePath != "/responses")
             {
                 context.Response.StatusCode = 404;
@@ -104,7 +141,7 @@ internal sealed class CodexContextRecoveryUpstreamServer : IAsyncDisposable
             {
                 var attempt = Interlocked.Increment(ref _compactionRequests);
                 var bodyBytes = Encoding.UTF8.GetByteCount(body);
-                if (attempt == 1)
+                if (attempt == 1 && !_catalogHeadroom)
                 {
                     Interlocked.Exchange(ref _firstCompactionBytes, bodyBytes);
                     Interlocked.Increment(ref _contextRejections);
@@ -164,7 +201,9 @@ internal sealed class CodexContextRecoveryUpstreamServer : IAsyncDisposable
                     "resp_codex_context_seed",
                     "msg_codex_context_seed",
                     "The first turn is ready.",
-                    inputTokens: 840,
+                    // This stimulus lies between the new 778k and old 892k
+                    // catalog thresholds. No client-side limit is overridden.
+                    inputTokens: _catalogHeadroom ? 800_000 : 840,
                     outputTokens: 20);
                 return;
             }
@@ -353,7 +392,7 @@ internal sealed class CodexContextRecoveryUpstreamServer : IAsyncDisposable
                 id = responseId,
                 @object = "response",
                 status = "in_progress",
-                model = "gpt-5.6-sol",
+                model = _model,
                 output = Array.Empty<object>(),
             },
         }));
@@ -377,7 +416,7 @@ internal sealed class CodexContextRecoveryUpstreamServer : IAsyncDisposable
                 id = responseId,
                 @object = "response",
                 status = "completed",
-                model = "gpt-5.6-sol",
+                model = _model,
                 output,
                 usage = new
                 {
@@ -398,6 +437,15 @@ internal sealed class CodexContextRecoveryUpstreamServer : IAsyncDisposable
             $"Set-Content -LiteralPath 'context_recovery_probe.txt' -Value '{_canary}'");
         var read = JsonSerializer.Serialize(
             "Get-Content -Raw -LiteralPath 'context_recovery_probe.txt'");
+        if (_catalogHeadroom)
+        {
+            // Current Codex code mode exposes exec_command; older recovery cases
+            // below deliberately retain their reviewed shell_command surface.
+            return $"const writeResult = await tools.exec_command({{cmd:{write},workdir:{workdir}}});\n"
+                + "text(writeResult);\n"
+                + $"const readResult = await tools.exec_command({{cmd:{read},workdir:{workdir}}});\n"
+                + "text(readResult);";
+        }
         return $"const writeResult = await tools.shell_command({{command:{write},workdir:{workdir}}});\n"
             + "text(writeResult);\n"
             + $"const readResult = await tools.shell_command({{command:{read},workdir:{workdir}}});\n"
