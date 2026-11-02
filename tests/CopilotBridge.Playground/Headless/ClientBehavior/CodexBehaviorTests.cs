@@ -212,7 +212,11 @@ public class CodexBehaviorTests
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
         var catalog = await http.GetStringAsync(
             $"{bridge.BaseUrl}/codex/models?client_version={version}");
-        await File.WriteAllTextAsync(Path.Combine(bridge.TraceDir, "catalog-headroom.json"), catalog);
+        var catalogEvidenceDirectory = Path.Combine(bridge.TraceDir, "catalog");
+        Directory.CreateDirectory(catalogEvidenceDirectory);
+        await File.WriteAllTextAsync(Path.Combine(catalogEvidenceDirectory, "models.json"), catalog);
+        // Metadata evidence must not satisfy the per-request audit health gate.
+        Assert.Empty(Directory.GetFiles(bridge.TraceDir, "*.json"));
 
         // The real client must consume the bridge resource. Deliberately omit
         // ModelContextWindow, ModelAutoCompactTokenLimit, and local catalog aliases.

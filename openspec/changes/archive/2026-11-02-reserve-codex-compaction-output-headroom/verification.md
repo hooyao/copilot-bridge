@@ -17,14 +17,15 @@ PASS for the output-headroom catalog policy. Only prevention item 1 is implement
 
 Client: `codex-cli 0.166.0-alpha.5.1`, isolated app-server and bridge subprocess, deterministic upstream, no local context or compaction override.
 
-Final manifest: `tests/behavior-runs/manifests/codex-catalog-output-headroom-20261102-062510-813.json`.
+Final manifest: `tests/behavior-runs/manifests/codex-catalog-output-headroom-20261102-065343-890.json`.
 
 - Actual catalog: total/max context 1,050,000; auto-compaction threshold 778,000.
+- The catalog snapshot is stored separately at `catalog/models.json`, outside the top-level audit-file health check. Before starting Codex, the actuator confirms that metadata capture alone produced no top-level JSON audit. The completed run produced 16 actual per-request audit files.
 - Controlled upstream seed: 800,000 input + 20 output tokens, between the new and previous thresholds. These are test stimuli, not a claim about a real 800k-token prompt or Copilot's boundary behavior.
 - The next request was compaction with `trigger=auto`, `reason=context_limit`, and `phase=pre_turn`; there were no context-window rejections.
 - Client stdout recorded a completed `contextCompaction` item and two actual `commandExecution` items, both exit 0. The read returned `catalog_headroom_compact_canary_1102`.
 - The subsequent upstream request carried the matching `custom_tool_call_output` for `call_codex_context_recovery_exec`, with successful write/read results.
-- The manifest-selected client SQLite log contained 113 rows in the bounded run window, zero router/dispatch fatals, zero ERROR rows, and zero retry rows. The digest is adjacent to that manifest's dispatch database.
+- The manifest-selected client SQLite log contained 122 rows in the bounded run window, zero router/dispatch fatals, zero ERROR rows, and zero retry rows. The digest is adjacent to that manifest's dispatch database.
 
 Counterfactual manifest: `tests/behavior-runs/manifests/codex-catalog-output-headroom-20261102-062354-780.json`. With the growth ceiling temporarily disabled, the actual catalog returned 892,000 and the otherwise identical real-client run produced zero compaction requests. Its semantic verdict is FAIL for the required early-compaction behavior even though the thin actuator completed. Product source and build outputs were restored afterward; the final manifest above reconfirmed automatic compaction.
 
