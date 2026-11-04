@@ -139,7 +139,18 @@ Durable record of choices and the reason — kept here rather than scattered thr
 Copilot discovery advertises `gpt-image-2.5-flare` as an image model on
 `/v1/images/generations` and `/v1/images/edits`, not a Responses model. Live
 probes generated a PNG and edited it using multipart input. The bridge exposes
-both routes under `/v1` and `/codex`, preserving request bytes and content type
-and relaying the upstream response. An OpenAI Python SDK client generated and
+both routes under `/v1` and `/codex`, preserving content type and request bytes
+except for configured Codex image-model aliases, and relaying the upstream response. An OpenAI Python SDK client generated and
 edited decodable PNGs through a separate bridge process. No Codex text-model
 profile or picker entry is inferred from this image capability.
+
+A real Codex 0.166.0-alpha.5.1 app-server task invoked its native image tool,
+generated a PNG and edited it through both JIT and Windows x64 AOT bridge
+processes, and recorded no client-log errors or retries. The isolated test
+used synthetic Codex ChatGPT auth and a real Copilot credential. The native
+tool sends `gpt-image-2`; the stock
+`Routing.ImageModelAliases` entry maps that id to the live-confirmed
+`gpt-image-2.5-flare`. Explicit OpenAI SDK and Codex imagegen CLI paths also
+worked. Copilot `/responses` rejected the separate hosted `image_generation`
+tool with `400 unsupported_value` for `gpt-5.6-sol` and `gpt-6.1-sol` under
+the `vscode-chat` integrator.

@@ -16,6 +16,71 @@ namespace CopilotBridge.Playground.Headless;
 public sealed class ImagesSdkTests
 {
     [Fact]
+    public async Task Codex_imagegen_cli_generates_and_edits_through_bridge()
+    {
+        var source = Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_DIRECT_CREDENTIAL_SOURCE_DIRECTORY");
+        using var staged = source is null ? await StageDirectCredentialAsync() : null;
+        source ??= staged!.Path;
+        var python = Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_OPENAI_PYTHON")
+            ?? throw new InvalidOperationException("Set COPILOT_BRIDGE_TEST_OPENAI_PYTHON to a Python with the OpenAI SDK.");
+        var codexHome = Environment.GetEnvironmentVariable("CODEX_HOME")
+            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        var script = Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_IMAGEGEN_SCRIPT")
+            ?? Path.Combine(codexHome, "skills", ".system", "imagegen", "scripts", "image_gen.py");
+        Assert.True(File.Exists(script), $"Codex imagegen script not found: {script}");
+        using var work = ClientBehaviorSupport.NewWorkDir("images-codex-skill");
+        await using var bridge = await ServeProcess.StartAsync(new ServeInvocation(
+            ServeScenario.Passthrough,
+            CredentialSourceDirectory: source,
+            CredentialStagingMode: CredentialStagingMode.PurposeBuiltDirectVersionTwo,
+            BridgeBinaryDirectory: Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_NATIVE_BINARY_DIRECTORY")));
+
+        var generated = Path.Combine(work.Path, "generated.png");
+        var edited = Path.Combine(work.Path, "edited.png");
+        await RunSkillAsync(python, script, bridge.BaseUrl, work.Path,
+            ["generate", "--model", "gpt-image-2.5-flare", "--prompt", "A simple red circle on a plain white background.",
+             "--size", "1024x1024", "--out", generated, "--no-augment"]);
+        AssertPng(generated);
+        await RunSkillAsync(python, script, bridge.BaseUrl, work.Path,
+            ["edit", "--model", "gpt-image-2.5-flare", "--image", generated,
+             "--prompt", "Change the red circle to blue.", "--size", "1024x1024", "--out", edited, "--no-augment"]);
+        AssertPng(edited);
+    }
+
+    private static async Task RunSkillAsync(string python, string script, string baseUrl, string workDirectory, string[] arguments)
+    {
+        var start = new ProcessStartInfo
+        {
+            FileName = python, WorkingDirectory = workDirectory,
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        start.Environment["OPENAI_API_KEY"] = "local-bridge";
+        start.Environment["OPENAI_BASE_URL"] = baseUrl + "/v1";
+        start.ArgumentList.Add(script);
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start imagegen.");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+        try { await process.WaitForExitAsync(deadline.Token); }
+        catch (OperationCanceledException) { process.Kill(entireProcessTree: true); throw; }
+        var output = await stdout;
+        var error = await stderr;
+        Assert.True(process.ExitCode == 0, $"Codex imagegen failed: {error}\n{output}");
+        Assert.Contains("Wrote ", output);
+    }
+
+    private static void AssertPng(string path)
+    {
+        Assert.True(File.Exists(path), $"imagegen did not write {path}");
+        using var stream = File.OpenRead(path);
+        byte[] signature = new byte[8];
+        stream.ReadExactly(signature);
+        Assert.Equal(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }, signature);
+    }
+
+    [Fact]
     public async Task Openai_sdk_generates_and_edits_decodable_images()
     {
         var source = Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_DIRECT_CREDENTIAL_SOURCE_DIRECTORY");
@@ -72,7 +137,7 @@ public sealed class ImagesSdkTests
         Assert.Contains("CLIENT EDITED: decoded PNG", output);
     }
 
-    private static async Task<ClientBehaviorSupport.ScratchDir> StageDirectCredentialAsync()
+    internal static async Task<ClientBehaviorSupport.ScratchDir> StageDirectCredentialAsync()
     {
         var start = new ProcessStartInfo("gh", "auth token --hostname github.com --no-refresh")
         {

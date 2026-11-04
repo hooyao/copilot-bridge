@@ -9,6 +9,12 @@
 
 ## Two layers: location = preference, profile = fact
 
+Codex's separate native Images API uses `Routing.ImageModelAliases`, not
+`Locations` or a text-model profile. The shipped entry maps `gpt-image-2` to
+`gpt-image-2.5-flare` on `/codex/images/...`; change the target or use an empty
+array to disable the mapping. `/v1/images/...` remains opaque. Upgrades keep
+an existing alias array intact, including an empty one.
+
 What model id + body shape reaches Copilot is decided by two layers, in order:
 
 1. **`Routing.Locations`** (this doc) — **operator preference**, editable in

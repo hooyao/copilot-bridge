@@ -142,16 +142,22 @@ internal static class RootCli
         // --scope option is offered and the help text states that visibility limit.
         var configCodex = new Command("codex",
             "Point global ~/.codex/config.toml at the bridge; preserve provider behavior fields (project/profile/CLI overrides may supersede it)");
+        var nativeImagesOption = new Option<bool>("--native-images")
+        {
+            Description = "Use Codex's native image tool through the bridge (requires Codex ChatGPT login; disables request compression)",
+        };
         configCodex.Options.Add(configPortOption);
         configCodex.Options.Add(dryRunOption);
         configCodex.Options.Add(showContentOption);
+        configCodex.Options.Add(nativeImagesOption);
         configCodex.SetAction((parseResult, _) => Task.FromResult(
             ConfigCommand.Configure(
                 "codex",
                 ConfigScope.Global,
                 parseResult.GetValue(configPortOption),
                 parseResult.GetValue(dryRunOption),
-                parseResult.GetValue(showContentOption))));
+                parseResult.GetValue(showContentOption),
+                parseResult.GetValue(nativeImagesOption))));
 
         var configStatus = new Command("status",
             "Show connection/auth drift and observe client behavior values without rewriting them");

@@ -25,6 +25,15 @@ internal sealed class RoutesConfig
 {
     /// <summary>Top-to-bottom, first-match-wins.</summary>
     public List<RouteLocation> Locations { get; set; } = [];
+
+    /// <summary>Exact model aliases for JSON requests on the Codex Images routes.</summary>
+    public List<ImageModelAlias> ImageModelAliases { get; set; } = [];
+}
+
+internal sealed class ImageModelAlias
+{
+    public string From { get; set; } = "";
+    public string To { get; set; } = "";
 }
 
 /// <summary>

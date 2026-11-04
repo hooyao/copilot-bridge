@@ -20,6 +20,16 @@ $env:COPILOT_BRIDGE_TEST_OPENAI_PYTHON = '<python executable with openai and pil
 dotnet test tests/CopilotBridge.Playground --filter "FullyQualifiedName~ImagesSdkTests" --logger "console;verbosity=detailed"
 ```
 
+The Codex imagegen CLI case also needs the installed `imagegen.py` script. Set
+`COPILOT_BRIDGE_TEST_IMAGEGEN_SCRIPT` to its absolute path if it is not at
+`$CODEX_HOME/skills/.system/imagegen/scripts/image_gen.py`. The
+`CodexImagesBehaviorTests` native case runs a real Codex app-server task; set
+`COPILOT_BRIDGE_TEST_CODEX_VERSION` to the installed client version and apply
+the client-log verdict described by the real-client-verify skill. Its isolated
+Codex home uses synthetic ChatGPT authentication to enable the native tool; a
+purpose-built GitHub CLI OAuth credential calls real Copilot. The CLI fallback
+case uses the `PYTHONPATH` of the test process for the OpenAI SDK.
+
 ## Codex Astra vision
 
 The two `CodexVisionBehaviorTests` cases exercise the stock

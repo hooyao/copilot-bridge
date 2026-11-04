@@ -4,10 +4,13 @@ using CopilotBridge.Cli.Auth;
 using CopilotBridge.Cli.Copilot;
 using CopilotBridge.Cli.Endpoints.Images;
 using CopilotBridge.Cli.Hosting.Options;
+using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -69,7 +72,8 @@ public class ImagesPassthroughTests
         { Content = new StringContent(output, Encoding.UTF8, "application/json") };
         var client = new FakeImagesClient(upstream);
 
-        await ImagesEndpoint.HandleAsync(context, client, NullLogger<ImagesEndpointTag>.Instance, ImageOperation.Generate);
+        var routes = new RoutesConfig { ImageModelAliases = [new ImageModelAlias { From = "gpt-image-2", To = "gpt-image-2.5-flare" }] };
+        await ImagesEndpoint.HandleAsync(context, client, NullLogger<ImagesEndpointTag>.Instance, ImageOperation.Generate, routes);
 
         Assert.Equal(ImageOperation.Generate, client.Operation);
         Assert.Equal(Encoding.UTF8.GetBytes(input), client.Body);
@@ -77,6 +81,109 @@ public class ImagesPassthroughTests
         Assert.Equal(200, context.Response.StatusCode);
         Assert.StartsWith("application/json", context.Response.ContentType);
         Assert.Equal(Encoding.UTF8.GetBytes(output), ((MemoryStream)context.Response.Body).ToArray());
+    }
+
+    // Contract: Codex's native image-model alias routes to Flare on the Codex
+    // image endpoint, with every other byte unchanged. The generic API is opaque.
+    [Theory]
+    [InlineData("/codex/images/generations", "gpt-image-2.5-flare")]
+    [InlineData("/codex/images/edits", "gpt-image-2.5-flare")]
+    [InlineData("/v1/images/generations", "gpt-image-2")]
+    public async Task Codex_native_model_alias_is_mapped_only_on_codex_routes(string path, string expectedModel)
+    {
+        const string input = " {\"nested\":{\"model\":\"gpt-image-2\"}, \"model\":\"gpt-image-2\", \"prompt\":\"keep gpt-image-2\", \"future\":true} ";
+        var context = new DefaultHttpContext();
+        context.Request.Path = path;
+        context.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(input));
+        context.Request.ContentType = "application/json; charset=utf-8";
+        context.Response.Body = new MemoryStream();
+        using var upstream = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+        var client = new FakeImagesClient(upstream);
+
+        var routes = new RoutesConfig { ImageModelAliases = [new ImageModelAlias { From = "gpt-image-2", To = "gpt-image-2.5-flare" }] };
+        await ImagesEndpoint.HandleAsync(context, client, NullLogger<ImagesEndpointTag>.Instance, ImageOperation.Generate, routes);
+
+        var expected = input.Replace("\"model\":\"gpt-image-2\", \"prompt\"", $"\"model\":\"{expectedModel}\", \"prompt\"", StringComparison.Ordinal);
+        Assert.Equal(Encoding.UTF8.GetBytes(expected), client.Body);
+    }
+
+    [Fact]
+    public async Task Duplicate_top_level_model_fields_are_not_rewritten()
+    {
+        const string input = "{\"model\":\"gpt-image-2\",\"model\":\"another-model\"}";
+        var context = new DefaultHttpContext();
+        context.Request.Path = "/codex/images/generations";
+        context.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(input));
+        context.Request.ContentType = "application/json";
+        context.Response.Body = new MemoryStream();
+        using var upstream = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+        var client = new FakeImagesClient(upstream);
+        var routes = new RoutesConfig { ImageModelAliases = [new ImageModelAlias { From = "gpt-image-2", To = "gpt-image-2.5-flare" }] };
+        await ImagesEndpoint.HandleAsync(context, client, NullLogger<ImagesEndpointTag>.Instance, ImageOperation.Generate, routes);
+        Assert.Equal(Encoding.UTF8.GetBytes(input), client.Body);
+    }
+
+    [Fact]
+    public void Shipped_routing_config_contains_the_codex_image_alias()
+    {
+        var config = new ConfigurationBuilder().SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: false).Build();
+        var services = new ServiceCollection();
+        services.Configure<RoutesConfig>(config.GetSection("Routing"));
+        using var provider = services.BuildServiceProvider();
+        var aliases = provider.GetRequiredService<IOptions<RoutesConfig>>().Value.ImageModelAliases;
+        var alias = Assert.Single(aliases);
+        Assert.Equal("gpt-image-2", alias.From);
+        Assert.Equal("gpt-image-2.5-flare", alias.To);
+    }
+
+    [Fact]
+    public void Image_alias_uses_operator_target_and_empty_list_disables_rewrite()
+    {
+        ReadOnlyMemory<byte> input = "{\"model\":\"gpt-image-2\",\"prompt\":\"unchanged\"}"u8.ToArray();
+        var mapped = CodexImageModelAlias.Rewrite(input, [new ImageModelAlias { From = "gpt-image-2", To = "custom-model" }]);
+        Assert.Equal("{\"model\":\"custom-model\",\"prompt\":\"unchanged\"}", Encoding.UTF8.GetString(mapped!));
+        Assert.Null(CodexImageModelAlias.Rewrite(input, []));
+    }
+
+    [Fact]
+    public void Configured_model_id_is_json_escaped()
+    {
+        ReadOnlyMemory<byte> input = "{\"model\":\"gpt-image-2\"}"u8.ToArray();
+        var result = CodexImageModelAlias.Rewrite(input, [new ImageModelAlias { From = "gpt-image-2", To = "custom\"model" }]);
+        using var json = System.Text.Json.JsonDocument.Parse(result!);
+        Assert.Equal("custom\"model", json.RootElement.GetProperty("model").GetString());
+    }
+
+    [Fact]
+    public void Empty_or_duplicate_image_aliases_are_rejected_at_startup()
+    {
+        var empty = new RoutesConfig { ImageModelAliases = [new ImageModelAlias { From = "gpt-image-2", To = "" }] };
+        var duplicates = new RoutesConfig { ImageModelAliases = [
+            new ImageModelAlias { From = "gpt-image-2", To = "one" },
+            new ImageModelAlias { From = "gpt-image-2", To = "two" },
+        ] };
+        Assert.Throws<InvalidOperationException>(() => RoutesValidator.Validate(empty));
+        Assert.Throws<InvalidOperationException>(() => RoutesValidator.Validate(duplicates));
+    }
+
+    // Contract: an upload rejected by the server's request-size limit must be
+    // reported as a client error and never be sent to Copilot.
+    [Fact]
+    public async Task Oversized_multipart_upload_returns_413_without_calling_upstream()
+    {
+        var context = new DefaultHttpContext();
+        context.Request.Body = new OversizedUploadStream();
+        context.Request.ContentType = "multipart/form-data; boundary=B";
+        context.Response.Body = new MemoryStream();
+        using var upstream = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("unexpected") };
+        var client = new FakeImagesClient(upstream);
+
+        await ImagesEndpoint.HandleAsync(context, client, NullLogger<ImagesEndpointTag>.Instance, ImageOperation.Edit);
+
+        Assert.Equal(StatusCodes.Status413PayloadTooLarge, context.Response.StatusCode);
+        Assert.Equal(0, client.Calls);
+        Assert.Contains("invalid_request_error", Encoding.UTF8.GetString(((MemoryStream)context.Response.Body).ToArray()));
     }
 
     [Theory]
@@ -141,14 +248,31 @@ public class ImagesPassthroughTests
 
     private sealed class FakeImagesClient(HttpResponseMessage response) : IImagesClient
     {
+        public int Calls { get; private set; }
         public ImageOperation Operation { get; private set; }
         public byte[] Body { get; private set; } = [];
         public string? ContentType { get; private set; }
         public ValueTask<HttpResponseMessage> PostImageAsync(ImageOperation operation, ReadOnlyMemory<byte> body, string? contentType, CancellationToken ct = default)
         {
-            Operation = operation; Body = body.ToArray(); ContentType = contentType;
+            Calls++; Operation = operation; Body = body.ToArray(); ContentType = contentType;
             return ValueTask.FromResult(response);
         }
+    }
+
+    private sealed class OversizedUploadStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => throw new BadHttpRequestException("Request body too large", 413);
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(new BadHttpRequestException("Request body too large", 413));
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class CaptureHandler(bool rejectFirst = false, bool fail = false, HttpStatusCode? rejectStatus = null) : HttpMessageHandler

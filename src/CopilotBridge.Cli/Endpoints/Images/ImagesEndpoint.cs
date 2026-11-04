@@ -1,10 +1,12 @@
 using System.Buffers;
 using System.Net.Http.Headers;
 using CopilotBridge.Cli.Copilot;
+using CopilotBridge.Cli.Pipeline.Routing;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CopilotBridge.Cli.Endpoints.Images;
 
@@ -20,21 +22,43 @@ internal static class ImagesEndpoint
         return app;
     }
 
-    private static Task GenerateAsync(HttpContext context, IImagesClient client, ILogger<ImagesEndpointTag> log) =>
-        HandleAsync(context, client, log, ImageOperation.Generate);
+    private static Task GenerateAsync(HttpContext context, IImagesClient client, IOptions<RoutesConfig> routes, ILogger<ImagesEndpointTag> log) =>
+        HandleAsync(context, client, log, ImageOperation.Generate, routes.Value);
 
-    private static Task EditAsync(HttpContext context, IImagesClient client, ILogger<ImagesEndpointTag> log) =>
-        HandleAsync(context, client, log, ImageOperation.Edit);
+    private static Task EditAsync(HttpContext context, IImagesClient client, IOptions<RoutesConfig> routes, ILogger<ImagesEndpointTag> log) =>
+        HandleAsync(context, client, log, ImageOperation.Edit, routes.Value);
 
     internal static async Task HandleAsync(
-        HttpContext context, IImagesClient client, ILogger<ImagesEndpointTag> log, ImageOperation operation)
+        HttpContext context, IImagesClient client, ILogger<ImagesEndpointTag> log, ImageOperation operation, RoutesConfig? routes = null)
     {
         var ct = context.RequestAborted;
         try
         {
             HttpResponseMessage upstream;
-            using (var body = await InboundBody.ReadPooledAsync(context.Request.Body, ct))
-                upstream = await client.PostImageAsync(operation, body.Memory, context.Request.ContentType, ct);
+            PooledBody body;
+            try
+            {
+                body = await InboundBody.ReadPooledAsync(context.Request.Body, ct);
+            }
+            catch (BadHttpRequestException ex)
+            {
+                context.Response.StatusCode = ex.StatusCode;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(
+                    "{\"error\":{\"message\":\"Invalid request body\",\"type\":\"invalid_request_error\"}}", ct);
+                return;
+            }
+            using (body)
+            {
+                var bytes = body.Memory;
+                if (context.Request.Path.StartsWithSegments("/codex/images")
+                    && MediaTypeHeaderValue.TryParse(context.Request.ContentType, out var type)
+                    && string.Equals(type.MediaType, "application/json", StringComparison.OrdinalIgnoreCase)
+                    && routes is not null
+                    && CodexImageModelAlias.Rewrite(bytes, routes.ImageModelAliases) is { } rewritten)
+                    bytes = rewritten;
+                upstream = await client.PostImageAsync(operation, bytes, context.Request.ContentType, ct);
+            }
 
             using (upstream)
             {

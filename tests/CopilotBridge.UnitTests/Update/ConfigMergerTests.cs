@@ -87,6 +87,25 @@ public class ConfigMergerTests
     }
 
     [Fact]
+    public void Image_aliases_keep_operator_changes_across_upgrades()
+    {
+        var merged = ConfigMerger.Merge(
+            oldJson: """{ "Routing": { "ImageModelAliases": [ { "From": "gpt-image-2", "To": "operator-model" } ] } }""",
+            newJson: """{ "Routing": { "ImageModelAliases": [ { "From": "gpt-image-2", "To": "gpt-image-2.5-flare" } ] } }""");
+        var aliases = Root(merged).GetProperty("Routing").GetProperty("ImageModelAliases");
+        Assert.Equal("operator-model", aliases[0].GetProperty("To").GetString());
+    }
+
+    [Fact]
+    public void Empty_image_aliases_stay_disabled_on_upgrade()
+    {
+        var merged = ConfigMerger.Merge(
+            oldJson: """{ "Routing": { "ImageModelAliases": [] } }""",
+            newJson: """{ "Routing": { "ImageModelAliases": [ { "From": "gpt-image-2", "To": "gpt-image-2.5-flare" } ] } }""");
+        Assert.Equal(0, Root(merged).GetProperty("Routing").GetProperty("ImageModelAliases").GetArrayLength());
+    }
+
+    [Fact]
     public void Old_null_overrides_new_default()
     {
         var merged = ConfigMerger.Merge(

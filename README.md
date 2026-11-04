@@ -39,6 +39,23 @@ The Images routes forward payloads and upstream errors without model-profile or
 routing-location rewrites. The configured upstream first-byte timeout applies;
 the raw response stream has no bridge keepalives or stream-idle timeout.
 
+Codex's [native image tool](https://learn.chatgpt.com/docs/image-generation)
+can use the bridge for both generation and edits. It requires a Codex ChatGPT
+login: API-key-only Codex sessions did not expose the native tool in the tested
+client. Configure a separate provider without deleting your existing one:
+
+```pwsh
+copilot-bridge config codex --native-images
+```
+
+Restart Codex after configuring it. This opt-in uses Codex's OpenAI
+authentication, disables request compression, and keeps the existing
+`copilot-bridge` provider intact. The bridge still authenticates independently
+to Copilot. The stock `Routing.ImageModelAliases` maps Codex's `gpt-image-2`
+request to `gpt-image-2.5-flare`; edit or clear that array to change or disable
+the mapping. Copilot's Responses API rejected its separate hosted
+`image_generation` tool in the tested account.
+
 It ships as a single ~14 MB native executable with **no .NET runtime to install**,
 for win-x64, win-arm64, linux-x64, and osx-arm64.
 
