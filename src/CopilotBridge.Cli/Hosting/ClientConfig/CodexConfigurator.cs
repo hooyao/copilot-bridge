@@ -62,10 +62,12 @@ internal sealed class CodexConfigurator : IClientConfigurator
         var doc = Tomlyn.Parsing.SyntaxParser.Parse(text, sourcePath);
         if (doc.HasErrors)
             throw new ClientConfigException("Existing config.toml has TOML syntax errors. Refusing to edit it.");
+        RejectConflictingNativeImagesRepresentations(doc);
         var native = FindTable(doc, NativeImagesProviderTableName);
         if (FindTable(doc, NativeImagesProviderTableName + ".auth") is not null
-            || (native is not null && native.Items.OfType<KeyValueSyntax>().Any(kv =>
-                IsAuthKey(kv.Key) || KeyName(kv.Key) is "env_key" or "experimental_bearer_token")))
+            || HasInlineOrDottedAuth(native)
+            || FindTableValueDisplay(native, "env_key") is not null
+            || FindTableValueDisplay(native, "experimental_bearer_token") is not null)
             throw new ClientConfigException($"Existing [{NativeImagesProviderTableName}] has conflicting authentication; refusing to overwrite it.");
 
         UpsertTopLevelString(doc, ModelProviderKey, NativeImagesProviderName);
@@ -195,7 +197,8 @@ internal sealed class CodexConfigurator : IClientConfigurator
                     drift.Add("native image mode requires HTTP Responses transport");
                 if (FindTableValueDisplay(FindTable(doc, "features"), "enable_request_compression") != "false")
                     drift.Add("native image mode requires uncompressed requests");
-                if (authTable is not null || FindTableValueDisplay(providerTable, "env_key") is not null
+                if (authTable is not null || HasInlineOrDottedAuth(providerTable)
+                    || FindTableValueDisplay(providerTable, "env_key") is not null
                     || FindTableValueDisplay(providerTable, "experimental_bearer_token") is not null)
                     drift.Add("native image mode has conflicting provider authentication");
             }
@@ -346,6 +349,31 @@ internal sealed class CodexConfigurator : IClientConfigurator
     private static bool IsAuthKey(KeySyntax? key)
     {
         return string.Equals(KeyPart(key?.Key), "auth", StringComparison.Ordinal);
+    }
+
+    private static bool HasInlineOrDottedAuth(TableSyntax? table) =>
+        table is not null && table.Items.OfType<KeyValueSyntax>().Any(kv => IsAuthKey(kv.Key));
+
+    private static void RejectConflictingNativeImagesRepresentations(DocumentSyntax doc)
+    {
+        foreach (var kv in doc.KeyValues)
+        {
+            var first = KeyPart(kv.Key?.Key);
+            if (string.Equals(first, "features", StringComparison.Ordinal))
+                throw new ClientConfigException(
+                    "Existing features use an inline or dotted representation. Convert it to a [features] table before enabling native images.");
+            if (!string.Equals(first, "model_providers", StringComparison.Ordinal) || kv.Key is null) continue;
+            var parts = kv.Key.DotKeys.ToArray();
+            if (parts.Length == 0 || string.Equals(KeyPart(parts[0].Key), NativeImagesProviderName, StringComparison.Ordinal))
+                throw new ClientConfigException(
+                    $"Existing model_providers use an inline or dotted representation conflicting with [{NativeImagesProviderTableName}]. Refusing to overwrite it.");
+        }
+
+        var parent = FindTable(doc, "model_providers");
+        if (parent is not null && parent.Items.OfType<KeyValueSyntax>().Any(kv =>
+            string.Equals(KeyPart(kv.Key?.Key), NativeImagesProviderName, StringComparison.Ordinal)))
+            throw new ClientConfigException(
+                $"Existing [{NativeImagesProviderTableName}] uses an inline or dotted representation. Refusing to overwrite it.");
     }
 
     private static TableSyntax AppendTable(DocumentSyntax doc, string tableName)

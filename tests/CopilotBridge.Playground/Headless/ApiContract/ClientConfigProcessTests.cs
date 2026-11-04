@@ -52,6 +52,25 @@ public sealed class ClientConfigProcessTests
         Assert.Contains("[codex / global] configured", status.Stdout);
     }
 
+    [Theory]
+    [InlineData("features = { multi_agent = true }")]
+    [InlineData("features.multi_agent = true")]
+    public async Task Native_image_configuration_leaves_inline_and_dotted_features_unchanged(string setting)
+    {
+        var executable = ServeProcess.LocateBridgeExecutable();
+        using var isolated = ClientBehaviorSupport.NewWorkDir("native-image-config-conflict");
+        var path = Path.Combine(isolated.Path, "config.toml");
+        var original = setting + "\n";
+        File.WriteAllText(path, original);
+        var result = await RunCliAsync(executable,
+            ["config", "codex", "--native-images"],
+            new Dictionary<string, string?> { ["CODEX_HOME"] = isolated.Path });
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("features", result.Stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(original, File.ReadAllText(path));
+        Assert.False(File.Exists(path + ".bak"));
+    }
+
     [Fact]
     public async Task Real_config_commands_preserve_every_client_behavior_field()
     {
