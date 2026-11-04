@@ -6,6 +6,20 @@ xUnit drives the real client and captures evidence, then the
 [`real-client-verify` skill](../../.agents/skills/real-client-verify/SKILL.md)
 judges the client's execution and logs.
 
+## Images API
+
+`ImagesSdkTests` uses the real OpenAI Python SDK and Pillow to generate an image
+and edit it through a bridge subprocess, then decodes both returned PNGs. It uses
+a purpose-built non-refreshable version-2 credential source. If no source is
+configured it stages a temporary credential from `gh auth token`. Do not stage an
+installed refreshable credential as the test source.
+
+```pwsh
+$env:COPILOT_BRIDGE_TEST_DIRECT_CREDENTIAL_SOURCE_DIRECTORY = '<purpose-built version-2 credential directory>'
+$env:COPILOT_BRIDGE_TEST_OPENAI_PYTHON = '<python executable with openai and pillow>'
+dotnet test tests/CopilotBridge.Playground --filter "FullyQualifiedName~ImagesSdkTests" --logger "console;verbosity=detailed"
+```
+
 ## Codex Astra vision
 
 The two `CodexVisionBehaviorTests` cases exercise the stock

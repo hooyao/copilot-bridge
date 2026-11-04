@@ -39,6 +39,9 @@ internal static class UpstreamHttpClientNames
     /// </summary>
     public const string Responses = "copilot-responses";
 
+    /// <summary>Image generation and edits have an independent connection pool.</summary>
+    public const string Images = "copilot-images";
+
     /// <summary>
     /// Short Copilot <b>metadata</b> calls that are not model turns:
     /// <c>/models</c> and <c>/v1/messages/count_tokens</c>.

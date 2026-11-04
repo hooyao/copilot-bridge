@@ -133,3 +133,13 @@ Durable record of choices and the reason — kept here rather than scattered thr
 | 2026-08-26 | A conspicuous top-level Authentication switch keeps official Copilot Plugin v3 as the default but can opt the next login into an explicitly configured OAuth App, persisted as refreshable direct credential version 4. | A project-owned public Device Flow client isolates its ten-token pool without requiring Marketplace publication or a shipped secret. The setting is deliberately false by default, affects only explicit future login, and records the actual issuer so config changes cannot break refresh. Live proof found custom OAuth plus `vscode-chat` authenticated but exposed only legacy models and rejected gpt-5.6; scoping GitHub Copilot SDK's `copilot-developer-cli` integration identity to v4 completed a real Codex multi-tool loop. Older versions retain `vscode-chat`; v4 never enters the App-identity-sensitive internal token exchange. |
 
 | 2026-10-27 | Added exact Nano, GPT-6.1 Terra, and MAI-Code 2 Flash Responses profiles and Terra picker metadata | Exact live probes and real Codex 0.164.0-alpha.11.1 multi-tool tasks proved all three models. Their accepted efforts are respectively none/low/medium/high/xhigh; none/low/medium/high/xhigh/max; and minimal/none/low/medium/high/xhigh/max. Rejected efforts fall back to low; MAI 2 raises minimal only with web_search. The existing uniform field/tool rejections remain. Terra's complete official resource is pinned to 126a0ee92ed2c5e73cd8a8f7e37563e8527552d7 and supplemented into old client catalogs; Ultra is filtered from both supplemental and newer baseline rows without modifying the source. Its inconsistent live context limits retain reviewed official limits. Nano/MAI 2 remain explicit-id only because no complete official picker resources were found. Luna Utility returned integrator-unavailable 400; Existing profiles, including administrator-disabled Claude models, were preserved. |
+
+## 2026-11-04 — Copilot Images API passthrough
+
+Copilot discovery advertises `gpt-image-2.5-flare` as an image model on
+`/v1/images/generations` and `/v1/images/edits`, not a Responses model. Live
+probes generated a PNG and edited it using multipart input. The bridge exposes
+both routes under `/v1` and `/codex`, preserving request bytes and content type
+and relaying the upstream response. An OpenAI Python SDK client generated and
+edited decodable PNGs through a separate bridge process. No Codex text-model
+profile or picker entry is inferred from this image capability.
