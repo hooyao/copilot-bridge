@@ -23,6 +23,8 @@ namespace CopilotBridge.Cli.Hosting.ClientConfig;
 internal sealed class CodexConfigurator : IClientConfigurator
 {
     private const string ProviderName = "copilot-bridge";
+    private const string NativeImagesProviderName = "copilot-bridge-native-images";
+    private const string NativeImagesProviderTableName = "model_providers." + NativeImagesProviderName;
     private const string ModelProviderKey = "model_provider";
     private const string ProviderTableName = "model_providers.copilot-bridge";
     private const string ProviderAuthTableName = ProviderTableName + ".auth";
@@ -41,6 +43,52 @@ internal sealed class CodexConfigurator : IClientConfigurator
             original, connection, CodexProviderAuthInvocation.ResolveCurrent(), path);
 
         return new ConfigPlan(ClientId, scope, path, newContent, original, summary);
+    }
+
+    internal ConfigPlan PlanNativeImages(BridgeConnection connection, ConfigScope scope)
+    {
+        var path = ResolvePath();
+        var original = File.Exists(path) ? File.ReadAllText(path) : null;
+        var (content, summary) = BuildNativeImagesContent(original, connection, path);
+        return new ConfigPlan(ClientId, scope, path, content, original, summary);
+    }
+
+    /// <summary>Opt-in native Images mode; leaves the existing bridge provider intact.</summary>
+    internal static (string Content, IReadOnlyList<string> Summary) BuildNativeImagesContent(
+        string? original, BridgeConnection connection, string sourcePath = "config.toml")
+    {
+        var text = original ?? string.Empty;
+        if (text.Length > 0 && !text.EndsWith('\n')) text += "\n";
+        var doc = Tomlyn.Parsing.SyntaxParser.Parse(text, sourcePath);
+        if (doc.HasErrors)
+            throw new ClientConfigException("Existing config.toml has TOML syntax errors. Refusing to edit it.");
+        RejectConflictingNativeImagesRepresentations(doc);
+        var native = FindTable(doc, NativeImagesProviderTableName);
+        if (FindTable(doc, NativeImagesProviderTableName + ".auth") is not null
+            || HasInlineOrDottedAuth(native)
+            || FindTableValueDisplay(native, "env_key") is not null
+            || FindTableValueDisplay(native, "experimental_bearer_token") is not null)
+            throw new ClientConfigException($"Existing [{NativeImagesProviderTableName}] has conflicting authentication; refusing to overwrite it.");
+
+        UpsertTopLevelString(doc, ModelProviderKey, NativeImagesProviderName);
+        native ??= AppendTable(doc, NativeImagesProviderTableName);
+        UpsertTableValue(native, "name", TomlBasicString(NativeImagesProviderName));
+        UpsertTableValue(native, "base_url", TomlBasicString(connection.CodexBaseUrl));
+        UpsertTableValue(native, "wire_api", TomlBasicString(WireApi));
+        UpsertTableValue(native, "requires_openai_auth", "true");
+        UpsertTableValue(native, "supports_websockets", "false");
+        var features = FindTable(doc, "features") ?? AppendTable(doc, "features");
+        UpsertTableValue(features, "enable_request_compression", "false");
+        var content = doc.ToString();
+        if (Tomlyn.Parsing.SyntaxParser.Parse(content, sourcePath).HasErrors)
+            throw new ClientConfigException("The planned Codex config is not valid TOML. Refusing to write it.");
+        return (content,
+        [
+            $"set {ModelProviderKey} = \"{NativeImagesProviderName}\"",
+            $"upsert [{NativeImagesProviderTableName}] with the bridge URL and OpenAI authentication",
+            "disable Codex request compression (the bridge accepts uncompressed Responses requests)",
+            "requires a Codex ChatGPT login; the existing copilot-bridge provider is preserved",
+        ]);
     }
 
     /// <summary>
@@ -126,36 +174,54 @@ internal sealed class CodexConfigurator : IClientConfigurator
         }
 
         var provider = FindTopLevelString(doc, ModelProviderKey);
-        var providerTable = FindTable(doc, ProviderTableName);
-        var authTable = FindTable(doc, ProviderAuthTableName);
+        var isNativeImages = provider == NativeImagesProviderName;
+        var currentTableName = isNativeImages ? NativeImagesProviderTableName : ProviderTableName;
+        var providerTable = FindTable(doc, currentTableName);
+        var authTable = FindTable(doc, currentTableName + ".auth");
         var baseUrl = FindTableString(providerTable, "base_url");
         var expectedInvocation = CodexProviderAuthInvocation.ResolveCurrent();
 
-        var configured = provider == ProviderName;
+        var configured = provider == ProviderName || isNativeImages;
         var drift = new List<string>();
         if (configured)
         {
-            if (!string.Equals(FindTableString(providerTable, "name"), ProviderName, StringComparison.Ordinal))
+            if (!string.Equals(FindTableString(providerTable, "name"), isNativeImages ? NativeImagesProviderName : ProviderName, StringComparison.Ordinal))
                 drift.Add("provider name differs from the managed value");
             if (!string.Equals(FindTableString(providerTable, "wire_api"), WireApi, StringComparison.Ordinal))
                 drift.Add("provider wire API differs from the managed value");
-            if (!string.Equals(FindTableString(authTable, "command"), expectedInvocation.Command, StringComparison.Ordinal))
-                drift.Add("discovery-auth command is missing or stale");
-            if (!SequenceEqual(FindTableStringArray(authTable, "args"), expectedInvocation.Args))
-                drift.Add("discovery-auth arguments are missing or stale");
-            if (FindTableInteger(authTable, "timeout_ms") != CodexProviderAuthInvocation.TimeoutMs)
-                drift.Add("discovery-auth timeout is missing or stale");
-            if (FindTableInteger(authTable, "refresh_interval_ms") != CodexProviderAuthInvocation.RefreshIntervalMs)
-                drift.Add("discovery-auth refresh policy is missing or stale");
+            if (isNativeImages)
+            {
+                if (FindTableValueDisplay(providerTable, "requires_openai_auth") != "true")
+                    drift.Add("native image mode requires OpenAI authentication");
+                if (FindTableValueDisplay(providerTable, "supports_websockets") != "false")
+                    drift.Add("native image mode requires HTTP Responses transport");
+                if (FindTableValueDisplay(FindTable(doc, "features"), "enable_request_compression") != "false")
+                    drift.Add("native image mode requires uncompressed requests");
+                if (authTable is not null || HasInlineOrDottedAuth(providerTable)
+                    || FindTableValueDisplay(providerTable, "env_key") is not null
+                    || FindTableValueDisplay(providerTable, "experimental_bearer_token") is not null)
+                    drift.Add("native image mode has conflicting provider authentication");
+            }
+            else
+            {
+                if (!string.Equals(FindTableString(authTable, "command"), expectedInvocation.Command, StringComparison.Ordinal))
+                    drift.Add("discovery-auth command is missing or stale");
+                if (!SequenceEqual(FindTableStringArray(authTable, "args"), expectedInvocation.Args))
+                    drift.Add("discovery-auth arguments are missing or stale");
+                if (FindTableInteger(authTable, "timeout_ms") != CodexProviderAuthInvocation.TimeoutMs)
+                    drift.Add("discovery-auth timeout is missing or stale");
+                if (FindTableInteger(authTable, "refresh_interval_ms") != CodexProviderAuthInvocation.RefreshIntervalMs)
+                    drift.Add("discovery-auth refresh policy is missing or stale");
+            }
         }
         var details = new List<string>
         {
             $"{ModelProviderKey} = {provider ?? "(unset)"}",
-            $"[{ProviderTableName}].base_url = {baseUrl ?? "(unset)"}",
-            $"[{ProviderTableName}].stream_idle_timeout_ms = {FindTableValueDisplay(providerTable, "stream_idle_timeout_ms") ?? "(unset)"}",
-            $"[{ProviderTableName}].request_max_retries = {FindTableValueDisplay(providerTable, "request_max_retries") ?? "(unset)"}",
-            $"[{ProviderTableName}].stream_max_retries = {FindTableValueDisplay(providerTable, "stream_max_retries") ?? "(unset)"}",
-            $"[{ProviderAuthTableName}] = {(authTable is null ? "missing" : "present")}",
+            $"[{currentTableName}].base_url = {baseUrl ?? "(unset)"}",
+            $"[{currentTableName}].stream_idle_timeout_ms = {FindTableValueDisplay(providerTable, "stream_idle_timeout_ms") ?? "(unset)"}",
+            $"[{currentTableName}].request_max_retries = {FindTableValueDisplay(providerTable, "request_max_retries") ?? "(unset)"}",
+            $"[{currentTableName}].stream_max_retries = {FindTableValueDisplay(providerTable, "stream_max_retries") ?? "(unset)"}",
+            isNativeImages ? "native image mode: Codex ChatGPT login required" : $"[{ProviderAuthTableName}] = {(authTable is null ? "missing" : "present")}",
         };
 
         return new ConfigState(ClientId, scope, path, Exists: true,
@@ -283,6 +349,31 @@ internal sealed class CodexConfigurator : IClientConfigurator
     private static bool IsAuthKey(KeySyntax? key)
     {
         return string.Equals(KeyPart(key?.Key), "auth", StringComparison.Ordinal);
+    }
+
+    private static bool HasInlineOrDottedAuth(TableSyntax? table) =>
+        table is not null && table.Items.OfType<KeyValueSyntax>().Any(kv => IsAuthKey(kv.Key));
+
+    private static void RejectConflictingNativeImagesRepresentations(DocumentSyntax doc)
+    {
+        foreach (var kv in doc.KeyValues)
+        {
+            var first = KeyPart(kv.Key?.Key);
+            if (string.Equals(first, "features", StringComparison.Ordinal))
+                throw new ClientConfigException(
+                    "Existing features use an inline or dotted representation. Convert it to a [features] table before enabling native images.");
+            if (!string.Equals(first, "model_providers", StringComparison.Ordinal) || kv.Key is null) continue;
+            var parts = kv.Key.DotKeys.ToArray();
+            if (parts.Length == 0 || string.Equals(KeyPart(parts[0].Key), NativeImagesProviderName, StringComparison.Ordinal))
+                throw new ClientConfigException(
+                    $"Existing model_providers use an inline or dotted representation conflicting with [{NativeImagesProviderTableName}]. Refusing to overwrite it.");
+        }
+
+        var parent = FindTable(doc, "model_providers");
+        if (parent is not null && parent.Items.OfType<KeyValueSyntax>().Any(kv =>
+            string.Equals(KeyPart(kv.Key?.Key), NativeImagesProviderName, StringComparison.Ordinal)))
+            throw new ClientConfigException(
+                $"Existing [{NativeImagesProviderTableName}] uses an inline or dotted representation. Refusing to overwrite it.");
     }
 
     private static TableSyntax AppendTable(DocumentSyntax doc, string tableName)

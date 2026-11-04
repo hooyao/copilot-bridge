@@ -6,6 +6,30 @@ xUnit drives the real client and captures evidence, then the
 [`real-client-verify` skill](../../.agents/skills/real-client-verify/SKILL.md)
 judges the client's execution and logs.
 
+## Images API
+
+`ImagesSdkTests` uses the real OpenAI Python SDK and Pillow to generate an image
+and edit it through a bridge subprocess, then decodes both returned PNGs. It uses
+a purpose-built non-refreshable version-2 credential source. If no source is
+configured it stages a temporary credential from `gh auth token`. Do not stage an
+installed refreshable credential as the test source.
+
+```pwsh
+$env:COPILOT_BRIDGE_TEST_DIRECT_CREDENTIAL_SOURCE_DIRECTORY = '<purpose-built version-2 credential directory>'
+$env:COPILOT_BRIDGE_TEST_OPENAI_PYTHON = '<python executable with openai and pillow>'
+dotnet test tests/CopilotBridge.Playground --filter "FullyQualifiedName~ImagesSdkTests" --logger "console;verbosity=detailed"
+```
+
+The Codex imagegen CLI case also needs the installed `imagegen.py` script. Set
+`COPILOT_BRIDGE_TEST_IMAGEGEN_SCRIPT` to its absolute path if it is not at
+`$CODEX_HOME/skills/.system/imagegen/scripts/image_gen.py`. The
+`CodexImagesBehaviorTests` native case runs a real Codex app-server task; set
+`COPILOT_BRIDGE_TEST_CODEX_VERSION` to the installed client version and apply
+the client-log verdict described by the real-client-verify skill. Its isolated
+Codex home uses synthetic ChatGPT authentication to enable the native tool; a
+purpose-built GitHub CLI OAuth credential calls real Copilot. The CLI fallback
+case uses the `PYTHONPATH` of the test process for the OpenAI SDK.
+
 ## Codex Astra vision
 
 The two `CodexVisionBehaviorTests` cases exercise the stock

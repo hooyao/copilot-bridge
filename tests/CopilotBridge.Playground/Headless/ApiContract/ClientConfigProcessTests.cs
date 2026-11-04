@@ -18,6 +18,60 @@ public sealed class ClientConfigProcessTests
     public ClientConfigProcessTests(ITestOutputHelper output) => _output = output;
 
     [Fact]
+    public async Task Native_image_configuration_command_preserves_the_existing_provider()
+    {
+        var executable = ServeProcess.LocateBridgeExecutable();
+        using var isolated = ClientBehaviorSupport.NewWorkDir("native-image-config");
+        var path = Path.Combine(isolated.Path, "config.toml");
+        const string original = """
+            model_provider = "copilot-bridge"
+            [model_providers.copilot-bridge]
+            base_url = "http://localhost:8765/codex"
+            [model_providers.copilot-bridge.auth]
+            command = "preserved-helper"
+            """;
+        File.WriteAllText(path, original);
+        var result = await RunCliAsync(executable,
+            ["config", "codex", "--native-images", "--port", "19001"],
+            new Dictionary<string, string?> { ["CODEX_HOME"] = isolated.Path });
+        Assert.True(result.ExitCode == 0, result.Stderr);
+        var config = File.ReadAllText(path);
+        Assert.Contains("model_provider = \"copilot-bridge-native-images\"", config);
+        Assert.Contains("base_url = \"http://localhost:19001/codex\"", config);
+        Assert.Contains("requires_openai_auth = true", config);
+        Assert.Contains("enable_request_compression = false", config);
+        Assert.Contains("command = \"preserved-helper\"", config);
+        Assert.Equal(original, File.ReadAllText(path + ".bak"));
+        var status = await RunCliAsync(executable, ["config", "status", "--port", "19001"],
+            new Dictionary<string, string?>
+            {
+                ["CODEX_HOME"] = isolated.Path,
+                ["COPILOT_BRIDGE_TEST_CLAUDE_SETTINGS_PATH"] = Path.Combine(isolated.Path, "claude.json"),
+            });
+        Assert.Equal(0, status.ExitCode);
+        Assert.Contains("[codex / global] configured", status.Stdout);
+    }
+
+    [Theory]
+    [InlineData("features = { multi_agent = true }")]
+    [InlineData("features.multi_agent = true")]
+    public async Task Native_image_configuration_leaves_inline_and_dotted_features_unchanged(string setting)
+    {
+        var executable = ServeProcess.LocateBridgeExecutable();
+        using var isolated = ClientBehaviorSupport.NewWorkDir("native-image-config-conflict");
+        var path = Path.Combine(isolated.Path, "config.toml");
+        var original = setting + "\n";
+        File.WriteAllText(path, original);
+        var result = await RunCliAsync(executable,
+            ["config", "codex", "--native-images"],
+            new Dictionary<string, string?> { ["CODEX_HOME"] = isolated.Path });
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("features", result.Stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(original, File.ReadAllText(path));
+        Assert.False(File.Exists(path + ".bak"));
+    }
+
+    [Fact]
     public async Task Real_config_commands_preserve_every_client_behavior_field()
     {
         var bridge = ServeProcess.LocateBridgeExecutable();

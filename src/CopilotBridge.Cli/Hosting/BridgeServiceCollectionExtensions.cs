@@ -141,6 +141,11 @@ internal static class BridgeServiceCollectionExtensions
             http.Timeout = Timeout.InfiniteTimeSpan;
             http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
         }).RemoveAllLoggers();
+        services.AddHttpClient(UpstreamHttpClientNames.Images, http =>
+        {
+            http.Timeout = Timeout.InfiniteTimeSpan;
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("copilot-bridge/0.1");
+        }).RemoveAllLoggers();
         // Auth keeps a finite timeout: these are short token calls on a refresh
         // timer, never long-lived streams, and a hung one should fail fast.
         services.AddHttpClient(UpstreamHttpClientNames.GitHubAuth, http =>
@@ -198,6 +203,7 @@ internal static class BridgeServiceCollectionExtensions
         services.AddSingleton<IAuthService>(sp => sp.GetRequiredService<AuthService>());
         services.AddSingleton<CopilotHeaderFactory>();
         services.AddSingleton<ICopilotClient, CopilotClient>();
+        services.AddSingleton<IImagesClient, ImagesClient>();
         // AddHybridCache uses TryAdd for its reflection-based JSON fallback.
         // Pre-register an explicit-only factory so runtime resolution never
         // selects that fallback; every value type used below must supply its

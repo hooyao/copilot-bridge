@@ -31,7 +31,8 @@ internal sealed record CodexAppServerInvocation(
     IReadOnlyList<string>? RequiredListedReasoningEfforts = null,
     JsonArray? InjectedItems = null,
     IReadOnlyList<string>? LocalImagePaths = null,
-    bool EnableMultiAgent = false);
+    bool EnableMultiAgent = false,
+    bool UseSyntheticChatGptAuth = false);
 
 internal sealed record CodexAppServerResult(
     int ExitCode,
@@ -60,7 +61,15 @@ internal static class CodexAppServerProcess
 
         var connection = new BridgeConnection(new Uri(invocation.BridgeBaseUrl).Port);
         string config;
-        if (invocation.ModelCatalogTemplateSlug is { Length: > 0 } templateSlug)
+        if (invocation.UseSyntheticChatGptAuth)
+        {
+            (config, _) = CodexConfigurator.BuildNativeImagesContent(null, connection);
+            // The synthetic auth has no real ChatGPT apps backend; isolate those
+            // services without changing the product's native-image config.
+            config = config.Replace("enable_request_compression = false\n",
+                "enable_request_compression = false\napps = false\nplugins = false\nremote_plugin = false\n", StringComparison.Ordinal);
+        }
+        else if (invocation.ModelCatalogTemplateSlug is { Length: > 0 } templateSlug)
         {
             // A local startup catalog must remain authoritative for this diagnostic
             // case. Command auth would fetch /codex/models after startup and replace
@@ -94,6 +103,27 @@ internal static class CodexAppServerProcess
                 original: null,
                 connection,
                 CodexProviderAuthInvocation.ResolveCurrent());
+        }
+        if (invocation.UseSyntheticChatGptAuth)
+        {
+            config = "chatgpt_base_url = \"http://127.0.0.1:9\"\n" + config;
+            static string B64(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text))
+                .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            var header = B64("{\"alg\":\"none\",\"typ\":\"JWT\"}");
+            var payload = B64("{\"sub\":\"synthetic\",\"exp\":4102444800,\"https://api.openai.com/auth\":{\"chatgpt_account_id\":\"synthetic\",\"chatgpt_user_id\":\"synthetic\",\"chatgpt_plan_type\":\"plus\"}}");
+            var syntheticToken = $"{header}.{payload}.signature";
+            var authFile = new JsonObject
+            {
+                ["tokens"] = new JsonObject
+                {
+                    ["id_token"] = syntheticToken,
+                    ["access_token"] = syntheticToken,
+                    ["refresh_token"] = "synthetic",
+                    ["account_id"] = "synthetic",
+                },
+                ["last_refresh"] = DateTimeOffset.UtcNow.ToString("O"),
+            };
+            await File.WriteAllTextAsync(Path.Combine(invocation.CodexHome, "auth.json"), authFile.ToJsonString(), cancellationToken);
         }
         if (invocation.StreamIdleTimeoutMs is not null
             || invocation.RequestMaxRetries is not null
@@ -146,6 +176,8 @@ internal static class CodexAppServerProcess
         start.Environment["CODEX_HOME"] = invocation.CodexHome;
         start.Environment["CODEX_SQLITE_HOME"] = dispatchHome;
         start.Environment["BRIDGE_DUMMY_KEY"] = "dummy-bridge-bypass";
+        if (invocation.UseSyntheticChatGptAuth)
+            start.Environment.Remove("OPENAI_API_KEY");
         // Keep stderr bounded. The SQLite layer has its own TRACE target filter;
         // thread/delete below explicitly flushes that independent sink.
         start.Environment["RUST_LOG"] = "warn";
@@ -220,7 +252,8 @@ internal static class CodexAppServerProcess
             var threadStartParams = new JsonObject
             {
                 ["model"] = invocation.Model,
-                ["modelProvider"] = "copilot-bridge",
+                ["modelProvider"] = invocation.UseSyntheticChatGptAuth
+                    ? "copilot-bridge-native-images" : "copilot-bridge",
                 ["cwd"] = Path.GetFullPath(invocation.WorkingDirectory),
                 ["approvalPolicy"] = "never",
                 ["sandbox"] = "danger-full-access",

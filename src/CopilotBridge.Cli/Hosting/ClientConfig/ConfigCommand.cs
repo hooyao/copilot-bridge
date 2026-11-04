@@ -23,7 +23,7 @@ internal static class ConfigCommand
     /// <param name="showContent">When true (and <paramref name="dryRun"/>), also print
     /// the full merged file content. Off by default so preserved secrets are not echoed.</param>
     public static int Configure(string clientId, ConfigScope scope, int? cliPort, bool dryRun,
-        bool showContent = false)
+        bool showContent = false, bool nativeImages = false)
     {
         if (cliPort is { } p && p is < 1 or > 65535)
         {
@@ -53,7 +53,9 @@ internal static class ConfigCommand
         ConfigPlan plan;
         try
         {
-            plan = configurator.Plan(connection, scope);
+            plan = nativeImages && configurator is CodexConfigurator codex
+                ? codex.PlanNativeImages(connection, scope)
+                : configurator.Plan(connection, scope);
         }
         catch (Exception ex)
         {

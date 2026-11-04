@@ -1,5 +1,22 @@
 ﻿# Bridge Pipeline Design
 
+> **Images passthrough:** `POST /v1/images/generations` and `/v1/images/edits`
+> (also `/codex/images/generations` and `/codex/images/edits`) forward the
+> JSON or multipart body and content type to the corresponding Copilot
+> `/v1/images/...` endpoint, with only configured image-model substitutions.
+> They relay response bytes, status, and end-to-end
+> headers without entering the model-routing or Responses pipelines. Images use
+> a dedicated authenticated connection pool and the first-byte timeout; the
+> body stream has no bridge keepalives or stream-idle timeout. Authentication
+> rejection may be replayed once; transient send failures are not retried because
+> generation may already have incurred work upstream.
+> Codex image model substitutions are configured in the operator-owned
+> `Routing.ImageModelAliases` array. The stock entry maps `gpt-image-2` to the
+> probed `gpt-image-2.5-flare` on `/codex/images/...`, preserving all other JSON
+> bytes. An empty array disables this rewrite; `/v1/images/...` stays opaque.
+> Codex's native image tool additionally requires its ChatGPT authentication
+> mode, uncompressed requests, and a compatible provider configuration.
+>
 > Status: v0.6 · 2026-08-05
 >
 > This document is the architectural contract for the bridge's request/response

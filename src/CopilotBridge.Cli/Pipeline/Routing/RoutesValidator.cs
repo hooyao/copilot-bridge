@@ -40,6 +40,17 @@ internal static class RoutesValidator
 
     public static void Validate(RoutesConfig config)
     {
+        if (config.ImageModelAliases is null)
+            throw new InvalidOperationException("appsettings.json: Routing.ImageModelAliases must be an array.");
+        var imageModels = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < config.ImageModelAliases.Count; i++)
+        {
+            var alias = config.ImageModelAliases[i];
+            if (alias is null || string.IsNullOrWhiteSpace(alias.From) || string.IsNullOrWhiteSpace(alias.To))
+                throw new InvalidOperationException($"appsettings.json: Routing.ImageModelAliases[{i}] requires non-empty From and To model ids.");
+            if (!imageModels.Add(alias.From))
+                throw new InvalidOperationException($"appsettings.json: Routing.ImageModelAliases[{i}] duplicates source model '{alias.From}'.");
+        }
         for (var i = 0; i < config.Locations.Count; i++)
         {
             var loc = config.Locations[i];
