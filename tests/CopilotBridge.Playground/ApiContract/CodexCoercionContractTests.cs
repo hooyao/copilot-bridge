@@ -66,20 +66,20 @@ public class CodexCoercionContractTests
     }
 
     /// <summary>
-    /// BECAUSE gpt-5-mini (small profile) still rejects <c>xhigh</c> and
+    /// BECAUSE mai-code-1.1-flash (small profile) still rejects <c>xhigh</c> and
     /// <c>none</c>, T2's clamps (xhigh→high, none→drop) are still needed.
     /// </summary>
     [Fact]
     public async Task SmallModel_StillRejectsXhighAndNone_ClampsStillNeeded()
     {
         using var client = new PlaygroundClient();
-        Assert.False(await ProbeEffort(client, "gpt-5-mini", "xhigh"),
-            "gpt-5-mini now ACCEPTS xhigh — the small-profile clamp may be unnecessary; reconcile.");
-        Assert.False(await ProbeEffort(client, "gpt-5-mini", "none"),
-            "gpt-5-mini now ACCEPTS none — reconcile the small-profile coercion.");
+        Assert.False(await ProbeEffort(client, "mai-code-1.1-flash", "xhigh"),
+            "mai-code-1.1-flash now ACCEPTS xhigh — the small-profile clamp may be unnecessary; reconcile.");
+        Assert.False(await ProbeEffort(client, "mai-code-1.1-flash", "none"),
+            "mai-code-1.1-flash now ACCEPTS none — reconcile the small-profile coercion.");
         // The clamp target (high) IS accepted.
-        Assert.True(await ProbeEffort(client, "gpt-5-mini", "high"),
-            "gpt-5-mini no longer accepts 'high' — the xhigh clamp target is wrong.");
+        Assert.True(await ProbeEffort(client, "mai-code-1.1-flash", "high"),
+            "mai-code-1.1-flash no longer accepts 'high' — the xhigh clamp target is wrong.");
     }
 
     /// <summary>
@@ -95,7 +95,7 @@ public class CodexCoercionContractTests
         Assert.Contains("low", large.AcceptedEfforts);    // clamp target for minimal
         Assert.DoesNotContain("minimal", large.AcceptedEfforts);
 
-        var small = catalog.Get("gpt-5-mini")!;
+        var small = catalog.Get("mai-code-1.1-flash")!;
         Assert.Contains("high", small.AcceptedEfforts);   // clamp target for xhigh
         Assert.DoesNotContain("xhigh", small.AcceptedEfforts);
         Assert.DoesNotContain("none", small.AcceptedEfforts);

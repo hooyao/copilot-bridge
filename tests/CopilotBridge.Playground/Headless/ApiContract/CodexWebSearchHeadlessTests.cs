@@ -59,7 +59,7 @@ public class CodexWebSearchHeadlessTests : IClassFixture<BridgeFixture>
         var result = await CodexProcess.RunAsync(new CodexInvocation(
             BridgeBaseUrl: _bridge.BaseUrl,
             Prompt: prompt,
-            Model: "gpt-5.5",
+            Model: "gpt-6.2-sol",
             Timeout: TimeSpan.FromMinutes(6),
             // Force hosted search into live-fetch mode (default is "cached"); a
             // non-responses-lite model then emits the {type:web_search} tool.

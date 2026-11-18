@@ -21,9 +21,6 @@ internal sealed class CopilotModelRegistry : IModelRegistry
     private static readonly HashSet<string> ResponsesModelIds = new(StringComparer.OrdinalIgnoreCase)
     {
         "gpt-5.3-codex",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.5",
         // gpt-5.6 codename slots (2026-07/08 reconciliation). All serve
         // /responses (endpoints=[/responses,ws:/responses]) and were live-probed
         // 200 on a minimal request — ResponsesProbe.Gpt56_LivenessProbe. WITHOUT
@@ -32,7 +29,6 @@ internal sealed class CopilotModelRegistry : IModelRegistry
         "gpt-5.6-luna",
         "gpt-5.6-sol",
         "gpt-5.6-sol-fast",
-        "gpt-5.6-terra",
         // Copilot discovery + ResponsesProbe.Gpt6Astra_LivenessProbe (2026-09-07):
         // exact id serves /responses and a real Codex request returns 200. Astra
         // rejects GPT-5.6's none/minimal efforts, so its wire facts live in its
@@ -46,12 +42,17 @@ internal sealed class CopilotModelRegistry : IModelRegistry
         "gpt-6-sol",
         // ResponsesProbe.Gpt61Sol_LivenessProbe (2026-10-02): exact id serves /responses.
         "gpt-6.1-sol",
+        // November2026_CandidateContracts_Probe (2026-11-18): exact-id live
+        // /responses liveness, effort/field/tool and structured output probes.
+        "gpt-6.2-astra",
+        "gpt-6.2-sol",
+        "gpt-5.6-luna-utility",
+        "mai-code-2",
         // October2026_CandidateContracts_Probe (2026-10-27): exact-id /responses
-        // liveness and request contracts confirmed; luna-utility remains unavailable.
+        // liveness and request contracts confirmed.
         "gpt-5.4-nano",
         "gpt-6.1-terra",
         "mai-code-2-flash",
-        "gpt-5-mini",
         // The 2026-10-02 exact-id probes retired mai-code-1-flash-picker (400
         // unavailable for vscode-chat) and confirmed mai-code-1.1-flash serves
         // /responses (200 — ResponsesProbe.Mai11Flash_LivenessProbe).

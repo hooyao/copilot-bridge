@@ -402,7 +402,7 @@ public class CopilotGapProbes
     /// </summary>
     [Theory]
     [InlineData("gpt-5.6-sol")]
-    [InlineData("gpt-5.5")]
+    [InlineData("gpt-6.2-sol")]
     public async Task GptResponses_WebSearchTool_ProbeNativeSearch(string model)
     {
         var payload = $$"""

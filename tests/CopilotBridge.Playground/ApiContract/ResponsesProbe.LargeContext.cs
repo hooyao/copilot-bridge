@@ -25,12 +25,9 @@ public partial class ResponsesProbe
     /// system blocks are part of the evidence.
     /// </remarks>
     [Theory]
-    [InlineData("gpt-5.4")]
-    [InlineData("gpt-5.5")]
     [InlineData("gpt-5.6-luna")]
     [InlineData("gpt-5.6-sol")]
     [InlineData("gpt-5.6-sol-fast")]
-    [InlineData("gpt-5.6-terra")]
     [InlineData("gpt-6-astra")]
     [InlineData("gpt-6-luna")]
     [InlineData("gpt-6-sol")]

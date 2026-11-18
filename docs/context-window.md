@@ -106,6 +106,21 @@
   threshold until coherent live limits permit the normal uplift. All are
   discovery metadata, not near-limit prompt admission results.
 
+- **2026-11-18 additions:** exact `gpt-6.2-astra` and `gpt-6.2-sol` both report
+  1,050,000 total / 1,050,000 prompt / 128,000 output. Prompt plus output exceeds
+  total, so the projector preserves their official Codex limits: Astra 272,000
+  context, Sol 500,000 context, both 872,000 maximum context and null explicit
+  compaction thresholds. The complete official resources require Codex 0.166.0;
+  live picker efforts exclude rejected Ultra. `gpt-5.6-luna-utility` and
+  `mai-code-2` report coherent 1,050,000 / 922,000 / 128,000 limits but have no
+  complete official picker resource; explicit-id execution is verified without
+  synthesizing context or compaction metadata. These are discovery hints, not
+  near-limit admission results. The same run confirmed `gpt-5.4`,
+  `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-terra`, and `gpt-5-mini` retired by exact
+  `model_not_supported` responses; their former capacities are historical.
+  Grok 4.6/4.7 advertise 500,000 / 372,000 / 128,000; recorded backend facts
+  do not imply a Codex picker resource or a bridge inference route.
+
 ## 1. Where the context window comes from — the client, not the server
 
 Claude Code computes the window in `getContextWindowForModel(model, betas)`

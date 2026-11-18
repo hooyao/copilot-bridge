@@ -50,7 +50,7 @@ public sealed class CodexModelsEndpointContractTests
     [InlineData("?client_version=0.145.0%2Fmain")]
     public async Task InvalidVersionQueryFailsSafely(string query)
     {
-        var result = await Invoke(query, Response("gpt-5.4"));
+        var result = await Invoke(query, Response("gpt-5.6-sol"));
 
         Assert.Equal(StatusCodes.Status400BadRequest, result.Status);
         Assert.Null(result.ETag);
@@ -61,7 +61,7 @@ public sealed class CodexModelsEndpointContractTests
     [Fact]
     public async Task SupportedRequestReturnsCodexEnvelopeEtagAndNoRawCopilotShape()
     {
-        var result = await Invoke($"?client_version={UnseenPrerelease}", Response("gpt-5.4"));
+        var result = await Invoke($"?client_version={UnseenPrerelease}", Response("gpt-5.6-sol"));
 
         Assert.Equal(StatusCodes.Status200OK, result.Status);
         Assert.Matches("^\"[0-9a-f]{64}\"$", result.ETag);
@@ -69,7 +69,7 @@ public sealed class CodexModelsEndpointContractTests
         Assert.True(doc.RootElement.TryGetProperty("models", out var models));
         Assert.Equal(JsonValueKind.Array, models.ValueKind);
         Assert.False(doc.RootElement.TryGetProperty("data", out _));
-        var model = models.EnumerateArray().Single(item => item.GetProperty("slug").GetString() == "gpt-5.4");
+        var model = models.EnumerateArray().Single(item => item.GetProperty("slug").GetString() == "gpt-5.6-sol");
         Assert.True(model.TryGetProperty("base_instructions", out _));
         Assert.False(model.TryGetProperty("capabilities", out _));
         Assert.False(model.TryGetProperty("supported_endpoints", out _));
@@ -83,7 +83,7 @@ public sealed class CodexModelsEndpointContractTests
     {
         var result = await Invoke(
             "?client_version=0.147.0",
-            Response("gpt-5.4"),
+            Response("gpt-5.6-sol"),
             "Codex Desktop/0.147.0-alpha.1.2 (Windows 10.0.26200; x86_64)");
 
         Assert.Equal(StatusCodes.Status200OK, result.Status);
@@ -95,7 +95,7 @@ public sealed class CodexModelsEndpointContractTests
     {
         var result = await Invoke(
             "?client_version=0.147.0",
-            Response("gpt-5.4"),
+            Response("gpt-5.6-sol"),
             "Codex Desktop/0.148.0-alpha.1 (Windows 10.0.26200; x86_64)");
 
         Assert.Equal(StatusCodes.Status400BadRequest, result.Status);
@@ -105,9 +105,9 @@ public sealed class CodexModelsEndpointContractTests
     [Fact]
     public async Task SameFactsYieldSameEtagAndChangedFactsYieldDifferentEtag()
     {
-        var one = await Invoke($"?client_version={UnseenPrerelease}", Response("gpt-5.4", 1_050_000, 922_000));
-        var same = await Invoke($"?client_version={UnseenPrerelease}", Response("gpt-5.4", 1_050_000, 922_000));
-        var changed = await Invoke($"?client_version={UnseenPrerelease}", Response("gpt-5.4", 1_000_000, 900_000));
+        var one = await Invoke($"?client_version={UnseenPrerelease}", Response("gpt-5.6-sol", 1_050_000, 922_000));
+        var same = await Invoke($"?client_version={UnseenPrerelease}", Response("gpt-5.6-sol", 1_050_000, 922_000));
+        var changed = await Invoke($"?client_version={UnseenPrerelease}", Response("gpt-5.6-sol", 1_000_000, 900_000));
 
         Assert.Equal(one.ETag, same.ETag);
         Assert.NotEqual(one.ETag, changed.ETag);

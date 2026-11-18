@@ -292,6 +292,39 @@ public class CodexBehaviorTests
     }
 
     /// <summary>
+    /// Exact-id GPT picker checks and explicit-id evidence where no official
+    /// client resource exists. Verdict comes from this run's client dispatch log.
+    /// </summary>
+    [Theory]
+    [InlineData("gpt-6.2-astra")]
+    [InlineData("gpt-6.2-sol")]
+    [InlineData("gpt-5.6-luna-utility")]
+    [InlineData("mai-code-2")]
+    public async Task Codex_November2026Models_MultiToolTask_ProducesDispatchLogForVerdict(string model)
+    {
+        var source = Environment.GetEnvironmentVariable("COPILOT_BRIDGE_TEST_CUSTOM_CREDENTIAL_SOURCE_DIRECTORY")
+            ?? throw new InvalidOperationException("Set the custom OAuth credential source directory.");
+        var picker = model.StartsWith("gpt-6.2-", StringComparison.Ordinal);
+        var canary = model.Replace('-', '_') + "_model_sync_canary_111826";
+        var prompt =
+            "Complete this task with separate real tool calls, inspecting each result:\n"
+            + "1. Use a shell tool to create numbers.csv containing a header value and rows 43, 47, 53.\n"
+            + "2. Use another shell tool to read numbers.csv, compute the sum and product, and save both to summary.txt.\n"
+            + "3. Use a file editing tool to append the exact line " + canary + " to summary.txt.\n"
+            + "4. Use a final shell tool to read both files and check the arithmetic. Report the sum, product and canary.";
+        await DriveAndRecordAsync(
+            "codex-november2026-" + model, prompt,
+            modelReasoningEffort: "low",
+            expectedCodexVersion: "0.167.0-alpha.4.1",
+            credentialSourceDirectory: source,
+            credentialStagingMode: CredentialStagingMode.CustomOAuthVersionFour,
+            model: model,
+            requiredListedModel: picker ? model : null,
+            requiredListedReasoningEfforts: picker ? ["low", "medium", "high", "xhigh", "max"] : null,
+            resolvedModel: model);
+    }
+
+    /// <summary>
     /// Candidate-targeted evidence for Copilot's internal-only Sol Fast id. This
     /// must remain separate from <see cref="ClientBehaviorSupport.LatestGpt"/>:
     /// Fast is an opt-in variant, not a replacement for the public Sol default.
@@ -345,33 +378,6 @@ public class CodexBehaviorTests
             model: "mai-code-1.1-flash",
             modelCatalogTemplateSlug: "gpt-5.5",
             resolvedModel: "mai-code-1.1-flash");
-    }
-
-    /// <summary>
-    /// Exact GPT-5 mini client capture for the minimal-plus-web_search rule.
-    /// The local alias supplies the reviewed client's tool behavior while each
-    /// sampling request keeps the real backend id. The skill reads the trace
-    /// and client-owned SQLite log for the tool execution verdict.
-    /// </summary>
-    [Fact]
-    public async Task Codex_Gpt5Mini_MinimalWithSearch_ProducesDispatchLogForVerdict()
-    {
-        const string model = "gpt-5-mini";
-        const string canary = "codex_gpt5mini_search_canary_10226";
-        var prompt =
-            "Use the apply_patch tool, not a shell command, to create mini_search_probe.txt "
-            + $"with exactly two lines: 2021 and {canary}. After the patch tool "
-            + "returns, use a separate shell tool call to read the file. Report both "
-            + "lines verbatim, then stop. Do not fabricate the file contents.";
-
-        await DriveAndRecordAsync(
-            "codex-gpt-5-mini-minimal-web-search",
-            prompt,
-            modelReasoningEffort: "minimal",
-            expectedCodexVersion: "0.144.6",
-            model: model,
-            modelCatalogTemplateSlug: "gpt-5.5",
-            resolvedModel: model);
     }
 
     [Fact]

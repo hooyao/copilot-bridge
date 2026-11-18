@@ -95,7 +95,7 @@ public class CodexPromptCacheHeadlessTests : IClassFixture<BridgeFixture>
 
     private static string BuildBody() => new JsonObject
     {
-        ["model"] = "gpt-5.5",
+        ["model"] = "gpt-6.2-sol",
         ["stream"] = true,
         ["store"] = false,
         // Stable cache key across both shots — what Codex Desktop sends per session.

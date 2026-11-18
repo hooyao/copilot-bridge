@@ -22,7 +22,7 @@ public sealed class CodexCatalogSnapshotContractTests
         var projected = Project(snapshot);
         var reviewedBaseline = Project([]);
 
-        foreach (var slug in new[] { "gpt-5.4", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra" })
+        foreach (var slug in new[] { "gpt-5.6-luna", "gpt-5.6-sol" })
         {
             var model = Find(projected.Models, slug);
             Assert.Equal(1_050_000, model.GetProperty("context_window").GetInt32());
@@ -43,24 +43,31 @@ public sealed class CodexCatalogSnapshotContractTests
             Assert.Equal(728_000, model.GetProperty("auto_compact_token_limit").GetInt32());
         }
 
-        Assert.Equal(400_000, Find(projected.Models, "gpt-5.4-mini").GetProperty("context_window").GetInt32());
+        // Historical discovery cannot revive a profile retired by an exact
+        // inference probe. Preserve the pinned fixture as historical evidence.
+        foreach (var slug in new[] { "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-terra" })
+        {
+            var model = Find(projected.Models, slug);
+            Assert.False(model.GetProperty("supported_in_api").GetBoolean());
+            Assert.Equal("hide", model.GetProperty("visibility").GetString());
+        }
         Assert.DoesNotContain(projected.Models,
             model => model.GetProperty("slug").GetString() == "gpt-5.6-sol-fast");
 
         // Mutate only one captured capability axis at a time. Missing/inconsistent
         // live limits keep reviewed values, a retired model is hidden, and a
         // future live-only slug is never synthesized.
-        var missing = Mutate(snapshot, "gpt-5.4", model =>
+        var missing = Mutate(snapshot, "gpt-5.6-luna", model =>
             model["capabilities"]!["limits"]!.AsObject().Remove("max_prompt_tokens"));
         Assert.Equal(
-            Find(reviewedBaseline.Models, "gpt-5.4").GetProperty("context_window").GetInt32(),
-            Find(Project(missing).Models, "gpt-5.4").GetProperty("context_window").GetInt32());
+            Find(reviewedBaseline.Models, "gpt-5.6-luna").GetProperty("context_window").GetInt32(),
+            Find(Project(missing).Models, "gpt-5.6-luna").GetProperty("context_window").GetInt32());
 
-        var inconsistent = Mutate(snapshot, "gpt-5.5", model =>
+        var inconsistent = Mutate(snapshot, "gpt-5.6-sol", model =>
             model["capabilities"]!["limits"]!["max_prompt_tokens"] = 1_050_001);
         Assert.Equal(
-            Find(reviewedBaseline.Models, "gpt-5.5").GetProperty("context_window").GetInt32(),
-            Find(Project(inconsistent).Models, "gpt-5.5").GetProperty("context_window").GetInt32());
+            Find(reviewedBaseline.Models, "gpt-5.6-sol").GetProperty("context_window").GetInt32(),
+            Find(Project(inconsistent).Models, "gpt-5.6-sol").GetProperty("context_window").GetInt32());
 
         var missingOutput = Mutate(snapshot, "gpt-5.6-luna", model =>
             model["capabilities"]!["limits"]!.AsObject().Remove("max_output_tokens"));

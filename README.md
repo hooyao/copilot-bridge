@@ -67,10 +67,10 @@ for win-x64, win-arm64, linux-x64, and osx-arm64.
   `claude-opus-5.5`; Claude Code's `claude-opus-5-5` normalizes to that id.
   Other Claude ids returned `model_not_supported` on the account used for the
   September 2026 sync. Codex runs on Copilot's gpt-5.x plus **GPT-6 Astra,
-  Luna, and Sol**. Fresh installs route the
+  Luna, Sol, and GPT-6.2 Astra/Sol**. Fresh installs route the
   reviewed `gpt-5.6-sol` Codex client identity to `gpt-6-astra`; the gpt-5.6 profiles remain
   (`gpt-5.6-luna` / `gpt-5.6-sol` / `gpt-5.6-sol-fast` /
-  `gpt-5.6-terra`), with Luna/Terra/Sol Fast direct and Sol restored to direct by
+  `gpt-5.6-luna-utility`), with Luna/Utility/Sol Fast direct and Sol restored to direct by
   clearing the route. Exact `gpt-6-luna` and `gpt-6-sol` are also available to
   Codex through reviewed official catalog supplements whenever the selected
   client catalog does not yet contain those exact slugs.
@@ -232,7 +232,7 @@ Codex project/profile/CLI layers can still affect a particular future process.
 `--dry-run` and `--port` work the same as above.
 
 For **direct routes** to the official-catalog-backed 1M-class gpt models
-(`gpt-5.4`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-5.6-terra`),
+(`gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-6.1-sol`),
 Copilot reports **1,050,000 total context**, **922,000 maximum prompt**, and
 128,000 maximum output. With those validated target limits, the bridge advertises
 1.05M total context and auto-compaction at **778,000 tokens**. This reserves one
@@ -271,13 +271,26 @@ Codex catalog supplement, so `/codex/models` offers it to clients whose own
 catalog predates it, with low/medium/high/xhigh/max reasoning (Ultra is rejected
 by Copilot). Nano and MAI 2 can be selected explicitly; no complete official
 Codex resource was found for either, so the bridge does not invent picker
-entries. `gpt-5.6-luna-utility` is unavailable to `vscode-chat`.
+entries.
+
+The 2026-11-18 reconciliation adds `gpt-6.2-astra`, `gpt-6.2-sol`,
+`gpt-5.6-luna-utility`, and `mai-code-2`, bringing the Responses catalog to
+16 exact profiles. Both GPT-6.2 ids have complete official picker resources
+(minimum Codex version 0.166.0) with low/medium/high/xhigh/max reasoning;
+Copilot rejects Ultra. Their inconsistent discovery limits retain official
+context windows (Astra 272,000; Sol 500,000), maximum context 872,000, and
+null explicit compaction thresholds. Utility and MAI-Code 2 work by explicit id;
+no picker resource is fabricated. Real Codex multi-tool tasks verified all four.
+Exact live `model_not_supported` responses retire `gpt-5.4`, `gpt-5.4-mini`,
+`gpt-5.5`, `gpt-5.6-terra`, and `gpt-5-mini`. Grok 4.6/4.7 backend facts are
+recorded separately; this does not add a Grok route or native Codex compatibility.
+Claude models were excluded from this reconciliation.
 
 **Or do it by hand** — edit `~/.codex/config.toml`, set the default model +
 provider at the top and add the provider block:
 
 ```toml
-model = "gpt-5.5"
+model = "gpt-6.2-sol"
 model_provider = "copilot-bridge"
 
 [model_providers.copilot-bridge]
@@ -428,8 +441,8 @@ native Anthropic surface. A few things differ from a paid Anthropic/OpenAI plan:
   Forced `tool_choice:any/tool` also becomes `auto`, preserving the parallel
   tool setting. On the Codex side effort support is per-model: most gpt-5.x
   models accept up to `xhigh` and the **gpt-5.6**
-  models (`luna`/`sol`/`sol-fast`/`terra`) are the first to also accept `max`,
-  while smaller ones like `gpt-5-mini` top out at `high` (no `xhigh`). The
+  models (`luna`/`sol`/`sol-fast`/`luna-utility`) also accept `max`,
+  while `mai-code-1.1-flash` tops out at `high` (no `xhigh`). The
   bridge strips (or clamps) an effort the target rejects instead of letting it fail.
 - **A model refusal can trigger Claude Code's fallback.** Opus 5.5 may return a
   `refusal` stop reason even on a simple tool task. Claude Code can retry that

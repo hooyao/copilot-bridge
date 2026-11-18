@@ -98,17 +98,15 @@ internal sealed class CodexModelProfileCatalog
     /// <c>gpt-6-luna</c>/<c>gpt-6-sol</c> probed directly 2026-09-23.
     /// Four effort profiles:
     /// <list type="bullet">
-    ///   <item><b>large</b> — <c>gpt-5.3-codex</c>, <c>gpt-5.4</c>,
-    ///         <c>gpt-5.4-mini</c>, <c>gpt-5.5</c>: accept
+    ///   <item><b>large</b> — <c>gpt-5.3-codex</c>, <c>gpt-5.4-nano</c>: accept
     ///         <c>none/low/medium/high/xhigh</c>, reject <c>minimal</c>.</item>
     ///   <item><b>xlarge</b> — <c>gpt-5.6-luna</c>, <c>gpt-5.6-sol</c>,
-    ///         <c>gpt-5.6-sol-fast</c>, <c>gpt-5.6-terra</c>:
+    ///         <c>gpt-5.6-sol-fast</c>, <c>gpt-5.6-luna-utility</c>:
     ///         <b>large + <c>max</c></b> — the first Codex
     ///         models to accept <c>max</c> (<c>Gpt56_Effort_ReProbe</c>: max → 200,
     ///         minimal → 400). So Anthropic's top tier passes through instead of
     ///         being clamped to <c>xhigh</c>.</item>
-    ///   <item><b>small</b> — <c>gpt-5-mini</c>,
-    ///         <c>mai-code-1.1-flash</c>: accept
+    ///   <item><b>small</b> — <c>mai-code-1.1-flash</c>: accept
     ///         <c>minimal/low/medium/high</c>, reject <c>none</c> AND <c>xhigh</c>
     ///         (the inverse of large at the boundaries).</item>
     ///   <item><b>Astra</b> — accepts <c>low/medium/high/xhigh/max</c>, rejects
@@ -133,9 +131,6 @@ internal sealed class CodexModelProfileCatalog
         // accept 'max', so there it passes through instead.
         string[] large = ["none", "low", "medium", "high", "xhigh"];
         yield return new CodexModelProfile { CanonicalId = "gpt-5.3-codex", AcceptedEfforts = large, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.4",       AcceptedEfforts = large, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.4-mini",  AcceptedEfforts = large, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.5",       AcceptedEfforts = large, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
 
         // ── "xlarge" effort profile: accept none/low/medium/high/xhigh/max, reject minimal ──
         // The gpt-5.6 codename slots (luna/sol/sol-fast/terra) are the first Codex models to
@@ -182,7 +177,6 @@ internal sealed class CodexModelProfileCatalog
             DefaultEffort = "xhigh",
             SupportsMultimodalFunctionOutput = true,
         };
-        yield return new CodexModelProfile { CanonicalId = "gpt-5.6-terra", AcceptedEfforts = xlarge, DefaultEffort = "xhigh", SupportsMultimodalFunctionOutput = true };
 
         // ── Astra profile: accept low/medium/high/xhigh/max; reject none+minimal ──
         // Every effort was live-probed directly 2026-09-07
@@ -238,6 +232,33 @@ internal sealed class CodexModelProfileCatalog
             SupportsMultimodalFunctionOutput = true,
         };
 
+        // November2026_CandidateContracts_Probe (2026-11-18): both exact
+        // GPT-6.2 ids accept low/medium/high/xhigh/max and reject
+        // none/minimal/ultra. Function/custom/web-search tools and two-turn
+        // structured image output succeed; the uniform rejections still apply.
+        // Low is the deliberate least-expensive accepted fallback.
+        foreach (var id in new[] { "gpt-6.2-astra", "gpt-6.2-sol" })
+            yield return new CodexModelProfile
+            {
+                CanonicalId = id,
+                AcceptedEfforts = ["low", "medium", "high", "xhigh", "max"],
+                DefaultEffort = "low",
+                SupportsMultimodalFunctionOutput = true,
+            };
+
+        // The same exact-id sweep accepts none/low/medium/high/xhigh/max on
+        // Utility and MAI 2, rejecting minimal/ultra. Neither has a reviewed
+        // official Codex resource, so these rows establish inference routing
+        // without synthesizing picker metadata.
+        foreach (var id in new[] { "gpt-5.6-luna-utility", "mai-code-2" })
+            yield return new CodexModelProfile
+            {
+                CanonicalId = id,
+                AcceptedEfforts = xlarge,
+                DefaultEffort = "low",
+                SupportsMultimodalFunctionOutput = true,
+            };
+
         // October2026_CandidateContracts_Probe (2026-10-27) uses the same
         // per-model effort/field/tool/image-output probes as the B2/B3 sweep.
         // Nano accepts none/low/medium/high/xhigh; minimal/max/ultra are rejected.
@@ -275,17 +296,8 @@ internal sealed class CodexModelProfileCatalog
         // DefaultEffort=high: small rejects xhigh, so its fallback is 'high' (its
         // top accepted tier) — an inbound 'max'/'xhigh' lands here.
         string[] small = ["minimal", "low", "medium", "high"];
-        // Minimal alone is accepted; minimal + web_search is rejected on both
-        // this exact id and mai-code-1.1-flash (2026-10-02 live probes and
-        // captured real Codex request replays).
-        yield return new CodexModelProfile
-        {
-            CanonicalId = "gpt-5-mini",
-            AcceptedEfforts = small,
-            DefaultEffort = "high",
-            RejectsMinimalWithWebSearch = true,
-            SupportsMultimodalFunctionOutput = true,
-        };
+        // Minimal alone is accepted; minimal + web_search is rejected on this
+        // exact id (2026-10-02 live probes and real Codex request replays).
         // The old -picker id is unavailable to vscode-chat (2026-10-02 exact-id
         // liveness 400); mai-code-1.1-flash is live on /responses. Its direct
         // effort probe accepts null/minimal/low/medium/high and rejects

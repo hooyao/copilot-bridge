@@ -154,3 +154,28 @@ tool sends `gpt-image-2`; the stock
 worked. Copilot `/responses` rejected the separate hosted `image_generation`
 tool with `400 unsupported_value` for `gpt-5.6-sol` and `gpt-6.1-sol` under
 the `vscode-chat` integrator.
+
+## 2026-11-18 — Reconcile non-Claude models and the .NET 10 SDK
+
+Live discovery and exact endpoint probes using the selected custom-OAuth
+credential add GPT-6.2 Astra/Sol, GPT-5.6 Luna Utility, and MAI-Code 2. Five
+previous profiles return `model_not_supported` under `vscode-chat` and
+integrator-unavailable under `copilot-developer-cli`: GPT-5.4, GPT-5.4 Mini,
+GPT-5.5, GPT-5.6 Terra, and GPT-5 Mini. Removing those profiles leaves 16 exact
+Responses entries. Claude models were explicitly excluded.
+
+Both GPT-6.2 models accept low/medium/high/xhigh/max; Utility and MAI 2 also
+accept none. All four reject minimal/ultra and retain the uniform field/tool
+rejections. Exact-model real streaming captures reconfirm each rewrite.
+Complete official GPT-6.2 resources, pinned by commit and digest, supplement
+missing client catalog rows while preserving newer same-slug metadata. Ultra
+is filtered in either case. Inconsistent live capacities keep official context
+and null compaction values. Real Codex 0.167.0-alpha.4.1 visibly offers both
+GPT-6.2 ids, executes their multi-tool tasks, and records clean dispatch logs.
+Utility and MAI 2 pass equivalent explicit-id tasks without invented picker
+resources. Grok 4.6/4.7 are live backend observations only: custom grammar
+tools remain rejected, with no route, coercion, or native-client promise added.
+
+The official .NET 10 release feed identifies SDK 10.0.404 as the latest stable
+10.x SDK (runtime 10.0.15). It is already installed locally; `global.json` now
+pins it instead of 10.0.301, retaining the existing latest-patch policy.
