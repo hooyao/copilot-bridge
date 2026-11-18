@@ -102,3 +102,19 @@ with no build steps executed. CI and release workflows now select the officially
 supported macos-15 arm64 image; matching runner documentation is updated.
 The repository compatibility checks also passed (4 tests) after the runner
 documentation update.
+
+## PR review follow-up
+
+The retirement probe now explicitly selects copilot-developer-cli for its first
+request and vscode-chat for its second, independently of credential version.
+All five exact-id retirement checks passed again.
+
+The hosted-search relay regression uses an isolated Codex 0.167.0-alpha.4.1
+startup catalog derived from the complete official GPT-6.2 Sol resource, changing
+only use_responses_lite to false inside that test. The official production
+resource remains unchanged. A real Codex run produced upstream web_search_call
+and relayed response.web_search_call events; the six selected tests passed.
+Restoring Lite=true in the test setup made the hosted-search assertion fail with
+no upstream web_search_call, confirming that the test detects the reviewed gap.
+This complementary ApiContract CLI test is transport evidence, separate from the
+four app-server dispatch verdicts above.

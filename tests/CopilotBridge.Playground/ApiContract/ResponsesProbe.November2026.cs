@@ -54,7 +54,8 @@ public partial class ResponsesProbe
     {
         using var client = new PlaygroundClient();
         var (status, body) = await ProbeRetry.WithRetry(
-            () => client.TryPostResponsesAsync(LivenessBody(model)), model + " unadvertised liveness");
+            () => client.TryPostResponsesAsync(LivenessBody(model),
+                integrationIdOverride: "copilot-developer-cli"), model + " unadvertised liveness");
         _output.WriteLine($"[{model}] liveness -> {(int)status}: {body}");
         await File.WriteAllTextAsync(Path.Combine(NovemberEvidenceDirectory(), model + "-liveness.json"),
             new JsonObject { ["status"] = (int)status, ["body"] = body }.ToJsonString());
