@@ -131,3 +131,10 @@ The restored hosted-search setup and all five retirement checks also passed a
 second live run. This records completion of the review overview's execution-
 evidence and AOT confirmation reminder; subsequent edits in this section are
 documentation only.
+## Exact-ID negative-case follow-up
+
+The three-way catalog-join contract now uses live-profile GPT-5.6 Luna for the
+wrong-case discovery row (GPT-5.6-LUNA), rather than a retired profile. Changing
+the product live-ID dictionary to OrdinalIgnoreCase made the expected hidden-row
+assertion fail. Restoring exact matching passed the complete 2012-test unit suite.
+This prevents model retirement from masking a case-matching regression.

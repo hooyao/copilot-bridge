@@ -108,7 +108,7 @@ public sealed class CodexModelCatalogContractTests
         var live = new[]
         {
             Live("gpt-5.6-sol", 1_050_000, 922_000, 128_000),
-            Live("GPT-5.5", 1_050_000, 922_000, 128_000), // wrong case is not exact
+            Live("GPT-5.6-LUNA", 1_050_000, 922_000, 128_000), // active profile; wrong case is not exact
             Live("gpt-5.2", 1_050_000, 922_000, 128_000), // baseline + live, but no exact bridge profile
             Live("future-gpt", 1_050_000, 922_000, 128_000), // live-only: never synthesize
             Live("gpt-5.3-codex", 400_000, 272_000, 128_000), // route + live, but absent from this baseline
@@ -117,8 +117,8 @@ public sealed class CodexModelCatalogContractTests
         var result = Project(baseline, live);
 
         Assert.True(Find(result.Models, "gpt-5.6-sol").GetProperty("supported_in_api").GetBoolean());
-        Assert.False(Find(result.Models, "gpt-5.5").GetProperty("supported_in_api").GetBoolean());
-        Assert.Equal("hide", Find(result.Models, "gpt-5.5").GetProperty("visibility").GetString());
+        Assert.False(Find(result.Models, "gpt-5.6-luna").GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal("hide", Find(result.Models, "gpt-5.6-luna").GetProperty("visibility").GetString());
         Assert.False(Find(result.Models, "gpt-5.2").GetProperty("supported_in_api").GetBoolean());
         Assert.DoesNotContain(result.Models, model => model.GetProperty("slug").GetString() == "future-gpt");
         Assert.DoesNotContain(result.Models, model => model.GetProperty("slug").GetString() == "gpt-5.3-codex");
