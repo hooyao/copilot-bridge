@@ -42,7 +42,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # 2. Build the AOT binary per RID on its own runner. Native AOT cannot
-  #    cross-OS compile, so linux builds on ubuntu, osx on macos-14, windows
+  #    cross-OS compile, so linux builds on ubuntu, osx on macos-15, windows
   #    on windows runners (win-arm64 natively on windows-11-arm). Each arm
   #    packages its own archive (.zip for Windows, .tar.gz for unix so the
   #    executable bit survives) and uploads it as an artifact.
@@ -59,7 +59,7 @@ jobs:
             rid: win-arm64
           - os: ubuntu-latest
             rid: linux-x64
-          - os: macos-14
+          - os: macos-15
             rid: osx-arm64
     runs-on: ${{ matrix.os }}
 
@@ -73,7 +73,7 @@ jobs:
 
       # A bare `dotnet publish` drives the AOT native link on every hosted image
       # (MSVC on Windows incl. native ARM64; clang+binutils on ubuntu; Xcode CLT
-      # on macos-14). The local build-aot.bat / vswhere dance is only needed on
+      # on macos-15). The local build-aot.bat / vswhere dance is only needed on
       # dev machines where vswhere isn't on PATH — CI images expose the toolchain
       # to the SDK's AOT targets directly.
       - name: Publish AOT (${{ matrix.rid }})

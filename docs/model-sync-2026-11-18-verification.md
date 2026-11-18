@@ -96,3 +96,7 @@ outputs, not bridge HTTP status, client exit code, or a canary alone.
 This verifies the JIT client/model paths. Cross-platform Native AOT compilation
 and binary startup remain the PR CI gates; this report does not claim that a
 downloaded release binary was tested.
+
+During PR validation, GitHub rejected the retired macos-14 runner configuration
+with no build steps executed. CI and release workflows now select the officially
+supported macos-15 arm64 image; matching runner documentation is updated.

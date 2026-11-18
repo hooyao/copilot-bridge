@@ -130,7 +130,7 @@ jobs:
         include:
           - os: ubuntu-latest
             rid: linux-x64
-          - os: macos-14
+          - os: macos-15
             rid: osx-arm64
           - os: windows-11-arm
             rid: win-arm64
@@ -154,7 +154,7 @@ jobs:
           -c Debug --filter "FullyQualifiedName~UpdatePipeTransportTests"
 
       # Publish only the CLI project for this RID. A bare `dotnet publish` drives
-      # the AOT native link: clang+binutils on ubuntu, Xcode CLT on macos-14, and
+      # the AOT native link: clang+binutils on ubuntu, Xcode CLT on macos-15, and
       # the MSVC toolchain (incl. native ARM64) on windows-11-arm are all present
       # on the hosted images — no extra toolchain install has been needed.
       - name: Publish AOT (${{ matrix.rid }})

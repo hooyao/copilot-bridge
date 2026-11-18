@@ -568,7 +568,7 @@ See [`docs/routing.md`](docs/routing.md) for the routing config reference and
 ## CI & releases
 
 CI runs the Debug build + unit tests + a Release AOT publish on `windows-latest`,
-plus a cross-platform AOT gate (`ubuntu-latest`/linux-x64, `macos-14`/osx-arm64,
+plus a cross-platform AOT gate (`ubuntu-latest`/linux-x64, `macos-15`/osx-arm64,
 `windows-11-arm`/win-arm64) that publishes and smoke-tests each binary on every
 push to `main`.
 

@@ -251,4 +251,4 @@ ubiquity of the fallback path).
 - **Real Linux/macOS (CI only):** `copilot-bridge debug selftest-tokenstore`
   (hidden command) runs the **real** machine-id probing + encrypt/decrypt
   round-trip + `0600` check against a temp file — non-destructive, no login
-  required. CI runs it on `ubuntu-latest` and `macos-14`.
+  required. CI runs it on `ubuntu-latest` and `macos-15`.
