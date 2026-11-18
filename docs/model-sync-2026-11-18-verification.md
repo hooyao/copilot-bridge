@@ -100,3 +100,5 @@ downloaded release binary was tested.
 During PR validation, GitHub rejected the retired macos-14 runner configuration
 with no build steps executed. CI and release workflows now select the officially
 supported macos-15 arm64 image; matching runner documentation is updated.
+The repository compatibility checks also passed (4 tests) after the runner
+documentation update.
