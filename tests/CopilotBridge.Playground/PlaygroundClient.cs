@@ -107,14 +107,15 @@ internal sealed class PlaygroundClient : IDisposable
     public async Task<(System.Net.HttpStatusCode Status, string Body)> TryPostResponsesAsync(
         string jsonBody,
         bool vision = false,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? integrationIdOverride = null)
     {
         var lease = await _auth.GetCopilotTokenAsync(ct: ct);
         var token = lease.Token;
         var baseUrl = lease.ApiBaseUrl;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/responses");
-        _headers.ApplyTo(req, token, vision, integrationId: lease.IntegrationId);
+        _headers.ApplyTo(req, token, vision, integrationId: integrationIdOverride ?? lease.IntegrationId);
         req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);

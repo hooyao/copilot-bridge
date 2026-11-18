@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using System.Text.Json.Nodes;
+using CopilotBridge.Cli.Catalogs.Codex;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -21,10 +22,11 @@ namespace CopilotBridge.Playground.Headless;
 /// reserved for thin actuators whose verdict is the <c>real-client-verify</c> skill
 /// reading the client's OWN log. This test's verdict IS an in-test trace assertion,
 /// so it belongs here.</para>
-/// <para><b>Model.</b> gpt-5.5 — codex 0.144.6 marks the gpt-5.6 family
-/// <c>use_responses_lite=true</c>, which suppresses ALL hosted tools (incl.
-/// web_search) client-side before the request is built, so the hosted tool is only
-/// emitted by a non-responses-lite model. The bridge fix is model-agnostic. The shell
+/// <para><b>Model.</b> Exact gpt-6.2-sol with an isolated, test-only catalog
+/// override of <c>use_responses_lite=false</c>. Its official Lite metadata
+/// suppresses hosted tools client-side, which would prevent this transport
+/// regression from reaching hosted search. Production metadata stays pinned.
+/// The bridge fix is model-agnostic. The shell
 /// is forbidden in the prompt so hosted web_search is the ONLY path to the answer.</para>
 /// <para>Ephemeral non-8765 port (BridgeFixture, tracing on); provider injected via
 /// <c>codex exec -c</c> overrides. Integration-tagged: skipped in CI.</para>
@@ -46,6 +48,16 @@ public class CodexWebSearchHeadlessTests : IClassFixture<BridgeFixture>
     [Fact]
     public async Task Codex_NativeWebSearch_BridgeRelaysWebSearchCallToClient()
     {
+        const string model = "gpt-6.2-sol";
+        using var scratch = ClientBehaviorSupport.NewWorkDir("codex-hosted-search-catalog");
+        var resource = CodexSupplementalCatalog.Load().Models.Single(
+            row => row.GetProperty("slug").GetString() == model);
+        var testResource = JsonNode.Parse(resource.GetRawText())!.AsObject();
+        testResource["use_responses_lite"] = false;
+        var catalogPath = Path.Combine(scratch.Path, "model-catalog.json");
+        await File.WriteAllTextAsync(catalogPath,
+            new JsonObject { ["models"] = new JsonArray(testResource) }.ToJsonString());
+        var tomlCatalogPath = catalogPath.Replace('\\', '/');
         var prompt =
             "Use ONLY your built-in web_search tool. Do NOT run any shell command, do NOT use "
             + "PowerShell, curl, Invoke-RestMethod, or any command-execution tool. Search the web "
@@ -59,11 +71,14 @@ public class CodexWebSearchHeadlessTests : IClassFixture<BridgeFixture>
         var result = await CodexProcess.RunAsync(new CodexInvocation(
             BridgeBaseUrl: _bridge.BaseUrl,
             Prompt: prompt,
-            Model: "gpt-5.5",
+            Model: model,
             Timeout: TimeSpan.FromMinutes(6),
+            CodexHome: scratch.Path,
+            WorkingDirectory: scratch.Path,
+            ExpectedCodexVersion: "0.167.0-alpha.4.1",
             // Force hosted search into live-fetch mode (default is "cached"); a
             // non-responses-lite model then emits the {type:web_search} tool.
-            ExtraConfig: new[] { "web_search=live" }));
+            ExtraConfig: new[] { "web_search=live", $"model_catalog_json=\"{tomlCatalogPath}\"" }));
 
         // Poll (bounded) until the async BridgeIoSink flush settles on BOTH signals we
         // assert — the upstream web_search_call AND the inbound response.web_search_call.*
@@ -72,7 +87,7 @@ public class CodexWebSearchHeadlessTests : IClassFixture<BridgeFixture>
         // so a poll that stops at upstream can observe the relay events not-yet-flushed.
         var entries = await PollUntilRelaySettledAsync(reader, TimeSpan.FromSeconds(20));
 
-        _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration} model=gpt-5.5");
+        _output.WriteLine($"codex.exe exit={result.ExitCode} duration={result.Duration} model={model}");
         _output.WriteLine($"bridge /responses entries: {entries.Count}");
 
         Assert.Equal(0, result.ExitCode);

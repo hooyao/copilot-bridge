@@ -36,7 +36,7 @@ public sealed class Gpt6AstraStockRoutingTests
     [Theory]
     [InlineData("gpt-5.6-luna")]
     [InlineData("gpt-5.6-sol-fast")]
-    [InlineData("gpt-5.6-terra")]
+    [InlineData("gpt-5.6-luna-utility")]
     public void StockRoute_DoesNotCollapseOtherGpt56Tiers(string model)
     {
         var target = CountTokensTestServices.Planner(LoadStockRoutes()).Plan(Context(model, "max"));

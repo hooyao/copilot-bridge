@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using CopilotBridge.Cli.Models.Anthropic.Request;
 using CopilotBridge.Cli.Pipeline.Routing;
@@ -94,14 +94,9 @@ public class CodexImageTests
 
     [Theory]
     [InlineData("gpt-5.3-codex")]
-    [InlineData("gpt-5.4")]
-    [InlineData("gpt-5.4-mini")]
-    [InlineData("gpt-5.5")]
     [InlineData("gpt-5.6-luna")]
     [InlineData("gpt-5.6-sol")]
     [InlineData("gpt-5.6-sol-fast")]
-    [InlineData("gpt-5.6-terra")]
-    [InlineData("gpt-5-mini")]
     public void ClaudeToolResult_TextImageText_PreservesStructuredOutputAndSetsVision(string model)
     {
         const string callId = "toolu_image_contract";

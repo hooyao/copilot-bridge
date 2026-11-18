@@ -37,7 +37,6 @@ public partial class ResponsesProbe
         "gpt-5.6-luna",
         "gpt-5.6-sol",
         "gpt-5.6-sol-fast",
-        "gpt-5.6-terra",
     ];
 
     /// <summary>
@@ -95,7 +94,6 @@ public partial class ResponsesProbe
     [InlineData("gpt-5.6-luna")]
     [InlineData("gpt-5.6-sol")]
     [InlineData("gpt-5.6-sol-fast")]
-    [InlineData("gpt-5.6-terra")]
     public async Task Gpt56_LivenessProbe(string model)
     {
         var payload = $$"""

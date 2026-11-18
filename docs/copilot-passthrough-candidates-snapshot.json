@@ -1,0 +1,62 @@
+{
+  "_meta": {
+    "date": "2026-11-18",
+    "contract": "Backend observations only. No native Codex compatibility, picker resource, or request coercions are implied."
+  },
+  "models": {
+    "grok-4.6": {
+      "effort": {
+        "accepted": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "rejected": [
+          "none",
+          "max",
+          "ultra"
+        ]
+      },
+      "fields_rejected": [
+        "store_true",
+        "service_tier"
+      ],
+      "tools_rejected": [
+        "custom_apply_patch",
+        "image_generation"
+      ],
+      "supports_multimodal_function_output": true,
+      "minimal_with_web_search_rejected": false,
+      "low_with_web_search_accepted": true
+    },
+    "grok-4.7": {
+      "effort": {
+        "accepted": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "rejected": [
+          "none",
+          "max",
+          "ultra"
+        ]
+      },
+      "fields_rejected": [
+        "store_true",
+        "service_tier"
+      ],
+      "tools_rejected": [
+        "custom_apply_patch",
+        "image_generation"
+      ],
+      "supports_multimodal_function_output": true,
+      "minimal_with_web_search_rejected": false,
+      "low_with_web_search_accepted": true
+    }
+  }
+}

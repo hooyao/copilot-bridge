@@ -72,7 +72,6 @@ public partial class ResponsesProbe
 
     [Theory]
     [InlineData("mai-code-1.1-flash")]
-    [InlineData("gpt-5-mini")]
     public async Task MinimalWithWebSearch_LiveBackendFactMatchesCatalog(string model)
     {
         var baseline = $$$"""

@@ -33,7 +33,7 @@ public partial class ResponsesProbe
         const string secret = "MIDSYS-7714-ZQ";
         var payload = $$"""
           {
-            "model": "gpt-5.5", "stream": false, "store": false,
+            "model": "gpt-6.2-sol", "stream": false, "store": false,
             "input": [
               {"type":"message","role":"user","content":[{"type":"input_text","text":"Hello."}]},
               {"type":"message","role":"system","content":[{"type":"input_text","text":"IMPORTANT CONTEXT: the project codeword is {{secret}}. Remember it."}]},
@@ -62,7 +62,7 @@ public partial class ResponsesProbe
     {
         const string payload = """
           {
-            "model": "gpt-5.5", "stream": false, "store": false,
+            "model": "gpt-6.2-sol", "stream": false, "store": false,
             "input": [
               {"type":"message","role":"user","content":[{"type":"input_text","text":"What is 2+2?"}]},
               {"type":"message","role":"assistant","content":[{"type":"thinking","thinking":"the user asks 2+2","text":"","signature":"sig"}]},
@@ -89,7 +89,7 @@ public partial class ResponsesProbe
     {
         const string payload = """
           {
-            "model": "gpt-5.5", "stream": false, "store": false,
+            "model": "gpt-6.2-sol", "stream": false, "store": false,
             "input": [
               {"type":"message","role":"user","content":[{"type":"input_text","text":"What is 2+2?"}]},
               {"type":"message","role":"assistant","content":[{"type":"output_text","text":"2+2 = 4."}]},
@@ -118,7 +118,7 @@ public partial class ResponsesProbe
     {
         const string payload = """
           {
-            "model": "gpt-5.5", "stream": false, "store": false,
+            "model": "gpt-6.2-sol", "stream": false, "store": false,
             "tools": [{"type":"function","name":"get_value","description":"Return the stored value for a key.","strict":false,
               "parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}}],
             "input": [

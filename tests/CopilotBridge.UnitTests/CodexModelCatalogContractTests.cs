@@ -90,9 +90,9 @@ public sealed class CodexModelCatalogContractTests
     public void ValidUpliftPreservesEveryCodexOwnedProperty()
     {
         var baseline = LoadBaseline();
-        var before = Find(baseline.Models, "gpt-5.4");
-        var result = Project(baseline, [Live("gpt-5.4", 1_050_000, 922_000, 128_000)]);
-        var after = Find(result.Models, "gpt-5.4");
+        var before = Find(baseline.Models, "gpt-5.6-sol");
+        var result = Project(baseline, [Live("gpt-5.6-sol", 1_050_000, 922_000, 128_000)]);
+        var after = Find(result.Models, "gpt-5.6-sol");
 
         foreach (var property in before.EnumerateObject().Where(p => !BackendOwnedProperties.Contains(p.Name)))
         {
@@ -107,8 +107,8 @@ public sealed class CodexModelCatalogContractTests
         var baseline = LoadBaseline();
         var live = new[]
         {
-            Live("gpt-5.4", 1_050_000, 922_000, 128_000),
-            Live("GPT-5.5", 1_050_000, 922_000, 128_000), // wrong case is not exact
+            Live("gpt-5.6-sol", 1_050_000, 922_000, 128_000),
+            Live("GPT-5.6-LUNA", 1_050_000, 922_000, 128_000), // active profile; wrong case is not exact
             Live("gpt-5.2", 1_050_000, 922_000, 128_000), // baseline + live, but no exact bridge profile
             Live("future-gpt", 1_050_000, 922_000, 128_000), // live-only: never synthesize
             Live("gpt-5.3-codex", 400_000, 272_000, 128_000), // route + live, but absent from this baseline
@@ -116,9 +116,9 @@ public sealed class CodexModelCatalogContractTests
 
         var result = Project(baseline, live);
 
-        Assert.True(Find(result.Models, "gpt-5.4").GetProperty("supported_in_api").GetBoolean());
-        Assert.False(Find(result.Models, "gpt-5.5").GetProperty("supported_in_api").GetBoolean());
-        Assert.Equal("hide", Find(result.Models, "gpt-5.5").GetProperty("visibility").GetString());
+        Assert.True(Find(result.Models, "gpt-5.6-sol").GetProperty("supported_in_api").GetBoolean());
+        Assert.False(Find(result.Models, "gpt-5.6-luna").GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal("hide", Find(result.Models, "gpt-5.6-luna").GetProperty("visibility").GetString());
         Assert.False(Find(result.Models, "gpt-5.2").GetProperty("supported_in_api").GetBoolean());
         Assert.DoesNotContain(result.Models, model => model.GetProperty("slug").GetString() == "future-gpt");
         Assert.DoesNotContain(result.Models, model => model.GetProperty("slug").GetString() == "gpt-5.3-codex");
@@ -216,6 +216,66 @@ public sealed class CodexModelCatalogContractTests
         Assert.Equal("low", model.GetProperty("default_reasoning_level").GetString());
     }
 
+    // Contract: official complete GPT-6.2 resources fill old catalogs; a newer
+    // same-slug baseline wins. Inconsistent live prompt+output limits cannot
+    // raise context or invent compaction; Ultra is never offered by Copilot.
+    [Theory]
+    [InlineData("gpt-6.2-astra", false, 272_000)]
+    [InlineData("gpt-6.2-astra", true, 272_000)]
+    [InlineData("gpt-6.2-sol", false, 500_000)]
+    [InlineData("gpt-6.2-sol", true, 500_000)]
+    public void NovemberGpt62Picker_UsesOfficialResourcesAndOnlyLiveEfforts(
+        string slug, bool newerBaseline, int contextWindow)
+    {
+        var baseline = LoadBaseline();
+        Assert.DoesNotContain(baseline.Models, row => row.GetProperty("slug").GetString() == slug);
+        var official = CodexSupplementalCatalog.Load().Models.Single(
+            row => row.GetProperty("slug").GetString() == slug);
+        var source = newerBaseline
+            ? ReplaceProperty(official, "description", "newer baseline owns GPT-6.2 metadata")
+            : official;
+        if (newerBaseline) baseline = baseline with { Models = [.. baseline.Models, source] };
+
+        var result = Project(baseline, [Live(slug, 1_050_000, 1_050_000, 128_000)]);
+        var model = Assert.Single(result.Models, row => row.GetProperty("slug").GetString() == slug);
+        Assert.True(model.GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal("list", model.GetProperty("visibility").GetString());
+        Assert.Equal("0.166.0", model.GetProperty("minimal_client_version").GetString());
+        Assert.Equal(source.GetProperty("description").GetString(), model.GetProperty("description").GetString());
+        AssertGpt61PickerEfforts(model);
+        Assert.Contains(official.GetProperty("supported_reasoning_levels").EnumerateArray(),
+            row => row.GetProperty("effort").GetString() == "ultra");
+        Assert.Equal(contextWindow, model.GetProperty("context_window").GetInt32());
+        Assert.Equal(872_000, model.GetProperty("max_context_window").GetInt32());
+        Assert.Equal(JsonValueKind.Null, model.GetProperty("auto_compact_token_limit").ValueKind);
+        Assert.True(JsonElement.DeepEquals(source.GetProperty("model_messages"), model.GetProperty("model_messages")));
+        if (!newerBaseline)
+            Assert.Equal(official.GetProperty("model_messages").GetProperty("instructions_template").GetString(),
+                model.GetProperty("base_instructions").GetString());
+    }
+
+    [Theory]
+    [InlineData("gpt-5.6-luna-utility")]
+    [InlineData("mai-code-2")]
+    public void NovemberExplicitIdModels_HaveNoInventedPickerEntry(string slug)
+    {
+        var result = Project(LoadBaseline(), [Live(slug, 1_050_000, 922_000, 128_000)]);
+        Assert.DoesNotContain(result.Models, row => row.GetProperty("slug").GetString() == slug);
+    }
+
+    [Theory]
+    [InlineData("gpt-5.4")]
+    [InlineData("gpt-5.4-mini")]
+    [InlineData("gpt-5.5")]
+    [InlineData("gpt-5.6-terra")]
+    public void NovemberRetiredIds_AreHiddenEvenWhenAnOldBaselineAndDiscoveryStillNameThem(string slug)
+    {
+        var result = Project(LoadBaseline(), [Live(slug, 1_050_000, 922_000, 128_000)]);
+        var model = Assert.Single(result.Models, row => row.GetProperty("slug").GetString() == slug);
+        Assert.False(model.GetProperty("supported_in_api").GetBoolean());
+        Assert.Equal("hide", model.GetProperty("visibility").GetString());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -274,8 +334,8 @@ public sealed class CodexModelCatalogContractTests
     [Fact]
     public void OneMillionClassLimitsReserveOneMaximumOutputAndSafetyMargin()
     {
-        var result = Project(LoadBaseline(), [Live("gpt-5.4", 1_050_000, 922_000, 128_000)]);
-        var model = Find(result.Models, "gpt-5.4");
+        var result = Project(LoadBaseline(), [Live("gpt-5.6-sol", 1_050_000, 922_000, 128_000)]);
+        var model = Find(result.Models, "gpt-5.6-sol");
 
         Assert.Equal(1_050_000, model.GetProperty("context_window").GetInt32());
         Assert.Equal(1_050_000, model.GetProperty("max_context_window").GetInt32());
@@ -286,8 +346,8 @@ public sealed class CodexModelCatalogContractTests
     [Fact]
     public void OutputGrowthGuardCanLowerThePromptPercentageThreshold()
     {
-        var result = Project(LoadBaseline(), [Live("gpt-5.4", 1_000_000, 800_000, 200_000)]);
-        var model = Find(result.Models, "gpt-5.4");
+        var result = Project(LoadBaseline(), [Live("gpt-5.6-sol", 1_000_000, 800_000, 200_000)]);
+        var model = Find(result.Models, "gpt-5.6-sol");
 
         Assert.Equal(584_000, model.GetProperty("auto_compact_token_limit").GetInt32());
         Assert.True(model.GetProperty("auto_compact_token_limit").GetInt32() < 800_000);
@@ -312,8 +372,8 @@ public sealed class CodexModelCatalogContractTests
     public void CompactionPolicyReservesOutputWhereRepresentableAndKeepsExistingCeilings(
         int total, int prompt, int output, int expected)
     {
-        var result = Project(LoadBaseline(), [Live("gpt-5.4", total, prompt, output)]);
-        var model = Find(result.Models, "gpt-5.4");
+        var result = Project(LoadBaseline(), [Live("gpt-5.6-sol", total, prompt, output)]);
+        var model = Find(result.Models, "gpt-5.6-sol");
         var compact = model.GetProperty("auto_compact_token_limit").GetInt32();
 
         Assert.True(model.GetProperty("supported_in_api").GetBoolean());
@@ -337,9 +397,9 @@ public sealed class CodexModelCatalogContractTests
     public void MissingOrInconsistentLimitsNeverRaiseTheReviewedBaseline(int? total, int? prompt)
     {
         var baseline = LoadBaseline();
-        var before = Find(baseline.Models, "gpt-5.4");
-        var result = Project(baseline, [Live("gpt-5.4", total, prompt, 128_000)]);
-        var after = Find(result.Models, "gpt-5.4");
+        var before = Find(baseline.Models, "gpt-5.6-sol");
+        var result = Project(baseline, [Live("gpt-5.6-sol", total, prompt, 128_000)]);
+        var after = Find(result.Models, "gpt-5.6-sol");
 
         Assert.True(JsonElement.DeepEquals(before.GetProperty("context_window"), after.GetProperty("context_window")));
         Assert.True(JsonElement.DeepEquals(before.GetProperty("max_context_window"), after.GetProperty("max_context_window")));
@@ -354,9 +414,9 @@ public sealed class CodexModelCatalogContractTests
     public void MissingOrInconsistentOutputLimitNeverRaisesTheReviewedBaseline(int? output)
     {
         var baseline = LoadBaseline();
-        var before = Find(baseline.Models, "gpt-5.4");
-        var result = Project(baseline, [Live("gpt-5.4", 1_050_000, 922_000, output)]);
-        var after = Find(result.Models, "gpt-5.4");
+        var before = Find(baseline.Models, "gpt-5.6-sol");
+        var result = Project(baseline, [Live("gpt-5.6-sol", 1_050_000, 922_000, output)]);
+        var after = Find(result.Models, "gpt-5.6-sol");
 
         Assert.True(JsonElement.DeepEquals(
             before.GetProperty("context_window"), after.GetProperty("context_window")));
@@ -430,9 +490,9 @@ public sealed class CodexModelCatalogContractTests
     public void StableEffectiveFactsProduceStableEtagAndChangedFactsProduceNewEtag()
     {
         var baseline = LoadBaseline();
-        var one = Project(baseline, [Live("gpt-5.4", 1_050_000, 922_000, 128_000)]);
-        var same = Project(baseline, [Live("gpt-5.4", 1_050_000, 922_000, 128_000)]);
-        var changed = Project(baseline, [Live("gpt-5.4", 1_000_000, 900_000, 100_000)]);
+        var one = Project(baseline, [Live("gpt-5.6-sol", 1_050_000, 922_000, 128_000)]);
+        var same = Project(baseline, [Live("gpt-5.6-sol", 1_050_000, 922_000, 128_000)]);
+        var changed = Project(baseline, [Live("gpt-5.6-sol", 1_000_000, 900_000, 100_000)]);
 
         Assert.Equal(one.ETag, same.ETag);
         Assert.NotEqual(one.ETag, changed.ETag);
@@ -451,9 +511,9 @@ public sealed class CodexModelCatalogContractTests
         var result = projector.Project(
             Version(baseline.SourceVersion),
             baseline,
-            [Live("gpt-5.4", 1_050_000, 922_000, 128_000)],
+            [Live("gpt-5.6-sol", 1_050_000, 922_000, 128_000)],
             liveOverlayValidated: true);
-        var model = Find(result.Models, "gpt-5.4");
+        var model = Find(result.Models, "gpt-5.6-sol");
 
         Assert.False(model.GetProperty("supported_in_api").GetBoolean());
         Assert.Equal("hide", model.GetProperty("visibility").GetString());
@@ -471,9 +531,9 @@ public sealed class CodexModelCatalogContractTests
         var result = projector.Project(
             Version(baseline.SourceVersion),
             baseline,
-            [Live("gpt-5.4", 1_050_000, 922_000, 128_000)],
+            [Live("gpt-5.6-sol", 1_050_000, 922_000, 128_000)],
             liveOverlayValidated: true);
-        var model = Find(result.Models, "gpt-5.4");
+        var model = Find(result.Models, "gpt-5.6-sol");
 
         Assert.False(model.GetProperty("supported_in_api").GetBoolean());
         Assert.Equal("hide", model.GetProperty("visibility").GetString());
@@ -584,7 +644,7 @@ public sealed class CodexModelCatalogContractTests
                 new RouteLocation
                 {
                     When = new MatchExpression { Model = "gpt-5.6-sol", Effort = "low" },
-                    Use = new LocationUse { Model = "gpt-5-mini" },
+                    Use = new LocationUse { Model = "mai-code-1.1-flash" },
                 },
                 new RouteLocation
                 {
@@ -597,7 +657,7 @@ public sealed class CodexModelCatalogContractTests
             Version("0.144.1"),
             LoadBaseline(),
             [
-                Live("gpt-5-mini", 264_000, 128_000, 64_000),
+                Live("mai-code-1.1-flash", 264_000, 128_000, 64_000),
                 Live("gpt-6-astra", 1_000_000, 872_000, 128_000),
             ],
             liveOverlayValidated: true);

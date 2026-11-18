@@ -31,7 +31,7 @@ public class CodexRequestBuildTests
 {
     // The production catalog (not a hand-built stub) so these assert the real
     // shipping profiles: large = gpt-5.3-codex (none/low/medium/high/xhigh),
-    // small = gpt-5-mini / MAI Flash (minimal/low/medium/high).
+    // small = MAI 1.1 Flash (minimal/low/medium/high).
     private static readonly CodexModelProfileCatalog Catalog = new();
 
     private static JsonObject Emit(MessagesRequest ir) =>
@@ -66,7 +66,6 @@ public class CodexRequestBuildTests
     /// search available by raising only that combination to low.
     /// </summary>
     [Theory]
-    [InlineData("gpt-5-mini", "web_search", "minimal", "low")]
     [InlineData("mai-code-1.1-flash", "web_search", "minimal", "low")]
     [InlineData("mai-code-1.1-flash", "function", "minimal", "minimal")]
     [InlineData("mai-code-1.1-flash", "web_search", "high", "high")]
@@ -141,8 +140,7 @@ public class CodexRequestBuildTests
     [InlineData("gpt-5.3-codex", "none", "none")]     // accepted → kept verbatim
     [InlineData("gpt-5.3-codex", "medium", "medium")] // accepted → kept
     [InlineData("gpt-5.3-codex", "xhigh", "xhigh")]   // accepted by large → kept
-    // gpt-5.5 specifically — the model from the runaway incident. max → xhigh, never medium.
-    [InlineData("gpt-5.5", "max", "xhigh")]
+    // The remaining large profile keeps the max-to-xhigh boundary.
     // xlarge profile (gpt-5.6 codenames): accept none/low/medium/high/xhigh/max,
     // reject minimal; DefaultEffort=xhigh. The distinguishing contract vs large:
     // 'max' is ACCEPTED, so Anthropic's top tier passes through VERBATIM instead of
@@ -151,12 +149,10 @@ public class CodexRequestBuildTests
     [InlineData("gpt-5.6-sol",   "max", "max")]         // ACCEPTED → verbatim (NOT clamped to xhigh like gpt-5.5)
     [InlineData("gpt-5.6-sol-fast", "max", "max")]
     [InlineData("gpt-5.6-luna",  "max", "max")]
-    [InlineData("gpt-5.6-terra", "max", "max")]
     [InlineData("gpt-5.6-sol",   "xhigh", "xhigh")]     // accepted → kept
     [InlineData("gpt-5.6-sol",   "minimal", "xhigh")]   // the only rejected value → profile default xhigh
     [InlineData("gpt-5.6-sol-fast", "minimal", "xhigh")]
     [InlineData("gpt-5.6-luna",  "minimal", "xhigh")]   // per-row DefaultEffort guard: NOT max (the documented footgun)
-    [InlineData("gpt-5.6-terra", "minimal", "xhigh")]   // per-row DefaultEffort guard: NOT max
     [InlineData("gpt-5.6-sol",   "none", "none")]       // accepted → kept
     // Astra accepts low..max and rejects both GPT-5.6-era boundary values.
     [InlineData("gpt-6-astra", "none", "low")]
@@ -181,21 +177,33 @@ public class CodexRequestBuildTests
     [InlineData("mai-code-2-flash", "none", "none")]
     [InlineData("mai-code-2-flash", "minimal", "minimal")]
     [InlineData("mai-code-2-flash", "max", "max")]
-    // small profile (gpt-5-mini): accepts minimal/low/medium/high; DefaultEffort=high.
-    [InlineData("gpt-5-mini", "max", "high")]         // unaccepted → small default high
-    [InlineData("gpt-5-mini", "xhigh", "high")]       // unaccepted (small rejects xhigh) → default high
-    [InlineData("gpt-5-mini", "none", "high")]        // unaccepted (small rejects none) → default high (NOT dropped)
-    [InlineData("gpt-5-mini", "minimal", "minimal")]  // accepted → kept
-    [InlineData("gpt-5-mini", "medium", "medium")]    // accepted → kept
+    [InlineData("gpt-6.2-astra", "none", "low")]
+    [InlineData("gpt-6.2-astra", "ultra", "low")]
+    [InlineData("gpt-6.2-astra", "max", "max")]
+    [InlineData("gpt-6.2-sol", "minimal", "low")]
+    [InlineData("gpt-6.2-sol", "ultra", "low")]
+    [InlineData("gpt-6.2-sol", "max", "max")]
+    [InlineData("gpt-5.6-luna-utility", "minimal", "low")]
+    [InlineData("gpt-5.6-luna-utility", "none", "none")]
+    [InlineData("gpt-5.6-luna-utility", "max", "max")]
+    [InlineData("mai-code-2", "ultra", "low")]
+    [InlineData("mai-code-2", "none", "none")]
+    [InlineData("mai-code-2", "max", "max")]
+    // small profile (MAI 1.1 Flash): accepts minimal/low/medium/high; DefaultEffort=high.
+    [InlineData("mai-code-1.1-flash", "max", "high")]         // unaccepted → small default high
+    [InlineData("mai-code-1.1-flash", "xhigh", "high")]       // unaccepted (small rejects xhigh) → default high
+    [InlineData("mai-code-1.1-flash", "none", "high")]        // unaccepted (small rejects none) → default high (NOT dropped)
+    [InlineData("mai-code-1.1-flash", "minimal", "minimal")]  // accepted → kept
+    [InlineData("mai-code-1.1-flash", "medium", "medium")]    // accepted → kept
     // unknown model → below the fuzzy floor → no profile → passthrough unclamped
     // (a genuinely unrelated id borrows nothing; the router surfaced it elsewhere).
     [InlineData("totally-unknown-model", "minimal", "minimal")]
     [InlineData("totally-unknown-model", "max", "max")]     // no profile → 'max' passes through untouched
     // unknown-but-CLOSE Codex id → GetNearest borrows the nearest profile's default.
-    // 'gpt-5.6' is closest to the large profiles (accept xhigh, default xhigh);
-    // a close SMALL-family id borrows the small default high.
-    [InlineData("gpt-5.6", "max", "xhigh")]
-    [InlineData("gpt-5-mini-preview", "max", "high")]
+    // A Codex preview id borrows the large profile (default xhigh);
+    // a close MAI Flash id borrows the small default high.
+    [InlineData("gpt-5.3-codex-preview", "max", "xhigh")]
+    [InlineData("mai-code-1.1-flash-preview", "max", "high")]
     // case-insensitivity: the accepted check is OrdinalIgnoreCase, so an accepted
     // value keeps its original case; an unaccepted value is replaced by the profile
     // default (emitted in the default's own case).

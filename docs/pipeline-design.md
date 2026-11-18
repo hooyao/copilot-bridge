@@ -2030,6 +2030,33 @@ Codex resources exist. Listed `gpt-5.6-luna-utility` returns integrator-unavaila
 compatibility promise; endpoint discovery alone establishes neither contract.
 Administrator-disabled Claude models were not probed or changed.
 
+The 2026-11-18 reconciliation leaves **16 exact Responses profiles**:
+`gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-5.6-luna-utility`, and `mai-code-2` are
+added; exact `model_not_supported` responses retire `gpt-5.4`, `gpt-5.4-mini`,
+`gpt-5.5`, `gpt-5.6-terra`, and `gpt-5-mini`. The older entries above describe
+historical probes. `November2026_CandidateContracts_Probe` establishes both
+GPT-6.2 effort sets as `low/medium/high/xhigh/max`, while Utility and MAI 2
+also accept `none`; all four reject `minimal/ultra`, accept function/custom/
+web-search and structured image function output, and retain the three uniform
+rejections. Unsupported efforts fall back to `low`. Real streaming client
+captures reconfirm every rewrite, including minimal without search so the
+search-specific validation cannot mask the model's own effort boundary.
+
+Complete GPT-6.2 Codex resources are pinned in the supplemental catalog with
+official commit and SHA-256 provenance, supplement missing exact slugs, and
+defer to newer same-slug baselines. Both resources require Codex 0.166.0.
+Projection removes probed-rejected Ultra without changing pinned source records.
+Inconsistent 1,050,000 total / 1,050,000 prompt / 128,000 output hints retain
+official context/maximum/compaction values (Astra 272,000/872,000/null;
+Sol 500,000/872,000/null). Real Codex 0.167.0-alpha.4.1 lists one visible
+exact-id row for each with only accepted efforts, and completes multi-tool
+tasks with matching call/output histories and clean client-owned SQLite logs.
+Utility and MAI 2 are verified by explicit id; no client resource is invented.
+Grok 4.6/4.7 observations live in
+`copilot-passthrough-candidates-snapshot.json`, outside the coercing profile
+catalog: both reject custom grammar tools, and no Grok route or native-client
+promise is added. Claude models were excluded by account-access scope.
+
 1. Run `tests/CopilotBridge.Playground/CopilotGapProbes.DumpClaudeModelsAndCapabilities`
    to see what Copilot exposes on the current account.
 2. Run `tests/CopilotBridge.Playground/ModelProfileProbe.Thinking_ProbeAcceptance`,

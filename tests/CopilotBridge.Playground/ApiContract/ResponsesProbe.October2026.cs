@@ -85,7 +85,10 @@ public partial class ResponsesProbe
     /// </summary>
     [Theory]
     [MemberData(nameof(OctoberModelRows))]
-    public async Task October2026_RealCodexBytes_RewriteBoundaries(string model)
+    public Task October2026_RealCodexBytes_RewriteBoundaries(string model) =>
+        AssertRealCodexRewriteBoundariesAsync(model);
+
+    private async Task AssertRealCodexRewriteBoundariesAsync(string model)
     {
         var (path, captured) = LoadNewestRealCodexBodyForModel(model);
         Assert.Equal(model, captured["model"]?.GetValue<string>());
@@ -103,9 +106,9 @@ public partial class ResponsesProbe
             (body["reasoning"] ??= new JsonObject()).AsObject()["effort"] = effort;
             await AssertCapturedAxisRejectedAsync(client, model, body, "effort=" + effort);
             // Search validation precedes model effort validation. When it
-            // masks Nano's minimal rejection, independently confirm the
+            // masks a model's minimal rejection, independently confirm the
             // model-level boundary without search on the same captured bytes.
-            if (model == "gpt-5.4-nano" && effort == "minimal")
+            if (effort == "minimal")
             {
                 var baseline = captured.DeepClone().AsObject();
                 if (baseline["tools"] is JsonArray tools)
@@ -152,5 +155,10 @@ public partial class ResponsesProbe
         var (status, response) = await client.TryPostResponsesAsync(body.ToJsonString());
         _output.WriteLine($"[{model}] captured {axis} -> {(int)status}: {Truncate(response, 500)}");
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, status);
+        var rejectedValue = axis.StartsWith("effort=", StringComparison.Ordinal)
+            ? axis["effort=".Length..]
+            : axis.StartsWith("minimal", StringComparison.Ordinal) ? "minimal"
+            : axis == "store_true" ? "store" : axis;
+        Assert.Contains(rejectedValue, response, StringComparison.OrdinalIgnoreCase);
     }
 }

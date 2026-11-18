@@ -83,7 +83,7 @@ public class CcOnGpt5HeadlessTests : IClassFixture<BridgeFixture>
         var result = await ClaudeProcess.RunAsync(new ClaudeInvocation(
             BridgeBaseUrl: _bridge.BaseUrl,
             Prompt: prompt,
-            Model: "gpt-5.5",
+            Model: "gpt-6.2-sol",
             Effort: null,
             OutputFormat: "json",
             AllowedTools: allowedTools,

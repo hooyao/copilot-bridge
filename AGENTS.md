@@ -136,7 +136,7 @@ default — not even inside a VS Developer prompt — so it fails with
 GitHub-hosted images expose the toolchain (MSVC / clang / Xcode CLT) to the SDK's
 AOT targets directly, so the workflows call a plain `dotnet publish -r <rid>`.
 The release pipeline builds all four RIDs, each on its own runner
-(`windows-latest`, `windows-11-arm`, `ubuntu-latest`, `macos-14`), and attaches
+(`windows-latest`, `windows-11-arm`, `ubuntu-latest`, `macos-15`), and attaches
 every archive (+ a macOS `.pkg`) to one GitHub Release.
 
 > **Agents publishing manually (when you can't run `build-aot.bat` directly):**

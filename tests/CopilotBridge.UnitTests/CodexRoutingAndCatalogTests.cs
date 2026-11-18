@@ -22,21 +22,20 @@ public class CodexRoutingAndCatalogTests
     public static IEnumerable<object[]> CodexIds() => new[]
     {
         new object[] { "gpt-5.3-codex" },
-        new object[] { "gpt-5.4" },
-        new object[] { "gpt-5.4-mini" },
-        new object[] { "gpt-5.5" },
         new object[] { "gpt-5.6-luna" },
         new object[] { "gpt-5.6-sol" },
         new object[] { "gpt-5.6-sol-fast" },
-        new object[] { "gpt-5.6-terra" },
         new object[] { "gpt-6-astra" },
         new object[] { "gpt-6-luna" },
         new object[] { "gpt-6-sol" },
         new object[] { "gpt-6.1-sol" },
+        new object[] { "gpt-6.2-astra" },
+        new object[] { "gpt-6.2-sol" },
+        new object[] { "gpt-5.6-luna-utility" },
+        new object[] { "mai-code-2" },
         new object[] { "gpt-5.4-nano" },
         new object[] { "gpt-6.1-terra" },
         new object[] { "mai-code-2-flash" },
-        new object[] { "gpt-5-mini" },
         new object[] { "mai-code-1.1-flash" },
     };
 
@@ -58,8 +57,38 @@ public class CodexRoutingAndCatalogTests
         Assert.Null(new CodexModelProfileCatalog().Get("mai-code-1-flash-picker"));
     }
 
+    // Both live integrator probes return model_not_supported for these ids.
+    // Old client catalogs may still name them, but cannot make them available.
     [Theory]
-    [InlineData("gpt-5-mini", true)]
+    [InlineData("gpt-5.4")]
+    [InlineData("gpt-5.4-mini")]
+    [InlineData("gpt-5.5")]
+    [InlineData("gpt-5.6-terra")]
+    [InlineData("gpt-5-mini")]
+    public void NovemberRetiredIds_HaveNoResponsesRouteOrProfile(string id)
+    {
+        Assert.Null(new CodexModelProfileCatalog().Get(id));
+        Assert.NotEqual(BackendVendor.CopilotResponses, Registry.Resolve(id)?.Vendor);
+    }
+
+    // Contract: exact live effort choices pass through; unsupported efforts
+    // use low, and custom tools and structured image outputs remain available.
+    [Theory]
+    [InlineData("gpt-6.2-astra", "low,medium,high,xhigh,max")]
+    [InlineData("gpt-6.2-sol", "low,medium,high,xhigh,max")]
+    [InlineData("gpt-5.6-luna-utility", "none,low,medium,high,xhigh,max")]
+    [InlineData("mai-code-2", "none,low,medium,high,xhigh,max")]
+    public void NovemberProfiles_UseExactProbedContract(string id, string efforts)
+    {
+        var profile = Assert.IsType<CodexModelProfile>(new CodexModelProfileCatalog().Get(id));
+        Assert.Equal(efforts.Split(','), profile.AcceptedEfforts);
+        Assert.Equal("low", profile.DefaultEffort);
+        Assert.False(profile.RejectsCustomTools);
+        Assert.False(profile.RejectsMinimalWithWebSearch);
+        Assert.True(profile.SupportsMultimodalFunctionOutput);
+    }
+
+    [Theory]
     [InlineData("mai-code-1.1-flash", true)]
     [InlineData("mai-code-2-flash", true)]
     [InlineData("gpt-6.1-sol", false)]
@@ -127,14 +156,10 @@ public class CodexRoutingAndCatalogTests
 
     [Theory]
     [InlineData("gpt-5.3-codex", "none,low,medium,high,xhigh", false, true)]
-    [InlineData("gpt-5.4",       "none,low,medium,high,xhigh", false, true)]
-    [InlineData("gpt-5.4-mini",  "none,low,medium,high,xhigh", false, true)]
-    [InlineData("gpt-5.5",       "none,low,medium,high,xhigh", false, true)]
     // xlarge = large + max (the gpt-5.6 codenames; Gpt56_Effort_ReProbe: max → 200).
     [InlineData("gpt-5.6-luna",  "none,low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-5.6-sol",   "none,low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-5.6-sol-fast", "none,low,medium,high,xhigh,max", false, true)]
-    [InlineData("gpt-5.6-terra", "none,low,medium,high,xhigh,max", false, true)]
     // Astra rejects both none and minimal; all remaining public tiers are accepted live.
     [InlineData("gpt-6-astra",    "low,medium,high,xhigh,max", false, true)]
     [InlineData("gpt-6-luna",     "none,low,medium,high,xhigh,max", false, true)]
@@ -143,7 +168,6 @@ public class CodexRoutingAndCatalogTests
     [InlineData("gpt-5.4-nano",   "none,low,medium,high,xhigh", false, true)]
     [InlineData("gpt-6.1-terra",  "none,low,medium,high,xhigh,max", false, true)]
     [InlineData("mai-code-2-flash", "minimal,none,low,medium,high,xhigh,max", false, true)]
-    [InlineData("gpt-5-mini",    "minimal,low,medium,high", false, true)]
     [InlineData("mai-code-1.1-flash", "minimal,low,medium,high", false, true)]
     public void Catalog_ProfilesMatchLiveContract(
         string id,
@@ -167,13 +191,10 @@ public class CodexRoutingAndCatalogTests
     [InlineData("gpt-5.6-luna", true)]
     [InlineData("gpt-5.6-sol", true)]
     [InlineData("gpt-5.6-sol-fast", true)]
-    [InlineData("gpt-5.6-terra", true)]
     [InlineData("gpt-6-astra", true)]
     [InlineData("gpt-6-luna", true)]
     [InlineData("gpt-6-sol", true)]
     [InlineData("gpt-6.1-sol", true)]
-    [InlineData("gpt-5.5", false)]         // large — rejects max
-    [InlineData("gpt-5-mini", false)]      // small — rejects max
     [InlineData("gpt-5.3-codex", false)]   // large — rejects max
     public void Catalog_MaxAcceptanceMatchesLiveContract(string id, bool acceptsMax)
     {
@@ -183,10 +204,10 @@ public class CodexRoutingAndCatalogTests
     }
 
     [Fact]
-    public void Catalog_HasAllSeventeenModels_AndUniformCoercions()
+    public void Catalog_HasAllSixteenModels_AndUniformCoercions()
     {
         var catalog = new CodexModelProfileCatalog();
-        Assert.Equal(17, catalog.Count);
+        Assert.Equal(16, catalog.Count);
         // The three uniform coercions are catalog-level facts (apply to every model).
         Assert.True(CodexModelProfileCatalog.StripsServiceTier);
         Assert.True(CodexModelProfileCatalog.StripsStoreTrue);
