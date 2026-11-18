@@ -118,3 +118,16 @@ Restoring Lite=true in the test setup made the hosted-search assertion fail with
 no upstream web_search_call, confirming that the test detects the reviewed gap.
 This complementary ApiContract CLI test is transport evidence, separate from the
 four app-server dispatch verdicts above.
+## Operator confirmation after review
+
+The locally retained manifests, nonempty client SQLite windows, exact upstream
+models, matching tool outputs, arithmetic results, and visible GPT-6.2 picker
+rows were inspected again after review. All four original native/explicit-id
+execution verdicts remain PASS; no missing execution evidence was found.
+The current code head 24a0b96 passed every required cross-platform Native AOT
+compile/startup gate, including macOS 15 arm64, in
+[CI run 44236135187](https://github.com/hooyao/copilot-bridge/actions/runs/44236135187).
+The restored hosted-search setup and all five retirement checks also passed a
+second live run. This records completion of the review overview's execution-
+evidence and AOT confirmation reminder; subsequent edits in this section are
+documentation only.
